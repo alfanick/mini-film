@@ -384,6 +384,7 @@ struct ApplyJob<'a> {
     keep_intermediate: Option<&'a Path>,
     no_grain: bool,
     jpg_quality: u8,
+    quiet: bool,
 }
 
 struct ApplyProgress<'a> {
@@ -416,6 +417,7 @@ fn run_apply(args: ApplyArgs) -> Result<()> {
             keep_intermediate: args.keep_intermediate.as_deref(),
             no_grain: args.no_grain,
             jpg_quality: args.jpg_quality,
+            quiet: false,
         },
         &resolved,
         grain_seed,
@@ -467,16 +469,17 @@ fn apply_resolved(
     let intermediate = job
         .keep_intermediate
         .map(Path::to_path_buf)
-        .unwrap_or_else(|| temp_dir.join("dcraw.tiff"));
+        .unwrap_or_else(|| temp_dir.join("dcraw.tif"));
+    let cleanup_intermediate = job.keep_intermediate.is_none();
     let output_ext = output_ext(job.output)?;
     let jpeg_output = output_ext == "jpg" || output_ext == "jpeg";
     let converted = if grain_enabled && jpeg_output {
         temp_dir.join("converted-8.ppm")
     } else {
-        temp_dir.join("converted.tiff")
+        temp_dir.join("converted.tif")
     };
     let final_source = if grain_enabled && !jpeg_output {
-        temp_dir.join("grained.tiff")
+        temp_dir.join("grained.tif")
     } else {
         converted.clone()
     };
@@ -490,6 +493,7 @@ fn apply_resolved(
         job.camera_profile,
         job.raw,
         &intermediate,
+        job.quiet,
     )?;
     progress_step(
         progress,
@@ -508,11 +512,15 @@ fn apply_resolved(
         &converted,
         (grain_enabled && jpeg_output).then_some(8),
     )?;
+    if cleanup_intermediate {
+        remove_temp_file(&intermediate)?;
+    }
 
     if grain_enabled && jpeg_output {
         progress_step(progress, 3, "grain");
         let grained = temp_dir.join("grained-8.ppm");
         apply_grain_8bit(&converted, &grained, resolved.grain, grain_seed)?;
+        remove_temp_file(&converted)?;
         if progress.is_none() {
             eprintln!(
                 "applied grain amount={} size={} frequency={}",
@@ -521,9 +529,11 @@ fn apply_resolved(
         }
         progress_step(progress, 4, "jpeg export");
         finalize_output(job.convert, &grained, job.output, job.jpg_quality)?;
+        remove_temp_file(&grained)?;
     } else if final_source != converted {
         progress_step(progress, 3, "grain");
         apply_grain(&converted, &final_source, resolved.grain, grain_seed)?;
+        remove_temp_file(&converted)?;
         if progress.is_none() {
             eprintln!(
                 "applied grain amount={} size={} frequency={}",
@@ -535,6 +545,9 @@ fn apply_resolved(
     if !jpeg_output || !grain_enabled {
         progress_step(progress, 4, "export");
         finalize_output(job.convert, &final_source, job.output, job.jpg_quality)?;
+        if final_source != converted {
+            remove_temp_file(&final_source)?;
+        }
     }
 
     progress_step(progress, 5, "done");
@@ -603,7 +616,8 @@ fn run_batch(args: BatchArgs) -> Result<()> {
             .and_then(|s| s.to_str())
             .unwrap_or("<unknown>")
             .to_string();
-        batch.set_message(format!("{} ({}/{})", display_name, index + 1, raws.len()));
+        batch.set_position((index + 1) as u64);
+        batch.set_message(display_name.clone());
         file.set_position(0);
         file.set_message(format!("{display_name}: queued"));
 
@@ -629,6 +643,7 @@ fn run_batch(args: BatchArgs) -> Result<()> {
                 keep_intermediate: None,
                 no_grain: args.no_grain,
                 jpg_quality: args.jpg_quality,
+                quiet: true,
             },
             &resolved,
             seed,
@@ -653,7 +668,6 @@ fn run_batch(args: BatchArgs) -> Result<()> {
                 failures.push((raw.clone(), err));
             }
         }
-        batch.inc(1);
     }
 
     if failures.is_empty() {
@@ -753,6 +767,14 @@ fn format_duration(duration: Duration) -> String {
         format!("{}m{:02}.{:03}s", seconds / 60, seconds % 60, millis)
     } else {
         format!("{seconds}.{millis:03}s")
+    }
+}
+
+fn remove_temp_file(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err).with_context(|| format!("removing temporary {}", path.display())),
     }
 }
 
@@ -1087,29 +1109,33 @@ fn run_raw_develop(
     camera_profile: Option<&str>,
     raw: &Path,
     output_tiff: &Path,
+    quiet: bool,
 ) -> Result<()> {
     match engine {
-        RawEngine::Rawtherapee => run_rawtherapee(rawtherapee, raw, output_tiff),
-        RawEngine::Dcraw => run_dcraw(dcraw, dcraw_args, camera_profile, raw, output_tiff),
-        RawEngine::Auto => match run_rawtherapee(rawtherapee, raw, output_tiff) {
+        RawEngine::Rawtherapee => run_rawtherapee(rawtherapee, raw, output_tiff, quiet),
+        RawEngine::Dcraw => run_dcraw(dcraw, dcraw_args, camera_profile, raw, output_tiff, quiet),
+        RawEngine::Auto => match run_rawtherapee(rawtherapee, raw, output_tiff, quiet) {
             Ok(()) => Ok(()),
             Err(rt_err) => {
-                eprintln!(
-                    "rawtherapee failed for {}, falling back to dcraw: {rt_err:#}",
-                    raw.display()
-                );
-                run_dcraw(dcraw, dcraw_args, camera_profile, raw, output_tiff)
+                if !quiet {
+                    eprintln!(
+                        "rawtherapee failed for {}, falling back to dcraw: {rt_err:#}",
+                        raw.display()
+                    );
+                }
+                run_dcraw(dcraw, dcraw_args, camera_profile, raw, output_tiff, quiet)
             }
         },
     }
 }
 
-fn run_rawtherapee(rawtherapee: &Path, raw: &Path, output_tiff: &Path) -> Result<()> {
+fn run_rawtherapee(rawtherapee: &Path, raw: &Path, output_tiff: &Path, quiet: bool) -> Result<()> {
     if let Some(parent) = output_tiff.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
 
-    let status = Command::new(rawtherapee)
+    let mut command = Command::new(rawtherapee);
+    command
         .arg("-q")
         .arg("-Y")
         .arg("-o")
@@ -1117,12 +1143,22 @@ fn run_rawtherapee(rawtherapee: &Path, raw: &Path, output_tiff: &Path) -> Result
         .arg("-t")
         .arg("-b16")
         .arg("-c")
-        .arg(raw)
+        .arg(raw);
+    if quiet {
+        command.stdout(Stdio::null()).stderr(Stdio::null());
+    }
+    let status = command
         .status()
         .with_context(|| format!("running {}", rawtherapee.display()))?;
 
     if !status.success() {
         bail!("rawtherapee failed with status {status}");
+    }
+    if !output_tiff.exists() {
+        bail!(
+            "rawtherapee finished without creating {}",
+            output_tiff.display()
+        );
     }
 
     Ok(())
@@ -1134,6 +1170,7 @@ fn run_dcraw(
     camera_profile: Option<&str>,
     raw: &Path,
     output_tiff: &Path,
+    quiet: bool,
 ) -> Result<()> {
     if let Some(parent) = output_tiff.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
@@ -1146,6 +1183,9 @@ fn run_dcraw(
     command.args(dcraw_args);
     if let Some(profile) = camera_profile {
         command.arg("-p").arg(profile);
+    }
+    if quiet {
+        command.stderr(Stdio::null());
     }
     let status = command
         .arg("-c")
