@@ -3,11 +3,14 @@ use std::{
     fs,
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+    thread,
     time::Instant,
 };
 
 use anyhow::{Context, Result, bail};
 use indicatif::{MultiProgress, ProgressBar};
+use rayon::prelude::*;
 use tempfile::Builder;
 use walkdir::WalkDir;
 
@@ -19,6 +22,8 @@ use crate::app::progress::{
 };
 use crate::app::util::time_of_day_seed;
 use crate::cli::ExportOptions;
+
+const BATCH_PARALLEL_FILES: usize = 4;
 
 pub(crate) struct BatchArgs {
     pub(crate) input: PathBuf,
@@ -40,10 +45,11 @@ pub(crate) struct BatchArgs {
 ///
 /// The batch pipeline validates shared export options once, creates the output
 /// directory, resolves the profile once into a reusable Hald, and then processes
-/// files sequentially with per-file temp directories. It preserves relative
-/// input paths under the output root, drives a batch progress bar plus a per-file
-/// step bar, derives a stable grain seed per file, records failures, and reports
-/// all failures after the loop instead of stopping at the first bad image.
+/// four files at a time with per-file temp directories. It preserves relative
+/// input paths under the output root, drives a batch progress bar plus one
+/// per-worker step bar, derives a stable grain seed per file, records failures,
+/// and reports all failures after the parallel work finishes instead of stopping
+/// at the first bad image.
 pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
     validate_export_options(&args.export)?;
     if !args.input.is_dir() {
@@ -86,80 +92,51 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
     let batch = multi.add(ProgressBar::new(raws.len() as u64));
     batch.set_style(batch_progress_style());
     batch.set_message("starting");
-    let file = multi.add(ProgressBar::new(5));
-    file.set_style(file_progress_style());
-    file.set_message("waiting");
+    let worker_bars: Vec<_> = (0..BATCH_PARALLEL_FILES)
+        .map(|index| {
+            let file = multi.add(ProgressBar::new(5));
+            file.set_style(file_progress_style());
+            file.set_message(format!("worker {} waiting", index + 1));
+            file
+        })
+        .collect();
 
     let batch_start = Instant::now();
-    let mut failures = Vec::new();
-    for (index, raw) in raws.iter().enumerate() {
-        let output = batch_output_path(&args.input, &args.output, raw)?;
-        if let Some(parent) = output.parent() {
-            fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-        }
-
-        let display_name = raw
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("<unknown>")
-            .to_string();
-        batch.set_position((index + 1) as u64);
-        batch.set_message(display_name.clone());
-        file.set_position(0);
-        file.set_message(format!("{display_name}: queued"));
-
-        let file_start = Instant::now();
-        let progress = ApplyProgress {
-            file: &file,
-            started: file_start,
-        };
-        let file_temp = temp_dir.path().join(format!("file-{index}"));
-        fs::create_dir_all(&file_temp)
-            .with_context(|| format!("creating {}", file_temp.display()))?;
-        let seed = per_file_seed(base_seed, index as u64, raw);
-        let result = apply_resolved(
-            ApplyJob {
-                raw,
-                output: &output,
-                rawtherapee: &args.rawtherapee,
-                convert: &args.convert,
-                keep_intermediate: None,
-                no_grain: args.no_grain,
-                export: &args.export,
-                quiet: true,
-            },
-            &resolved,
-            seed,
-            &file_temp,
-            Some(&progress),
-        );
-
-        match result {
-            Ok(()) => {
-                file.set_message(format!(
-                    "{}: done in {}",
-                    display_name,
-                    format_duration(file_start.elapsed())
-                ));
-            }
-            Err(err) => {
-                file.set_message(format!(
-                    "{}: failed after {}",
-                    display_name,
-                    format_duration(file_start.elapsed())
-                ));
-                failures.push((raw.clone(), err));
-            }
-        }
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(BATCH_PARALLEL_FILES)
+        .build()?;
+    let bar_pool = Arc::new(Mutex::new(worker_bars.clone()));
+    let results: Vec<_> = pool.install(|| {
+        raws.par_iter()
+            .enumerate()
+            .map(|(index, raw)| {
+                let file = acquire_worker_bar(&bar_pool);
+                let result = process_batch_file(
+                    &args,
+                    &resolved,
+                    base_seed,
+                    temp_dir.path(),
+                    &batch,
+                    &file,
+                    index,
+                    raw,
+                );
+                release_worker_bar(&bar_pool, file);
+                result
+            })
+            .collect()
+    });
+    for file in &worker_bars {
+        file.finish_and_clear();
     }
 
+    let failures: Vec<_> = results.into_iter().filter_map(Result::err).collect();
     if failures.is_empty() {
         batch.finish_with_message(format!(
             "done {} files in {}",
             raws.len(),
             format_duration(batch_start.elapsed())
         ));
-        file.finish_and_clear();
         Ok(())
     } else {
         batch.abandon_with_message(format!(
@@ -172,6 +149,112 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
             batch.println(format!("failed {}: {err:#}", path.display()));
         }
         bail!("batch finished with failures")
+    }
+}
+
+fn acquire_worker_bar(bar_pool: &Arc<Mutex<Vec<ProgressBar>>>) -> ProgressBar {
+    loop {
+        if let Some(file) = bar_pool
+            .lock()
+            .expect("worker progress bar pool poisoned")
+            .pop()
+        {
+            return file;
+        }
+        thread::yield_now();
+    }
+}
+
+fn release_worker_bar(bar_pool: &Arc<Mutex<Vec<ProgressBar>>>, file: ProgressBar) {
+    bar_pool
+        .lock()
+        .expect("worker progress bar pool poisoned")
+        .push(file);
+}
+
+fn process_batch_file(
+    args: &BatchArgs,
+    resolved: &crate::app::profile::ResolvedProfile,
+    base_seed: u64,
+    temp_root: &Path,
+    batch: &ProgressBar,
+    file: &ProgressBar,
+    index: usize,
+    raw: &Path,
+) -> Result<(), (PathBuf, anyhow::Error)> {
+    process_batch_file_inner(
+        args, resolved, base_seed, temp_root, batch, file, index, raw,
+    )
+    .map_err(|err| (raw.to_path_buf(), err))
+}
+
+fn process_batch_file_inner(
+    args: &BatchArgs,
+    resolved: &crate::app::profile::ResolvedProfile,
+    base_seed: u64,
+    temp_root: &Path,
+    batch: &ProgressBar,
+    file: &ProgressBar,
+    index: usize,
+    raw: &Path,
+) -> Result<()> {
+    let output = batch_output_path(&args.input, &args.output, raw)?;
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+
+    let display_name = raw
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("<unknown>")
+        .to_string();
+    batch.set_message(display_name.clone());
+    file.set_position(0);
+    file.set_message(format!("{display_name}: queued"));
+
+    let file_start = Instant::now();
+    let progress = ApplyProgress {
+        file,
+        started: file_start,
+    };
+    let file_temp = temp_root.join(format!("file-{index}"));
+    fs::create_dir_all(&file_temp).with_context(|| format!("creating {}", file_temp.display()))?;
+    let seed = per_file_seed(base_seed, index as u64, raw);
+    let result = apply_resolved(
+        ApplyJob {
+            raw,
+            output: &output,
+            rawtherapee: &args.rawtherapee,
+            convert: &args.convert,
+            keep_intermediate: None,
+            no_grain: args.no_grain,
+            export: &args.export,
+            quiet: true,
+        },
+        resolved,
+        seed,
+        &file_temp,
+        Some(&progress),
+    );
+
+    batch.inc(1);
+    match result {
+        Ok(()) => {
+            file.set_message(format!(
+                "{}: done in {}",
+                display_name,
+                format_duration(file_start.elapsed())
+            ));
+            Ok(())
+        }
+        Err(err) => {
+            file.set_message(format!(
+                "{}: failed after {}",
+                display_name,
+                format_duration(file_start.elapsed())
+            ));
+            Err(err)
+        }
     }
 }
 
