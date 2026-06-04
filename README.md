@@ -101,7 +101,7 @@ cargo run --release -- sampler \
   --output /home/alfanick/profile-sampler.jpg
 ```
 
-`sampler` renders one thumbnail per XMP file from `emulations/` and uses `montage` to build a contact sheet with six thumbnails per row. Each thumbnail is developed with its profile-specific generated RawTherapee `.pp3` files before the Hald and grain stages. Each label is relative to the emulation directory. Thumbnail longest edge defaults to 512 px:
+`sampler` renders one thumbnail per XMP file from `emulations/` and uses `montage` to build a contact sheet with six thumbnails per row. Each thumbnail is developed with its profile-specific generated RawTherapee `.pp3` files, including Film Simulation for the Hald, before the grain stage. Each label is relative to the emulation directory. Thumbnail longest edge defaults to 512 px:
 
 ```sh
 --thumbnail-long-edge 768
@@ -155,12 +155,13 @@ JPEG subsampling values:
 - an emulation name, searched under `emulations/`
 - a generated Hald name, searched under `--hald-dir`
 
-RGBTable XMPs under `profiles/` are internal lookup tables. `apply`, `batch`, and `sampler` do not use them as user-facing emulations; they are only used to resolve linked `crs:Look` UUID/name references from emulation XMPs. `mini-film` generates a temporary Hald from the linked profile, generates temporary RawTherapee `.pp3` files for supported XMP adjustments, applies the Hald, then applies the emulation grain settings.
+RGBTable XMPs under `profiles/` are internal lookup tables. `apply`, `batch`, and `sampler` do not use them as user-facing emulations; they are only used to resolve linked `crs:Look` UUID/name references from emulation XMPs. `mini-film` generates a temporary Hald from the linked profile, generates temporary RawTherapee `.pp3` files for supported XMP adjustments and Film Simulation, lets RawTherapee apply the Hald, then applies the emulation grain settings.
 
 ## Processing Split
 
 RawTherapee handles:
 
+- RAW development and Hald CLUT application through Film Simulation
 - `Exposure2012`, `Contrast2012`, `Highlights2012`, `Shadows2012`, `Whites2012`, `Blacks2012`
 - `Saturation`, `Vibrance`
 - `ToneCurvePV2012` and per-channel `ToneCurvePV2012Red/Green/Blue`
@@ -179,7 +180,6 @@ mini-film internally handles:
 
 ImageMagick/GraphicsMagick `convert` handles:
 
-- applying the Hald with `-hald-clut`
 - final resize, bit depth, metadata stripping, JPEG quality/subsampling, progressive JPEG, and TIFF/JPEG encoding
 
 `montage` handles only the sampler contact sheet assembly and labels. Texture is not faithfully mapped yet.

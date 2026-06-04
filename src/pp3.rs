@@ -61,6 +61,16 @@ pub fn rawtherapee_profile_text(
     out
 }
 
+pub fn rawtherapee_hald_clut_profile_text(hald: &Path) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "[Film Simulation]");
+    let _ = writeln!(out, "Enabled=true");
+    let _ = writeln!(out, "ClutFilename={}", hald.display());
+    let _ = writeln!(out, "Strength=100");
+    let _ = writeln!(out);
+    out
+}
+
 fn write_exposure_section(out: &mut String, adjustments: &ProfileAdjustments) {
     let _ = writeln!(out, "[Exposure]");
     let _ = writeln!(out, "Auto=false");

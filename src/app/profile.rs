@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use mini_film::{
     GrainSettings, HaldOptions, convert_xmp_to_hald, extract_film_recipe, profile_info_line,
-    write_rawtherapee_profile,
+    rawtherapee_hald_clut_profile_text, write_rawtherapee_profile,
 };
 use walkdir::WalkDir;
 
@@ -13,6 +13,22 @@ pub(crate) struct ResolvedProfile {
     pub(crate) hald_path: PathBuf,
     pub(crate) rawtherapee_profiles: Vec<PathBuf>,
     pub(crate) grain: GrainSettings,
+}
+
+pub(crate) fn rawtherapee_profiles_with_hald(
+    resolved: &ResolvedProfile,
+    temp_dir: &Path,
+) -> Result<Vec<PathBuf>> {
+    let lut_profile = temp_dir.join("rt-hald-clut.pp3");
+    std::fs::write(
+        &lut_profile,
+        rawtherapee_hald_clut_profile_text(&resolved.hald_path),
+    )
+    .with_context(|| format!("writing {}", lut_profile.display()))?;
+
+    let mut profiles = resolved.rawtherapee_profiles.clone();
+    profiles.push(lut_profile);
+    Ok(profiles)
 }
 
 /// Resolve a CLI profile selector into a concrete Hald file plus recipe metadata.

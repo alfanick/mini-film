@@ -7,9 +7,11 @@ use tempfile::Builder;
 use crate::app::export::{
     finalize_output, output_ext, validate_export_options, validate_output_format,
 };
-use crate::app::profile::{ResolvedProfile, normalize_name, resolve_profile};
+use crate::app::profile::{
+    ResolvedProfile, normalize_name, rawtherapee_profiles_with_hald, resolve_profile,
+};
 use crate::app::progress::{ApplyProgress, progress_step};
-use crate::app::raw::{run_convert_depth, run_raw_develop};
+use crate::app::raw::run_raw_develop;
 use crate::app::util::{remove_temp_file, time_of_day_seed};
 use crate::cli::ExportOptions;
 
@@ -88,10 +90,10 @@ pub(crate) fn run_apply(args: ApplyArgs) -> Result<()> {
 /// Apply an already resolved profile to one RAW input.
 ///
 /// The function owns the processing graph. It develops RAW to TIFF with
-/// RawTherapee, applies the Hald, eagerly removes temporary files, optionally
-/// renders grain in either 8-bit JPEG space or 16-bit TIFF space, and finally
-/// exports to the requested output format while updating progress bars for
-/// batch callers.
+/// RawTherapee while applying generated `.pp3` adjustments and the Hald CLUT via
+/// Film Simulation, eagerly removes temporary files, optionally renders grain in
+/// either 8-bit JPEG space or 16-bit TIFF space, and finally exports to the
+/// requested output format while updating progress bars for batch callers.
 pub(crate) fn apply_resolved(
     job: ApplyJob<'_>,
     resolved: &ResolvedProfile,
@@ -102,7 +104,6 @@ pub(crate) fn apply_resolved(
     validate_output_format(job.output)?;
 
     let grain_enabled = !job.no_grain && resolved.grain.is_enabled();
-
     let intermediate = job
         .keep_intermediate
         .map(Path::to_path_buf)
@@ -110,42 +111,21 @@ pub(crate) fn apply_resolved(
     let cleanup_intermediate = job.keep_intermediate.is_none();
     let output_ext = output_ext(job.output)?;
     let jpeg_output = output_ext == "jpg" || output_ext == "jpeg";
-    let converted = if grain_enabled && jpeg_output {
-        temp_dir.join("converted-8.ppm")
-    } else {
-        temp_dir.join("converted.tif")
-    };
-    let final_source = if grain_enabled && !jpeg_output {
-        temp_dir.join("grained.tif")
-    } else {
-        converted.clone()
-    };
 
     progress_step(progress, 1, "rawtherapee");
+    let rawtherapee_profiles = rawtherapee_profiles_with_hald(resolved, temp_dir)?;
     run_raw_develop(
         job.rawtherapee,
-        &resolved.rawtherapee_profiles,
+        &rawtherapee_profiles,
         job.raw,
         &intermediate,
         job.quiet,
     )?;
-    progress_step(progress, 2, "hald");
-    run_convert_depth(
-        job.convert,
-        &intermediate,
-        &resolved.hald_path,
-        &converted,
-        (grain_enabled && jpeg_output).then_some(8),
-    )?;
-    if cleanup_intermediate {
-        remove_temp_file(&intermediate)?;
-    }
 
     if grain_enabled && jpeg_output {
         progress_step(progress, 3, "grain");
         let grained = temp_dir.join("grained-8.ppm");
-        apply_grain_8bit(&converted, &grained, resolved.grain, grain_seed)?;
-        remove_temp_file(&converted)?;
+        apply_grain_8bit(&intermediate, &grained, resolved.grain, grain_seed)?;
         if progress.is_none() {
             eprintln!(
                 "applied grain amount={} size={} frequency={}",
@@ -155,24 +135,26 @@ pub(crate) fn apply_resolved(
         progress_step(progress, 4, "jpeg export");
         finalize_output(job.convert, &grained, job.output, job.export)?;
         remove_temp_file(&grained)?;
-    } else if final_source != converted {
+    } else if grain_enabled {
         progress_step(progress, 3, "grain");
-        apply_grain(&converted, &final_source, resolved.grain, grain_seed)?;
-        remove_temp_file(&converted)?;
+        let grained = temp_dir.join("grained.tif");
+        apply_grain(&intermediate, &grained, resolved.grain, grain_seed)?;
         if progress.is_none() {
             eprintln!(
                 "applied grain amount={} size={} frequency={}",
                 resolved.grain.amount, resolved.grain.size, resolved.grain.frequency
             );
         }
+        progress_step(progress, 4, "export");
+        finalize_output(job.convert, &grained, job.output, job.export)?;
+        remove_temp_file(&grained)?;
+    } else {
+        progress_step(progress, 4, "export");
+        finalize_output(job.convert, &intermediate, job.output, job.export)?;
     }
 
-    if !jpeg_output || !grain_enabled {
-        progress_step(progress, 4, "export");
-        finalize_output(job.convert, &final_source, job.output, job.export)?;
-        if final_source != converted {
-            remove_temp_file(&final_source)?;
-        }
+    if cleanup_intermediate {
+        remove_temp_file(&intermediate)?;
     }
 
     progress_step(progress, 5, "done");

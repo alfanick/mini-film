@@ -14,9 +14,9 @@ use tempfile::Builder;
 use walkdir::WalkDir;
 
 use crate::app::export::{add_convert_thread_limit, finalize_output, validate_output_format};
-use crate::app::profile::profile_from_xmp_quiet;
+use crate::app::profile::{profile_from_xmp_quiet, rawtherapee_profiles_with_hald};
 use crate::app::progress::format_duration;
-use crate::app::raw::{run_convert_depth, run_raw_develop};
+use crate::app::raw::run_raw_develop;
 use crate::app::util::{remove_temp_file, time_of_day_seed};
 use crate::cli::{ExportOptions, JpegSubsampling};
 
@@ -53,9 +53,10 @@ struct SamplerProgress {
 ///
 /// Each XMP is resolved to a temporary Hald plus generated RawTherapee `.pp3`
 /// profiles. The RAW is developed per profile so RawTherapee-side tone/color
-/// settings are reflected in the thumbnail, then mini-film applies the Hald,
-/// optional grain, final thumbnail sizing, and finally passes everything to
-/// `montage` with a relative profile path as the label below the image.
+/// settings and the Hald Film Simulation are reflected in the thumbnail, then
+/// mini-film applies optional grain, final thumbnail sizing, and finally passes
+/// everything to `montage` with a relative profile path as the label below the
+/// image.
 pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
     validate_sampler_args(&args)?;
 
@@ -281,41 +282,32 @@ fn render_profile_thumbnail(
             .with_context(|| format!("resolving profile {}", profile.display()))?;
     let developed = profile_temp.join("rawtherapee.tif");
     sampler_step(progress, 2, "rawtherapee");
+    let rawtherapee_profiles = rawtherapee_profiles_with_hald(&resolved, &profile_temp)?;
     run_raw_develop(
         &args.rawtherapee,
-        &resolved.rawtherapee_profiles,
+        &rawtherapee_profiles,
         &args.raw,
         &developed,
         true,
     )?;
-    let converted = profile_temp.join("converted-8.ppm");
-    sampler_step(progress, 3, "hald");
-    run_convert_depth(
-        &args.convert,
-        &developed,
-        &resolved.hald_path,
-        &converted,
-        Some(8),
-    )?;
-    remove_temp_file(&developed)?;
 
     let source = if !args.no_grain && resolved.grain.is_enabled() {
-        sampler_step(progress, 4, "grain");
+        sampler_step(progress, 3, "grain");
         let grained = profile_temp.join("grained-8.ppm");
         apply_grain_8bit(
-            &converted,
+            &developed,
             &grained,
             resolved.grain,
             sample_seed(base_seed, index, profile),
         )?;
-        remove_temp_file(&converted)?;
+        remove_temp_file(&developed)?;
         grained
     } else {
-        sampler_step(progress, 4, "grain skipped");
-        converted
+        sampler_step(progress, 3, "grain skipped");
+        developed
     };
 
-    sampler_step(progress, 5, "thumbnail");
+    sampler_step(progress, 4, "thumbnail");
     let thumb = profile_temp.join("thumb.jpg");
     finalize_output(&args.convert, &source, &thumb, export)?;
     remove_temp_file(&source)?;
