@@ -16,9 +16,9 @@ use walkdir::WalkDir;
 use crate::app::export::{add_convert_thread_limit, finalize_output, validate_output_format};
 use crate::app::profile::profile_from_xmp_quiet;
 use crate::app::progress::format_duration;
-use crate::app::raw::{raw_engine_step, run_convert_depth, run_raw_develop};
+use crate::app::raw::{run_convert_depth, run_raw_develop};
 use crate::app::util::{remove_temp_file, time_of_day_seed};
-use crate::cli::{ExportOptions, JpegSubsampling, RawEngine};
+use crate::cli::{ExportOptions, JpegSubsampling};
 
 const SAMPLER_PARALLEL_PROFILES: usize = 2;
 
@@ -27,11 +27,7 @@ pub(crate) struct SamplerArgs {
     pub(crate) output: PathBuf,
     pub(crate) profiles_root: PathBuf,
     pub(crate) hald_level: u32,
-    pub(crate) dcraw_args: Vec<String>,
-    pub(crate) raw_engine: RawEngine,
     pub(crate) rawtherapee: PathBuf,
-    pub(crate) camera_profile: Option<String>,
-    pub(crate) dcraw: PathBuf,
     pub(crate) convert: PathBuf,
     pub(crate) montage: PathBuf,
     pub(crate) no_grain: bool,
@@ -89,18 +85,9 @@ pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
     sampler.set_message("raw develop");
     let raw_progress = multi.add(ProgressBar::new(5));
     raw_progress.set_style(profile_progress_style());
-    raw_progress.set_message(raw_engine_step(args.raw_engine));
+    raw_progress.set_message("rawtherapee");
 
-    run_raw_develop(
-        args.raw_engine,
-        &args.rawtherapee,
-        &args.dcraw,
-        &args.dcraw_args,
-        args.camera_profile.as_deref(),
-        &args.raw,
-        &base_tiff,
-        true,
-    )?;
+    run_raw_develop(&args.rawtherapee, &args.raw, &base_tiff, true)?;
     raw_progress.set_position(5);
     raw_progress.finish_and_clear();
 

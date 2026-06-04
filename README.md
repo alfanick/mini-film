@@ -6,7 +6,7 @@ It can:
 
 - convert Adobe Camera Raw / Lightroom `crs:RGBTable` profile XMPs to 16-bit Hald CLUT PNGs
 - bake profile-side Camera Raw tone/color adjustments into generated Hald CLUTs
-- develop a RAW file with `dcraw`
+- develop a RAW file with `rawtherapee-cli`
 - apply a Hald CLUT with GraphicsMagick/ImageMagick `convert`
 - read Lightroom preset XMPs that reference a profile and define grain
 - batch-process DNG/NEF folders into JPEGs
@@ -26,7 +26,7 @@ Convert one profile XMP:
 
 ```sh
 cargo run --release -- hald \
-  '../RNI FILMS 5 Negative - Pro - profiles/Kodak Portra 400 normalised profile.xmp' \
+  '/home/alfanick/Pictures/RNI/profiles/Kodak Portra 400 normalised profile.xmp' \
   -o '../hald/Kodak Portra 400 normalised.hald.png' \
   --overwrite
 ```
@@ -34,7 +34,7 @@ cargo run --release -- hald \
 Convert all profile XMPs under the parent directory:
 
 ```sh
-cargo run --release -- hald .. -o ../hald --overwrite
+cargo run --release -- hald /home/alfanick/Pictures/RNI/profiles -o ../hald --overwrite
 ```
 
 The ordinary RNI preset XMPs usually only reference a profile UUID and do not contain the table payload; `hald` skips those in directory mode. Profile XMPs that include extra Camera Raw settings print `adjustments=baked`; those settings are folded into the generated Hald along with the RGB table.
@@ -45,17 +45,18 @@ Use a Lightroom emulation XMP that references an internal profile and defines gr
 
 ```sh
 cargo run --release -- apply input.RAW \
-  --profile '../emulations/Kodak Portra 400 warm grainy.xmp' \
-  --profiles-root .. \
+  --profile '/home/alfanick/Pictures/RNI/emulations/Kodak Portra 400 warm grainy.xmp' \
+  --profiles-root /home/alfanick/Pictures/RNI \
   -o output.tif
 ```
 
-If the emulation and profile directories are siblings of the project directory, no `--profiles-root` is needed:
+If `--profile` is an emulation name, set `--profiles-root` to the RNI library directory that contains `emulations/` and `profiles/`:
 
 ```sh
 cargo run -- apply \
   --output /home/alfanick/test.jpg \
-  --profile '../emulations/Agfa Scala 200 + grainy.xmp' \
+  --profile 'Agfa Scala 200 + grainy' \
+  --profiles-root /home/alfanick/Pictures/RNI \
   /home/alfanick/Pictures/Lightroom/2026/05/03/DSC_1812-10.dng
 ```
 
@@ -63,8 +64,8 @@ cargo run -- apply \
 
 ```sh
 cargo run --release -- apply input.RAW \
-  --profile '../emulations/Kodak Portra 400 warm grainy.xmp' \
-  --profiles-root .. \
+  --profile '/home/alfanick/Pictures/RNI/emulations/Kodak Portra 400 warm grainy.xmp' \
+  --profiles-root /home/alfanick/Pictures/RNI \
   -o output.jpg
 ```
 
@@ -78,7 +79,8 @@ Process every `.dng`, `.DNG`, `.nef`, and `.NEF` under an input directory and wr
 cargo run --release -- batch \
   /home/alfanick/Pictures/Lightroom/2026/05/03 \
   /home/alfanick/batch-output \
-  --profile '../emulations/Agfa Scala 200 + grainy.xmp'
+  --profile 'Agfa Scala 200 + grainy' \
+  --profiles-root /home/alfanick/Pictures/RNI
 ```
 
 The output directory is created if it does not exist. Nested input folders are preserved, and each RAW output uses the same relative path with a `.jpg` extension.
@@ -95,7 +97,7 @@ Render one RAW through every resolvable emulation XMP and write a labeled JPEG c
 ```sh
 cargo run --release -- sampler \
   /home/alfanick/Pictures/Lightroom/2026/05/03/DSC_1812-10.dng \
-  --profiles-root .. \
+  --profiles-root /home/alfanick/Pictures/RNI \
   --output /home/alfanick/profile-sampler.jpg
 ```
 
@@ -173,25 +175,12 @@ Supported as CLUT adjustments:
 
 Texture is not faithfully representable in a Hald CLUT and is not applied. Sharpening is applied outside the Hald because it is spatial; the mapping to `convert -unsharp` is approximate.
 
-## RAW Engine And Color Handling
+## RAW Development
 
-By default, `mini-film` uses:
-
-```sh
---raw-engine auto
-```
-
-`auto` tries `rawtherapee-cli` first and falls back to `dcraw` if RawTherapee is unavailable or fails for a file. RawTherapee renders a 16-bit TIFF intermediate with its neutral command-line defaults:
+`mini-film` uses RawTherapee as its only RAW engine. It renders a 16-bit TIFF intermediate with:
 
 ```sh
 rawtherapee-cli -q -Y -o intermediate.tif -t -b16 -c input.RAW
-```
-
-Force a specific engine with:
-
-```sh
---raw-engine rawtherapee
---raw-engine dcraw
 ```
 
 Use a non-default RawTherapee binary path with:
@@ -199,37 +188,6 @@ Use a non-default RawTherapee binary path with:
 ```sh
 --rawtherapee /path/to/rawtherapee-cli
 ```
-
-When `--raw-engine dcraw` is used, the default `dcraw` arguments are:
-
-```sh
--T -6 -W -w -o 1
-```
-
-That means:
-
-- `-6`: 16-bit working TIFF
-- `-W`: no automatic brightening
-- `-w`: camera/as-shot white balance
-- `-o 1`: sRGB output space
-
-This matches the decoded RNI tables in this directory, which report sRGB primaries and sRGB gamma in the DNG SDK RGB-table metadata. For cameras/workflows that need a specific input profile, pass it through to `dcraw`:
-
-```sh
-cargo run --release -- apply input.RAW \
-  --profile 'Kodak Portra 400 warm grainy' \
-  --profiles-root .. \
-  --camera-profile embed \
-  -o output.tif
-```
-
-or:
-
-```sh
---camera-profile /path/to/camera.icc
-```
-
-`--camera-profile` and `--dcraw-args` apply only to the dcraw engine.
 
 ## Grain
 
@@ -267,4 +225,4 @@ or use a preset:
 
 ## Caveat
 
-This does not fully clone Adobe Camera Raw. It decodes and applies the profile RGB table, bakes supported profile tone/color fields into the Hald, uses RawTherapee or dcraw for RAW development, and emulates Lightroom grain. Adobe-specific tone mapping, local contrast, sharpening, and camera matching may still differ.
+This does not fully clone Adobe Camera Raw. It decodes and applies the profile RGB table, bakes supported profile tone/color fields into the Hald, uses RawTherapee for RAW development, and emulates Lightroom grain. Adobe-specific tone mapping, local contrast, sharpening, and camera matching may still differ.

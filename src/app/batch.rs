@@ -18,7 +18,7 @@ use crate::app::progress::{
     ApplyProgress, batch_progress_style, file_progress_style, format_duration,
 };
 use crate::app::util::time_of_day_seed;
-use crate::cli::{ExportOptions, RawEngine};
+use crate::cli::ExportOptions;
 
 pub(crate) struct BatchArgs {
     pub(crate) input: PathBuf,
@@ -27,11 +27,7 @@ pub(crate) struct BatchArgs {
     pub(crate) hald_dir: PathBuf,
     pub(crate) profiles_root: PathBuf,
     pub(crate) hald_level: u32,
-    pub(crate) dcraw_args: Vec<String>,
-    pub(crate) raw_engine: RawEngine,
     pub(crate) rawtherapee: PathBuf,
-    pub(crate) camera_profile: Option<String>,
-    pub(crate) dcraw: PathBuf,
     pub(crate) convert: PathBuf,
     pub(crate) no_grain: bool,
     pub(crate) grain: Option<String>,
@@ -69,11 +65,7 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
         hald_dir: args.hald_dir.clone(),
         profiles_root: args.profiles_root.clone(),
         hald_level: args.hald_level,
-        dcraw_args: args.dcraw_args.clone(),
-        raw_engine: args.raw_engine,
         rawtherapee: args.rawtherapee.clone(),
-        camera_profile: args.camera_profile.clone(),
-        dcraw: args.dcraw.clone(),
         convert: args.convert.clone(),
         keep_intermediate: None,
         no_grain: args.no_grain,
@@ -129,11 +121,7 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
             ApplyJob {
                 raw,
                 output: &output,
-                dcraw_args: &args.dcraw_args,
-                raw_engine: args.raw_engine,
                 rawtherapee: &args.rawtherapee,
-                camera_profile: args.camera_profile.as_deref(),
-                dcraw: &args.dcraw,
                 convert: &args.convert,
                 keep_intermediate: None,
                 no_grain: args.no_grain,

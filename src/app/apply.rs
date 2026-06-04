@@ -9,11 +9,9 @@ use crate::app::export::{
 };
 use crate::app::profile::{ResolvedProfile, normalize_name, resolve_profile};
 use crate::app::progress::{ApplyProgress, progress_step};
-use crate::app::raw::{
-    raw_engine_step, run_convert_depth, run_dcraw_convert_final, run_raw_develop,
-};
+use crate::app::raw::{run_convert_depth, run_raw_develop};
 use crate::app::util::{remove_temp_file, time_of_day_seed};
-use crate::cli::{ExportOptions, RawEngine};
+use crate::cli::ExportOptions;
 
 pub(crate) struct ApplyArgs {
     pub(crate) raw: PathBuf,
@@ -22,11 +20,7 @@ pub(crate) struct ApplyArgs {
     pub(crate) hald_dir: PathBuf,
     pub(crate) profiles_root: PathBuf,
     pub(crate) hald_level: u32,
-    pub(crate) dcraw_args: Vec<String>,
-    pub(crate) raw_engine: RawEngine,
     pub(crate) rawtherapee: PathBuf,
-    pub(crate) camera_profile: Option<String>,
-    pub(crate) dcraw: PathBuf,
     pub(crate) convert: PathBuf,
     pub(crate) keep_intermediate: Option<PathBuf>,
     pub(crate) no_grain: bool,
@@ -39,11 +33,7 @@ pub(crate) struct ApplyArgs {
 pub(crate) struct ApplyJob<'a> {
     pub(crate) raw: &'a Path,
     pub(crate) output: &'a Path,
-    pub(crate) dcraw_args: &'a [String],
-    pub(crate) raw_engine: RawEngine,
     pub(crate) rawtherapee: &'a Path,
-    pub(crate) camera_profile: Option<&'a str>,
-    pub(crate) dcraw: &'a Path,
     pub(crate) convert: &'a Path,
     pub(crate) keep_intermediate: Option<&'a Path>,
     pub(crate) no_grain: bool,
@@ -74,11 +64,7 @@ pub(crate) fn run_apply(args: ApplyArgs) -> Result<()> {
         ApplyJob {
             raw: &args.raw,
             output: &args.output,
-            dcraw_args: &args.dcraw_args,
-            raw_engine: args.raw_engine,
             rawtherapee: &args.rawtherapee,
-            camera_profile: args.camera_profile.as_deref(),
-            dcraw: &args.dcraw,
             convert: &args.convert,
             keep_intermediate: args.keep_intermediate.as_deref(),
             no_grain: args.no_grain,
@@ -101,12 +87,11 @@ pub(crate) fn run_apply(args: ApplyArgs) -> Result<()> {
 
 /// Apply an already resolved profile to one RAW input.
 ///
-/// The function owns the processing graph. A dcraw-only no-grain path streams
-/// dcraw directly into convert to avoid an intermediate file. Otherwise it
-/// develops RAW to TIFF, applies the Hald and optional sharpening, eagerly
-/// removes temporary files, optionally renders grain in either 8-bit JPEG space
-/// or 16-bit TIFF space, and finally exports to the requested output format
-/// while updating progress bars for batch callers.
+/// The function owns the processing graph. It develops RAW to TIFF with
+/// RawTherapee, applies the Hald and optional sharpening, eagerly removes
+/// temporary files, optionally renders grain in either 8-bit JPEG space or
+/// 16-bit TIFF space, and finally exports to the requested output format while
+/// updating progress bars for batch callers.
 pub(crate) fn apply_resolved(
     job: ApplyJob<'_>,
     resolved: &ResolvedProfile,
@@ -118,32 +103,10 @@ pub(crate) fn apply_resolved(
 
     let grain_enabled = !job.no_grain && resolved.grain.is_enabled();
 
-    if !grain_enabled && job.keep_intermediate.is_none() && job.raw_engine == RawEngine::Dcraw {
-        let step = if resolved.sharpening.is_enabled() {
-            "dcraw + hald/sharpen + export"
-        } else {
-            "dcraw + hald + export"
-        };
-        progress_step(progress, 1, step);
-        run_dcraw_convert_final(
-            job.dcraw,
-            job.dcraw_args,
-            job.camera_profile,
-            job.raw,
-            job.convert,
-            &resolved.hald_path,
-            resolved.sharpening,
-            job.output,
-            job.export,
-        )?;
-        progress_step(progress, 5, "done");
-        return Ok(());
-    }
-
     let intermediate = job
         .keep_intermediate
         .map(Path::to_path_buf)
-        .unwrap_or_else(|| temp_dir.join("dcraw.tif"));
+        .unwrap_or_else(|| temp_dir.join("rawtherapee.tif"));
     let cleanup_intermediate = job.keep_intermediate.is_none();
     let output_ext = output_ext(job.output)?;
     let jpeg_output = output_ext == "jpg" || output_ext == "jpeg";
@@ -158,17 +121,8 @@ pub(crate) fn apply_resolved(
         converted.clone()
     };
 
-    progress_step(progress, 1, raw_engine_step(job.raw_engine));
-    run_raw_develop(
-        job.raw_engine,
-        job.rawtherapee,
-        job.dcraw,
-        job.dcraw_args,
-        job.camera_profile,
-        job.raw,
-        &intermediate,
-        job.quiet,
-    )?;
+    progress_step(progress, 1, "rawtherapee");
+    run_raw_develop(job.rawtherapee, job.raw, &intermediate, job.quiet)?;
     progress_step(
         progress,
         2,
