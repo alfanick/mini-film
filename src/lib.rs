@@ -1,3 +1,5 @@
+#![feature(portable_simd)]
+
 mod adjustments;
 mod grain;
 mod hald;
