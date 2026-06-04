@@ -125,6 +125,34 @@ enum CommandKind {
         /// JPEG quality when output path ends in .jpg or .jpeg.
         #[arg(long, default_value_t = 95)]
         jpg_quality: u8,
+
+        /// Resize final output with GraphicsMagick geometry, for example 3000x3000 or 3000x3000>.
+        #[arg(long)]
+        resize: Option<String>,
+
+        /// Resize final output so the longest edge is at most this many pixels.
+        #[arg(long)]
+        long_edge: Option<u32>,
+
+        /// Resize final output so width is at most this many pixels.
+        #[arg(long)]
+        max_width: Option<u32>,
+
+        /// Resize final output so height is at most this many pixels.
+        #[arg(long)]
+        max_height: Option<u32>,
+
+        /// JPEG chroma subsampling.
+        #[arg(long, value_enum, default_value_t = JpegSubsampling::S444)]
+        jpeg_subsampling: JpegSubsampling,
+
+        /// Strip profiles and text metadata from final output.
+        #[arg(long)]
+        strip_metadata: bool,
+
+        /// Write progressive/interlaced JPEG output.
+        #[arg(long)]
+        progressive_jpeg: bool,
     },
 
     /// Apply a profile to every DNG/NEF file in an input folder and write JPEGs.
@@ -194,6 +222,34 @@ enum CommandKind {
         /// JPEG quality for every output file.
         #[arg(long, default_value_t = 95)]
         jpg_quality: u8,
+
+        /// Resize final JPEGs with GraphicsMagick geometry, for example 3000x3000 or 3000x3000>.
+        #[arg(long)]
+        resize: Option<String>,
+
+        /// Resize final JPEGs so the longest edge is at most this many pixels.
+        #[arg(long)]
+        long_edge: Option<u32>,
+
+        /// Resize final JPEGs so width is at most this many pixels.
+        #[arg(long)]
+        max_width: Option<u32>,
+
+        /// Resize final JPEGs so height is at most this many pixels.
+        #[arg(long)]
+        max_height: Option<u32>,
+
+        /// JPEG chroma subsampling.
+        #[arg(long, value_enum, default_value_t = JpegSubsampling::S444)]
+        jpeg_subsampling: JpegSubsampling,
+
+        /// Strip profiles and text metadata from final JPEGs.
+        #[arg(long)]
+        strip_metadata: bool,
+
+        /// Write progressive/interlaced JPEGs.
+        #[arg(long)]
+        progressive_jpeg: bool,
     },
 }
 
@@ -202,6 +258,35 @@ enum RawEngine {
     Auto,
     Rawtherapee,
     Dcraw,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum JpegSubsampling {
+    S444,
+    S422,
+    S420,
+}
+
+impl JpegSubsampling {
+    fn graphicsmagick_sampling_factor(self) -> &'static str {
+        match self {
+            JpegSubsampling::S444 => "1x1,1x1,1x1",
+            JpegSubsampling::S422 => "2x1,1x1,1x1",
+            JpegSubsampling::S420 => "2x2,1x1,1x1",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ExportOptions {
+    jpg_quality: u8,
+    resize: Option<String>,
+    long_edge: Option<u32>,
+    max_width: Option<u32>,
+    max_height: Option<u32>,
+    jpeg_subsampling: JpegSubsampling,
+    strip_metadata: bool,
+    progressive_jpeg: bool,
 }
 
 fn main() -> Result<()> {
@@ -234,6 +319,13 @@ fn main() -> Result<()> {
             grain_preset,
             grain_seed,
             jpg_quality,
+            resize,
+            long_edge,
+            max_width,
+            max_height,
+            jpeg_subsampling,
+            strip_metadata,
+            progressive_jpeg,
         } => run_apply(ApplyArgs {
             raw,
             output,
@@ -252,7 +344,16 @@ fn main() -> Result<()> {
             grain,
             grain_preset,
             grain_seed,
-            jpg_quality,
+            export: ExportOptions {
+                jpg_quality,
+                resize,
+                long_edge,
+                max_width,
+                max_height,
+                jpeg_subsampling,
+                strip_metadata,
+                progressive_jpeg,
+            },
         }),
         CommandKind::Batch {
             input,
@@ -272,6 +373,13 @@ fn main() -> Result<()> {
             grain_preset,
             grain_seed,
             jpg_quality,
+            resize,
+            long_edge,
+            max_width,
+            max_height,
+            jpeg_subsampling,
+            strip_metadata,
+            progressive_jpeg,
         } => run_batch(BatchArgs {
             input,
             output,
@@ -289,7 +397,16 @@ fn main() -> Result<()> {
             grain,
             grain_preset,
             grain_seed,
-            jpg_quality,
+            export: ExportOptions {
+                jpg_quality,
+                resize,
+                long_edge,
+                max_width,
+                max_height,
+                jpeg_subsampling,
+                strip_metadata,
+                progressive_jpeg,
+            },
         }),
     }
 }
@@ -343,7 +460,7 @@ struct ApplyArgs {
     grain: Option<String>,
     grain_preset: Option<String>,
     grain_seed: Option<u64>,
-    jpg_quality: u8,
+    export: ExportOptions,
 }
 
 struct BatchArgs {
@@ -363,7 +480,7 @@ struct BatchArgs {
     grain: Option<String>,
     grain_preset: Option<String>,
     grain_seed: Option<u64>,
-    jpg_quality: u8,
+    export: ExportOptions,
 }
 
 struct ResolvedProfile {
@@ -383,7 +500,7 @@ struct ApplyJob<'a> {
     convert: &'a Path,
     keep_intermediate: Option<&'a Path>,
     no_grain: bool,
-    jpg_quality: u8,
+    export: &'a ExportOptions,
     quiet: bool,
 }
 
@@ -394,6 +511,7 @@ struct ApplyProgress<'a> {
 
 fn run_apply(args: ApplyArgs) -> Result<()> {
     validate_output_format(&args.output)?;
+    validate_export_options(&args.export)?;
 
     let temp_dir = Builder::new().prefix("mini-film-").tempdir()?;
     let mut resolved = resolve_profile(&args, temp_dir.path())?;
@@ -416,7 +534,7 @@ fn run_apply(args: ApplyArgs) -> Result<()> {
             convert: &args.convert,
             keep_intermediate: args.keep_intermediate.as_deref(),
             no_grain: args.no_grain,
-            jpg_quality: args.jpg_quality,
+            export: &args.export,
             quiet: false,
         },
         &resolved,
@@ -460,7 +578,7 @@ fn apply_resolved(
             &resolved.hald_path,
             resolved.sharpening,
             job.output,
-            job.jpg_quality,
+            job.export,
         )?;
         progress_step(progress, 5, "done");
         return Ok(());
@@ -528,7 +646,7 @@ fn apply_resolved(
             );
         }
         progress_step(progress, 4, "jpeg export");
-        finalize_output(job.convert, &grained, job.output, job.jpg_quality)?;
+        finalize_output(job.convert, &grained, job.output, job.export)?;
         remove_temp_file(&grained)?;
     } else if final_source != converted {
         progress_step(progress, 3, "grain");
@@ -544,7 +662,7 @@ fn apply_resolved(
 
     if !jpeg_output || !grain_enabled {
         progress_step(progress, 4, "export");
-        finalize_output(job.convert, &final_source, job.output, job.jpg_quality)?;
+        finalize_output(job.convert, &final_source, job.output, job.export)?;
         if final_source != converted {
             remove_temp_file(&final_source)?;
         }
@@ -555,6 +673,7 @@ fn apply_resolved(
 }
 
 fn run_batch(args: BatchArgs) -> Result<()> {
+    validate_export_options(&args.export)?;
     if !args.input.is_dir() {
         bail!("batch input is not a directory: {}", args.input.display());
     }
@@ -585,7 +704,7 @@ fn run_batch(args: BatchArgs) -> Result<()> {
         grain: args.grain.clone(),
         grain_preset: args.grain_preset.clone(),
         grain_seed: args.grain_seed,
-        jpg_quality: args.jpg_quality,
+        export: args.export.clone(),
     };
     let mut resolved = resolve_profile(&apply_args, temp_dir.path())?;
     if let Some(grain) =
@@ -642,7 +761,7 @@ fn run_batch(args: BatchArgs) -> Result<()> {
                 convert: &args.convert,
                 keep_intermediate: None,
                 no_grain: args.no_grain,
-                jpg_quality: args.jpg_quality,
+                export: &args.export,
                 quiet: true,
             },
             &resolved,
@@ -776,6 +895,30 @@ fn remove_temp_file(path: &Path) -> Result<()> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(err).with_context(|| format!("removing temporary {}", path.display())),
     }
+}
+
+fn validate_export_options(export: &ExportOptions) -> Result<()> {
+    if export.resize.is_some()
+        && (export.long_edge.is_some() || export.max_width.is_some() || export.max_height.is_some())
+    {
+        bail!("use either --resize or --long-edge/--max-width/--max-height");
+    }
+    if export.long_edge.is_some() && (export.max_width.is_some() || export.max_height.is_some()) {
+        bail!("use either --long-edge or --max-width/--max-height");
+    }
+    for (name, value) in [
+        ("--long-edge", export.long_edge),
+        ("--max-width", export.max_width),
+        ("--max-height", export.max_height),
+    ] {
+        if value == Some(0) {
+            bail!("{name} must be greater than zero");
+        }
+    }
+    if export.resize.as_deref().is_some_and(str::is_empty) {
+        bail!("--resize must not be empty");
+    }
+    Ok(())
 }
 
 fn configure_threads() {
@@ -1209,7 +1352,7 @@ fn run_dcraw_convert_final(
     hald: &Path,
     sharpening: SharpeningSettings,
     output: &Path,
-    jpg_quality: u8,
+    export: &ExportOptions,
 ) -> Result<()> {
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
@@ -1236,7 +1379,7 @@ fn run_dcraw_convert_final(
     add_convert_thread_limit(&mut convert_command);
     convert_command.arg("tiff:-").arg("-hald-clut").arg(hald);
     add_sharpening_args(&mut convert_command, sharpening);
-    add_final_convert_args(&mut convert_command, output, jpg_quality)?;
+    add_final_convert_args(&mut convert_command, output, export)?;
     let mut convert_child = convert_command
         .stdin(Stdio::from(dcraw_stdout))
         .spawn()
@@ -1301,7 +1444,12 @@ fn add_sharpening_args(command: &mut Command, sharpening: SharpeningSettings) {
         .arg(format!("{radius:.2}x{sigma:.2}+{amount:.2}+{threshold:.3}"));
 }
 
-fn finalize_output(convert: &Path, input: &Path, output: &Path, jpg_quality: u8) -> Result<()> {
+fn finalize_output(
+    convert: &Path,
+    input: &Path,
+    output: &Path,
+    export: &ExportOptions,
+) -> Result<()> {
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
@@ -1309,7 +1457,7 @@ fn finalize_output(convert: &Path, input: &Path, output: &Path, jpg_quality: u8)
     let mut command = Command::new(convert);
     add_convert_thread_limit(&mut command);
     command.arg(input);
-    add_final_convert_args(&mut command, output, jpg_quality)?;
+    add_final_convert_args(&mut command, output, export)?;
 
     let status = command
         .status()
@@ -1322,19 +1470,53 @@ fn finalize_output(convert: &Path, input: &Path, output: &Path, jpg_quality: u8)
     Ok(())
 }
 
-fn add_final_convert_args(command: &mut Command, output: &Path, jpg_quality: u8) -> Result<()> {
+fn add_final_convert_args(
+    command: &mut Command,
+    output: &Path,
+    export: &ExportOptions,
+) -> Result<()> {
     let ext = output_ext(output)?;
+    add_resize_args(command, export);
 
     if ext == "jpg" || ext == "jpeg" {
+        if export.strip_metadata {
+            command.arg("-strip");
+        }
+        if export.progressive_jpeg {
+            command.arg("-interlace").arg("Line");
+        }
         command
             .arg("-depth")
             .arg("8")
+            .arg("-sampling-factor")
+            .arg(export.jpeg_subsampling.graphicsmagick_sampling_factor())
             .arg("-quality")
-            .arg(jpg_quality.clamp(1, 100).to_string());
+            .arg(export.jpg_quality.clamp(1, 100).to_string());
+    } else if export.strip_metadata {
+        command.arg("-strip");
     }
 
     command.arg(output);
     Ok(())
+}
+
+fn add_resize_args(command: &mut Command, export: &ExportOptions) {
+    let geometry = if let Some(resize) = &export.resize {
+        Some(resize.clone())
+    } else if let Some(long_edge) = export.long_edge {
+        Some(format!("{long_edge}x{long_edge}>"))
+    } else {
+        match (export.max_width, export.max_height) {
+            (Some(width), Some(height)) => Some(format!("{width}x{height}>")),
+            (Some(width), None) => Some(format!("{width}x>")),
+            (None, Some(height)) => Some(format!("x{height}>")),
+            (None, None) => None,
+        }
+    };
+
+    if let Some(geometry) = geometry {
+        command.arg("-resize").arg(geometry);
+    }
 }
 
 fn add_convert_thread_limit(command: &mut Command) {

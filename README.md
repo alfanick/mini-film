@@ -87,6 +87,34 @@ The output directory is created if it does not exist. Nested input folders are p
 - total batch progress across files
 - current file progress across RAW decode, Hald/sharpening, grain, and JPEG export steps
 
+## JPEG Export Options
+
+`apply` and `batch` support the same final JPEG controls:
+
+```sh
+--jpg-quality 90
+--long-edge 3000
+--jpeg-subsampling s444
+--progressive-jpeg
+--strip-metadata
+```
+
+Resize options:
+
+- `--resize 3000x3000>` passes explicit GraphicsMagick resize geometry.
+- `--long-edge 3000` constrains the longest edge to 3000 px.
+- `--max-width 3000` constrains width only.
+- `--max-height 2000` constrains height only.
+- `--max-width 3000 --max-height 2000` constrains both dimensions.
+
+Use one resize mode at a time: `--resize`, `--long-edge`, or `--max-width/--max-height`.
+
+JPEG subsampling values:
+
+- `s444`: best quality, no chroma subsampling
+- `s422`: balanced horizontal chroma subsampling
+- `s420`: smaller files with horizontal and vertical chroma subsampling
+
 ## Profile Selection
 
 `--profile` accepts:
