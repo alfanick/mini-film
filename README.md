@@ -47,6 +47,15 @@ cargo run --release -- apply input.RAW \
   -o output.tif
 ```
 
+If the preset path sits next to its matching `- profiles` directory, no `--profiles-root` is needed:
+
+```sh
+cargo run -- apply \
+  --output /home/alfanick/test.jpg \
+  --profile '../RNI FILMS 5 BW - Pro/Agfa Scala 200 faded plus grainy.xmp' \
+  /home/alfanick/Pictures/Lightroom/2026/05/03/DSC_1812-10.dng
+```
+
 `output.tif` / `output.tiff` is exported as 10-bit TIFF.
 
 ```sh
@@ -119,6 +128,20 @@ Set deterministic variation with:
 
 ```sh
 --grain-seed 42
+```
+
+When using a Hald PNG or non-grain profile directly, pass grain manually:
+
+```sh
+--grain 30,45,45
+```
+
+or use a preset:
+
+```sh
+--grain-preset light
+--grain-preset medium
+--grain-preset heavy
 ```
 
 ## Caveat

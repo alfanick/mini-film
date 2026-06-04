@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use flate2::read::ZlibDecoder;
-use image::{DynamicImage, GenericImageView, ImageBuffer, Rgba};
+use image::{DynamicImage, GenericImageView, ImageBuffer, ImageReader, Rgba};
 use noise::{NoiseFn, Perlin};
 use quick_xml::{Reader, events::Event};
 use rand::SeedableRng;
@@ -422,6 +422,17 @@ pub fn extract_film_recipe(path: &Path) -> Result<XmpFilmRecipe> {
         }
     }
 
+    if look_uuid.is_none() || look_name.is_none() {
+        if let Some(look_block) = extract_tag_block(&xml, "crs:Look") {
+            if look_uuid.is_none() {
+                look_uuid = extract_attr(look_block, "crs:UUID");
+            }
+            if look_name.is_none() {
+                look_name = extract_attr(look_block, "crs:Name");
+            }
+        }
+    }
+
     let rgb_table = match (rgb_table_id, table_value) {
         (Some(table_id), Some(encoded)) => Some(XmpRgbTable {
             name: name.clone(),
@@ -455,7 +466,12 @@ pub fn apply_grain(input: &Path, output: &Path, grain: GrainSettings, seed: u64)
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
 
-    let image = image::open(input).with_context(|| format!("opening {}", input.display()))?;
+    let mut reader =
+        ImageReader::open(input).with_context(|| format!("opening {}", input.display()))?;
+    reader.no_limits();
+    let image = reader
+        .decode()
+        .with_context(|| format!("decoding {}", input.display()))?;
     let grained = render_grain(image, grain, seed)?;
     grained
         .save(output)
@@ -514,6 +530,20 @@ fn parse_u8(value: &str, name: &str) -> Result<u8> {
         .parse()
         .with_context(|| format!("invalid {name} value {value:?}"))?;
     Ok(parsed.min(100) as u8)
+}
+
+fn extract_tag_block<'a>(xml: &'a str, tag: &str) -> Option<&'a str> {
+    let start = xml.find(&format!("<{tag}"))?;
+    let end_tag = format!("</{tag}>");
+    let end = xml[start..].find(&end_tag)? + start + end_tag.len();
+    Some(&xml[start..end])
+}
+
+fn extract_attr(block: &str, attr: &str) -> Option<String> {
+    let needle = format!("{attr}=\"");
+    let start = block.find(&needle)? + needle.len();
+    let end = block[start..].find('"')? + start;
+    Some(block[start..end].to_string())
 }
 
 pub fn decode_rgb_table(encoded: &str) -> Result<Vec<u8>> {

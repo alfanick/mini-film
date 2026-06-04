@@ -96,6 +96,14 @@ enum CommandKind {
         #[arg(long)]
         no_grain: bool,
 
+        /// Override grain as amount,size,frequency, each 0..100. Example: --grain 30,45,45
+        #[arg(long)]
+        grain: Option<String>,
+
+        /// Built-in grain override: light, medium, or heavy.
+        #[arg(long)]
+        grain_preset: Option<String>,
+
         /// Seed for deterministic generated grain.
         #[arg(long, default_value_t = 1)]
         grain_seed: u64,
@@ -128,6 +136,8 @@ fn main() -> Result<()> {
             convert,
             keep_intermediate,
             no_grain,
+            grain,
+            grain_preset,
             grain_seed,
             jpg_quality,
         } => run_apply(ApplyArgs {
@@ -143,6 +153,8 @@ fn main() -> Result<()> {
             convert,
             keep_intermediate,
             no_grain,
+            grain,
+            grain_preset,
             grain_seed,
             jpg_quality,
         }),
@@ -193,6 +205,8 @@ struct ApplyArgs {
     convert: PathBuf,
     keep_intermediate: Option<PathBuf>,
     no_grain: bool,
+    grain: Option<String>,
+    grain_preset: Option<String>,
     grain_seed: u64,
     jpg_quality: u8,
 }
@@ -206,7 +220,12 @@ fn run_apply(args: ApplyArgs) -> Result<()> {
     validate_output_format(&args.output)?;
 
     let temp_dir = Builder::new().prefix("mini-film-").tempdir()?;
-    let resolved = resolve_profile(&args, temp_dir.path())?;
+    let mut resolved = resolve_profile(&args, temp_dir.path())?;
+    if let Some(grain) =
+        resolve_grain_override(args.grain.as_deref(), args.grain_preset.as_deref())?
+    {
+        resolved.grain = grain;
+    }
 
     let intermediate = match &args.keep_intermediate {
         Some(path) => path.clone(),
@@ -310,7 +329,7 @@ fn profile_from_xmp(
     let source = if recipe.rgb_table.is_some() {
         path.to_path_buf()
     } else {
-        resolve_recipe_profile(&recipe, profiles_root)
+        resolve_recipe_profile(&recipe, profiles_root, path)
             .with_context(|| format!("resolving linked profile for preset {}", path.display()))?
     };
 
@@ -334,17 +353,29 @@ fn profile_from_xmp(
 fn resolve_recipe_profile(
     recipe: &mini_film::XmpFilmRecipe,
     profiles_root: &Path,
+    preset_path: &Path,
 ) -> Result<PathBuf> {
-    if let Some(uuid) = &recipe.look_uuid {
-        if let Some(path) = find_profile_by_uuid(profiles_root, uuid)? {
-            return Ok(path);
+    let mut roots = vec![profiles_root.to_path_buf()];
+    if let Some(parent) = preset_path.parent() {
+        roots.push(parent.to_path_buf());
+        if let Some(grandparent) = parent.parent() {
+            roots.push(grandparent.to_path_buf());
         }
     }
-    if let Some(name) = &recipe.look_name {
-        if let Some(path) = find_xmp_by_name(profiles_root, name)? {
-            return Ok(path);
+
+    for root in roots {
+        if let Some(uuid) = &recipe.look_uuid {
+            if let Some(path) = find_profile_by_uuid(&root, uuid)? {
+                return Ok(path);
+            }
+        }
+        if let Some(name) = &recipe.look_name {
+            if let Some(path) = find_rgb_xmp_by_name(&root, name)? {
+                return Ok(path);
+            }
         }
     }
+
     bail!("preset does not contain a resolvable RGB table or linked Look UUID/name")
 }
 
@@ -360,6 +391,47 @@ fn find_xmp_by_name(root: &Path, name: &str) -> Result<Option<PathBuf>> {
         return Ok(None);
     }
     find_named_file(root, name, &["xmp"], false)
+}
+
+fn find_rgb_xmp_by_name(root: &Path, name: &str) -> Result<Option<PathBuf>> {
+    let Some(candidate) = find_xmp_by_name(root, name)? else {
+        return Ok(None);
+    };
+    if extract_film_recipe(&candidate)
+        .map(|recipe| recipe.rgb_table.is_some())
+        .unwrap_or(false)
+    {
+        return Ok(Some(candidate));
+    }
+
+    let wanted = normalize_name(name);
+    for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("xmp") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let candidate_name = normalize_name(stem)
+            .trim_end_matches("profile")
+            .trim()
+            .to_string();
+        if candidate_name != wanted {
+            continue;
+        }
+        if extract_film_recipe(path)
+            .map(|recipe| recipe.rgb_table.is_some())
+            .unwrap_or(false)
+        {
+            return Ok(Some(path.to_path_buf()));
+        }
+    }
+
+    Ok(None)
 }
 
 fn find_profile_by_uuid(root: &Path, uuid: &str) -> Result<Option<PathBuf>> {
@@ -441,6 +513,58 @@ fn normalize_name(value: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn resolve_grain_override(
+    grain: Option<&str>,
+    preset: Option<&str>,
+) -> Result<Option<GrainSettings>> {
+    match (grain, preset) {
+        (Some(_), Some(_)) => bail!("use either --grain or --grain-preset, not both"),
+        (Some(value), None) => Ok(Some(parse_grain(value)?)),
+        (None, Some(value)) => Ok(Some(match normalize_name(value).as_str() {
+            "none" | "off" => GrainSettings::default(),
+            "light" => GrainSettings {
+                amount: 18,
+                size: 35,
+                frequency: 40,
+            },
+            "medium" => GrainSettings {
+                amount: 30,
+                size: 45,
+                frequency: 45,
+            },
+            "heavy" => GrainSettings {
+                amount: 45,
+                size: 60,
+                frequency: 55,
+            },
+            _ => bail!("unknown grain preset {value:?}; use light, medium, heavy, or none"),
+        })),
+        (None, None) => Ok(None),
+    }
+}
+
+fn parse_grain(value: &str) -> Result<GrainSettings> {
+    let parts: Vec<_> = value.split(',').map(str::trim).collect();
+    if parts.len() != 3 {
+        bail!("--grain must be amount,size,frequency, for example --grain 30,45,45");
+    }
+    Ok(GrainSettings {
+        amount: parse_grain_part(parts[0], "amount")?,
+        size: parse_grain_part(parts[1], "size")?,
+        frequency: parse_grain_part(parts[2], "frequency")?,
+    })
+}
+
+fn parse_grain_part(value: &str, name: &str) -> Result<u8> {
+    let parsed: u16 = value
+        .parse()
+        .with_context(|| format!("invalid grain {name} value {value:?}"))?;
+    if parsed > 100 {
+        bail!("grain {name} must be in 0..100");
+    }
+    Ok(parsed as u8)
 }
 
 fn run_dcraw(
