@@ -45,7 +45,7 @@ pub(crate) enum CommandKind {
         #[arg(short, long)]
         output: PathBuf,
 
-        /// Profile selector: Hald PNG path, RGBTable XMP path, or profile name.
+        /// Profile selector: Hald PNG path, emulation XMP path, or emulation name.
         #[arg(short, long)]
         profile: String,
 
@@ -53,7 +53,7 @@ pub(crate) enum CommandKind {
         #[arg(long, default_value = "hald")]
         hald_dir: PathBuf,
 
-        /// Directory tree containing XMP profiles, used when --profile is a name.
+        /// Film library root. Emulation XMPs are selected from emulations/ and RGBTable profiles from profiles/.
         #[arg(long, default_value = ".")]
         profiles_root: PathBuf,
 
@@ -146,7 +146,7 @@ pub(crate) enum CommandKind {
         /// Output folder. It is created if it does not exist.
         output: PathBuf,
 
-        /// Profile selector: Hald PNG path, RGBTable XMP path, preset XMP path, or profile name.
+        /// Profile selector: Hald PNG path, emulation XMP path, or emulation name.
         #[arg(short, long)]
         profile: String,
 
@@ -154,7 +154,7 @@ pub(crate) enum CommandKind {
         #[arg(long, default_value = "hald")]
         hald_dir: PathBuf,
 
-        /// Directory tree containing XMP profiles, used when --profile is a name.
+        /// Film library root. Emulation XMPs are selected from emulations/ and RGBTable profiles from profiles/.
         #[arg(long, default_value = ".")]
         profiles_root: PathBuf,
 
@@ -244,7 +244,7 @@ pub(crate) enum CommandKind {
         #[arg(short, long)]
         output: PathBuf,
 
-        /// Directory tree containing XMP profiles and presets to sample.
+        /// Film library root. Sampler reads emulation XMPs from emulations/ and resolves RGBTables from profiles/.
         #[arg(long, default_value = ".")]
         profiles_root: PathBuf,
 
@@ -303,6 +303,10 @@ pub(crate) enum CommandKind {
         /// Strip profiles and text metadata from generated JPEGs.
         #[arg(long)]
         strip_metadata: bool,
+
+        /// Write progressive/interlaced sampler JPEGs.
+        #[arg(long = "progressive", alias = "progressive-jpeg")]
+        progressive_jpeg: bool,
     },
 }
 

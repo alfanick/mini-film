@@ -155,6 +155,7 @@ fn main() -> Result<()> {
             jpg_quality,
             jpeg_subsampling,
             strip_metadata,
+            progressive_jpeg,
         } => run_sampler(SamplerArgs {
             raw,
             output,
@@ -173,6 +174,7 @@ fn main() -> Result<()> {
             jpg_quality,
             jpeg_subsampling,
             strip_metadata,
+            progressive_jpeg,
         }),
     }
 }

@@ -17,10 +17,11 @@ pub(crate) struct ResolvedProfile {
 
 /// Resolve a CLI profile selector into a concrete Hald file plus recipe metadata.
 ///
-/// The selector can be a real path, an XMP profile/preset name under
-/// `profiles_root`, or a generated Hald name under `hald_dir`. XMP inputs may
-/// generate a temporary Hald and preserve grain/sharpening metadata; raw PNG
-/// Hald inputs have no attached recipe metadata, so they resolve with defaults.
+/// The selector can be a real path, an emulation XMP name under `emulations/`,
+/// or a generated Hald name under `hald_dir`. Emulation XMP inputs generate a
+/// temporary Hald from their linked internal RGBTable profile and preserve
+/// grain/sharpening metadata; raw PNG Hald inputs have no attached recipe
+/// metadata, so they resolve with defaults.
 pub(crate) fn resolve_profile(args: &ApplyArgs, temp_dir: &Path) -> Result<ResolvedProfile> {
     let selector_path = Path::new(&args.profile);
     if selector_path.exists() {
@@ -32,8 +33,10 @@ pub(crate) fn resolve_profile(args: &ApplyArgs, temp_dir: &Path) -> Result<Resol
         );
     }
 
-    if let Some(path) = find_xmp_by_name(&args.profiles_root, &args.profile)? {
-        return profile_from_path(&path, args.hald_level, &args.profiles_root, temp_dir);
+    for root in emulation_selector_roots(&args.profiles_root) {
+        if let Some(path) = find_xmp_by_name(&root, &args.profile)? {
+            return profile_from_path(&path, args.hald_level, &args.profiles_root, temp_dir);
+        }
     }
 
     if let Some(path) = find_hald_by_name(&args.hald_dir, &args.profile)? {
@@ -45,7 +48,7 @@ pub(crate) fn resolve_profile(args: &ApplyArgs, temp_dir: &Path) -> Result<Resol
     }
 
     bail!(
-        "could not resolve profile {:?} as a file, XMP name under {}, or Hald name under {}",
+        "could not resolve profile {:?} as a file, emulation XMP name under {}, or Hald name under {}",
         args.profile,
         args.profiles_root.display(),
         args.hald_dir.display()
@@ -55,9 +58,9 @@ pub(crate) fn resolve_profile(args: &ApplyArgs, temp_dir: &Path) -> Result<Resol
 /// Resolve an explicit profile path by extension.
 ///
 /// PNG files are already usable Hald CLUTs and are returned directly. XMP files
-/// may be RGBTable profiles or presets that point at a Look, so they are sent
-/// through the XMP resolver. Other extensions are rejected early to make command
-/// failures clearer.
+/// must be emulations that point at a Look; direct RGBTable profile XMPs are
+/// reserved for internal LUT resolution and the `convert` command. Other
+/// extensions are rejected early to make command failures clearer.
 fn profile_from_path(
     path: &Path,
     hald_level: u32,
@@ -80,23 +83,45 @@ fn profile_from_path(
 
 /// Resolve an XMP file to a temporary Hald and recipe settings.
 ///
-/// If the XMP embeds an RGBTable it is the source profile. If it is a preset,
-/// the linked Look is resolved by UUID/name before conversion. The generated
-/// Hald is written into the caller's temp directory, grain comes from the preset
-/// recipe, and sharpening comes from the converted source profile metadata.
+/// User-facing XMPs are Lightroom emulation presets. The linked Look is resolved
+/// by UUID/name under the internal `profiles/` tree before conversion. The
+/// generated Hald is written into the caller's temp directory, grain comes from
+/// the emulation recipe, and sharpening comes from the converted source profile
+/// metadata.
 pub(crate) fn profile_from_xmp(
     path: &Path,
     hald_level: u32,
     profiles_root: &Path,
     temp_dir: &Path,
 ) -> Result<ResolvedProfile> {
+    profile_from_xmp_inner(path, hald_level, profiles_root, temp_dir, true)
+}
+
+pub(crate) fn profile_from_xmp_quiet(
+    path: &Path,
+    hald_level: u32,
+    profiles_root: &Path,
+    temp_dir: &Path,
+) -> Result<ResolvedProfile> {
+    profile_from_xmp_inner(path, hald_level, profiles_root, temp_dir, false)
+}
+
+fn profile_from_xmp_inner(
+    path: &Path,
+    hald_level: u32,
+    profiles_root: &Path,
+    temp_dir: &Path,
+    print_info: bool,
+) -> Result<ResolvedProfile> {
     let recipe = extract_film_recipe(path)?;
-    let source = if recipe.rgb_table.is_some() {
-        path.to_path_buf()
-    } else {
-        resolve_recipe_profile(&recipe, profiles_root, path)
-            .with_context(|| format!("resolving linked profile for preset {}", path.display()))?
+    if recipe.rgb_table.is_some() {
+        bail!(
+            "profile XMPs with RGBTable are internal; use an emulation XMP from emulations instead: {}",
+            path.display()
+        );
     };
+    let source = resolve_recipe_profile(&recipe, profiles_root, path)
+        .with_context(|| format!("resolving linked profile for preset {}", path.display()))?;
 
     let output = temp_dir.join("profile.hald.png");
     let converted = convert_xmp_to_hald(
@@ -108,7 +133,9 @@ pub(crate) fn profile_from_xmp(
             info_only: false,
         },
     )?;
-    eprintln!("{}", profile_info_line(&converted));
+    if print_info {
+        eprintln!("{}", profile_info_line(&converted));
+    }
     Ok(ResolvedProfile {
         hald_path: output,
         grain: recipe.grain,
@@ -127,15 +154,7 @@ fn resolve_recipe_profile(
     profiles_root: &Path,
     preset_path: &Path,
 ) -> Result<PathBuf> {
-    let mut roots = vec![profiles_root.to_path_buf()];
-    if let Some(parent) = preset_path.parent() {
-        roots.push(parent.to_path_buf());
-        if let Some(grandparent) = parent.parent() {
-            roots.push(grandparent.to_path_buf());
-        }
-    }
-
-    for root in roots {
+    for root in rgb_profile_roots(profiles_root, preset_path) {
         if let Some(uuid) = &recipe.look_uuid {
             if let Some(path) = find_profile_by_uuid(&root, uuid)? {
                 return Ok(path);
@@ -303,4 +322,66 @@ pub(crate) fn normalize_name(value: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn emulation_selector_roots(root: &Path) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    push_unique_root(&mut roots, root.join("emulations"));
+    if root
+        .file_name()
+        .and_then(|s| s.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("emulations"))
+    {
+        push_unique_root(&mut roots, root.to_path_buf());
+    }
+    if let Some(parent) = canonical_parent(root) {
+        push_unique_root(&mut roots, parent.join("emulations"));
+    }
+    if roots.is_empty() {
+        push_unique_root(&mut roots, root.to_path_buf());
+    }
+    roots
+}
+
+fn rgb_profile_roots(profiles_root: &Path, preset_path: &Path) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    push_unique_root(&mut roots, profiles_root.join("profiles"));
+    if profiles_root
+        .file_name()
+        .and_then(|s| s.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("profiles"))
+    {
+        push_unique_root(&mut roots, profiles_root.to_path_buf());
+    }
+
+    if let Some(parent) = preset_path.parent() {
+        if let Some(layout_root) = parent.parent() {
+            push_unique_root(&mut roots, layout_root.join("profiles"));
+        }
+        push_unique_root(&mut roots, parent.join("profiles"));
+    }
+
+    if let Some(parent) = canonical_parent(profiles_root) {
+        push_unique_root(&mut roots, parent.join("profiles"));
+    }
+    if roots.is_empty() {
+        push_unique_root(&mut roots, profiles_root.to_path_buf());
+    }
+
+    roots
+}
+
+fn canonical_parent(path: &Path) -> Option<PathBuf> {
+    path.canonicalize()
+        .ok()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+}
+
+fn push_unique_root(roots: &mut Vec<PathBuf>, root: PathBuf) {
+    if !root.exists() {
+        return;
+    }
+    if !roots.iter().any(|candidate| candidate == &root) {
+        roots.push(root);
+    }
 }

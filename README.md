@@ -41,21 +41,21 @@ The ordinary RNI preset XMPs usually only reference a profile UUID and do not co
 
 ## Apply A Complete Film Recipe
 
-Use a Lightroom preset XMP that references a profile and defines grain:
+Use a Lightroom emulation XMP that references an internal profile and defines grain:
 
 ```sh
 cargo run --release -- apply input.RAW \
-  --profile '../RNI FILMS 5 Negative - Pro/Kodak Portra 400 warm grainy.xmp' \
+  --profile '../emulations/Kodak Portra 400 warm grainy.xmp' \
   --profiles-root .. \
   -o output.tif
 ```
 
-If the preset path sits next to its matching `- profiles` directory, no `--profiles-root` is needed:
+If the emulation and profile directories are siblings of the project directory, no `--profiles-root` is needed:
 
 ```sh
 cargo run -- apply \
   --output /home/alfanick/test.jpg \
-  --profile '../RNI FILMS 5 BW - Pro/Agfa Scala 200 faded plus grainy.xmp' \
+  --profile '../emulations/Agfa Scala 200 + grainy.xmp' \
   /home/alfanick/Pictures/Lightroom/2026/05/03/DSC_1812-10.dng
 ```
 
@@ -63,7 +63,7 @@ cargo run -- apply \
 
 ```sh
 cargo run --release -- apply input.RAW \
-  --profile '../RNI FILMS 5 Negative - Pro/Kodak Portra 400 warm grainy.xmp' \
+  --profile '../emulations/Kodak Portra 400 warm grainy.xmp' \
   --profiles-root .. \
   -o output.jpg
 ```
@@ -78,7 +78,7 @@ Process every `.dng`, `.DNG`, `.nef`, and `.NEF` under an input directory and wr
 cargo run --release -- batch \
   /home/alfanick/Pictures/Lightroom/2026/05/03 \
   /home/alfanick/batch-output \
-  --profile '../RNI FILMS 5 BW - Pro/Agfa Scala 200 faded plus grainy.xmp'
+  --profile '../emulations/Agfa Scala 200 + grainy.xmp'
 ```
 
 The output directory is created if it does not exist. Nested input folders are preserved, and each RAW output uses the same relative path with a `.jpg` extension.
@@ -90,7 +90,7 @@ The output directory is created if it does not exist. Nested input folders are p
 
 ## Profile Sampler Contact Sheet
 
-Render one RAW through every resolvable XMP profile or preset under a profile tree and write a labeled JPEG contact sheet:
+Render one RAW through every resolvable emulation XMP and write a labeled JPEG contact sheet:
 
 ```sh
 cargo run --release -- sampler \
@@ -99,7 +99,7 @@ cargo run --release -- sampler \
   --output /home/alfanick/profile-sampler.jpg
 ```
 
-`sampler` develops the RAW once, renders one thumbnail per XMP profile, and uses `montage` to build a contact sheet with six thumbnails per row. Each label is the profile path relative to `--profiles-root`. Thumbnail longest edge defaults to 512 px:
+`sampler` develops the RAW once, renders one thumbnail per XMP file from `emulations/`, and uses `montage` to build a contact sheet with six thumbnails per row. Each label is relative to the emulation directory. Thumbnail longest edge defaults to 512 px:
 
 ```sh
 --thumbnail-long-edge 768
@@ -111,11 +111,14 @@ Use a non-default montage binary with:
 
 ```sh
 --montage /path/to/montage
+--progressive
 ```
 
 ## JPEG Export Options
 
-`apply` and `batch` support the same final JPEG controls:
+`apply` and `batch` support the same final JPEG controls. `sampler` also
+supports `--jpg-quality`, `--jpeg-subsampling`, `--strip-metadata`, and
+`--progressive` for generated sampler JPEGs.
 
 ```sh
 --jpg-quality 90
@@ -146,12 +149,11 @@ JPEG subsampling values:
 `--profile` accepts:
 
 - a Hald PNG path
-- a profile XMP path containing `crs:RGBTable`
-- a preset XMP path containing `crs:Look` plus optional grain settings
-- a profile or preset name, searched under `--profiles-root`
+- an emulation XMP path containing `crs:Look` plus optional grain settings
+- an emulation name, searched under `emulations/`
 - a generated Hald name, searched under `--hald-dir`
 
-When a preset XMP references a profile, `mini-film` resolves the linked `crs:Look` UUID/name under `--profiles-root`, generates a temporary Hald, applies it, then applies the preset grain settings.
+RGBTable XMPs under `profiles/` are internal lookup tables. `apply`, `batch`, and `sampler` do not use them as user-facing emulations; they are only used to resolve linked `crs:Look` UUID/name references from emulation XMPs. `mini-film` generates a temporary Hald from the linked profile, applies it, then applies the emulation grain settings.
 
 ## Profile Adjustments
 
@@ -249,7 +251,7 @@ Set deterministic variation with:
 --grain-seed 42
 ```
 
-When using a Hald PNG or non-grain profile directly, pass grain manually:
+When using a Hald PNG directly, pass grain manually:
 
 ```sh
 --grain 30,45,45
