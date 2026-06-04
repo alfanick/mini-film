@@ -1,5 +1,5 @@
 [package]
-name = "rgbtable2hald"
+name = "mini-film"
 version = "0.1.0"
 edition = "2024"
 
@@ -7,7 +7,13 @@ edition = "2024"
 anyhow = "1.0.98"
 clap = { version = "4.5.38", features = ["derive"] }
 flate2 = "1.1.1"
+image = "0.25.8"
+noise = "0.9.0"
 png = "0.17.16"
 quick-xml = "0.37.5"
+rand = "0.8.5"
+rand_chacha = "0.3.1"
+rand_distr = "0.4.3"
 sanitize-filename = "0.6.0"
+tempfile = "3.23.0"
 walkdir = "2.5.0"
