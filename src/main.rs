@@ -1,16 +1,19 @@
 use std::{
+    collections::hash_map::DefaultHasher,
     fs::{self, File},
+    hash::{Hash, Hasher},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use mini_film::{
-    GrainSettings, HaldOptions, apply_grain, apply_grain_8bit, convert_path, convert_xmp_to_hald,
-    extract_film_recipe, profile_info_line, try_convert_dir,
+    GrainSettings, HaldOptions, SharpeningSettings, apply_grain, apply_grain_8bit, convert_path,
+    convert_xmp_to_hald, extract_film_recipe, profile_info_line, try_convert_dir,
 };
 use rayon::ThreadPoolBuilder;
 use tempfile::Builder;
@@ -79,6 +82,14 @@ enum CommandKind {
         #[arg(long, value_delimiter = ' ', default_value = "-T -6 -W -w -o 1")]
         dcraw_args: Vec<String>,
 
+        /// RAW decoder: auto tries RawTherapee first and falls back to dcraw.
+        #[arg(long, value_enum, default_value_t = RawEngine::Auto)]
+        raw_engine: RawEngine,
+
+        /// Path to rawtherapee-cli binary.
+        #[arg(long, default_value = "rawtherapee-cli")]
+        rawtherapee: PathBuf,
+
         /// Camera input ICC profile for dcraw, or "embed". If omitted, dcraw uses its camera matrix.
         #[arg(long)]
         camera_profile: Option<String>,
@@ -115,6 +126,82 @@ enum CommandKind {
         #[arg(long, default_value_t = 95)]
         jpg_quality: u8,
     },
+
+    /// Apply a profile to every DNG/NEF file in an input folder and write JPEGs.
+    Batch {
+        /// Input folder scanned recursively for .dng/.DNG/.nef/.NEF files.
+        input: PathBuf,
+
+        /// Output folder. It is created if it does not exist.
+        output: PathBuf,
+
+        /// Profile selector: Hald PNG path, RGBTable XMP path, preset XMP path, or profile name.
+        #[arg(short, long)]
+        profile: String,
+
+        /// Directory containing generated Hald PNGs, used when --profile is a name.
+        #[arg(long, default_value = "hald")]
+        hald_dir: PathBuf,
+
+        /// Directory tree containing XMP profiles, used when --profile is a name.
+        #[arg(long, default_value = ".")]
+        profiles_root: PathBuf,
+
+        /// Hald level to use when --profile points to an XMP or resolves to an XMP.
+        #[arg(short = 'l', long, default_value_t = 8)]
+        hald_level: u32,
+
+        /// Extra arguments passed to dcraw before the RAW path.
+        #[arg(long, value_delimiter = ' ', default_value = "-T -6 -W -w -o 1")]
+        dcraw_args: Vec<String>,
+
+        /// RAW decoder: auto tries RawTherapee first and falls back to dcraw.
+        #[arg(long, value_enum, default_value_t = RawEngine::Auto)]
+        raw_engine: RawEngine,
+
+        /// Path to rawtherapee-cli binary.
+        #[arg(long, default_value = "rawtherapee-cli")]
+        rawtherapee: PathBuf,
+
+        /// Camera input ICC profile for dcraw, or "embed". If omitted, dcraw uses its camera matrix.
+        #[arg(long)]
+        camera_profile: Option<String>,
+
+        /// Path to dcraw binary.
+        #[arg(long, default_value = "dcraw")]
+        dcraw: PathBuf,
+
+        /// Path to convert binary.
+        #[arg(long, default_value = "convert")]
+        convert: PathBuf,
+
+        /// Disable Lightroom XMP grain emulation.
+        #[arg(long)]
+        no_grain: bool,
+
+        /// Override grain as amount,size,frequency, each 0..100. Example: --grain 30,45,45
+        #[arg(long)]
+        grain: Option<String>,
+
+        /// Built-in grain override: light, medium, or heavy.
+        #[arg(long)]
+        grain_preset: Option<String>,
+
+        /// Base seed for deterministic generated grain. Defaults to current time of day.
+        #[arg(long)]
+        grain_seed: Option<u64>,
+
+        /// JPEG quality for every output file.
+        #[arg(long, default_value_t = 95)]
+        jpg_quality: u8,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum RawEngine {
+    Auto,
+    Rawtherapee,
+    Dcraw,
 }
 
 fn main() -> Result<()> {
@@ -136,6 +223,8 @@ fn main() -> Result<()> {
             profiles_root,
             hald_level,
             dcraw_args,
+            raw_engine,
+            rawtherapee,
             camera_profile,
             dcraw,
             convert,
@@ -153,10 +242,49 @@ fn main() -> Result<()> {
             profiles_root,
             hald_level,
             dcraw_args,
+            raw_engine,
+            rawtherapee,
             camera_profile,
             dcraw,
             convert,
             keep_intermediate,
+            no_grain,
+            grain,
+            grain_preset,
+            grain_seed,
+            jpg_quality,
+        }),
+        CommandKind::Batch {
+            input,
+            output,
+            profile,
+            hald_dir,
+            profiles_root,
+            hald_level,
+            dcraw_args,
+            raw_engine,
+            rawtherapee,
+            camera_profile,
+            dcraw,
+            convert,
+            no_grain,
+            grain,
+            grain_preset,
+            grain_seed,
+            jpg_quality,
+        } => run_batch(BatchArgs {
+            input,
+            output,
+            profile,
+            hald_dir,
+            profiles_root,
+            hald_level,
+            dcraw_args,
+            raw_engine,
+            rawtherapee,
+            camera_profile,
+            dcraw,
+            convert,
             no_grain,
             grain,
             grain_preset,
@@ -205,6 +333,8 @@ struct ApplyArgs {
     profiles_root: PathBuf,
     hald_level: u32,
     dcraw_args: Vec<String>,
+    raw_engine: RawEngine,
+    rawtherapee: PathBuf,
     camera_profile: Option<String>,
     dcraw: PathBuf,
     convert: PathBuf,
@@ -216,9 +346,49 @@ struct ApplyArgs {
     jpg_quality: u8,
 }
 
+struct BatchArgs {
+    input: PathBuf,
+    output: PathBuf,
+    profile: String,
+    hald_dir: PathBuf,
+    profiles_root: PathBuf,
+    hald_level: u32,
+    dcraw_args: Vec<String>,
+    raw_engine: RawEngine,
+    rawtherapee: PathBuf,
+    camera_profile: Option<String>,
+    dcraw: PathBuf,
+    convert: PathBuf,
+    no_grain: bool,
+    grain: Option<String>,
+    grain_preset: Option<String>,
+    grain_seed: Option<u64>,
+    jpg_quality: u8,
+}
+
 struct ResolvedProfile {
     hald_path: PathBuf,
     grain: GrainSettings,
+    sharpening: SharpeningSettings,
+}
+
+struct ApplyJob<'a> {
+    raw: &'a Path,
+    output: &'a Path,
+    dcraw_args: &'a [String],
+    raw_engine: RawEngine,
+    rawtherapee: &'a Path,
+    camera_profile: Option<&'a str>,
+    dcraw: &'a Path,
+    convert: &'a Path,
+    keep_intermediate: Option<&'a Path>,
+    no_grain: bool,
+    jpg_quality: u8,
+}
+
+struct ApplyProgress<'a> {
+    file: &'a ProgressBar,
+    started: Instant,
 }
 
 fn run_apply(args: ApplyArgs) -> Result<()> {
@@ -233,78 +403,25 @@ fn run_apply(args: ApplyArgs) -> Result<()> {
     }
     let grain_seed = args.grain_seed.unwrap_or_else(time_of_day_seed);
 
-    let grain_enabled = !args.no_grain && resolved.grain.is_enabled();
-
-    if !grain_enabled && args.keep_intermediate.is_none() {
-        run_dcraw_convert_final(
-            &args.dcraw,
-            &args.dcraw_args,
-            args.camera_profile.as_deref(),
-            &args.raw,
-            &args.convert,
-            &resolved.hald_path,
-            &args.output,
-            args.jpg_quality,
-        )?;
-        eprintln!(
-            "wrote {} using {}",
-            args.output.display(),
-            resolved.hald_path.display()
-        );
-        return Ok(());
-    }
-
-    let intermediate = args
-        .keep_intermediate
-        .clone()
-        .unwrap_or_else(|| temp_dir.path().join("dcraw.tiff"));
-    let output_ext = output_ext(&args.output)?;
-    let jpeg_output = output_ext == "jpg" || output_ext == "jpeg";
-    let converted = if grain_enabled && jpeg_output {
-        temp_dir.path().join("converted-8.ppm")
-    } else {
-        temp_dir.path().join("converted.tiff")
-    };
-    let final_source = if grain_enabled && !jpeg_output {
-        temp_dir.path().join("grained.tiff")
-    } else {
-        converted.clone()
-    };
-
-    run_dcraw(
-        &args.dcraw,
-        &args.dcraw_args,
-        args.camera_profile.as_deref(),
-        &args.raw,
-        &intermediate,
+    apply_resolved(
+        ApplyJob {
+            raw: &args.raw,
+            output: &args.output,
+            dcraw_args: &args.dcraw_args,
+            raw_engine: args.raw_engine,
+            rawtherapee: &args.rawtherapee,
+            camera_profile: args.camera_profile.as_deref(),
+            dcraw: &args.dcraw,
+            convert: &args.convert,
+            keep_intermediate: args.keep_intermediate.as_deref(),
+            no_grain: args.no_grain,
+            jpg_quality: args.jpg_quality,
+        },
+        &resolved,
+        grain_seed,
+        temp_dir.path(),
+        None,
     )?;
-    run_convert_depth(
-        &args.convert,
-        &intermediate,
-        &resolved.hald_path,
-        &converted,
-        (grain_enabled && jpeg_output).then_some(8),
-    )?;
-
-    if grain_enabled && jpeg_output {
-        let grained = temp_dir.path().join("grained-8.ppm");
-        apply_grain_8bit(&converted, &grained, resolved.grain, grain_seed)?;
-        eprintln!(
-            "applied grain amount={} size={} frequency={}",
-            resolved.grain.amount, resolved.grain.size, resolved.grain.frequency
-        );
-        finalize_output(&args.convert, &grained, &args.output, args.jpg_quality)?;
-    } else if final_source != converted {
-        apply_grain(&converted, &final_source, resolved.grain, grain_seed)?;
-        eprintln!(
-            "applied grain amount={} size={} frequency={}",
-            resolved.grain.amount, resolved.grain.size, resolved.grain.frequency
-        );
-    }
-
-    if !jpeg_output || !grain_enabled {
-        finalize_output(&args.convert, &final_source, &args.output, args.jpg_quality)?;
-    }
 
     eprintln!(
         "wrote {} using {}",
@@ -312,6 +429,331 @@ fn run_apply(args: ApplyArgs) -> Result<()> {
         resolved.hald_path.display()
     );
     Ok(())
+}
+
+fn apply_resolved(
+    job: ApplyJob<'_>,
+    resolved: &ResolvedProfile,
+    grain_seed: u64,
+    temp_dir: &Path,
+    progress: Option<&ApplyProgress<'_>>,
+) -> Result<()> {
+    validate_output_format(job.output)?;
+
+    let grain_enabled = !job.no_grain && resolved.grain.is_enabled();
+
+    if !grain_enabled && job.keep_intermediate.is_none() && job.raw_engine == RawEngine::Dcraw {
+        let step = if resolved.sharpening.is_enabled() {
+            "dcraw + hald/sharpen + export"
+        } else {
+            "dcraw + hald + export"
+        };
+        progress_step(progress, 1, step);
+        run_dcraw_convert_final(
+            job.dcraw,
+            job.dcraw_args,
+            job.camera_profile,
+            job.raw,
+            job.convert,
+            &resolved.hald_path,
+            resolved.sharpening,
+            job.output,
+            job.jpg_quality,
+        )?;
+        progress_step(progress, 5, "done");
+        return Ok(());
+    }
+
+    let intermediate = job
+        .keep_intermediate
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| temp_dir.join("dcraw.tiff"));
+    let output_ext = output_ext(job.output)?;
+    let jpeg_output = output_ext == "jpg" || output_ext == "jpeg";
+    let converted = if grain_enabled && jpeg_output {
+        temp_dir.join("converted-8.ppm")
+    } else {
+        temp_dir.join("converted.tiff")
+    };
+    let final_source = if grain_enabled && !jpeg_output {
+        temp_dir.join("grained.tiff")
+    } else {
+        converted.clone()
+    };
+
+    progress_step(progress, 1, raw_engine_step(job.raw_engine));
+    run_raw_develop(
+        job.raw_engine,
+        job.rawtherapee,
+        job.dcraw,
+        job.dcraw_args,
+        job.camera_profile,
+        job.raw,
+        &intermediate,
+    )?;
+    progress_step(
+        progress,
+        2,
+        if resolved.sharpening.is_enabled() {
+            "hald/sharpen"
+        } else {
+            "hald"
+        },
+    );
+    run_convert_depth(
+        job.convert,
+        &intermediate,
+        &resolved.hald_path,
+        resolved.sharpening,
+        &converted,
+        (grain_enabled && jpeg_output).then_some(8),
+    )?;
+
+    if grain_enabled && jpeg_output {
+        progress_step(progress, 3, "grain");
+        let grained = temp_dir.join("grained-8.ppm");
+        apply_grain_8bit(&converted, &grained, resolved.grain, grain_seed)?;
+        if progress.is_none() {
+            eprintln!(
+                "applied grain amount={} size={} frequency={}",
+                resolved.grain.amount, resolved.grain.size, resolved.grain.frequency
+            );
+        }
+        progress_step(progress, 4, "jpeg export");
+        finalize_output(job.convert, &grained, job.output, job.jpg_quality)?;
+    } else if final_source != converted {
+        progress_step(progress, 3, "grain");
+        apply_grain(&converted, &final_source, resolved.grain, grain_seed)?;
+        if progress.is_none() {
+            eprintln!(
+                "applied grain amount={} size={} frequency={}",
+                resolved.grain.amount, resolved.grain.size, resolved.grain.frequency
+            );
+        }
+    }
+
+    if !jpeg_output || !grain_enabled {
+        progress_step(progress, 4, "export");
+        finalize_output(job.convert, &final_source, job.output, job.jpg_quality)?;
+    }
+
+    progress_step(progress, 5, "done");
+    Ok(())
+}
+
+fn run_batch(args: BatchArgs) -> Result<()> {
+    if !args.input.is_dir() {
+        bail!("batch input is not a directory: {}", args.input.display());
+    }
+    fs::create_dir_all(&args.output)
+        .with_context(|| format!("creating {}", args.output.display()))?;
+
+    let raws = collect_batch_inputs(&args.input)?;
+    if raws.is_empty() {
+        bail!("no DNG/NEF files found under {}", args.input.display());
+    }
+
+    let temp_dir = Builder::new().prefix("mini-film-batch-").tempdir()?;
+    let apply_args = ApplyArgs {
+        raw: PathBuf::new(),
+        output: PathBuf::new(),
+        profile: args.profile.clone(),
+        hald_dir: args.hald_dir.clone(),
+        profiles_root: args.profiles_root.clone(),
+        hald_level: args.hald_level,
+        dcraw_args: args.dcraw_args.clone(),
+        raw_engine: args.raw_engine,
+        rawtherapee: args.rawtherapee.clone(),
+        camera_profile: args.camera_profile.clone(),
+        dcraw: args.dcraw.clone(),
+        convert: args.convert.clone(),
+        keep_intermediate: None,
+        no_grain: args.no_grain,
+        grain: args.grain.clone(),
+        grain_preset: args.grain_preset.clone(),
+        grain_seed: args.grain_seed,
+        jpg_quality: args.jpg_quality,
+    };
+    let mut resolved = resolve_profile(&apply_args, temp_dir.path())?;
+    if let Some(grain) =
+        resolve_grain_override(args.grain.as_deref(), args.grain_preset.as_deref())?
+    {
+        resolved.grain = grain;
+    }
+    let base_seed = args.grain_seed.unwrap_or_else(time_of_day_seed);
+
+    let multi = MultiProgress::new();
+    let batch = multi.add(ProgressBar::new(raws.len() as u64));
+    batch.set_style(batch_progress_style());
+    batch.set_message("starting");
+    let file = multi.add(ProgressBar::new(5));
+    file.set_style(file_progress_style());
+    file.set_message("waiting");
+
+    let batch_start = Instant::now();
+    let mut failures = Vec::new();
+    for (index, raw) in raws.iter().enumerate() {
+        let output = batch_output_path(&args.input, &args.output, raw)?;
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+        }
+
+        let display_name = raw
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("<unknown>")
+            .to_string();
+        batch.set_message(format!("{} ({}/{})", display_name, index + 1, raws.len()));
+        file.set_position(0);
+        file.set_message(format!("{display_name}: queued"));
+
+        let file_start = Instant::now();
+        let progress = ApplyProgress {
+            file: &file,
+            started: file_start,
+        };
+        let file_temp = temp_dir.path().join(format!("file-{index}"));
+        fs::create_dir_all(&file_temp)
+            .with_context(|| format!("creating {}", file_temp.display()))?;
+        let seed = per_file_seed(base_seed, index as u64, raw);
+        let result = apply_resolved(
+            ApplyJob {
+                raw,
+                output: &output,
+                dcraw_args: &args.dcraw_args,
+                raw_engine: args.raw_engine,
+                rawtherapee: &args.rawtherapee,
+                camera_profile: args.camera_profile.as_deref(),
+                dcraw: &args.dcraw,
+                convert: &args.convert,
+                keep_intermediate: None,
+                no_grain: args.no_grain,
+                jpg_quality: args.jpg_quality,
+            },
+            &resolved,
+            seed,
+            &file_temp,
+            Some(&progress),
+        );
+
+        match result {
+            Ok(()) => {
+                file.set_message(format!(
+                    "{}: done in {}",
+                    display_name,
+                    format_duration(file_start.elapsed())
+                ));
+            }
+            Err(err) => {
+                file.set_message(format!(
+                    "{}: failed after {}",
+                    display_name,
+                    format_duration(file_start.elapsed())
+                ));
+                failures.push((raw.clone(), err));
+            }
+        }
+        batch.inc(1);
+    }
+
+    if failures.is_empty() {
+        batch.finish_with_message(format!(
+            "done {} files in {}",
+            raws.len(),
+            format_duration(batch_start.elapsed())
+        ));
+        file.finish_and_clear();
+        Ok(())
+    } else {
+        batch.abandon_with_message(format!(
+            "failed {}/{} files in {}",
+            failures.len(),
+            raws.len(),
+            format_duration(batch_start.elapsed())
+        ));
+        for (path, err) in failures {
+            batch.println(format!("failed {}: {err:#}", path.display()));
+        }
+        bail!("batch finished with failures")
+    }
+}
+
+fn collect_batch_inputs(input: &Path) -> Result<Vec<PathBuf>> {
+    let mut raws = Vec::new();
+    for entry in WalkDir::new(input).into_iter().filter_map(Result::ok) {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        if is_batch_raw(entry.path()) {
+            raws.push(entry.path().to_path_buf());
+        }
+    }
+    raws.sort();
+    Ok(raws)
+}
+
+fn is_batch_raw(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|s| s.to_str()),
+        Some(ext)
+            if ext.eq_ignore_ascii_case("dng") || ext.eq_ignore_ascii_case("nef")
+    )
+}
+
+fn batch_output_path(input_root: &Path, output_root: &Path, raw: &Path) -> Result<PathBuf> {
+    let rel = raw
+        .strip_prefix(input_root)
+        .with_context(|| format!("mapping {} under {}", raw.display(), input_root.display()))?;
+    let parent = rel.parent().unwrap_or_else(|| Path::new(""));
+    let stem = rel
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| anyhow::anyhow!("input has no valid stem: {}", raw.display()))?;
+    Ok(output_root.join(parent).join(format!("{stem}.jpg")))
+}
+
+fn batch_progress_style() -> ProgressStyle {
+    ProgressStyle::with_template(
+        "{spinner:.green} batch [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} {msg}",
+    )
+    .unwrap()
+    .progress_chars("#>-")
+}
+
+fn file_progress_style() -> ProgressStyle {
+    ProgressStyle::with_template(
+        "{spinner:.green} file  [{elapsed_precise}] [{wide_bar:.magenta/blue}] {pos}/{len} {msg}",
+    )
+    .unwrap()
+    .progress_chars("#>-")
+}
+
+fn progress_step(progress: Option<&ApplyProgress<'_>>, position: u64, step: &str) {
+    let Some(progress) = progress else {
+        return;
+    };
+    progress.file.set_position(position);
+    progress.file.set_message(format!(
+        "{} ({})",
+        step,
+        format_duration(progress.started.elapsed())
+    ));
+}
+
+fn per_file_seed(base_seed: u64, index: u64, path: &Path) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    base_seed ^ index.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ hasher.finish()
+}
+
+fn format_duration(duration: Duration) -> String {
+    let seconds = duration.as_secs();
+    let millis = duration.subsec_millis();
+    if seconds >= 60 {
+        format!("{}m{:02}.{:03}s", seconds / 60, seconds % 60, millis)
+    } else {
+        format!("{seconds}.{millis:03}s")
+    }
 }
 
 fn configure_threads() {
@@ -348,6 +790,7 @@ fn resolve_profile(args: &ApplyArgs, temp_dir: &Path) -> Result<ResolvedProfile>
         return Ok(ResolvedProfile {
             hald_path: path,
             grain: GrainSettings::default(),
+            sharpening: SharpeningSettings::default(),
         });
     }
 
@@ -369,6 +812,7 @@ fn profile_from_path(
         Some(ext) if ext.eq_ignore_ascii_case("png") => Ok(ResolvedProfile {
             hald_path: path.to_path_buf(),
             grain: GrainSettings::default(),
+            sharpening: SharpeningSettings::default(),
         }),
         Some(ext) if ext.eq_ignore_ascii_case("xmp") => {
             profile_from_xmp(path, hald_level, profiles_root, temp_dir)
@@ -406,6 +850,7 @@ fn profile_from_xmp(
     Ok(ResolvedProfile {
         hald_path: output,
         grain: recipe.grain,
+        sharpening: converted.sharpening,
     })
 }
 
@@ -626,6 +1071,63 @@ fn parse_grain_part(value: &str, name: &str) -> Result<u8> {
     Ok(parsed as u8)
 }
 
+fn raw_engine_step(engine: RawEngine) -> &'static str {
+    match engine {
+        RawEngine::Auto => "rawtherapee",
+        RawEngine::Rawtherapee => "rawtherapee",
+        RawEngine::Dcraw => "dcraw",
+    }
+}
+
+fn run_raw_develop(
+    engine: RawEngine,
+    rawtherapee: &Path,
+    dcraw: &Path,
+    dcraw_args: &[String],
+    camera_profile: Option<&str>,
+    raw: &Path,
+    output_tiff: &Path,
+) -> Result<()> {
+    match engine {
+        RawEngine::Rawtherapee => run_rawtherapee(rawtherapee, raw, output_tiff),
+        RawEngine::Dcraw => run_dcraw(dcraw, dcraw_args, camera_profile, raw, output_tiff),
+        RawEngine::Auto => match run_rawtherapee(rawtherapee, raw, output_tiff) {
+            Ok(()) => Ok(()),
+            Err(rt_err) => {
+                eprintln!(
+                    "rawtherapee failed for {}, falling back to dcraw: {rt_err:#}",
+                    raw.display()
+                );
+                run_dcraw(dcraw, dcraw_args, camera_profile, raw, output_tiff)
+            }
+        },
+    }
+}
+
+fn run_rawtherapee(rawtherapee: &Path, raw: &Path, output_tiff: &Path) -> Result<()> {
+    if let Some(parent) = output_tiff.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+
+    let status = Command::new(rawtherapee)
+        .arg("-q")
+        .arg("-Y")
+        .arg("-o")
+        .arg(output_tiff)
+        .arg("-t")
+        .arg("-b16")
+        .arg("-c")
+        .arg(raw)
+        .status()
+        .with_context(|| format!("running {}", rawtherapee.display()))?;
+
+    if !status.success() {
+        bail!("rawtherapee failed with status {status}");
+    }
+
+    Ok(())
+}
+
 fn run_dcraw(
     dcraw: &Path,
     dcraw_args: &[String],
@@ -666,6 +1168,7 @@ fn run_dcraw_convert_final(
     raw: &Path,
     convert: &Path,
     hald: &Path,
+    sharpening: SharpeningSettings,
     output: &Path,
     jpg_quality: u8,
 ) -> Result<()> {
@@ -692,6 +1195,7 @@ fn run_dcraw_convert_final(
 
     let mut convert_command = Command::new(convert);
     convert_command.arg("tiff:-").arg("-hald-clut").arg(hald);
+    add_sharpening_args(&mut convert_command, sharpening);
     add_final_convert_args(&mut convert_command, output, jpg_quality)?;
     let mut convert_child = convert_command
         .stdin(Stdio::from(dcraw_stdout))
@@ -715,6 +1219,7 @@ fn run_convert_depth(
     convert: &Path,
     input_tiff: &Path,
     hald: &Path,
+    sharpening: SharpeningSettings,
     output: &Path,
     depth: Option<u8>,
 ) -> Result<()> {
@@ -724,6 +1229,7 @@ fn run_convert_depth(
 
     let mut command = Command::new(convert);
     command.arg(input_tiff).arg("-hald-clut").arg(hald);
+    add_sharpening_args(&mut command, sharpening);
     if let Some(depth) = depth {
         command.arg("-depth").arg(depth.to_string());
     }
@@ -738,6 +1244,20 @@ fn run_convert_depth(
     }
 
     Ok(())
+}
+
+fn add_sharpening_args(command: &mut Command, sharpening: SharpeningSettings) {
+    if !sharpening.is_enabled() {
+        return;
+    }
+
+    let radius = sharpening.radius.clamp(0.1, 3.0);
+    let sigma = (radius * (0.65 + sharpening.detail.clamp(0.0, 100.0) / 250.0)).clamp(0.1, 3.5);
+    let amount = (sharpening.amount.clamp(0.0, 150.0) / 100.0).clamp(0.0, 1.5);
+    let threshold = (sharpening.masking.clamp(0.0, 100.0) / 1000.0).clamp(0.0, 0.1);
+    command
+        .arg("-unsharp")
+        .arg(format!("{radius:.2}x{sigma:.2}+{amount:.2}+{threshold:.3}"));
 }
 
 fn finalize_output(convert: &Path, input: &Path, output: &Path, jpg_quality: u8) -> Result<()> {
