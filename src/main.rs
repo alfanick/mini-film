@@ -2,14 +2,17 @@ use std::{
     fs::{self, File},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    thread,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use mini_film::{
-    GrainSettings, HaldOptions, apply_grain, convert_path, convert_xmp_to_hald,
+    GrainSettings, HaldOptions, apply_grain, apply_grain_8bit, convert_path, convert_xmp_to_hald,
     extract_film_recipe, profile_info_line, try_convert_dir,
 };
+use rayon::ThreadPoolBuilder;
 use tempfile::Builder;
 use walkdir::WalkDir;
 
@@ -104,9 +107,9 @@ enum CommandKind {
         #[arg(long)]
         grain_preset: Option<String>,
 
-        /// Seed for deterministic generated grain.
-        #[arg(long, default_value_t = 1)]
-        grain_seed: u64,
+        /// Seed for deterministic generated grain. Defaults to current time of day.
+        #[arg(long)]
+        grain_seed: Option<u64>,
 
         /// JPEG quality when output path ends in .jpg or .jpeg.
         #[arg(long, default_value_t = 95)]
@@ -115,6 +118,8 @@ enum CommandKind {
 }
 
 fn main() -> Result<()> {
+    configure_threads();
+
     match Cli::parse().command {
         CommandKind::Hald {
             input,
@@ -207,7 +212,7 @@ struct ApplyArgs {
     no_grain: bool,
     grain: Option<String>,
     grain_preset: Option<String>,
-    grain_seed: u64,
+    grain_seed: Option<u64>,
     jpg_quality: u8,
 }
 
@@ -226,16 +231,44 @@ fn run_apply(args: ApplyArgs) -> Result<()> {
     {
         resolved.grain = grain;
     }
+    let grain_seed = args.grain_seed.unwrap_or_else(time_of_day_seed);
 
-    let intermediate = match &args.keep_intermediate {
-        Some(path) => path.clone(),
-        None => temp_dir.path().join("dcraw.tiff"),
-    };
-    let converted = temp_dir.path().join("converted.tiff");
-    let final_source = if args.no_grain || !resolved.grain.is_enabled() {
-        converted.clone()
+    let grain_enabled = !args.no_grain && resolved.grain.is_enabled();
+
+    if !grain_enabled && args.keep_intermediate.is_none() {
+        run_dcraw_convert_final(
+            &args.dcraw,
+            &args.dcraw_args,
+            args.camera_profile.as_deref(),
+            &args.raw,
+            &args.convert,
+            &resolved.hald_path,
+            &args.output,
+            args.jpg_quality,
+        )?;
+        eprintln!(
+            "wrote {} using {}",
+            args.output.display(),
+            resolved.hald_path.display()
+        );
+        return Ok(());
+    }
+
+    let intermediate = args
+        .keep_intermediate
+        .clone()
+        .unwrap_or_else(|| temp_dir.path().join("dcraw.tiff"));
+    let output_ext = output_ext(&args.output)?;
+    let jpeg_output = output_ext == "jpg" || output_ext == "jpeg";
+    let converted = if grain_enabled && jpeg_output {
+        temp_dir.path().join("converted-8.ppm")
     } else {
+        temp_dir.path().join("converted.tiff")
+    };
+    let final_source = if grain_enabled && !jpeg_output {
         temp_dir.path().join("grained.tiff")
+    } else {
+        converted.clone()
     };
 
     run_dcraw(
@@ -245,22 +278,33 @@ fn run_apply(args: ApplyArgs) -> Result<()> {
         &args.raw,
         &intermediate,
     )?;
-    run_convert(
+    run_convert_depth(
         &args.convert,
         &intermediate,
         &resolved.hald_path,
         &converted,
+        (grain_enabled && jpeg_output).then_some(8),
     )?;
 
-    if final_source != converted {
-        apply_grain(&converted, &final_source, resolved.grain, args.grain_seed)?;
+    if grain_enabled && jpeg_output {
+        let grained = temp_dir.path().join("grained-8.ppm");
+        apply_grain_8bit(&converted, &grained, resolved.grain, grain_seed)?;
+        eprintln!(
+            "applied grain amount={} size={} frequency={}",
+            resolved.grain.amount, resolved.grain.size, resolved.grain.frequency
+        );
+        finalize_output(&args.convert, &grained, &args.output, args.jpg_quality)?;
+    } else if final_source != converted {
+        apply_grain(&converted, &final_source, resolved.grain, grain_seed)?;
         eprintln!(
             "applied grain amount={} size={} frequency={}",
             resolved.grain.amount, resolved.grain.size, resolved.grain.frequency
         );
     }
 
-    finalize_output(&args.convert, &final_source, &args.output, args.jpg_quality)?;
+    if !jpeg_output || !grain_enabled {
+        finalize_output(&args.convert, &final_source, &args.output, args.jpg_quality)?;
+    }
 
     eprintln!(
         "wrote {} using {}",
@@ -268,6 +312,21 @@ fn run_apply(args: ApplyArgs) -> Result<()> {
         resolved.hald_path.display()
     );
     Ok(())
+}
+
+fn configure_threads() {
+    let threads = thread::available_parallelism()
+        .map(|threads| threads.get())
+        .unwrap_or(1);
+    let _ = ThreadPoolBuilder::new().num_threads(threads).build_global();
+}
+
+fn time_of_day_seed() -> u64 {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let seconds_in_day = now.as_secs() % 86_400;
+    (seconds_in_day << 32) ^ now.subsec_nanos() as u64
 }
 
 fn resolve_profile(args: &ApplyArgs, temp_dir: &Path) -> Result<ResolvedProfile> {
@@ -600,15 +659,76 @@ fn run_dcraw(
     Ok(())
 }
 
-fn run_convert(convert: &Path, input_tiff: &Path, hald: &Path, output: &Path) -> Result<()> {
+fn run_dcraw_convert_final(
+    dcraw: &Path,
+    dcraw_args: &[String],
+    camera_profile: Option<&str>,
+    raw: &Path,
+    convert: &Path,
+    hald: &Path,
+    output: &Path,
+    jpg_quality: u8,
+) -> Result<()> {
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
 
-    let status = Command::new(convert)
-        .arg(input_tiff)
-        .arg("-hald-clut")
-        .arg(hald)
+    let mut dcraw_command = Command::new(dcraw);
+    dcraw_command.args(dcraw_args);
+    if let Some(profile) = camera_profile {
+        dcraw_command.arg("-p").arg(profile);
+    }
+    let mut dcraw_child = dcraw_command
+        .arg("-c")
+        .arg(raw)
+        .stdout(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("running {}", dcraw.display()))?;
+
+    let dcraw_stdout = dcraw_child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("failed to capture dcraw stdout"))?;
+
+    let mut convert_command = Command::new(convert);
+    convert_command.arg("tiff:-").arg("-hald-clut").arg(hald);
+    add_final_convert_args(&mut convert_command, output, jpg_quality)?;
+    let mut convert_child = convert_command
+        .stdin(Stdio::from(dcraw_stdout))
+        .spawn()
+        .with_context(|| format!("running {}", convert.display()))?;
+
+    let convert_status = convert_child.wait()?;
+    let dcraw_status = dcraw_child.wait()?;
+
+    if !dcraw_status.success() {
+        bail!("dcraw failed with status {dcraw_status}");
+    }
+    if !convert_status.success() {
+        bail!("convert failed with status {convert_status}");
+    }
+
+    Ok(())
+}
+
+fn run_convert_depth(
+    convert: &Path,
+    input_tiff: &Path,
+    hald: &Path,
+    output: &Path,
+    depth: Option<u8>,
+) -> Result<()> {
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+
+    let mut command = Command::new(convert);
+    command.arg(input_tiff).arg("-hald-clut").arg(hald);
+    if let Some(depth) = depth {
+        command.arg("-depth").arg(depth.to_string());
+    }
+
+    let status = command
         .arg(output)
         .status()
         .with_context(|| format!("running {}", convert.display()))?;
@@ -625,22 +745,11 @@ fn finalize_output(convert: &Path, input: &Path, output: &Path, jpg_quality: u8)
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
 
-    let ext = output_ext(output)?;
     let mut command = Command::new(convert);
     command.arg(input);
-
-    if ext == "jpg" || ext == "jpeg" {
-        command
-            .arg("-depth")
-            .arg("8")
-            .arg("-quality")
-            .arg(jpg_quality.clamp(1, 100).to_string());
-    } else {
-        command.arg("-depth").arg("10");
-    }
+    add_final_convert_args(&mut command, output, jpg_quality)?;
 
     let status = command
-        .arg(output)
         .status()
         .with_context(|| format!("running {}", convert.display()))?;
 
@@ -648,6 +757,21 @@ fn finalize_output(convert: &Path, input: &Path, output: &Path, jpg_quality: u8)
         bail!("final export failed with status {status}");
     }
 
+    Ok(())
+}
+
+fn add_final_convert_args(command: &mut Command, output: &Path, jpg_quality: u8) -> Result<()> {
+    let ext = output_ext(output)?;
+
+    if ext == "jpg" || ext == "jpeg" {
+        command
+            .arg("-depth")
+            .arg("8")
+            .arg("-quality")
+            .arg(jpg_quality.clamp(1, 100).to_string());
+    }
+
+    command.arg(output);
     Ok(())
 }
 

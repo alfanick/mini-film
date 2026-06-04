@@ -9,7 +9,7 @@ It can:
 - apply a Hald CLUT with GraphicsMagick/ImageMagick `convert`
 - read Lightroom preset XMPs that reference a profile and define grain
 - add deterministic procedural film grain
-- export either 10-bit TIFF or 8-bit JPEG
+- export either 16-bit TIFF or 8-bit JPEG
 
 ## Build
 
@@ -56,7 +56,7 @@ cargo run -- apply \
   /home/alfanick/Pictures/Lightroom/2026/05/03/DSC_1812-10.dng
 ```
 
-`output.tif` / `output.tiff` is exported as 10-bit TIFF.
+`output.tif` / `output.tiff` is exported as 16-bit TIFF.
 
 ```sh
 cargo run --release -- apply input.RAW \
