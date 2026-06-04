@@ -779,10 +779,9 @@ fn remove_temp_file(path: &Path) -> Result<()> {
 }
 
 fn configure_threads() {
-    let threads = thread::available_parallelism()
-        .map(|threads| threads.get())
-        .unwrap_or(1);
-    let _ = ThreadPoolBuilder::new().num_threads(threads).build_global();
+    let _ = ThreadPoolBuilder::new()
+        .num_threads(cpu_thread_count())
+        .build_global();
 }
 
 fn time_of_day_seed() -> u64 {
@@ -1234,6 +1233,7 @@ fn run_dcraw_convert_final(
         .ok_or_else(|| anyhow::anyhow!("failed to capture dcraw stdout"))?;
 
     let mut convert_command = Command::new(convert);
+    add_convert_thread_limit(&mut convert_command);
     convert_command.arg("tiff:-").arg("-hald-clut").arg(hald);
     add_sharpening_args(&mut convert_command, sharpening);
     add_final_convert_args(&mut convert_command, output, jpg_quality)?;
@@ -1268,6 +1268,7 @@ fn run_convert_depth(
     }
 
     let mut command = Command::new(convert);
+    add_convert_thread_limit(&mut command);
     command.arg(input_tiff).arg("-hald-clut").arg(hald);
     add_sharpening_args(&mut command, sharpening);
     if let Some(depth) = depth {
@@ -1306,6 +1307,7 @@ fn finalize_output(convert: &Path, input: &Path, output: &Path, jpg_quality: u8)
     }
 
     let mut command = Command::new(convert);
+    add_convert_thread_limit(&mut command);
     command.arg(input);
     add_final_convert_args(&mut command, output, jpg_quality)?;
 
@@ -1333,6 +1335,19 @@ fn add_final_convert_args(command: &mut Command, output: &Path, jpg_quality: u8)
 
     command.arg(output);
     Ok(())
+}
+
+fn add_convert_thread_limit(command: &mut Command) {
+    command
+        .arg("-limit")
+        .arg("Threads")
+        .arg(cpu_thread_count().to_string());
+}
+
+fn cpu_thread_count() -> usize {
+    thread::available_parallelism()
+        .map(|threads| threads.get())
+        .unwrap_or(1)
 }
 
 fn validate_output_format(output: &Path) -> Result<()> {
