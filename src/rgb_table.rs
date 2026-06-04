@@ -8,6 +8,12 @@ use crate::model::RgbTable;
 const BTT_RGB_TABLE: u32 = 1;
 const RGB_TABLE_VERSION: u32 = 1;
 
+/// Decode an Adobe Camera Raw RGBTable payload.
+///
+/// XMP stores the binary table as Adobe's custom base85 text followed by zlib
+/// compression. The first four decoded bytes declare the uncompressed length,
+/// so the function decodes base85, inflates the zlib stream, and verifies that
+/// the payload length matches before handing bytes to the binary parser.
 pub fn decode_rgb_table(encoded: &str) -> Result<Vec<u8>> {
     let compressed = adobe_base85_decode(encoded);
     if compressed.len() < 5 {
@@ -29,6 +35,13 @@ pub fn decode_rgb_table(encoded: &str) -> Result<Vec<u8>> {
     Ok(decoded)
 }
 
+/// Parse the binary RGBTable format into usable samples and metadata.
+///
+/// The table header declares type, version, dimensions, and division count.
+/// Sample values are stored as deltas from a neutral ramp, so the parser
+/// reconstructs actual 16-bit RGB samples by adding the no-op ramp back with
+/// wrapping arithmetic. Both 1D and 3D tables are supported, followed by
+/// primaries/gamma/gamut and optional flags metadata.
 pub fn parse_rgb_table(bytes: &[u8]) -> Result<RgbTable> {
     let mut r = LeReader::new(bytes);
 
@@ -106,6 +119,12 @@ pub fn parse_rgb_table(bytes: &[u8]) -> Result<RgbTable> {
     })
 }
 
+/// Decode Adobe's little-endian base85 alphabet.
+///
+/// This is not standard Ascii85 ordering: each valid character maps to a digit
+/// in Adobe's table and five digits form one little-endian 32-bit word. Partial
+/// trailing groups emit one to three bytes, and whitespace or unknown characters
+/// are ignored because XMP may wrap or format the encoded text.
 fn adobe_base85_decode(encoded: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity((encoded.len() + 4) / 5 * 4);
     let mut phase = 0u32;
@@ -149,6 +168,12 @@ fn adobe_base85_decode(encoded: &str) -> Vec<u8> {
     out
 }
 
+/// Map one Adobe base85 byte to its numeric digit.
+///
+/// The RGBTable encoding uses digits, lowercase, uppercase, and a fixed set of
+/// punctuation to represent values 0..84. Keeping the mapping explicit makes it
+/// clear that this is Adobe's alphabet rather than the more common Ascii85
+/// alphabet.
 fn adobe_digit(byte: u8) -> Option<u8> {
     let value = match byte {
         b'0'..=b'9' => byte - b'0',
@@ -182,6 +207,13 @@ fn adobe_digit(byte: u8) -> Option<u8> {
     Some(value)
 }
 
+/// Sample a 1D or 3D RGBTable at one Hald grid coordinate.
+///
+/// Hald coordinates are on the generated LUT axis, while RGBTable samples live
+/// on their own division grid. For 1D tables each channel is interpolated
+/// independently. For 3D tables the coordinate is scaled into table space,
+/// split into low/high corners, and trilinearly interpolated across the eight
+/// neighboring RGB samples to produce one 16-bit output color.
 pub(crate) fn sample_table(table: &RgbTable, r: u32, g: u32, b: u32, axis: u32) -> [u16; 3] {
     if table.dimensions == 1 {
         return [
@@ -223,6 +255,11 @@ pub(crate) fn sample_table(table: &RgbTable, r: u32, g: u32, b: u32, axis: u32) 
     out
 }
 
+/// Interpolate one channel from a 1D RGBTable.
+///
+/// The input coordinate is scaled from Hald-axis space into table-division
+/// space, then split into adjacent sample indexes and a fractional blend. The
+/// two stored samples are linearly interpolated and clamped to 16-bit output.
 fn sample_1d(table: &RgbTable, input: u32, axis: u32, channel: usize) -> u16 {
     let d = table.divisions as usize;
     let pos = scaled_pos(input, axis, table.divisions);

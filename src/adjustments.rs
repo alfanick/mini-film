@@ -1,5 +1,13 @@
 use crate::model::{ParametricTone, ProfileAdjustments, ToneCurves};
 
+/// Bake Lightroom-style profile adjustments into one RGB sample.
+///
+/// The Hald writer calls this for every sampled CLUT coordinate. The function
+/// converts 16-bit integer RGB into normalized floats, applies exposure first
+/// as a power-of-two scale, then applies tone, curves, and color controls in a
+/// stable order that roughly follows Lightroom's perceptual pipeline. The
+/// result is clamped and quantized back to 16-bit because the generated Hald PNG
+/// is the reusable LUT consumed later by ImageMagick/GraphicsMagick.
 pub(crate) fn apply_profile_adjustments(
     rgb: [u16; 3],
     adjustments: &ProfileAdjustments,
@@ -30,6 +38,14 @@ pub(crate) fn apply_profile_adjustments(
     ]
 }
 
+/// Apply scalar tone controls that mostly operate through luminance.
+///
+/// Highlights/shadows and whites/blacks are weighted by smooth luminance masks
+/// so they affect the intended tonal regions instead of the whole RGB triplet.
+/// Parametric curve controls add another luma delta based on split points, while
+/// contrast and clarity are approximated as centered gain around mid-gray. This
+/// is deliberately local and deterministic because it runs while generating the
+/// LUT, not while processing each final image pixel.
 fn apply_basic_tone(mut color: [f32; 3], adjustments: &ProfileAdjustments) -> [f32; 3] {
     let mut current_luma = luma(color);
 
@@ -69,6 +85,12 @@ fn apply_basic_tone(mut color: [f32; 3], adjustments: &ProfileAdjustments) -> [f
     color
 }
 
+/// Apply composite and per-channel tone curves.
+///
+/// Lightroom stores tone curves as 0..255 control points. The composite curve is
+/// applied to all channels first, then red/green/blue curves are applied to
+/// their respective channels. Identity curves are skipped so empty or no-op XMP
+/// data does not add sorting/interpolation work during Hald generation.
 fn apply_tone_curves(mut color: [f32; 3], curves: &ToneCurves) -> [f32; 3] {
     if !curve_is_identity(&curves.composite) {
         color = color.map(|v| apply_curve(v, &curves.composite));
@@ -85,6 +107,13 @@ fn apply_tone_curves(mut color: [f32; 3], curves: &ToneCurves) -> [f32; 3] {
     color
 }
 
+/// Apply saturation, vibrance, HSL, and camera calibration adjustments.
+///
+/// The algorithm moves into HSL because these controls are hue-relative rather
+/// than simple per-channel gains. Global saturation is linear, vibrance is
+/// stronger on less-saturated colors, HSL sliders are blended around Lightroom's
+/// eight hue centers, and calibration shifts use broader primary-centered hue
+/// weights. The final HSL value is normalized and converted back to RGB.
 fn apply_color_adjustments(color: [f32; 3], adjustments: &ProfileAdjustments) -> [f32; 3] {
     let (mut hue, mut saturation, mut lightness) = rgb_to_hsl(color);
 
@@ -139,6 +168,12 @@ fn apply_color_adjustments(color: [f32; 3], adjustments: &ProfileAdjustments) ->
     )
 }
 
+/// Compute the luma delta for Lightroom's parametric tone curve.
+///
+/// The three split points divide the luminance range into shadows, darks,
+/// lights, and highlights. Edge regions use smoothstep ramps and middle regions
+/// use triangular weights so adjacent controls blend rather than creating hard
+/// discontinuities in the generated LUT.
 fn parametric_delta(luma: f32, tone: ParametricTone) -> f32 {
     let s1 = (tone.shadow_split / 100.0).clamp(0.01, 0.99);
     let s2 = (tone.midtone_split / 100.0).clamp(s1 + 0.01, 0.99);
@@ -150,6 +185,12 @@ fn parametric_delta(luma: f32, tone: ParametricTone) -> f32 {
     (shadow + dark + light + highlight) / 100.0 * 0.22
 }
 
+/// Interpolate a Lightroom tone curve at one normalized channel value.
+///
+/// XMP curve points are stored in 0..255 space, so the input is scaled to that
+/// domain, the points are sorted by x, and the surrounding segment is linearly
+/// interpolated. Values outside the first/last point are pinned to the nearest
+/// endpoint, matching the usual behavior of point curves.
 fn apply_curve(value: f32, points: &[(f32, f32)]) -> f32 {
     if points.is_empty() {
         return value;
@@ -173,6 +214,11 @@ fn apply_curve(value: f32, points: &[(f32, f32)]) -> f32 {
     (sorted.last().unwrap().1 / 255.0).clamp(0.0, 1.0)
 }
 
+/// Detect whether a curve can be skipped.
+///
+/// Empty curves and curves whose points all lie on y=x leave values unchanged.
+/// This matters because adjustment baking calls the curve path for every Hald
+/// sample, and avoiding unnecessary interpolation keeps generation predictable.
 pub(crate) fn curve_is_identity(points: &[(f32, f32)]) -> bool {
     points.is_empty()
         || points
@@ -188,11 +234,21 @@ fn luma(color: [f32; 3]) -> f32 {
     0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2]
 }
 
+/// Smoothly ramp from zero to one between two edges.
+///
+/// The cubic Hermite shape avoids hard transitions at tonal-mask boundaries by
+/// giving the ramp zero slope at both ends. It is used for highlight/shadow masks
+/// and parametric tone regions.
 fn smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
     let t = ((value - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }
 
+/// Compute a triangular region weight around a center point.
+///
+/// Values outside the left/right bounds receive no weight. Values inside ramp up
+/// toward the center and down after it, which makes darks/lights parametric
+/// controls overlap smoothly with neighboring tonal regions.
 fn triangle_weight(value: f32, left: f32, right: f32, center: f32) -> f32 {
     if value <= left || value >= right {
         return 0.0;
@@ -204,6 +260,12 @@ fn triangle_weight(value: f32, left: f32, right: f32, center: f32) -> f32 {
     }
 }
 
+/// Convert normalized RGB to HSL.
+///
+/// The conversion computes lightness from the min/max RGB channels, derives
+/// saturation from chroma relative to lightness, and selects the hue sector from
+/// whichever channel is dominant. Hue is normalized into degrees so HSL sliders
+/// and calibration weights can operate on a circular color wheel.
 fn rgb_to_hsl(rgb: [f32; 3]) -> (f32, f32, f32) {
     let r = rgb[0];
     let g = rgb[1];
@@ -233,6 +295,11 @@ fn rgb_to_hsl(rgb: [f32; 3]) -> (f32, f32, f32) {
     (normalize_hue(hue), saturation, lightness)
 }
 
+/// Convert normalized HSL back to RGB.
+///
+/// The implementation uses the standard p/q helper formulation. Saturation zero
+/// is a grayscale fast path; otherwise each RGB channel samples the hue wheel at
+/// offsets one third turn apart and returns normalized channel values.
 fn hsl_to_rgb(hue: f32, saturation: f32, lightness: f32) -> [f32; 3] {
     if saturation == 0.0 {
         return [lightness; 3];
@@ -251,6 +318,11 @@ fn hsl_to_rgb(hue: f32, saturation: f32, lightness: f32) -> [f32; 3] {
     ]
 }
 
+/// Resolve one channel from the HSL hue helper curve.
+///
+/// The input `t` is wrapped into 0..1 and then evaluated across the three linear
+/// hue segments used by the standard HSL-to-RGB conversion. This is small but
+/// mathematically sensitive because off-by-one wrapping would cause hue seams.
 fn hue_to_rgb(p: f32, q: f32, mut t: f32) -> f32 {
     if t < 0.0 {
         t += 1.0;

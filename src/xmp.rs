@@ -13,6 +13,15 @@ pub fn extract_rgb_table(path: &Path) -> Result<XmpRgbTable> {
         .ok_or_else(|| anyhow!("missing crs:RGBTable"))
 }
 
+/// Extract all film-recipe data mini-film understands from one XMP file.
+///
+/// The parser streams quick-xml events and collects two related shapes of XMP:
+/// profiles that embed a `crs:RGBTable`, and presets that reference a Look by
+/// UUID/name while carrying grain and other settings. It tracks whether parsing
+/// is inside `crs:Look` so linked profile metadata does not get confused with
+/// preset metadata, routes tone-curve text into the active curve target, and
+/// falls back to a small raw-string lookup for Look attributes that quick-xml may
+/// miss when vendors encode them in compact forms.
 pub fn extract_film_recipe(path: &Path) -> Result<XmpFilmRecipe> {
     let mut xml = String::new();
     File::open(path)
@@ -205,6 +214,13 @@ pub fn extract_film_recipe(path: &Path) -> Result<XmpFilmRecipe> {
     })
 }
 
+/// Parse one Lightroom adjustment attribute into the profile adjustment model.
+///
+/// XMP uses many separate `crs:*` keys for basic tone, parametric curves, HSL,
+/// and calibration. This function strips the namespace, dispatches known scalar
+/// fields directly, and delegates HSL channel-name decoding to `hsl_attr`. It is
+/// intentionally tolerant of unknown keys because presets often contain many
+/// Lightroom fields that mini-film does not emulate yet.
 fn parse_adjustment_attr(
     adjustments: &mut ProfileAdjustments,
     key: &str,
@@ -254,6 +270,12 @@ fn parse_adjustment_attr(
     Ok(())
 }
 
+/// Parse one Lightroom sharpening attribute into sharpening settings.
+///
+/// Sharpening is not baked into the Hald because ImageMagick can apply it to the
+/// developed image after the LUT. The parser marks sharpening as present when
+/// any relevant field appears, then stores amount/radius/detail/masking so the
+/// export layer can translate them to `convert -unsharp`.
 fn parse_sharpening_attr(
     sharpening: &mut SharpeningSettings,
     key: &str,
@@ -304,6 +326,12 @@ fn parse_curve_point(value: &str) -> Option<(f32, f32)> {
     Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
 }
 
+/// Append a parsed curve point to the active tone-curve channel.
+///
+/// Tone curve text nodes are interpreted according to the most recent enclosing
+/// `crs:ToneCurvePV2012*` tag. The target enum keeps that state explicit, so
+/// composite, red, green, and blue curves can all be collected from the same XMP
+/// event stream without duplicating parser code.
 fn push_curve_point(curves: &mut ToneCurves, target: Option<CurveTarget>, point: (f32, f32)) {
     match target {
         Some(CurveTarget::Composite) => curves.composite.push(point),
@@ -328,6 +356,12 @@ enum HslAttr {
     Luminance,
 }
 
+/// Map Lightroom HSL adjustment names to array slots.
+///
+/// Lightroom encodes HSL sliders as names such as `HueAdjustmentOrange` and
+/// `LuminanceAdjustmentBlue`. This helper splits the control family from the
+/// color suffix and returns both the destination array and the fixed hue-channel
+/// index used by `ProfileAdjustments`.
 fn hsl_attr(key: &str) -> Option<(HslAttr, usize)> {
     let (prefix, suffix) = if let Some(suffix) = key.strip_prefix("HueAdjustment") {
         (HslAttr::Hue, suffix)

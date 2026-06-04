@@ -51,6 +51,12 @@ pub(crate) struct ApplyJob<'a> {
     pub(crate) quiet: bool,
 }
 
+/// Run the single-file apply command.
+///
+/// This validates output/export options, creates a temporary workspace, resolves
+/// the selected profile into a Hald plus grain/sharpening metadata, applies any
+/// explicit grain override, chooses a deterministic-or-time-based seed, and then
+/// delegates the actual RAW/Hald/grain/export pipeline to `apply_resolved`.
 pub(crate) fn run_apply(args: ApplyArgs) -> Result<()> {
     validate_output_format(&args.output)?;
     validate_export_options(&args.export)?;
@@ -93,6 +99,14 @@ pub(crate) fn run_apply(args: ApplyArgs) -> Result<()> {
     Ok(())
 }
 
+/// Apply an already resolved profile to one RAW input.
+///
+/// The function owns the processing graph. A dcraw-only no-grain path streams
+/// dcraw directly into convert to avoid an intermediate file. Otherwise it
+/// develops RAW to TIFF, applies the Hald and optional sharpening, eagerly
+/// removes temporary files, optionally renders grain in either 8-bit JPEG space
+/// or 16-bit TIFF space, and finally exports to the requested output format
+/// while updating progress bars for batch callers.
 pub(crate) fn apply_resolved(
     job: ApplyJob<'_>,
     resolved: &ResolvedProfile,
@@ -214,6 +228,12 @@ pub(crate) fn apply_resolved(
     Ok(())
 }
 
+/// Resolve command-line grain overrides.
+///
+/// XMP grain is used by default, but users can override it with either an
+/// explicit `amount,size,frequency` tuple or a named preset. The two override
+/// forms are mutually exclusive, and `none`/`off` intentionally resolves to
+/// disabled grain rather than an error.
 pub(crate) fn resolve_grain_override(
     grain: Option<&str>,
     preset: Option<&str>,

@@ -10,6 +10,13 @@ use crate::app::run_hald;
 use crate::app::util::configure_threads;
 use crate::cli::{Cli, CommandKind, ExportOptions};
 
+/// Parse CLI arguments and dispatch to the selected mini-film workflow.
+///
+/// The top-level binary keeps clap-generated command shapes separate from the
+/// runtime structs used by the application modules. It initializes the Rayon
+/// thread pool once, then maps shared apply/batch flags into `ExportOptions` so
+/// the downstream pipeline can handle single-file and batch processing through
+/// the same conversion/export code.
 fn main() -> Result<()> {
     configure_threads();
 

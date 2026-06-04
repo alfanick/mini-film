@@ -40,6 +40,14 @@ pub(crate) struct BatchArgs {
     pub(crate) export: ExportOptions,
 }
 
+/// Run the batch command over every supported RAW file under an input tree.
+///
+/// The batch pipeline validates shared export options once, creates the output
+/// directory, resolves the profile once into a reusable Hald, and then processes
+/// files sequentially with per-file temp directories. It preserves relative
+/// input paths under the output root, drives a batch progress bar plus a per-file
+/// step bar, derives a stable grain seed per file, records failures, and reports
+/// all failures after the loop instead of stopping at the first bad image.
 pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
     validate_export_options(&args.export)?;
     if !args.input.is_dir() {

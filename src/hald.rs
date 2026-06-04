@@ -11,6 +11,12 @@ use crate::model::{
     BatchSummary, ConvertedProfile, HaldOptions, ProfileAdjustments, RgbTable, XmpRgbTable,
 };
 
+/// Convert one XMP file or a directory tree of XMP files to Hald PNGs.
+///
+/// The function validates the requested Hald level once, creates the output
+/// directory for batch conversion when needed, and dispatches to either the
+/// directory walker or the single-file converter. It is the public library
+/// entrypoint used by the CLI `hald` command.
 pub fn convert_path(
     input: &Path,
     output: &Path,
@@ -28,6 +34,12 @@ pub fn convert_path(
     }
 }
 
+/// Convert every `.xmp` file under a directory and fail on the first error.
+///
+/// Each input path is mapped to a matching relative output path, with the file
+/// stem sanitized and `.hald.png` appended. This mode is useful when callers
+/// want strict conversion semantics and prefer a single error over a partial
+/// success report.
 pub fn convert_dir(
     input_dir: &Path,
     output_dir: &Path,
@@ -59,6 +71,12 @@ pub fn convert_dir(
     Ok(converted)
 }
 
+/// Convert every `.xmp` file under a directory while collecting failures.
+///
+/// This mirrors `convert_dir` but records skipped files and continues after
+/// individual conversion errors. The CLI uses it for directory conversion so one
+/// malformed preset does not prevent the usable RGBTable profiles from being
+/// generated.
 pub fn try_convert_dir(
     input_dir: &Path,
     output_dir: &Path,
@@ -100,6 +118,12 @@ pub fn try_convert_dir(
     Ok((converted, summary))
 }
 
+/// Convert one RGBTable-bearing XMP profile into a generated Hald PNG.
+///
+/// The converter parses the XMP recipe, extracts the embedded RGBTable, decodes
+/// the Adobe base85/zlib payload, parses the binary table, and optionally writes
+/// a Hald image. Profile adjustments are baked into the Hald at generation time,
+/// while sharpening remains metadata because it is applied later by convert.
 pub fn convert_xmp_to_hald(
     input: &Path,
     output: &Path,
@@ -150,6 +174,12 @@ pub fn profile_display_name(input: &Path, profile: &XmpRgbTable) -> String {
     })
 }
 
+/// Format a detailed metadata line for a converted profile.
+///
+/// The output includes human-readable profile identity plus table dimensions,
+/// primaries/gamma/gamut, amount range, flags, and markers for baked adjustments
+/// or enabled sharpening. Keeping this centralized makes `hald --info-only` and
+/// conversion logs report the same facts.
 pub fn profile_info_line(converted: &ConvertedProfile) -> String {
     let display_name = profile_display_name(&converted.input, &converted.profile);
     format!(
@@ -192,6 +222,13 @@ pub fn write_hald_png(table: &RgbTable, level: u32, path: &Path) -> Result<()> {
     write_hald_png_with_adjustments(table, level, path, &ProfileAdjustments::default())
 }
 
+/// Write a 16-bit RGB Hald CLUT PNG from an RGBTable.
+///
+/// A Hald level defines `axis = level * level` samples per channel and an image
+/// side of `level * axis`. The nested b/g/r loops emit pixels in Hald order,
+/// sample the RGBTable at each coordinate, bake optional profile adjustments,
+/// and append big-endian 16-bit RGB channels for the PNG encoder. Overflow
+/// checks keep impossible levels from allocating invalid buffers.
 pub fn write_hald_png_with_adjustments(
     table: &RgbTable,
     level: u32,

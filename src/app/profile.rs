@@ -15,6 +15,12 @@ pub(crate) struct ResolvedProfile {
     pub(crate) sharpening: SharpeningSettings,
 }
 
+/// Resolve a CLI profile selector into a concrete Hald file plus recipe metadata.
+///
+/// The selector can be a real path, an XMP profile/preset name under
+/// `profiles_root`, or a generated Hald name under `hald_dir`. XMP inputs may
+/// generate a temporary Hald and preserve grain/sharpening metadata; raw PNG
+/// Hald inputs have no attached recipe metadata, so they resolve with defaults.
 pub(crate) fn resolve_profile(args: &ApplyArgs, temp_dir: &Path) -> Result<ResolvedProfile> {
     let selector_path = Path::new(&args.profile);
     if selector_path.exists() {
@@ -46,6 +52,12 @@ pub(crate) fn resolve_profile(args: &ApplyArgs, temp_dir: &Path) -> Result<Resol
     );
 }
 
+/// Resolve an explicit profile path by extension.
+///
+/// PNG files are already usable Hald CLUTs and are returned directly. XMP files
+/// may be RGBTable profiles or presets that point at a Look, so they are sent
+/// through the XMP resolver. Other extensions are rejected early to make command
+/// failures clearer.
 fn profile_from_path(
     path: &Path,
     hald_level: u32,
@@ -66,6 +78,12 @@ fn profile_from_path(
     }
 }
 
+/// Resolve an XMP file to a temporary Hald and recipe settings.
+///
+/// If the XMP embeds an RGBTable it is the source profile. If it is a preset,
+/// the linked Look is resolved by UUID/name before conversion. The generated
+/// Hald is written into the caller's temp directory, grain comes from the preset
+/// recipe, and sharpening comes from the converted source profile metadata.
 fn profile_from_xmp(
     path: &Path,
     hald_level: u32,
@@ -98,6 +116,12 @@ fn profile_from_xmp(
     })
 }
 
+/// Find the RGBTable profile referenced by a preset recipe.
+///
+/// Presets often live near their referenced profiles, but users can also provide
+/// a profiles root. The search tries the configured root, the preset directory,
+/// and its parent, preferring exact Look UUID matches and falling back to Look
+/// name matches that must contain a real RGBTable.
 fn resolve_recipe_profile(
     recipe: &mini_film::XmpFilmRecipe,
     profiles_root: &Path,
@@ -141,6 +165,12 @@ fn find_xmp_by_name(root: &Path, name: &str) -> Result<Option<PathBuf>> {
     find_named_file(root, name, &["xmp"], false)
 }
 
+/// Find an RGBTable-bearing XMP profile by name.
+///
+/// The first pass uses the generic XMP name matcher. If that resolves to a
+/// preset rather than a profile, the second pass scans the tree for stems that
+/// normalize to the requested name after removing common `profile` suffixes, and
+/// validates candidates by parsing them for an embedded RGBTable.
 fn find_rgb_xmp_by_name(root: &Path, name: &str) -> Result<Option<PathBuf>> {
     let Some(candidate) = find_xmp_by_name(root, name)? else {
         return Ok(None);
@@ -182,6 +212,12 @@ fn find_rgb_xmp_by_name(root: &Path, name: &str) -> Result<Option<PathBuf>> {
     Ok(None)
 }
 
+/// Find an RGBTable-bearing profile whose XMP UUID matches a Look UUID.
+///
+/// The resolver walks XMP files recursively, ignores malformed files and presets
+/// without RGB tables, and returns the first profile whose parsed UUID equals
+/// the preset's linked Look UUID. This is the strongest preset-to-profile match
+/// because display names can collide or vary by vendor packaging.
 fn find_profile_by_uuid(root: &Path, uuid: &str) -> Result<Option<PathBuf>> {
     if !root.exists() {
         return Ok(None);
@@ -209,6 +245,12 @@ fn find_profile_by_uuid(root: &Path, uuid: &str) -> Result<Option<PathBuf>> {
     Ok(None)
 }
 
+/// Find a named file using normalized exact match with one fuzzy fallback.
+///
+/// Matching lowercases names, treats `_`, `-`, and `.` as spaces, and removes
+/// generated suffixes such as `hald` or `profile` before comparison. Exact
+/// normalized matches win; otherwise the first candidate containing the wanted
+/// normalized text is returned to support ergonomic profile-name selectors.
 fn find_named_file(
     root: &Path,
     name: &str,
