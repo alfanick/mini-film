@@ -1,0 +1,13 @@
+[package]
+name = "rgbtable2hald"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.98"
+clap = { version = "4.5.38", features = ["derive"] }
+flate2 = "1.1.1"
+png = "0.17.16"
+quick-xml = "0.37.5"
+sanitize-filename = "0.6.0"
+walkdir = "2.5.0"
