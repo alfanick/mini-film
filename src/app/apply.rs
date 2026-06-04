@@ -44,7 +44,7 @@ pub(crate) struct ApplyJob<'a> {
 /// Run the single-file apply command.
 ///
 /// This validates output/export options, creates a temporary workspace, resolves
-/// the selected profile into a Hald plus grain/sharpening metadata, applies any
+/// the selected profile into a Hald plus RawTherapee/grain metadata, applies any
 /// explicit grain override, chooses a deterministic-or-time-based seed, and then
 /// delegates the actual RAW/Hald/grain/export pipeline to `apply_resolved`.
 pub(crate) fn run_apply(args: ApplyArgs) -> Result<()> {
@@ -88,10 +88,10 @@ pub(crate) fn run_apply(args: ApplyArgs) -> Result<()> {
 /// Apply an already resolved profile to one RAW input.
 ///
 /// The function owns the processing graph. It develops RAW to TIFF with
-/// RawTherapee, applies the Hald and optional sharpening, eagerly removes
-/// temporary files, optionally renders grain in either 8-bit JPEG space or
-/// 16-bit TIFF space, and finally exports to the requested output format while
-/// updating progress bars for batch callers.
+/// RawTherapee, applies the Hald, eagerly removes temporary files, optionally
+/// renders grain in either 8-bit JPEG space or 16-bit TIFF space, and finally
+/// exports to the requested output format while updating progress bars for
+/// batch callers.
 pub(crate) fn apply_resolved(
     job: ApplyJob<'_>,
     resolved: &ResolvedProfile,
@@ -122,21 +122,18 @@ pub(crate) fn apply_resolved(
     };
 
     progress_step(progress, 1, "rawtherapee");
-    run_raw_develop(job.rawtherapee, job.raw, &intermediate, job.quiet)?;
-    progress_step(
-        progress,
-        2,
-        if resolved.sharpening.is_enabled() {
-            "hald/sharpen"
-        } else {
-            "hald"
-        },
-    );
+    run_raw_develop(
+        job.rawtherapee,
+        &resolved.rawtherapee_profiles,
+        job.raw,
+        &intermediate,
+        job.quiet,
+    )?;
+    progress_step(progress, 2, "hald");
     run_convert_depth(
         job.convert,
         &intermediate,
         &resolved.hald_path,
-        resolved.sharpening,
         &converted,
         (grain_enabled && jpeg_output).then_some(8),
     )?;

@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use mini_film::{
-    GrainSettings, HaldOptions, SharpeningSettings, convert_xmp_to_hald, extract_film_recipe,
-    profile_info_line,
+    GrainSettings, HaldOptions, convert_xmp_to_hald, extract_film_recipe, profile_info_line,
+    write_rawtherapee_profile,
 };
 use walkdir::WalkDir;
 
@@ -11,17 +11,17 @@ use crate::app::apply::ApplyArgs;
 
 pub(crate) struct ResolvedProfile {
     pub(crate) hald_path: PathBuf,
+    pub(crate) rawtherapee_profiles: Vec<PathBuf>,
     pub(crate) grain: GrainSettings,
-    pub(crate) sharpening: SharpeningSettings,
 }
 
 /// Resolve a CLI profile selector into a concrete Hald file plus recipe metadata.
 ///
 /// The selector can be a real path, an emulation XMP name under `emulations/`,
 /// or a generated Hald name under `hald_dir`. Emulation XMP inputs generate a
-/// temporary Hald from their linked internal RGBTable profile and preserve
-/// grain/sharpening metadata; raw PNG Hald inputs have no attached recipe
-/// metadata, so they resolve with defaults.
+/// temporary Hald from their linked internal RGBTable profile and may generate
+/// RawTherapee `.pp3` files for tone/color/sharpening metadata; raw PNG Hald
+/// inputs have no attached recipe metadata, so they resolve with defaults.
 pub(crate) fn resolve_profile(args: &ApplyArgs, temp_dir: &Path) -> Result<ResolvedProfile> {
     let selector_path = Path::new(&args.profile);
     if selector_path.exists() {
@@ -42,8 +42,8 @@ pub(crate) fn resolve_profile(args: &ApplyArgs, temp_dir: &Path) -> Result<Resol
     if let Some(path) = find_hald_by_name(&args.hald_dir, &args.profile)? {
         return Ok(ResolvedProfile {
             hald_path: path,
+            rawtherapee_profiles: Vec::new(),
             grain: GrainSettings::default(),
-            sharpening: SharpeningSettings::default(),
         });
     }
 
@@ -70,8 +70,8 @@ fn profile_from_path(
     match path.extension().and_then(|s| s.to_str()) {
         Some(ext) if ext.eq_ignore_ascii_case("png") => Ok(ResolvedProfile {
             hald_path: path.to_path_buf(),
+            rawtherapee_profiles: Vec::new(),
             grain: GrainSettings::default(),
-            sharpening: SharpeningSettings::default(),
         }),
         Some(ext) if ext.eq_ignore_ascii_case("xmp") => {
             profile_from_xmp(path, hald_level, profiles_root, temp_dir)
@@ -86,8 +86,8 @@ fn profile_from_path(
 /// User-facing XMPs are Lightroom emulation presets. The linked Look is resolved
 /// by UUID/name under the internal `profiles/` tree before conversion. The
 /// generated Hald is written into the caller's temp directory, grain comes from
-/// the emulation recipe, and sharpening comes from the converted source profile
-/// metadata.
+/// the emulation recipe, and supported tone/color/sharpening metadata is written
+/// as RawTherapee `.pp3` side profiles.
 pub(crate) fn profile_from_xmp(
     path: &Path,
     hald_level: u32,
@@ -136,10 +136,25 @@ fn profile_from_xmp_inner(
     if print_info {
         eprintln!("{}", profile_info_line(&converted));
     }
+    let mut rawtherapee_profiles = Vec::new();
+    if let Some(path) = write_rawtherapee_profile(
+        &temp_dir.join("source.pp3"),
+        &converted.adjustments,
+        converted.sharpening,
+    )? {
+        rawtherapee_profiles.push(path);
+    }
+    if let Some(path) = write_rawtherapee_profile(
+        &temp_dir.join("emulation.pp3"),
+        &recipe.adjustments,
+        recipe.sharpening,
+    )? {
+        rawtherapee_profiles.push(path);
+    }
     Ok(ResolvedProfile {
         hald_path: output,
+        rawtherapee_profiles,
         grain: recipe.grain,
-        sharpening: converted.sharpening,
     })
 }
 

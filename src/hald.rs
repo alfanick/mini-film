@@ -7,9 +7,7 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use walkdir::WalkDir;
 
-use crate::model::{
-    BatchSummary, ConvertedProfile, HaldOptions, ProfileAdjustments, RgbTable, XmpRgbTable,
-};
+use crate::model::{BatchSummary, ConvertedProfile, HaldOptions, RgbTable, XmpRgbTable};
 
 /// Convert one XMP file or a directory tree of XMP files to Hald PNGs.
 ///
@@ -122,8 +120,9 @@ pub fn try_convert_dir(
 ///
 /// The converter parses the XMP recipe, extracts the embedded RGBTable, decodes
 /// the Adobe base85/zlib payload, parses the binary table, and optionally writes
-/// a Hald image. Profile adjustments are baked into the Hald at generation time,
-/// while sharpening remains metadata because it is applied later by convert.
+/// a Hald image. The generated Hald contains only the RGBTable lookup; parsed
+/// tone/color/sharpening metadata is returned so callers can hand it to
+/// RawTherapee through a generated `.pp3` profile.
 pub fn convert_xmp_to_hald(
     input: &Path,
     output: &Path,
@@ -150,7 +149,7 @@ pub fn convert_xmp_to_hald(
             fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
         }
 
-        write_hald_png_with_adjustments(&table, options.hald_level, output, &recipe.adjustments)
+        write_hald_png(&table, options.hald_level, output)
             .with_context(|| format!("writing {}", output.display()))?;
     }
 
@@ -177,9 +176,10 @@ pub fn profile_display_name(input: &Path, profile: &XmpRgbTable) -> String {
 /// Format a detailed metadata line for a converted profile.
 ///
 /// The output includes human-readable profile identity plus table dimensions,
-/// primaries/gamma/gamut, amount range, flags, and markers for baked adjustments
-/// or enabled sharpening. Keeping this centralized makes `hald --info-only` and
-/// conversion logs report the same facts.
+/// primaries/gamma/gamut, amount range, flags, and markers for adjustments or
+/// sharpening that should be forwarded to RawTherapee through generated `.pp3`
+/// files. Keeping this centralized makes `hald --info-only` and conversion logs
+/// report the same facts.
 pub fn profile_info_line(converted: &ConvertedProfile) -> String {
     let display_name = profile_display_name(&converted.input, &converted.profile);
     format!(
@@ -208,10 +208,10 @@ pub fn profile_info_line(converted: &ConvertedProfile) -> String {
         if converted.adjustments.is_default() {
             ""
         } else {
-            " adjustments=baked"
+            " adjustments=pp3"
         },
         if converted.sharpening.is_enabled() {
-            " sharpening=enabled"
+            " sharpening=pp3"
         } else {
             ""
         }
@@ -219,21 +219,28 @@ pub fn profile_info_line(converted: &ConvertedProfile) -> String {
 }
 
 pub fn write_hald_png(table: &RgbTable, level: u32, path: &Path) -> Result<()> {
-    write_hald_png_with_adjustments(table, level, path, &ProfileAdjustments::default())
+    write_hald_png_with_adjustments(
+        table,
+        level,
+        path,
+        &crate::model::ProfileAdjustments::default(),
+    )
 }
 
 /// Write a 16-bit RGB Hald CLUT PNG from an RGBTable.
 ///
 /// A Hald level defines `axis = level * level` samples per channel and an image
 /// side of `level * axis`. The nested b/g/r loops emit pixels in Hald order,
-/// sample the RGBTable at each coordinate, bake optional profile adjustments,
-/// and append big-endian 16-bit RGB channels for the PNG encoder. Overflow
-/// checks keep impossible levels from allocating invalid buffers.
+/// sample the RGBTable at each coordinate, and append big-endian 16-bit RGB
+/// channels for the PNG encoder. Overflow checks keep impossible levels from
+/// allocating invalid buffers. The adjustment argument is retained for API
+/// compatibility but intentionally ignored: tone/color settings now belong in
+/// generated RawTherapee `.pp3` profiles, not in the Hald.
 pub fn write_hald_png_with_adjustments(
     table: &RgbTable,
     level: u32,
     path: &Path,
-    adjustments: &ProfileAdjustments,
+    _adjustments: &crate::model::ProfileAdjustments,
 ) -> Result<()> {
     validate_hald_level(level)?;
 
@@ -253,7 +260,6 @@ pub fn write_hald_png_with_adjustments(
         for g in 0..axis {
             for r in 0..axis {
                 let rgb = crate::rgb_table::sample_table(table, r, g, b, axis);
-                let rgb = crate::adjustments::apply_profile_adjustments(rgb, adjustments);
                 for channel in rgb {
                     data.extend_from_slice(&channel.to_be_bytes());
                 }

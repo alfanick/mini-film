@@ -1,0 +1,371 @@
+use std::{
+    fmt::Write as _,
+    fs,
+    path::{Path, PathBuf},
+};
+
+use anyhow::{Context, Result};
+
+use crate::model::{ProfileAdjustments, SharpeningSettings};
+
+/// Write a partial RawTherapee processing profile for XMP-side image settings.
+///
+/// RawTherapee `.pp3` files can be incomplete and are layered by
+/// `rawtherapee-cli` in command-line order. This writer only emits sections for
+/// Lightroom/Camera Raw settings that mini-film has parsed from XMP and that are
+/// better handled by RawTherapee's image pipeline than by a Hald CLUT. The Hald
+/// remains limited to the RGBTable lookup, while RawTherapee receives tone,
+/// color, curve, and sharpening approximations before mini-film applies the
+/// Hald and grain.
+pub fn write_rawtherapee_profile(
+    path: &Path,
+    adjustments: &ProfileAdjustments,
+    sharpening: SharpeningSettings,
+) -> Result<Option<PathBuf>> {
+    if adjustments.is_default() && !sharpening.is_enabled() {
+        return Ok(None);
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+    let text = rawtherapee_profile_text(adjustments, sharpening);
+    fs::write(path, text).with_context(|| format!("writing {}", path.display()))?;
+    Ok(Some(path.to_path_buf()))
+}
+
+/// Render a RawTherapee `.pp3` string from parsed Lightroom-style settings.
+///
+/// The generated profile is deliberately partial. `rawtherapee-cli -p` starts
+/// from neutral/default values and applies the keys present here, so mini-film
+/// does not need to clone RawTherapee's full profile schema. Basic Lightroom
+/// sliders map to RawTherapee's Exposure tool where there are direct controls;
+/// point and parametric curves become RT curve data; HSL/calibration sliders are
+/// represented as hue-relative Lab curves; and Lightroom sharpening becomes RT
+/// capture sharpening/unsharp settings. Unsupported or weakly-known Lightroom
+/// controls are left out instead of being baked into the Hald.
+pub fn rawtherapee_profile_text(
+    adjustments: &ProfileAdjustments,
+    sharpening: SharpeningSettings,
+) -> String {
+    let mut out = String::new();
+
+    write_exposure_section(&mut out, adjustments);
+    write_luminance_section(&mut out, adjustments);
+    write_color_curve_section(&mut out, adjustments);
+    write_vibrance_section(&mut out, adjustments);
+    write_sharpening_section(&mut out, sharpening);
+    write_color_management_section(&mut out);
+    write_raw_section(&mut out);
+
+    out
+}
+
+fn write_exposure_section(out: &mut String, adjustments: &ProfileAdjustments) {
+    let _ = writeln!(out, "[Exposure]");
+    let _ = writeln!(out, "Auto=false");
+    let _ = writeln!(out, "Clip=0.02");
+    let _ = writeln!(out, "Compensation={}", fmt_f32(adjustments.exposure));
+    let _ = writeln!(out, "Brightness={}", fmt_f32(adjustments.whites * 0.5));
+    let _ = writeln!(out, "Contrast={}", fmt_f32(adjustments.contrast));
+    let _ = writeln!(out, "Saturation={}", fmt_f32(adjustments.saturation));
+    let _ = writeln!(out, "Black={}", fmt_f32(-adjustments.blacks));
+    let _ = writeln!(
+        out,
+        "HighlightCompr={}",
+        fmt_f32((-adjustments.highlights).clamp(0.0, 100.0))
+    );
+    let _ = writeln!(
+        out,
+        "ShadowCompr={}",
+        fmt_f32(adjustments.shadows.clamp(0.0, 100.0))
+    );
+    let _ = writeln!(out, "HighlightComprThreshold=0");
+    let _ = writeln!(out, "CurveFromHistogramMatching=false");
+    let _ = writeln!(out, "CurveMode=Standard");
+    let _ = writeln!(out, "CurveMode2=Standard");
+    let _ = writeln!(
+        out,
+        "Curve={}",
+        rt_curve(&adjustments.tone_curve.composite, 255.0)
+    );
+    let _ = writeln!(out, "Curve2=0;");
+    let _ = writeln!(out);
+}
+
+fn write_luminance_section(out: &mut String, adjustments: &ProfileAdjustments) {
+    let curve = parametric_curve(adjustments);
+    let enabled = adjustments.clarity != 0.0 || curve != "0;";
+
+    let _ = writeln!(out, "[Luminance Curve]");
+    let _ = writeln!(out, "Enabled={enabled}");
+    let _ = writeln!(out, "Brightness=0");
+    let _ = writeln!(out, "Contrast={}", fmt_f32(adjustments.clarity));
+    let _ = writeln!(out, "Chromaticity=0");
+    let _ = writeln!(out, "AvoidColorShift=false");
+    let _ = writeln!(out, "RedAndSkinTonesProtection=0");
+    let _ = writeln!(out, "LCredsk=true");
+    let _ = writeln!(out, "LCurve={curve}");
+    let _ = writeln!(out, "aCurve=0;");
+    let _ = writeln!(out, "bCurve=0;");
+    let _ = writeln!(out, "ccCurve=0;");
+    let _ = writeln!(out, "chCurve={}", hue_curve(&adjustments.hsl.hue, 0.30));
+    let _ = writeln!(
+        out,
+        "lhCurve={}",
+        hue_curve(&adjustments.hsl.luminance, 0.01)
+    );
+    let _ = writeln!(out, "hhCurve=0;");
+    let _ = writeln!(out, "LcCurve=0;");
+    let _ = writeln!(out, "ClCurve=0;");
+    let _ = writeln!(out);
+}
+
+fn write_color_curve_section(out: &mut String, adjustments: &ProfileAdjustments) {
+    let red = rt_curve(&adjustments.tone_curve.red, 255.0);
+    let green = rt_curve(&adjustments.tone_curve.green, 255.0);
+    let blue = rt_curve(&adjustments.tone_curve.blue, 255.0);
+
+    let _ = writeln!(out, "[RGB Curves]");
+    let _ = writeln!(out, "LumaMode=false");
+    let _ = writeln!(out, "rCurve={red}");
+    let _ = writeln!(out, "gCurve={green}");
+    let _ = writeln!(out, "bCurve={blue}");
+    let _ = writeln!(out);
+}
+
+fn write_vibrance_section(out: &mut String, adjustments: &ProfileAdjustments) {
+    let has_hsl_saturation = adjustments.hsl.saturation.iter().any(|value| *value != 0.0);
+    let has_calibration = adjustments.calibration.red_hue != 0.0
+        || adjustments.calibration.red_saturation != 0.0
+        || adjustments.calibration.green_hue != 0.0
+        || adjustments.calibration.green_saturation != 0.0
+        || adjustments.calibration.blue_hue != 0.0
+        || adjustments.calibration.blue_saturation != 0.0;
+    let enabled = adjustments.vibrance != 0.0 || has_hsl_saturation || has_calibration;
+    let saturated = adjustments.vibrance + average(&adjustments.hsl.saturation);
+    let pastels = adjustments.vibrance * 0.75;
+    let calibration_sat = (adjustments.calibration.red_saturation
+        + adjustments.calibration.green_saturation
+        + adjustments.calibration.blue_saturation)
+        / 3.0;
+    let hue_shift = (adjustments.calibration.red_hue
+        + adjustments.calibration.green_hue
+        + adjustments.calibration.blue_hue)
+        / 3.0;
+
+    if !enabled {
+        return;
+    }
+
+    let _ = writeln!(out, "[Vibrance]");
+    let _ = writeln!(out, "Enabled=true");
+    let _ = writeln!(out, "Pastels={}", fmt_f32(pastels + calibration_sat * 0.25));
+    let _ = writeln!(
+        out,
+        "Saturated={}",
+        fmt_f32(saturated + calibration_sat * 0.25)
+    );
+    let _ = writeln!(out, "ProtectSkins=false");
+    let _ = writeln!(out, "AvoidColorShift=true");
+    let _ = writeln!(out, "SkinTonesCurve={}", calibration_curve(hue_shift));
+    let _ = writeln!(out);
+}
+
+fn write_sharpening_section(out: &mut String, sharpening: SharpeningSettings) {
+    let _ = writeln!(out, "[Sharpening]");
+    let _ = writeln!(out, "Enabled={}", sharpening.is_enabled());
+    if sharpening.is_enabled() {
+        let _ = writeln!(out, "Method=usm");
+        let _ = writeln!(out, "Radius={}", fmt_f32(sharpening.radius.clamp(0.1, 3.0)));
+        let _ = writeln!(
+            out,
+            "Amount={}",
+            fmt_f32(sharpening.amount.clamp(0.0, 150.0))
+        );
+        let _ = writeln!(
+            out,
+            "Threshold={}",
+            fmt_f32(sharpening.masking.clamp(0.0, 100.0) / 100.0)
+        );
+        let _ = writeln!(out, "OnlyEdges=false");
+        let _ = writeln!(out, "EdgedetectionRadius=1.9");
+        let _ = writeln!(
+            out,
+            "EdgeTolerance={}",
+            fmt_f32(sharpening.detail.clamp(0.0, 100.0))
+        );
+        let _ = writeln!(out, "HalocontrolEnabled=true");
+        let _ = writeln!(out, "HalocontrolAmount=50");
+    }
+    let _ = writeln!(out);
+}
+
+fn write_color_management_section(out: &mut String) {
+    let _ = writeln!(out, "[Color Management]");
+    let _ = writeln!(out, "ToneCurve=false");
+    let _ = writeln!(out, "ApplyLookTable=true");
+    let _ = writeln!(out, "ApplyBaselineExposureOffset=true");
+    let _ = writeln!(out, "ApplyHueSatMap=true");
+    let _ = writeln!(out, "DCPIlluminant=0");
+    let _ = writeln!(out);
+}
+
+fn write_raw_section(out: &mut String) {
+    let _ = writeln!(out, "[RAW]");
+    let _ = writeln!(out, "CA=true");
+    let _ = writeln!(out);
+}
+
+fn rt_curve(points: &[(f32, f32)], scale: f32) -> String {
+    if curve_is_identity(points) {
+        return "0;".to_string();
+    }
+
+    let mut normalized = points.to_vec();
+    normalized.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut curve = String::from("3;");
+    for (x, y) in normalized {
+        let _ = write!(
+            curve,
+            "{};{};",
+            fmt_f32((x / scale).clamp(0.0, 1.0)),
+            fmt_f32((y / scale).clamp(0.0, 1.0))
+        );
+    }
+    curve
+}
+
+fn parametric_curve(adjustments: &ProfileAdjustments) -> String {
+    let tone = adjustments.parametric;
+    if tone.shadows == 0.0
+        && tone.darks == 0.0
+        && tone.lights == 0.0
+        && tone.highlights == 0.0
+        && tone.shadow_split == 25.0
+        && tone.midtone_split == 50.0
+        && tone.highlight_split == 75.0
+    {
+        return "0;".to_string();
+    }
+
+    let points = [
+        (0.0, 0.0 + tone.shadows / 100.0 * 0.25),
+        (
+            (tone.shadow_split / 100.0).clamp(0.0, 1.0),
+            tone.darks / 100.0 * 0.20 + tone.shadows / 100.0 * 0.10,
+        ),
+        (
+            (tone.midtone_split / 100.0).clamp(0.0, 1.0),
+            tone.darks / 100.0 * 0.10 + tone.lights / 100.0 * 0.10,
+        ),
+        (
+            (tone.highlight_split / 100.0).clamp(0.0, 1.0),
+            tone.lights / 100.0 * 0.20 + tone.highlights / 100.0 * 0.10,
+        ),
+        (1.0, 1.0 + tone.highlights / 100.0 * 0.25),
+    ];
+
+    let mut curve = String::from("3;");
+    for (x, delta) in points {
+        let y = (x + delta).clamp(0.0, 1.0);
+        let _ = write!(curve, "{};{};", fmt_f32(x), fmt_f32(y));
+    }
+    curve
+}
+
+fn hue_curve(values: &[f32; 8], scale: f32) -> String {
+    if values.iter().all(|value| *value == 0.0) {
+        return "0;".to_string();
+    }
+
+    let centers = [0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 280.0, 320.0];
+    let mut curve = String::from("3;");
+    for (center, value) in centers.iter().zip(values) {
+        let x = center / 360.0;
+        let y = (0.5 + value * scale).clamp(0.0, 1.0);
+        let _ = write!(curve, "{};{};", fmt_f32(x), fmt_f32(y));
+    }
+    curve
+}
+
+fn calibration_curve(hue_shift: f32) -> String {
+    if hue_shift == 0.0 {
+        "0;".to_string()
+    } else {
+        let y = (0.5 + hue_shift / 360.0).clamp(0.0, 1.0);
+        format!("3;0;{};1;{};", fmt_f32(y), fmt_f32(y))
+    }
+}
+
+fn average(values: &[f32; 8]) -> f32 {
+    values.iter().sum::<f32>() / values.len() as f32
+}
+
+fn curve_is_identity(points: &[(f32, f32)]) -> bool {
+    points.is_empty() || points.iter().all(|(x, y)| (*x - *y).abs() < f32::EPSILON)
+}
+
+fn fmt_f32(value: f32) -> String {
+    let mut value = format!("{value:.6}");
+    while value.contains('.') && value.ends_with('0') {
+        value.pop();
+    }
+    if value.ends_with('.') {
+        value.pop();
+    }
+    value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{ParametricTone, ProfileAdjustments};
+
+    #[test]
+    fn neutral_profile_has_disabled_curves_and_sharpening() {
+        let profile = rawtherapee_profile_text(
+            &ProfileAdjustments::default(),
+            SharpeningSettings::default(),
+        );
+        assert!(profile.contains("[Exposure]\n"));
+        assert!(profile.contains("Curve=0;\n"));
+        assert!(profile.contains("[Sharpening]\nEnabled=false\n"));
+    }
+
+    #[test]
+    fn adjusted_profile_contains_rt_tone_and_color_keys() {
+        let adjustments = ProfileAdjustments {
+            exposure: 0.5,
+            contrast: 20.0,
+            highlights: -30.0,
+            shadows: 40.0,
+            whites: 10.0,
+            blacks: -5.0,
+            vibrance: 25.0,
+            parametric: ParametricTone {
+                shadows: -10.0,
+                darks: 5.0,
+                lights: 7.0,
+                highlights: -3.0,
+                ..ParametricTone::default()
+            },
+            ..ProfileAdjustments::default()
+        };
+        let sharpening = SharpeningSettings {
+            present: true,
+            amount: 40.0,
+            radius: 1.2,
+            detail: 20.0,
+            masking: 10.0,
+        };
+
+        let profile = rawtherapee_profile_text(&adjustments, sharpening);
+        assert!(profile.contains("Compensation=0.5\n"));
+        assert!(profile.contains("HighlightCompr=30\n"));
+        assert!(profile.contains("ShadowCompr=40\n"));
+        assert!(profile.contains("[Vibrance]\nEnabled=true\n"));
+        assert!(profile.contains("[Sharpening]\nEnabled=true\n"));
+        assert!(profile.contains("Amount=40\n"));
+    }
+}

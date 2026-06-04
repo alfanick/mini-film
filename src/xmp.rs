@@ -272,10 +272,11 @@ fn parse_adjustment_attr(
 
 /// Parse one Lightroom sharpening attribute into sharpening settings.
 ///
-/// Sharpening is not baked into the Hald because ImageMagick can apply it to the
-/// developed image after the LUT. The parser marks sharpening as present when
-/// any relevant field appears, then stores amount/radius/detail/masking so the
-/// export layer can translate them to `convert -unsharp`.
+/// Sharpening is not baked into the Hald because it is spatial, and it is not
+/// applied by ImageMagick because RawTherapee has a native sharpening stage.
+/// The parser marks sharpening as present when any relevant field appears, then
+/// stores amount/radius/detail/masking so the generated `.pp3` can pass an
+/// approximation to RawTherapee.
 fn parse_sharpening_attr(
     sharpening: &mut SharpeningSettings,
     key: &str,

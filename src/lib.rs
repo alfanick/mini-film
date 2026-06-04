@@ -2,6 +2,7 @@ mod adjustments;
 mod grain;
 mod hald;
 mod model;
+mod pp3;
 mod rgb_table;
 mod xmp;
 
@@ -15,5 +16,6 @@ pub use model::{
     HslAdjustments, ParametricTone, ProfileAdjustments, RgbTable, SharpeningSettings, ToneCurves,
     XmpFilmRecipe, XmpRgbTable,
 };
+pub use pp3::{rawtherapee_profile_text, write_rawtherapee_profile};
 pub use rgb_table::{decode_rgb_table, parse_rgb_table};
 pub use xmp::{extract_film_recipe, extract_rgb_table};

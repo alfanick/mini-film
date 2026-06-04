@@ -1,31 +1,9 @@
 use std::{fs, path::Path, process::Command};
 
 use anyhow::{Context, Result, bail};
-use mini_film::SharpeningSettings;
 
 use crate::app::util::cpu_thread_count;
 use crate::cli::ExportOptions;
-
-/// Translate Lightroom sharpening settings to a convert `-unsharp` argument.
-///
-/// ImageMagick/GraphicsMagick does not expose Lightroom's exact sharpening
-/// model, so the conversion clamps Lightroom amount/radius/detail/masking into
-/// a conservative unsharp mask. Radius maps directly, detail increases sigma,
-/// amount becomes the gain, and masking becomes a small threshold to avoid
-/// sharpening flat areas too aggressively.
-pub(crate) fn add_sharpening_args(command: &mut Command, sharpening: SharpeningSettings) {
-    if !sharpening.is_enabled() {
-        return;
-    }
-
-    let radius = sharpening.radius.clamp(0.1, 3.0);
-    let sigma = (radius * (0.65 + sharpening.detail.clamp(0.0, 100.0) / 250.0)).clamp(0.1, 3.5);
-    let amount = (sharpening.amount.clamp(0.0, 150.0) / 100.0).clamp(0.0, 1.5);
-    let threshold = (sharpening.masking.clamp(0.0, 100.0) / 1000.0).clamp(0.0, 0.1);
-    command
-        .arg("-unsharp")
-        .arg(format!("{radius:.2}x{sigma:.2}+{amount:.2}+{threshold:.3}"));
-}
 
 /// Run the final convert invocation that writes the user-facing output.
 ///

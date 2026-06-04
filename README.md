@@ -5,7 +5,7 @@
 It can:
 
 - convert Adobe Camera Raw / Lightroom `crs:RGBTable` profile XMPs to 16-bit Hald CLUT PNGs
-- bake profile-side Camera Raw tone/color adjustments into generated Hald CLUTs
+- generate RawTherapee `.pp3` profiles for supported Camera Raw tone/color/sharpening adjustments
 - develop a RAW file with `rawtherapee-cli`
 - apply a Hald CLUT with GraphicsMagick/ImageMagick `convert`
 - read Lightroom preset XMPs that reference a profile and define grain
@@ -37,7 +37,7 @@ Convert all profile XMPs under the parent directory:
 cargo run --release -- hald /home/alfanick/Pictures/RNI/profiles -o ../hald --overwrite
 ```
 
-The ordinary RNI preset XMPs usually only reference a profile UUID and do not contain the table payload; `hald` skips those in directory mode. Profile XMPs that include extra Camera Raw settings print `adjustments=baked`; those settings are folded into the generated Hald along with the RGB table.
+The ordinary RNI preset XMPs usually only reference a profile UUID and do not contain the table payload; `hald` skips those in directory mode. Hald PNGs contain only the decoded RGBTable lookup. Profile XMPs that include extra Camera Raw settings print `adjustments=pp3` or `sharpening=pp3`; those settings are handled through generated RawTherapee profiles during `apply`, `batch`, and `sampler`.
 
 ## Apply A Complete Film Recipe
 
@@ -88,7 +88,7 @@ The output directory is created if it does not exist. Nested input folders are p
 `batch` shows two progress bars:
 
 - total batch progress across files
-- current file progress across RAW decode, Hald/sharpening, grain, and JPEG export steps
+- current file progress across RAW decode, Hald, grain, and JPEG export steps
 
 ## Profile Sampler Contact Sheet
 
@@ -101,7 +101,7 @@ cargo run --release -- sampler \
   --output /home/alfanick/profile-sampler.jpg
 ```
 
-`sampler` develops the RAW once, renders one thumbnail per XMP file from `emulations/`, and uses `montage` to build a contact sheet with six thumbnails per row. Each label is relative to the emulation directory. Thumbnail longest edge defaults to 512 px:
+`sampler` renders one thumbnail per XMP file from `emulations/` and uses `montage` to build a contact sheet with six thumbnails per row. Each thumbnail is developed with its profile-specific generated RawTherapee `.pp3` files before the Hald and grain stages. Each label is relative to the emulation directory. Thumbnail longest edge defaults to 512 px:
 
 ```sh
 --thumbnail-long-edge 768
@@ -155,13 +155,11 @@ JPEG subsampling values:
 - an emulation name, searched under `emulations/`
 - a generated Hald name, searched under `--hald-dir`
 
-RGBTable XMPs under `profiles/` are internal lookup tables. `apply`, `batch`, and `sampler` do not use them as user-facing emulations; they are only used to resolve linked `crs:Look` UUID/name references from emulation XMPs. `mini-film` generates a temporary Hald from the linked profile, applies it, then applies the emulation grain settings.
+RGBTable XMPs under `profiles/` are internal lookup tables. `apply`, `batch`, and `sampler` do not use them as user-facing emulations; they are only used to resolve linked `crs:Look` UUID/name references from emulation XMPs. `mini-film` generates a temporary Hald from the linked profile, generates temporary RawTherapee `.pp3` files for supported XMP adjustments, applies the Hald, then applies the emulation grain settings.
 
-## Profile Adjustments
+## Processing Split
 
-Linked profile XMPs can contain more than `crs:RGBTable`. `mini-film` bakes supported profile-side adjustments into the Hald so `convert -hald-clut` applies the whole color recipe in one pass.
-
-Supported as CLUT adjustments:
+RawTherapee handles:
 
 - `Exposure2012`, `Contrast2012`, `Highlights2012`, `Shadows2012`, `Whites2012`, `Blacks2012`
 - `Saturation`, `Vibrance`
@@ -169,18 +167,29 @@ Supported as CLUT adjustments:
 - `ParametricShadows/Darks/Lights/Highlights` and split points
 - HSL `HueAdjustment*`, `SaturationAdjustment*`, `LuminanceAdjustment*`
 - calibration-style `RedHue/RedSaturation`, `GreenHue/GreenSaturation`, `BlueHue/BlueSaturation`
-- `Clarity2012` as a global midtone contrast approximation
-- profile sharpening fields as a spatial `convert -unsharp` pass after Hald application:
+- `Clarity2012` as a RawTherapee luminance-contrast approximation
+- profile sharpening fields in generated `.pp3` files:
   `Sharpness`, `SharpenRadius`, `SharpenDetail`, `SharpenEdgeMasking`
 
-Texture is not faithfully representable in a Hald CLUT and is not applied. Sharpening is applied outside the Hald because it is spatial; the mapping to `convert -unsharp` is approximate.
+mini-film internally handles:
+
+- resolving emulation XMPs to internal RGBTable XMPs under `profiles/`
+- decoding RGBTable payloads and generating RGBTable-only Hald PNGs
+- procedural grain from Lightroom grain fields
+
+ImageMagick/GraphicsMagick `convert` handles:
+
+- applying the Hald with `-hald-clut`
+- final resize, bit depth, metadata stripping, JPEG quality/subsampling, progressive JPEG, and TIFF/JPEG encoding
+
+`montage` handles only the sampler contact sheet assembly and labels. Texture is not faithfully mapped yet.
 
 ## RAW Development
 
 `mini-film` uses RawTherapee as its only RAW engine. It renders a 16-bit TIFF intermediate with:
 
 ```sh
-rawtherapee-cli -q -Y -o intermediate.tif -t -b16 -c input.RAW
+rawtherapee-cli -q -Y [-p generated.pp3 ...] -o intermediate.tif -t -b16 -c input.RAW
 ```
 
 Use a non-default RawTherapee binary path with:
@@ -225,4 +234,4 @@ or use a preset:
 
 ## Caveat
 
-This does not fully clone Adobe Camera Raw. It decodes and applies the profile RGB table, bakes supported profile tone/color fields into the Hald, uses RawTherapee for RAW development, and emulates Lightroom grain. Adobe-specific tone mapping, local contrast, sharpening, and camera matching may still differ.
+This does not fully clone Adobe Camera Raw. It decodes and applies the profile RGB table, maps supported profile tone/color/sharpening fields into generated RawTherapee `.pp3` files, uses RawTherapee for RAW development, and emulates Lightroom grain. Adobe-specific tone mapping, local contrast, sharpening, and camera matching may still differ.

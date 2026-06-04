@@ -1,13 +1,12 @@
 use std::{
     fs,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 
 use anyhow::{Context, Result, bail};
-use mini_film::SharpeningSettings;
 
-use crate::app::export::{add_convert_thread_limit, add_sharpening_args};
+use crate::app::export::add_convert_thread_limit;
 
 /// Develop one RAW file with RawTherapee.
 ///
@@ -16,11 +15,12 @@ use crate::app::export::{add_convert_thread_limit, add_sharpening_args};
 /// stdout/stderr to keep progress output readable.
 pub(crate) fn run_raw_develop(
     rawtherapee: &Path,
+    profiles: &[PathBuf],
     raw: &Path,
     output_tiff: &Path,
     quiet: bool,
 ) -> Result<()> {
-    run_rawtherapee(rawtherapee, raw, output_tiff, quiet)
+    run_rawtherapee(rawtherapee, profiles, raw, output_tiff, quiet)
 }
 
 /// Invoke RawTherapee CLI and require it to create the requested TIFF.
@@ -29,15 +29,23 @@ pub(crate) fn run_raw_develop(
 /// pipeline steps, so this wrapper creates the destination directory, requests
 /// overwrite, TIFF output, and 16-bit depth, optionally silences logs for batch,
 /// then checks both process status and actual output-file existence.
-fn run_rawtherapee(rawtherapee: &Path, raw: &Path, output_tiff: &Path, quiet: bool) -> Result<()> {
+fn run_rawtherapee(
+    rawtherapee: &Path,
+    profiles: &[PathBuf],
+    raw: &Path,
+    output_tiff: &Path,
+    quiet: bool,
+) -> Result<()> {
     if let Some(parent) = output_tiff.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
 
     let mut command = Command::new(rawtherapee);
+    command.arg("-q").arg("-Y");
+    for profile in profiles {
+        command.arg("-p").arg(profile);
+    }
     command
-        .arg("-q")
-        .arg("-Y")
         .arg("-o")
         .arg(output_tiff)
         .arg("-t")
@@ -64,18 +72,16 @@ fn run_rawtherapee(rawtherapee: &Path, raw: &Path, output_tiff: &Path, quiet: bo
     Ok(())
 }
 
-/// Run convert for Hald application, optional sharpening, and optional depth.
+/// Run convert for Hald application and optional depth.
 ///
 /// This is the non-streaming convert pass used after RawTherapee or when grain
 /// requires an intermediate image. It limits convert threads to CPU count,
-/// applies `-hald-clut`, appends ImageMagick sharpening arguments when present,
-/// optionally forces depth for JPEG-bound 8-bit grain, and writes the requested
-/// intermediate output.
+/// applies `-hald-clut`, optionally forces depth for JPEG-bound 8-bit grain,
+/// and writes the requested intermediate output.
 pub(crate) fn run_convert_depth(
     convert: &Path,
     input_tiff: &Path,
     hald: &Path,
-    sharpening: SharpeningSettings,
     output: &Path,
     depth: Option<u8>,
 ) -> Result<()> {
@@ -86,7 +92,6 @@ pub(crate) fn run_convert_depth(
     let mut command = Command::new(convert);
     add_convert_thread_limit(&mut command);
     command.arg(input_tiff).arg("-hald-clut").arg(hald);
-    add_sharpening_args(&mut command, sharpening);
     if let Some(depth) = depth {
         command.arg("-depth").arg(depth.to_string());
     }

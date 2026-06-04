@@ -51,11 +51,11 @@ struct SamplerProgress {
 
 /// Render a labeled contact sheet showing every resolvable XMP profile.
 ///
-/// The sampler develops the RAW once to a neutral 16-bit TIFF, then reuses that
-/// intermediate for every profile. Each XMP is resolved to a temporary Hald,
-/// applied to the shared base TIFF, optionally grained, resized to a thumbnail,
-/// and finally passed to `montage` with the complete profile path as the label
-/// below the image.
+/// Each XMP is resolved to a temporary Hald plus generated RawTherapee `.pp3`
+/// profiles. The RAW is developed per profile so RawTherapee-side tone/color
+/// settings are reflected in the thumbnail, then mini-film applies the Hald,
+/// optional grain, final thumbnail sizing, and finally passes everything to
+/// `montage` with a relative profile path as the label below the image.
 pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
     validate_sampler_args(&args)?;
 
@@ -66,7 +66,6 @@ pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
     }
 
     let temp_dir = Builder::new().prefix("mini-film-sampler-").tempdir()?;
-    let base_tiff = temp_dir.path().join("base.tif");
     let base_seed = args.grain_seed.unwrap_or_else(time_of_day_seed);
     let export = ExportOptions {
         jpg_quality: args.jpg_quality,
@@ -82,14 +81,7 @@ pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
     let multi = MultiProgress::new();
     let sampler = multi.add(ProgressBar::new(profiles.len() as u64));
     sampler.set_style(sampler_progress_style());
-    sampler.set_message("raw develop");
-    let raw_progress = multi.add(ProgressBar::new(5));
-    raw_progress.set_style(profile_progress_style());
-    raw_progress.set_message("rawtherapee");
-
-    run_raw_develop(&args.rawtherapee, &args.raw, &base_tiff, true)?;
-    raw_progress.set_position(5);
-    raw_progress.finish_and_clear();
+    sampler.set_message("starting");
 
     let started = Instant::now();
     let workers: Vec<_> = (0..SAMPLER_PARALLEL_PROFILES)
@@ -133,7 +125,6 @@ pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
                     let result = render_profile_thumbnail(
                         &args,
                         temp_dir.path(),
-                        &base_tiff,
                         profile,
                         &emulation_root,
                         index,
@@ -273,7 +264,6 @@ fn emulation_root(root: &Path) -> PathBuf {
 fn render_profile_thumbnail(
     args: &SamplerArgs,
     temp_root: &Path,
-    base_tiff: &Path,
     profile: &Path,
     emulation_root: &Path,
     index: usize,
@@ -289,19 +279,28 @@ fn render_profile_thumbnail(
     let resolved =
         profile_from_xmp_quiet(profile, args.hald_level, &args.profiles_root, &profile_temp)
             .with_context(|| format!("resolving profile {}", profile.display()))?;
+    let developed = profile_temp.join("rawtherapee.tif");
+    sampler_step(progress, 2, "rawtherapee");
+    run_raw_develop(
+        &args.rawtherapee,
+        &resolved.rawtherapee_profiles,
+        &args.raw,
+        &developed,
+        true,
+    )?;
     let converted = profile_temp.join("converted-8.ppm");
-    sampler_step(progress, 2, "hald");
+    sampler_step(progress, 3, "hald");
     run_convert_depth(
         &args.convert,
-        base_tiff,
+        &developed,
         &resolved.hald_path,
-        resolved.sharpening,
         &converted,
         Some(8),
     )?;
+    remove_temp_file(&developed)?;
 
     let source = if !args.no_grain && resolved.grain.is_enabled() {
-        sampler_step(progress, 3, "grain");
+        sampler_step(progress, 4, "grain");
         let grained = profile_temp.join("grained-8.ppm");
         apply_grain_8bit(
             &converted,
@@ -312,11 +311,11 @@ fn render_profile_thumbnail(
         remove_temp_file(&converted)?;
         grained
     } else {
-        sampler_step(progress, 3, "grain skipped");
+        sampler_step(progress, 4, "grain skipped");
         converted
     };
 
-    sampler_step(progress, 4, "thumbnail");
+    sampler_step(progress, 5, "thumbnail");
     let thumb = profile_temp.join("thumb.jpg");
     finalize_output(&args.convert, &source, &thumb, export)?;
     remove_temp_file(&source)?;
