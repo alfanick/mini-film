@@ -7,6 +7,7 @@ use clap::Parser;
 use crate::app::apply::{ApplyArgs, run_apply};
 use crate::app::batch::{BatchArgs, run_batch};
 use crate::app::run_hald;
+use crate::app::sampler::{SamplerArgs, run_sampler};
 use crate::app::util::configure_threads;
 use crate::cli::{Cli, CommandKind, ExportOptions};
 
@@ -135,6 +136,43 @@ fn main() -> Result<()> {
                 strip_metadata,
                 progressive_jpeg,
             },
+        }),
+        CommandKind::Sampler {
+            raw,
+            output,
+            profiles_root,
+            hald_level,
+            dcraw_args,
+            raw_engine,
+            rawtherapee,
+            camera_profile,
+            dcraw,
+            convert,
+            montage,
+            no_grain,
+            grain_seed,
+            thumbnail_long_edge,
+            jpg_quality,
+            jpeg_subsampling,
+            strip_metadata,
+        } => run_sampler(SamplerArgs {
+            raw,
+            output,
+            profiles_root,
+            hald_level,
+            dcraw_args,
+            raw_engine,
+            rawtherapee,
+            camera_profile,
+            dcraw,
+            convert,
+            montage,
+            no_grain,
+            grain_seed,
+            thumbnail_long_edge,
+            jpg_quality,
+            jpeg_subsampling,
+            strip_metadata,
         }),
     }
 }

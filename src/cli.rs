@@ -234,6 +234,76 @@ pub(crate) enum CommandKind {
         #[arg(long)]
         progressive_jpeg: bool,
     },
+
+    /// Render every resolvable XMP profile as a labeled contact-sheet thumbnail.
+    Sampler {
+        /// RAW file to use as the sampler source.
+        raw: PathBuf,
+
+        /// Output contact sheet JPEG path.
+        #[arg(short, long)]
+        output: PathBuf,
+
+        /// Directory tree containing XMP profiles and presets to sample.
+        #[arg(long, default_value = ".")]
+        profiles_root: PathBuf,
+
+        /// Hald level to use for temporary XMP profile conversion.
+        #[arg(short = 'l', long, default_value_t = 8)]
+        hald_level: u32,
+
+        /// Extra arguments passed to dcraw before the RAW path.
+        #[arg(long, value_delimiter = ' ', default_value = "-T -6 -W -w -o 1")]
+        dcraw_args: Vec<String>,
+
+        /// RAW decoder: auto tries RawTherapee first and falls back to dcraw.
+        #[arg(long, value_enum, default_value_t = RawEngine::Auto)]
+        raw_engine: RawEngine,
+
+        /// Path to rawtherapee-cli binary.
+        #[arg(long, default_value = "rawtherapee-cli")]
+        rawtherapee: PathBuf,
+
+        /// Camera input ICC profile for dcraw, or "embed". If omitted, dcraw uses its camera matrix.
+        #[arg(long)]
+        camera_profile: Option<String>,
+
+        /// Path to dcraw binary.
+        #[arg(long, default_value = "dcraw")]
+        dcraw: PathBuf,
+
+        /// Path to convert binary.
+        #[arg(long, default_value = "convert")]
+        convert: PathBuf,
+
+        /// Path to montage binary.
+        #[arg(long, default_value = "montage")]
+        montage: PathBuf,
+
+        /// Disable Lightroom XMP grain emulation.
+        #[arg(long)]
+        no_grain: bool,
+
+        /// Base seed for deterministic generated grain. Defaults to current time of day.
+        #[arg(long)]
+        grain_seed: Option<u64>,
+
+        /// Thumbnail longest edge in pixels.
+        #[arg(long, default_value_t = 512)]
+        thumbnail_long_edge: u32,
+
+        /// JPEG quality for thumbnails and the final contact sheet.
+        #[arg(long, default_value_t = 95)]
+        jpg_quality: u8,
+
+        /// JPEG chroma subsampling for thumbnails and the final contact sheet.
+        #[arg(long, value_enum, default_value_t = JpegSubsampling::S444)]
+        jpeg_subsampling: JpegSubsampling,
+
+        /// Strip profiles and text metadata from generated JPEGs.
+        #[arg(long)]
+        strip_metadata: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]

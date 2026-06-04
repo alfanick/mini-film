@@ -10,6 +10,7 @@ It can:
 - apply a Hald CLUT with GraphicsMagick/ImageMagick `convert`
 - read Lightroom preset XMPs that reference a profile and define grain
 - batch-process DNG/NEF folders into JPEGs
+- render a profile sampler contact sheet for one RAW file
 - add deterministic procedural film grain
 - export either 16-bit TIFF or 8-bit JPEG
 
@@ -86,6 +87,31 @@ The output directory is created if it does not exist. Nested input folders are p
 
 - total batch progress across files
 - current file progress across RAW decode, Hald/sharpening, grain, and JPEG export steps
+
+## Profile Sampler Contact Sheet
+
+Render one RAW through every resolvable XMP profile or preset under a profile tree and write a labeled JPEG contact sheet:
+
+```sh
+cargo run --release -- sampler \
+  /home/alfanick/Pictures/Lightroom/2026/05/03/DSC_1812-10.dng \
+  --profiles-root .. \
+  --output /home/alfanick/profile-sampler.jpg
+```
+
+`sampler` develops the RAW once, renders one thumbnail per XMP profile, and uses `montage` to build a contact sheet with six thumbnails per row. Each label is the profile path relative to `--profiles-root`. Thumbnail longest edge defaults to 512 px:
+
+```sh
+--thumbnail-long-edge 768
+--jpg-quality 92
+--no-grain
+```
+
+Use a non-default montage binary with:
+
+```sh
+--montage /path/to/montage
+```
 
 ## JPEG Export Options
 

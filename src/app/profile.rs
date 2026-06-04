@@ -84,7 +84,7 @@ fn profile_from_path(
 /// the linked Look is resolved by UUID/name before conversion. The generated
 /// Hald is written into the caller's temp directory, grain comes from the preset
 /// recipe, and sharpening comes from the converted source profile metadata.
-fn profile_from_xmp(
+pub(crate) fn profile_from_xmp(
     path: &Path,
     hald_level: u32,
     profiles_root: &Path,
