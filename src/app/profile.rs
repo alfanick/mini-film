@@ -1,4 +1,10 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::hash_map::DefaultHasher,
+    fs,
+    hash::{Hash, Hasher},
+    path::{Path, PathBuf},
+    time::UNIX_EPOCH,
+};
 
 use anyhow::{Context, Result, bail};
 use mini_film::{
@@ -45,13 +51,20 @@ pub(crate) fn resolve_profile(args: &ApplyArgs, temp_dir: &Path) -> Result<Resol
             selector_path,
             args.hald_level,
             &args.profiles_root,
+            &args.hald_dir,
             temp_dir,
         );
     }
 
     for root in emulation_selector_roots(&args.profiles_root) {
         if let Some(path) = find_xmp_by_name(&root, &args.profile)? {
-            return profile_from_path(&path, args.hald_level, &args.profiles_root, temp_dir);
+            return profile_from_path(
+                &path,
+                args.hald_level,
+                &args.profiles_root,
+                &args.hald_dir,
+                temp_dir,
+            );
         }
     }
 
@@ -81,6 +94,7 @@ fn profile_from_path(
     path: &Path,
     hald_level: u32,
     profiles_root: &Path,
+    hald_dir: &Path,
     temp_dir: &Path,
 ) -> Result<ResolvedProfile> {
     match path.extension().and_then(|s| s.to_str()) {
@@ -90,7 +104,7 @@ fn profile_from_path(
             grain: GrainSettings::default(),
         }),
         Some(ext) if ext.eq_ignore_ascii_case("xmp") => {
-            profile_from_xmp(path, hald_level, profiles_root, temp_dir)
+            profile_from_xmp(path, hald_level, profiles_root, hald_dir, temp_dir)
         }
         Some(ext) => bail!("unsupported profile path extension .{ext}; expected .png or .xmp"),
         None => bail!("profile path has no extension: {}", path.display()),
@@ -108,24 +122,27 @@ pub(crate) fn profile_from_xmp(
     path: &Path,
     hald_level: u32,
     profiles_root: &Path,
+    hald_dir: &Path,
     temp_dir: &Path,
 ) -> Result<ResolvedProfile> {
-    profile_from_xmp_inner(path, hald_level, profiles_root, temp_dir, true)
+    profile_from_xmp_inner(path, hald_level, profiles_root, hald_dir, temp_dir, true)
 }
 
 pub(crate) fn profile_from_xmp_quiet(
     path: &Path,
     hald_level: u32,
     profiles_root: &Path,
+    hald_dir: &Path,
     temp_dir: &Path,
 ) -> Result<ResolvedProfile> {
-    profile_from_xmp_inner(path, hald_level, profiles_root, temp_dir, false)
+    profile_from_xmp_inner(path, hald_level, profiles_root, hald_dir, temp_dir, false)
 }
 
 fn profile_from_xmp_inner(
     path: &Path,
     hald_level: u32,
     profiles_root: &Path,
+    hald_dir: &Path,
     temp_dir: &Path,
     print_info: bool,
 ) -> Result<ResolvedProfile> {
@@ -139,16 +156,28 @@ fn profile_from_xmp_inner(
     let source = resolve_recipe_profile(&recipe, profiles_root, path)
         .with_context(|| format!("resolving linked profile for preset {}", path.display()))?;
 
-    let output = temp_dir.join("profile.hald.png");
-    let converted = convert_xmp_to_hald(
-        &source,
-        &output,
-        HaldOptions {
-            hald_level,
-            overwrite: true,
-            info_only: false,
-        },
-    )?;
+    let output = cached_hald_path(&source, hald_level, hald_dir)?;
+    let converted = if output.exists() {
+        convert_xmp_to_hald(
+            &source,
+            &output,
+            HaldOptions {
+                hald_level,
+                overwrite: false,
+                info_only: true,
+            },
+        )?
+    } else {
+        convert_xmp_to_hald(
+            &source,
+            &output,
+            HaldOptions {
+                hald_level,
+                overwrite: false,
+                info_only: false,
+            },
+        )?
+    };
     if print_info {
         eprintln!("{}", profile_info_line(&converted));
     }
@@ -199,6 +228,32 @@ fn resolve_recipe_profile(
     }
 
     bail!("preset does not contain a resolvable RGB table or linked Look UUID/name")
+}
+
+fn cached_hald_path(source: &Path, hald_level: u32, hald_dir: &Path) -> Result<PathBuf> {
+    fs::create_dir_all(hald_dir).with_context(|| format!("creating {}", hald_dir.display()))?;
+    let metadata = fs::metadata(source).with_context(|| format!("reading {}", source.display()))?;
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+
+    let mut hasher = DefaultHasher::new();
+    source.hash(&mut hasher);
+    hald_level.hash(&mut hasher);
+    metadata.len().hash(&mut hasher);
+    modified.hash(&mut hasher);
+    let hash = hasher.finish();
+
+    let stem = source
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(sanitize_filename::sanitize)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "profile".to_string());
+    Ok(hald_dir.join(format!("{stem}.l{hald_level}.{hash:016x}.hald.png")))
 }
 
 fn find_hald_by_name(root: &Path, name: &str) -> Result<Option<PathBuf>> {

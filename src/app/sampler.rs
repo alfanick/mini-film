@@ -26,6 +26,7 @@ pub(crate) struct SamplerArgs {
     pub(crate) raw: PathBuf,
     pub(crate) output: PathBuf,
     pub(crate) profiles_root: PathBuf,
+    pub(crate) hald_dir: PathBuf,
     pub(crate) hald_level: u32,
     pub(crate) rawtherapee: PathBuf,
     pub(crate) convert: PathBuf,
@@ -277,9 +278,14 @@ fn render_profile_thumbnail(
     fs::create_dir_all(&profile_temp)
         .with_context(|| format!("creating {}", profile_temp.display()))?;
 
-    let resolved =
-        profile_from_xmp_quiet(profile, args.hald_level, &args.profiles_root, &profile_temp)
-            .with_context(|| format!("resolving profile {}", profile.display()))?;
+    let resolved = profile_from_xmp_quiet(
+        profile,
+        args.hald_level,
+        &args.profiles_root,
+        &args.hald_dir,
+        &profile_temp,
+    )
+    .with_context(|| format!("resolving profile {}", profile.display()))?;
     let developed = profile_temp.join("rawtherapee.tif");
     sampler_step(progress, 2, "rawtherapee");
     let rawtherapee_profiles = rawtherapee_profiles_with_hald(&resolved, &profile_temp)?;

@@ -34,10 +34,10 @@ cargo run --release -- hald \
 Convert all profile XMPs under the parent directory:
 
 ```sh
-cargo run --release -- hald /home/alfanick/Pictures/RNI/profiles -o ../hald --overwrite
+cargo run --release -- hald /home/alfanick/Pictures/RNI/profiles --overwrite
 ```
 
-The ordinary RNI preset XMPs usually only reference a profile UUID and do not contain the table payload; `hald` skips those in directory mode. Hald PNGs contain only the decoded RGBTable lookup. Profile XMPs that include extra Camera Raw settings print `adjustments=pp3` or `sharpening=pp3`; those settings are handled through generated RawTherapee profiles during `apply`, `batch`, and `sampler`.
+The ordinary RNI preset XMPs usually only reference a profile UUID and do not contain the table payload; `hald` skips those in directory mode. When `-o/--output` is omitted, `hald` writes generated Hald PNGs under `$HOME/.cache/mini-film/hald`. Hald PNGs contain only the decoded RGBTable lookup. Profile XMPs that include extra Camera Raw settings print `adjustments=pp3` or `sharpening=pp3`; those settings are handled through generated RawTherapee profiles during `apply`, `batch`, and `sampler`.
 
 ## Apply A Complete Film Recipe
 
@@ -153,9 +153,9 @@ JPEG subsampling values:
 - a Hald PNG path
 - an emulation XMP path containing `crs:Look` plus optional grain settings
 - an emulation name, searched under `emulations/`
-- a generated Hald name, searched under `--hald-dir`
+- a generated Hald name, searched under `--hald-dir`, which defaults to `$HOME/.cache/mini-film/hald`
 
-RGBTable XMPs under `profiles/` are internal lookup tables. `apply`, `batch`, and `sampler` do not use them as user-facing emulations; they are only used to resolve linked `crs:Look` UUID/name references from emulation XMPs. `mini-film` generates a temporary Hald from the linked profile, generates temporary RawTherapee `.pp3` files for supported XMP adjustments and Film Simulation, lets RawTherapee apply the Hald, then applies the emulation grain settings.
+RGBTable XMPs under `profiles/` are internal lookup tables. `apply`, `batch`, and `sampler` do not use them as user-facing emulations; they are only used to resolve linked `crs:Look` UUID/name references from emulation XMPs. `mini-film` generates or reuses a cached Hald from the linked profile under `$HOME/.cache/mini-film/hald`, generates temporary RawTherapee `.pp3` files for supported XMP adjustments and Film Simulation, lets RawTherapee apply the Hald, then applies the emulation grain settings.
 
 ## Processing Split
 

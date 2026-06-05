@@ -8,7 +8,7 @@ use crate::app::apply::{ApplyArgs, run_apply};
 use crate::app::batch::{BatchArgs, run_batch};
 use crate::app::run_hald;
 use crate::app::sampler::{SamplerArgs, run_sampler};
-use crate::app::util::configure_threads;
+use crate::app::util::{configure_threads, default_hald_dir};
 use crate::cli::{Cli, CommandKind, ExportOptions};
 
 /// Parse CLI arguments and dispatch to the selected mini-film workflow.
@@ -28,7 +28,13 @@ fn main() -> Result<()> {
             hald_level,
             overwrite,
             info_only,
-        } => run_hald(&input, &output, hald_level, overwrite, info_only),
+        } => run_hald(
+            &input,
+            &output.unwrap_or_else(default_hald_dir),
+            hald_level,
+            overwrite,
+            info_only,
+        ),
         CommandKind::Apply {
             raw,
             output,
@@ -55,7 +61,7 @@ fn main() -> Result<()> {
             raw,
             output,
             profile,
-            hald_dir,
+            hald_dir: hald_dir.unwrap_or_else(default_hald_dir),
             profiles_root,
             hald_level,
             rawtherapee,
@@ -101,7 +107,7 @@ fn main() -> Result<()> {
             input,
             output,
             profile,
-            hald_dir,
+            hald_dir: hald_dir.unwrap_or_else(default_hald_dir),
             profiles_root,
             hald_level,
             rawtherapee,
@@ -125,6 +131,7 @@ fn main() -> Result<()> {
             raw,
             output,
             profiles_root,
+            hald_dir,
             hald_level,
             rawtherapee,
             convert,
@@ -140,6 +147,7 @@ fn main() -> Result<()> {
             raw,
             output,
             profiles_root,
+            hald_dir: hald_dir.unwrap_or_else(default_hald_dir),
             hald_level,
             rawtherapee,
             convert,

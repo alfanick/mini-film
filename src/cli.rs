@@ -19,9 +19,9 @@ pub(crate) enum CommandKind {
         /// XMP profile file or directory to convert.
         input: PathBuf,
 
-        /// Output PNG path for a single file, or output directory for a directory input.
-        #[arg(short, long, default_value = "hald")]
-        output: PathBuf,
+        /// Output PNG path for a single file, or output directory for a directory input. Defaults to $HOME/.cache/mini-film/hald.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
 
         /// Hald level. Level 8 produces a 64x64x64 CLUT stored as a 512x512 PNG.
         #[arg(short = 'l', long, default_value_t = 8)]
@@ -49,9 +49,9 @@ pub(crate) enum CommandKind {
         #[arg(short, long)]
         profile: String,
 
-        /// Directory containing generated Hald PNGs, used when --profile is a name.
-        #[arg(long, default_value = "hald")]
-        hald_dir: PathBuf,
+        /// Directory containing generated cached Hald PNGs. Defaults to $HOME/.cache/mini-film/hald.
+        #[arg(long)]
+        hald_dir: Option<PathBuf>,
 
         /// Film library root. Emulation XMPs are selected from emulations/ and RGBTable profiles from profiles/.
         #[arg(long, default_value = ".")]
@@ -134,9 +134,9 @@ pub(crate) enum CommandKind {
         #[arg(short, long)]
         profile: String,
 
-        /// Directory containing generated Hald PNGs, used when --profile is a name.
-        #[arg(long, default_value = "hald")]
-        hald_dir: PathBuf,
+        /// Directory containing generated cached Hald PNGs. Defaults to $HOME/.cache/mini-film/hald.
+        #[arg(long)]
+        hald_dir: Option<PathBuf>,
 
         /// Film library root. Emulation XMPs are selected from emulations/ and RGBTable profiles from profiles/.
         #[arg(long, default_value = ".")]
@@ -215,6 +215,10 @@ pub(crate) enum CommandKind {
         /// Film library root. Sampler reads emulation XMPs from emulations/ and resolves RGBTables from profiles/.
         #[arg(long, default_value = ".")]
         profiles_root: PathBuf,
+
+        /// Directory containing generated cached Hald PNGs. Defaults to $HOME/.cache/mini-film/hald.
+        #[arg(long)]
+        hald_dir: Option<PathBuf>,
 
         /// Hald level to use for temporary XMP profile conversion.
         #[arg(short = 'l', long, default_value_t = 8)]

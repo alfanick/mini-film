@@ -1,6 +1,6 @@
 use std::{
-    fs,
-    path::Path,
+    env, fs,
+    path::{Path, PathBuf},
     thread,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -34,4 +34,13 @@ pub(crate) fn cpu_thread_count() -> usize {
     thread::available_parallelism()
         .map(|threads| threads.get())
         .unwrap_or(1)
+}
+
+pub(crate) fn default_hald_dir() -> PathBuf {
+    env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".cache")
+        .join("mini-film")
+        .join("hald")
 }
