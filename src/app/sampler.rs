@@ -17,7 +17,7 @@ use rayon::prelude::*;
 use tempfile::Builder;
 use walkdir::WalkDir;
 
-use crate::app::export::{add_convert_thread_limit, finalize_output, validate_output_format};
+use crate::app::export::{add_convert_thread_limit, finalize_output, output_ext};
 use crate::app::profile::{profile_from_xmp_quiet, rawtherapee_profiles_with_hald};
 use crate::app::progress::{
     ApplyProgress, StageEstimates, format_duration, progress_length, progress_position,
@@ -71,6 +71,12 @@ struct SheetLayout {
     body: String,
     width: u32,
     height: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SheetOutputKind {
+    Raster,
+    Pdf,
 }
 
 struct SamplerProgress {
@@ -240,15 +246,8 @@ pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
 }
 
 fn validate_sampler_args(args: &SamplerArgs) -> Result<()> {
-    validate_output_format(&args.output)?;
-    let ext = args
-        .output
-        .extension()
-        .and_then(|s| s.to_str())
-        .map(str::to_ascii_lowercase)
-        .unwrap_or_default();
-    if ext != "jpg" && ext != "jpeg" {
-        bail!("sampler output must be .jpg or .jpeg");
+    if sampler_output_kind(&args.output)?.is_none() {
+        bail!("sampler output must be .jpg, .jpeg, or .pdf");
     }
     if !args.profiles_root.is_dir() {
         bail!(
@@ -260,6 +259,14 @@ fn validate_sampler_args(args: &SamplerArgs) -> Result<()> {
         bail!("--thumbnail-long-edge must be greater than zero");
     }
     Ok(())
+}
+
+fn sampler_output_kind(output: &Path) -> Result<Option<SheetOutputKind>> {
+    Ok(match output_ext(output)?.as_str() {
+        "jpg" | "jpeg" => Some(SheetOutputKind::Raster),
+        "pdf" => Some(SheetOutputKind::Pdf),
+        _ => None,
+    })
 }
 
 fn resolve_sampler_jobs(jobs: Option<usize>) -> Result<usize> {
@@ -445,7 +452,8 @@ fn run_structured_sheet(
     for thumb in thumbs {
         trie.insert(thumb.clone_for_tree());
     }
-    let layout = build_sheet_layout(&trie, thumbnail_long_edge);
+    let output_kind = sampler_output_kind(output)?.context("unsupported sampler output format")?;
+    let layout = build_sheet_layout(&trie, thumbnail_long_edge, output_kind);
     let svg = render_sheet_svg(&layout);
     let svg_path = output.with_extension("mini-film-sampler.svg");
     fs::write(&svg_path, svg).with_context(|| format!("writing {}", svg_path.display()))?;
@@ -455,11 +463,13 @@ fn run_structured_sheet(
     if let Some(font) = sheet_font_path() {
         command.arg("-font").arg(font);
     }
-    command
-        .arg(&svg_path)
-        .arg("-quality")
-        .arg(jpg_quality.clamp(1, 100).to_string());
-    if progressive_jpeg {
+    command.arg(&svg_path);
+    if output_kind == SheetOutputKind::Raster {
+        command
+            .arg("-quality")
+            .arg(jpg_quality.clamp(1, 100).to_string());
+    }
+    if output_kind == SheetOutputKind::Raster && progressive_jpeg {
         command.arg("-interlace").arg("Line");
     }
     command.arg(output);
@@ -581,9 +591,16 @@ fn profile_name_parts(name: &str) -> Vec<String> {
     }
 }
 
-fn build_sheet_layout(trie: &ProfileTrie, thumbnail_long_edge: u32) -> SheetLayout {
+fn build_sheet_layout(
+    trie: &ProfileTrie,
+    thumbnail_long_edge: u32,
+    output_kind: SheetOutputKind,
+) -> SheetLayout {
     let mut thumb = thumbnail_long_edge.max(64);
     let columns = sampler_sheet_columns(trie_thumb_count(trie));
+    if output_kind == SheetOutputKind::Pdf {
+        return build_sheet_layout_with_thumb(trie, thumb, columns);
+    }
     loop {
         let layout = build_sheet_layout_with_thumb(trie, thumb, columns);
         if layout.height < 60_000 || thumb <= 64 {
@@ -594,32 +611,34 @@ fn build_sheet_layout(trie: &ProfileTrie, thumbnail_long_edge: u32) -> SheetLayo
 }
 
 fn build_sheet_layout_with_thumb(trie: &ProfileTrie, thumb: u32, columns: u32) -> SheetLayout {
-    let margin = 36u32;
-    let indent = (thumb / 7).clamp(28, 96);
-    let gap = (thumb / 18).clamp(12, 32);
+    let margin = 28u32;
+    let indent = (thumb / 9).clamp(20, 72);
+    let gap = (thumb / 28).clamp(8, 22);
     let columns = columns.max(1);
-    let width = (thumb * columns + margin * 2 + indent * 3 + gap * columns.saturating_sub(1))
-        .clamp(1200, 32_000);
+    let max_grid_indent = max_rendered_grid_depth(trie) as u32 + 1;
+    let width =
+        (thumb * columns + margin * 2 + indent * max_grid_indent + gap * columns.saturating_sub(1))
+            .clamp(1200, 32_000);
     let mut ctx = LayoutContext {
         body: String::new(),
-        y: margin + 60,
-        width,
+        y: margin + 64,
         margin,
         indent,
         gap,
         thumb,
+        columns,
     };
-    ctx.text(margin, ctx.y, "mini-film sampler", 60, 700, "#111");
-    ctx.y += 70;
+    ctx.text(margin, ctx.y, "mini-film sampler", 44, 700, "#111");
+    ctx.y += 60;
     ctx.text(
         margin,
         ctx.y,
         "Profiles are grouped by shared name prefixes; indentation shows trie depth.",
-        24,
+        18,
         400,
         "#666",
     );
-    ctx.y += 52;
+    ctx.y += 38;
     for (part, child) in &trie.children {
         ctx.render_node(child, &[part.clone()], 0);
     }
@@ -652,11 +671,11 @@ fn render_sheet_svg(layout: &SheetLayout) -> String {
 struct LayoutContext {
     body: String,
     y: u32,
-    width: u32,
     margin: u32,
     indent: u32,
     gap: u32,
     thumb: u32,
+    columns: u32,
 }
 
 impl LayoutContext {
@@ -664,21 +683,26 @@ impl LayoutContext {
         let x = self.margin + self.indent * depth as u32;
         let text = prefix.join(" ");
         let size = match depth {
-            0 => 42,
-            1 => 34,
-            2 => 26,
-            _ => 21,
+            0 => 32,
+            1 => 25,
+            2 => 19,
+            _ => 15,
         };
         let weight = if depth <= 1 { 700 } else { 600 };
-        self.y += if depth == 0 { 28 } else { 14 };
+        self.y += match depth {
+            0 => 50,
+            1 => 40,
+            2 => 30,
+            _ => 20,
+        };
         self.text(x, self.y, &text, size, weight, header_color(depth));
-        self.y += size + 14;
+        self.y += size + 10;
 
-        if (depth >= 1 || subtree_depth(node) <= 2) && !contains_version_branch(node) {
+        if (depth >= 1 || subtree_depth(node) <= 2) && !contains_forced_branch(node) {
             let mut entries = Vec::new();
             collect_subtree_entries(node, prefix.len(), &mut entries);
             if !entries.is_empty() {
-                self.render_labeled_thumbs(&entries, x + self.indent);
+                self.render_labeled_thumbs(&entries, depth);
             }
             return;
         }
@@ -698,15 +722,16 @@ impl LayoutContext {
                 .iter()
                 .filter(|(_, child)| child.children.is_empty() && !child.thumbs.is_empty())
                 .flat_map(|(part, child)| {
+                    let label = child_variant_label(prefix, part);
                     child
                         .thumbs
                         .iter()
-                        .map(move |thumb| sheet_entry(part.clone(), thumb))
+                        .map(move |thumb| sheet_entry(label.clone(), thumb))
                 }),
         );
         leaf_entries.sort_by(|left, right| left.sort_key.cmp(&right.sort_key));
         if !leaf_entries.is_empty() {
-            self.render_labeled_thumbs(&leaf_entries, x + self.indent);
+            self.render_labeled_thumbs(&leaf_entries, depth);
         }
 
         for (part, child) in &node.children {
@@ -719,14 +744,14 @@ impl LayoutContext {
         }
     }
 
-    fn render_labeled_thumbs(&mut self, entries: &[SheetEntry<'_>], x: u32) {
+    fn render_labeled_thumbs(&mut self, entries: &[SheetEntry<'_>], depth: usize) {
+        let x = self.margin + self.indent * (depth as u32 + 1);
         let tile = self.thumb + self.gap;
-        let padding = (self.thumb / 40).clamp(10, 24);
-        let label_height = 136u32;
+        let padding = (self.thumb / 72).clamp(6, 14);
+        let label_height = 66u32;
         let image_box = self.thumb.saturating_sub(padding * 2).max(1);
         let tile_height = label_height + image_box + padding;
-        let available = self.width.saturating_sub(x + self.margin).max(self.thumb);
-        let columns = (available / tile).max(1);
+        let columns = self.columns.max(1);
         for (index, entry) in entries.iter().enumerate() {
             if index > 0 && index as u32 % columns == 0 {
                 self.y += tile_height + self.gap;
@@ -736,12 +761,12 @@ impl LayoutContext {
             let thumb = entry.thumb;
             let (display_width, display_height) = thumb_display_size(thumb, image_box);
             self.tile_rect(tx, self.y, self.thumb, tile_height);
-            self.text(tx + padding, self.y + 72, &entry.label, 48, 500, "#444444");
+            self.text(tx + padding, self.y + 48, &entry.label, 30, 500, "#444444");
             self.text(
                 tx + padding,
-                self.y + 104,
+                self.y + 64,
                 &entry.full_name,
-                20,
+                12,
                 400,
                 "#777777",
             );
@@ -829,6 +854,13 @@ fn thumb_label_after_prefix(thumb: &SampleThumb, prefix_len: usize) -> String {
     }
 }
 
+fn child_variant_label(prefix: &[String], part: &str) -> String {
+    prefix
+        .last()
+        .map(|base| format!("{base} {part}"))
+        .unwrap_or_else(|| part.to_string())
+}
+
 fn sheet_entry(label: String, thumb: &SampleThumb) -> SheetEntry<'_> {
     SheetEntry {
         sort_key: variant_sort_key(&label),
@@ -878,6 +910,11 @@ fn is_version_part(part: &str) -> bool {
         .is_some_and(|version| version.parse::<u32>().is_ok())
 }
 
+fn is_film_speed_part(part: &str) -> bool {
+    part.parse::<u32>()
+        .is_ok_and(|speed| (25..=12800).contains(&speed))
+}
+
 fn trie_thumb_count(trie: &ProfileTrie) -> u32 {
     let children: u32 = trie.children.values().map(trie_thumb_count).sum();
     trie.thumbs.len() as u32 + children
@@ -891,14 +928,47 @@ fn subtree_depth(trie: &ProfileTrie) -> usize {
         .map_or(0, |depth| depth + 1)
 }
 
-fn contains_version_branch(trie: &ProfileTrie) -> bool {
+fn contains_forced_branch(trie: &ProfileTrie) -> bool {
+    trie.children.iter().any(|(part, child)| {
+        is_version_part(part) || is_film_speed_part(part) || contains_forced_branch(child)
+    })
+}
+
+fn max_rendered_grid_depth(trie: &ProfileTrie) -> usize {
     trie.children
-        .iter()
-        .any(|(part, child)| is_version_part(part) || contains_version_branch(child))
+        .values()
+        .map(|child| max_rendered_grid_depth_at(child, 0))
+        .max()
+        .unwrap_or(0)
+}
+
+fn max_rendered_grid_depth_at(node: &ProfileTrie, depth: usize) -> usize {
+    if (depth >= 1 || subtree_depth(node) <= 2) && !contains_forced_branch(node) {
+        return depth;
+    }
+
+    let has_leaf_grid = !node.thumbs.is_empty()
+        || node
+            .children
+            .values()
+            .any(|child| child.children.is_empty() && !child.thumbs.is_empty());
+    let own_depth = has_leaf_grid.then_some(depth);
+    let child_depth = node
+        .children
+        .values()
+        .filter(|child| !(child.children.is_empty() && !child.thumbs.is_empty()))
+        .map(|child| max_rendered_grid_depth_at(child, depth + 1))
+        .max();
+
+    own_depth
+        .into_iter()
+        .chain(child_depth)
+        .max()
+        .unwrap_or(depth)
 }
 
 fn sampler_sheet_columns(thumb_count: u32) -> u32 {
-    thumb_count.clamp(1, 6)
+    thumb_count.clamp(1, 8)
 }
 
 fn header_color(depth: usize) -> &'static str {
@@ -1030,7 +1100,7 @@ mod tests {
         thumb.image = PathBuf::from("/tmp/kodak.jpg");
         trie.insert(thumb);
 
-        let layout = build_sheet_layout(&trie, 128);
+        let layout = build_sheet_layout(&trie, 128, SheetOutputKind::Raster);
         let svg = render_sheet_svg(&layout);
 
         assert!(svg.contains(">Kodak<"));
@@ -1038,7 +1108,7 @@ mod tests {
         assert!(svg.contains(">400 Grainy<"));
         assert!(svg.contains(">Kodak Portra 400 Grainy.xmp<"));
         assert!(svg.contains("/tmp/kodak.jpg"));
-        assert!(svg.contains(r#"width="108" height="72""#));
+        assert!(svg.contains(r#"width="116" height="77""#));
         assert!(svg.contains("font-family"));
     }
 
@@ -1054,7 +1124,7 @@ mod tests {
             trie.insert(sample_thumb(name, 1024, 683));
         }
 
-        let layout = build_sheet_layout(&trie, 256);
+        let layout = build_sheet_layout(&trie, 256, SheetOutputKind::Raster);
         let svg = render_sheet_svg(&layout);
 
         assert!(svg.contains(">Fuji<"));
@@ -1080,13 +1150,57 @@ mod tests {
             trie.insert(sample_thumb(name, 1024, 683));
         }
 
-        let layout = build_sheet_layout(&trie, 256);
+        let layout = build_sheet_layout(&trie, 256, SheetOutputKind::Raster);
         let svg = render_sheet_svg(&layout);
 
         assert!(svg.contains(">Ilford<"));
         assert!(svg.contains(">FP4<"));
         assert!(svg.contains(">FP4 grainy<"));
         assert!(svg.find(">FP4<") < svg.find(">FP4 grainy<"));
+    }
+
+    #[test]
+    fn base_profile_sorts_before_named_variants() {
+        let mut trie = ProfileTrie::default();
+        for name in ["Ilford FP4", "Ilford FP4 faded", "Ilford FP4 contrast"] {
+            trie.insert(sample_thumb(name, 1024, 683));
+        }
+
+        let layout = build_sheet_layout(&trie, 256, SheetOutputKind::Raster);
+        let svg = render_sheet_svg(&layout);
+
+        assert!(svg.contains(">FP4<"));
+        assert!(svg.contains(">FP4 faded<"));
+        assert!(svg.contains(">FP4 contrast<"));
+        assert!(svg.find(">FP4<") < svg.find(">FP4 contrast<"));
+        assert!(svg.find(">FP4<") < svg.find(">FP4 faded<"));
+    }
+
+    #[test]
+    fn film_speeds_render_as_separate_branches() {
+        let mut trie = ProfileTrie::default();
+        for name in [
+            "Kodak Portra 200",
+            "Kodak Portra 200 grainy",
+            "Kodak Portra 800",
+            "Kodak Portra 800 grainy",
+            "Kodak Portra 100",
+            "Kodak Portra 100 grainy",
+        ] {
+            trie.insert(sample_thumb(name, 1024, 683));
+        }
+
+        let layout = build_sheet_layout(&trie, 256, SheetOutputKind::Raster);
+        let svg = render_sheet_svg(&layout);
+
+        assert!(svg.contains(">Kodak Portra 100<"));
+        assert!(svg.contains(">Kodak Portra 200<"));
+        assert!(svg.contains(">Kodak Portra 800<"));
+        assert!(svg.find(">Kodak Portra 100<") < svg.find(">Kodak Portra 200<"));
+        assert!(svg.find(">Kodak Portra 200<") < svg.find(">Kodak Portra 800<"));
+        assert!(svg.find(">100<") < svg.find(">100 grainy<"));
+        assert!(svg.find(">200<") < svg.find(">200 grainy<"));
+        assert!(svg.find(">800<") < svg.find(">800 grainy<"));
     }
 
     #[test]
@@ -1105,7 +1219,7 @@ mod tests {
             }
         }
 
-        let layout = build_sheet_layout(&trie, 1024);
+        let layout = build_sheet_layout(&trie, 1024, SheetOutputKind::Raster);
 
         assert_eq!(trie_thumb_count(&trie), 624);
         assert!(layout.width < 65_000);
@@ -1113,10 +1227,36 @@ mod tests {
     }
 
     #[test]
-    fn sampler_columns_are_capped_at_six() {
-        assert_eq!(sampler_sheet_columns(414), 6);
-        assert_eq!(sampler_sheet_columns(24), 6);
+    fn sampler_columns_are_capped_at_eight() {
+        assert_eq!(sampler_sheet_columns(414), 8);
+        assert_eq!(sampler_sheet_columns(24), 8);
         assert_eq!(sampler_sheet_columns(4), 4);
+    }
+
+    #[test]
+    fn pdf_sampler_layout_preserves_requested_thumbnail_size() {
+        let mut trie = ProfileTrie::default();
+        for index in 0..64 {
+            trie.insert(sample_thumb(&format!("Kodak Portra {index}"), 1024, 683));
+        }
+
+        let layout = build_sheet_layout(&trie, 1024, SheetOutputKind::Pdf);
+        let svg = render_sheet_svg(&layout);
+
+        assert!(svg.contains(r#"width="996" height="664""#));
+    }
+
+    #[test]
+    fn sampler_accepts_jpeg_and_pdf_outputs() {
+        assert_eq!(
+            sampler_output_kind(Path::new("sheet.jpg")).unwrap(),
+            Some(SheetOutputKind::Raster)
+        );
+        assert_eq!(
+            sampler_output_kind(Path::new("sheet.pdf")).unwrap(),
+            Some(SheetOutputKind::Pdf)
+        );
+        assert_eq!(sampler_output_kind(Path::new("sheet.tiff")).unwrap(), None);
     }
 
     #[test]

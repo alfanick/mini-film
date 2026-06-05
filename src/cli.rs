@@ -288,7 +288,7 @@ pub(crate) enum CommandKind {
         /// RAW file to use as the sampler source.
         raw: PathBuf,
 
-        /// Output contact sheet JPEG path.
+        /// Output contact sheet path (.jpg/.jpeg or .pdf).
         #[arg(short, long)]
         output: PathBuf,
 
@@ -332,7 +332,7 @@ pub(crate) enum CommandKind {
         #[arg(long, default_value_t = 512)]
         thumbnail_long_edge: u32,
 
-        /// JPEG quality for thumbnails and the final contact sheet.
+        /// JPEG quality for thumbnails and JPEG contact sheets.
         #[arg(long, default_value_t = 95)]
         jpg_quality: u8,
 
