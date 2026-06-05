@@ -602,24 +602,24 @@ fn build_sheet_layout_with_thumb(trie: &ProfileTrie, thumb: u32, columns: u32) -
         .clamp(1200, 32_000);
     let mut ctx = LayoutContext {
         body: String::new(),
-        y: margin + 122,
+        y: margin + 60,
         width,
         margin,
         indent,
         gap,
         thumb,
     };
-    ctx.text(margin, ctx.y, "mini-film sampler", 122, 700, "#111");
-    ctx.y += 138;
+    ctx.text(margin, ctx.y, "mini-film sampler", 60, 700, "#111");
+    ctx.y += 70;
     ctx.text(
         margin,
         ctx.y,
         "Profiles are grouped by shared name prefixes; indentation shows trie depth.",
-        61,
+        24,
         400,
         "#666",
     );
-    ctx.y += 132;
+    ctx.y += 52;
     for (part, child) in &trie.children {
         ctx.render_node(child, &[part.clone()], 0);
     }
@@ -664,15 +664,15 @@ impl LayoutContext {
         let x = self.margin + self.indent * depth as u32;
         let text = prefix.join(" ");
         let size = match depth {
-            0 => 108,
-            1 => 92,
-            2 => 78,
-            _ => 67,
+            0 => 42,
+            1 => 34,
+            2 => 26,
+            _ => 21,
         };
         let weight = if depth <= 1 { 700 } else { 600 };
-        self.y += if depth == 0 { 72 } else { 32 };
+        self.y += if depth == 0 { 28 } else { 14 };
         self.text(x, self.y, &text, size, weight, header_color(depth));
-        self.y += size + 32;
+        self.y += size + 14;
 
         if (depth >= 1 || subtree_depth(node) <= 2) && !contains_version_branch(node) {
             let mut entries = Vec::new();
@@ -721,25 +721,42 @@ impl LayoutContext {
 
     fn render_labeled_thumbs(&mut self, entries: &[SheetEntry<'_>], x: u32) {
         let tile = self.thumb + self.gap;
-        let label_height = 190u32;
+        let padding = (self.thumb / 40).clamp(10, 24);
+        let label_height = 136u32;
+        let image_box = self.thumb.saturating_sub(padding * 2).max(1);
+        let tile_height = label_height + image_box + padding;
         let available = self.width.saturating_sub(x + self.margin).max(self.thumb);
         let columns = (available / tile).max(1);
         for (index, entry) in entries.iter().enumerate() {
             if index > 0 && index as u32 % columns == 0 {
-                self.y += self.thumb + label_height + self.gap;
+                self.y += tile_height + self.gap;
             }
             let col = index as u32 % columns;
             let tx = x + col * tile;
             let thumb = entry.thumb;
-            let (display_width, display_height) = thumb_display_size(thumb, self.thumb);
-            self.tile_rect(tx, self.y, self.thumb, self.thumb + label_height);
-            self.text(tx, self.y + 84, &entry.label, 65, 500, "#444444");
-            self.text(tx, self.y + 157, &entry.full_name, 17, 400, "#777777");
-            let ty = self.y + label_height + (self.thumb - display_height) / 2;
-            self.rect(tx, ty, display_width, display_height);
-            self.image(tx, ty, display_width, display_height, &thumb.image);
+            let (display_width, display_height) = thumb_display_size(thumb, image_box);
+            self.tile_rect(tx, self.y, self.thumb, tile_height);
+            self.text(tx + padding, self.y + 72, &entry.label, 48, 500, "#444444");
+            self.text(
+                tx + padding,
+                self.y + 104,
+                &entry.full_name,
+                20,
+                400,
+                "#777777",
+            );
+            let image_x = tx + padding + (image_box - display_width) / 2;
+            let image_y = self.y + label_height + padding + (image_box - display_height) / 2;
+            self.rect(image_x, image_y, display_width, display_height);
+            self.image(
+                image_x,
+                image_y,
+                display_width,
+                display_height,
+                &thumb.image,
+            );
         }
-        self.y += self.thumb + label_height + self.gap;
+        self.y += tile_height + self.gap;
     }
 
     fn text(&mut self, x: u32, y: u32, text: &str, size: u32, weight: u32, color: &str) {
@@ -881,7 +898,7 @@ fn contains_version_branch(trie: &ProfileTrie) -> bool {
 }
 
 fn sampler_sheet_columns(thumb_count: u32) -> u32 {
-    thumb_count.clamp(1, 5)
+    thumb_count.clamp(1, 6)
 }
 
 fn header_color(depth: usize) -> &'static str {
@@ -1021,7 +1038,7 @@ mod tests {
         assert!(svg.contains(">400 Grainy<"));
         assert!(svg.contains(">Kodak Portra 400 Grainy.xmp<"));
         assert!(svg.contains("/tmp/kodak.jpg"));
-        assert!(svg.contains(r#"width="128" height="85""#));
+        assert!(svg.contains(r#"width="108" height="72""#));
         assert!(svg.contains("font-family"));
     }
 
@@ -1096,9 +1113,9 @@ mod tests {
     }
 
     #[test]
-    fn sampler_columns_are_capped_at_five() {
-        assert_eq!(sampler_sheet_columns(414), 5);
-        assert_eq!(sampler_sheet_columns(24), 5);
+    fn sampler_columns_are_capped_at_six() {
+        assert_eq!(sampler_sheet_columns(414), 6);
+        assert_eq!(sampler_sheet_columns(24), 6);
         assert_eq!(sampler_sheet_columns(4), 4);
     }
 
