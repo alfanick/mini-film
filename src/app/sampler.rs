@@ -444,7 +444,7 @@ fn sampler_progress_style() -> ProgressStyle {
 
 fn profile_progress_style() -> ProgressStyle {
     ProgressStyle::with_template(
-        "{spinner:.green} profile [{elapsed_precise}] [{wide_bar:.magenta/blue}] {percent:>3}% {msg}",
+        "{spinner:.green} profile [{wide_bar:.magenta/blue}] {percent:>3}% {msg:.40}",
     )
     .unwrap()
     .progress_chars("█▌░")

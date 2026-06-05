@@ -60,7 +60,7 @@ pub(crate) fn batch_progress_style() -> ProgressStyle {
 
 pub(crate) fn file_progress_style() -> ProgressStyle {
     ProgressStyle::with_template(
-        "{spinner:.green} file  [{elapsed_precise}] [{wide_bar:.magenta/blue}] {percent:>3}% {msg}",
+        "{spinner:.green} file  [{wide_bar:.magenta/blue}] {percent:>3}% {msg:.40}",
     )
     .unwrap()
     .progress_chars("█▌░")
