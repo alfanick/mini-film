@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
+const DEFAULT_HALD_LEVEL: u32 = 16;
+
 #[derive(Parser, Debug)]
 #[command(
     version,
@@ -23,8 +25,8 @@ pub(crate) enum CommandKind {
         #[arg(short, long)]
         output: Option<PathBuf>,
 
-        /// Hald level. Level 8 produces a 64x64x64 CLUT stored as a 512x512 PNG.
-        #[arg(short = 'l', long, default_value_t = 8)]
+        /// Hald level. Level 16 produces a 256x256x256 CLUT stored as a 4096x4096 PNG.
+        #[arg(short = 'l', long, default_value_t = DEFAULT_HALD_LEVEL)]
         hald_level: u32,
 
         /// Overwrite existing output files.
@@ -50,7 +52,7 @@ pub(crate) enum CommandKind {
         hald_dir: Option<PathBuf>,
 
         /// Hald level used when reporting the cached Hald path for XMP profiles.
-        #[arg(short = 'l', long, default_value_t = 8)]
+        #[arg(short = 'l', long, default_value_t = DEFAULT_HALD_LEVEL)]
         hald_level: u32,
     },
 
@@ -72,7 +74,7 @@ pub(crate) enum CommandKind {
         hald_dir: Option<PathBuf>,
 
         /// Hald level used when reporting the cached Hald path for XMP profiles.
-        #[arg(short = 'l', long, default_value_t = 8)]
+        #[arg(short = 'l', long, default_value_t = DEFAULT_HALD_LEVEL)]
         hald_level: u32,
     },
 
@@ -98,7 +100,7 @@ pub(crate) enum CommandKind {
         profiles_root: PathBuf,
 
         /// Hald level to use when --profile points to an XMP or resolves to an XMP.
-        #[arg(short = 'l', long, default_value_t = 8)]
+        #[arg(short = 'l', long, default_value_t = DEFAULT_HALD_LEVEL)]
         hald_level: u32,
 
         /// Path to rawtherapee-cli binary.
@@ -183,7 +185,7 @@ pub(crate) enum CommandKind {
         profiles_root: PathBuf,
 
         /// Hald level to use when --profile points to an XMP or resolves to an XMP.
-        #[arg(short = 'l', long, default_value_t = 8)]
+        #[arg(short = 'l', long, default_value_t = DEFAULT_HALD_LEVEL)]
         hald_level: u32,
 
         /// Path to rawtherapee-cli binary.
@@ -269,7 +271,7 @@ pub(crate) enum CommandKind {
         hald_dir: Option<PathBuf>,
 
         /// Hald level to use for temporary XMP profile conversion.
-        #[arg(short = 'l', long, default_value_t = 8)]
+        #[arg(short = 'l', long, default_value_t = DEFAULT_HALD_LEVEL)]
         hald_level: u32,
 
         /// Path to rawtherapee-cli binary.
@@ -382,5 +384,59 @@ mod tests {
             JpegSubsampling::S420.graphicsmagick_sampling_factor(),
             "2x2,1x1,1x1"
         );
+    }
+
+    #[test]
+    fn cli_parses_level_16_as_the_hald_default_for_all_profile_commands() {
+        let cli = Cli::parse_from(["mini-film", "hald", "profiles"]);
+        assert!(matches!(
+            cli.command,
+            CommandKind::Hald { hald_level: 16, .. }
+        ));
+
+        let cli = Cli::parse_from(["mini-film", "info", "profile"]);
+        assert!(matches!(
+            cli.command,
+            CommandKind::Info { hald_level: 16, .. }
+        ));
+
+        let cli = Cli::parse_from(["mini-film", "pp3", "profile"]);
+        assert!(matches!(
+            cli.command,
+            CommandKind::Pp3 { hald_level: 16, .. }
+        ));
+
+        let cli = Cli::parse_from([
+            "mini-film",
+            "apply",
+            "--output",
+            "out.jpg",
+            "--profile",
+            "profile",
+            "input.dng",
+        ]);
+        assert!(matches!(
+            cli.command,
+            CommandKind::Apply { hald_level: 16, .. }
+        ));
+
+        let cli = Cli::parse_from([
+            "mini-film",
+            "batch",
+            "input-dir",
+            "output-dir",
+            "--profile",
+            "profile",
+        ]);
+        assert!(matches!(
+            cli.command,
+            CommandKind::Batch { hald_level: 16, .. }
+        ));
+
+        let cli = Cli::parse_from(["mini-film", "sampler", "input.dng", "--output", "out.jpg"]);
+        assert!(matches!(
+            cli.command,
+            CommandKind::Sampler { hald_level: 16, .. }
+        ));
     }
 }

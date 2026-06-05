@@ -632,7 +632,7 @@ mod tests {
             profile,
             hald_dir,
             profiles_root,
-            hald_level: 8,
+            hald_level: 16,
             rawtherapee: PathBuf::from("rawtherapee-cli"),
             convert: PathBuf::from("convert"),
             keep_intermediate: None,

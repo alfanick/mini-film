@@ -214,7 +214,7 @@ pub struct HaldOptions {
 impl Default for HaldOptions {
     fn default() -> Self {
         Self {
-            hald_level: 8,
+            hald_level: 16,
             overwrite: false,
             info_only: false,
         }
