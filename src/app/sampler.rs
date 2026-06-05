@@ -602,7 +602,7 @@ fn build_sheet_layout_with_thumb(trie: &ProfileTrie, thumb: u32, columns: u32) -
         .clamp(1200, 32_000);
     let mut ctx = LayoutContext {
         body: String::new(),
-        y: margin,
+        y: margin + 90,
         width,
         margin,
         indent,
