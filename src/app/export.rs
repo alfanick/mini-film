@@ -42,8 +42,8 @@ pub(crate) fn finalize_output(
 /// Resize options are added first so the encoder sees the final image geometry.
 /// JPEG outputs are forced to 8-bit, then receive metadata stripping,
 /// progressive/interlace mode, chroma subsampling, and quality settings. TIFF
-/// outputs keep the upstream 16-bit depth unless the caller explicitly selected
-/// metadata stripping.
+/// outputs keep the upstream 16-bit depth, use TIFF Zip/Deflate compression,
+/// and only strip metadata when explicitly requested.
 pub(crate) fn add_final_convert_args(
     command: &mut Command,
     output: &Path,
@@ -66,8 +66,11 @@ pub(crate) fn add_final_convert_args(
             .arg(export.jpeg_subsampling.graphicsmagick_sampling_factor())
             .arg("-quality")
             .arg(export.jpg_quality.clamp(1, 100).to_string());
-    } else if export.strip_metadata {
-        command.arg("-strip");
+    } else {
+        if export.strip_metadata {
+            command.arg("-strip");
+        }
+        command.arg("-compress").arg("Zip");
     }
 
     command.arg(output);
@@ -213,7 +216,7 @@ mod tests {
     }
 
     #[test]
-    fn tiff_export_keeps_depth_and_accepts_structured_resize() {
+    fn tiff_export_keeps_depth_compresses_and_accepts_structured_resize() {
         let mut command = Command::new("convert");
         let mut export = export_options();
         export.max_width = Some(3000);
@@ -224,7 +227,14 @@ mod tests {
 
         assert_eq!(
             command_args(&command),
-            ["-resize", "3000x2000>", "-strip", "out.tif"]
+            [
+                "-resize",
+                "3000x2000>",
+                "-strip",
+                "-compress",
+                "Zip",
+                "out.tif"
+            ]
         );
     }
 

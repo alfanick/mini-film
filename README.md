@@ -62,7 +62,7 @@ cargo run -- apply \
   /home/alfanick/Pictures/Lightroom/2026/05/03/DSC_1812-10.dng
 ```
 
-`output.tif` / `output.tiff` is exported as 16-bit TIFF.
+`output.tif` / `output.tiff` is exported as 16-bit Zip-compressed TIFF.
 
 ```sh
 cargo run --release -- apply input.RAW \
@@ -97,7 +97,7 @@ cargo run --release -- batch \
   --jobs 8
 ```
 
-The output directory is created if it does not exist. Nested input folders are preserved, and each RAW output uses the same relative path with a `.jpg` extension by default. Use `--output-format tiff` to write `.tif` files through the 16-bit TIFF path.
+The output directory is created if it does not exist. Nested input folders are preserved, and each RAW output uses the same relative path with a `.jpg` extension by default. Use `--output-format tiff` to write `.tif` files through the 16-bit Zip-compressed TIFF path.
 
 By default, `batch` processes half of the detected CPU threads at once. On a 16-thread CPU that means 8 files in parallel. Override it with `--jobs N` when tuning for a different machine, output format, or memory budget.
 
@@ -135,7 +135,7 @@ Use a non-default montage binary with:
 ## JPEG Export Options
 
 `apply` and `batch` support the same final JPG controls. `batch` also accepts
-`--output-format jpg|tiff`; TIFF batch output is written as 16-bit `.tif`.
+`--output-format jpg|tiff`; TIFF batch output is written as 16-bit Zip-compressed `.tif`.
 `sampler` also
 supports `--jpg-quality`, `--jpeg-subsampling`, `--strip-metadata`, and
 `--progressive` for generated sampler JPEGs.
@@ -224,7 +224,7 @@ mini-film internally handles:
 
 ImageMagick/GraphicsMagick `convert` handles:
 
-- final resize, bit depth, metadata stripping, JPEG quality/subsampling, progressive JPEG, and TIFF/JPEG encoding
+- final resize, bit depth, metadata stripping, JPEG quality/subsampling, progressive JPEG, TIFF Zip compression, and TIFF/JPEG encoding
 
 `montage` handles only the sampler contact sheet assembly and labels. Texture is not faithfully mapped yet.
 
