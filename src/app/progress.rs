@@ -52,18 +52,18 @@ impl StageEstimates {
 
 pub(crate) fn batch_progress_style() -> ProgressStyle {
     ProgressStyle::with_template(
-        "{spinner:.green} batch [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} {msg}",
+        "{spinner:.green} batch [{elapsed_precise}] [{wide_bar:.cyan/blue}] {percent:>3}% {msg}",
     )
     .unwrap()
-    .progress_chars("#>-")
+    .progress_chars("█▌░")
 }
 
 pub(crate) fn file_progress_style() -> ProgressStyle {
     ProgressStyle::with_template(
-        "{spinner:.green} file  [{elapsed_precise}] [{wide_bar:.magenta/blue}] {pos}/{len} {msg}",
+        "{spinner:.green} file  [{elapsed_precise}] [{wide_bar:.magenta/blue}] {percent:>3}% {msg}",
     )
     .unwrap()
-    .progress_chars("#>-")
+    .progress_chars("█▌░")
 }
 
 pub(crate) fn progress_step(progress: Option<&ApplyProgress<'_>>, position: u64, step: &str) {

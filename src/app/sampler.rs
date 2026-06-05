@@ -436,18 +436,18 @@ fn run_montage(
 
 fn sampler_progress_style() -> ProgressStyle {
     ProgressStyle::with_template(
-        "{spinner:.green} sampler [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} {msg}",
+        "{spinner:.green} sampler [{elapsed_precise}] [{wide_bar:.cyan/blue}] {percent:>3}% {msg}",
     )
     .unwrap()
-    .progress_chars("#>-")
+    .progress_chars("█▌░")
 }
 
 fn profile_progress_style() -> ProgressStyle {
     ProgressStyle::with_template(
-        "{spinner:.green} profile [{elapsed_precise}] [{wide_bar:.magenta/blue}] {pos}/{len} {msg}",
+        "{spinner:.green} profile [{elapsed_precise}] [{wide_bar:.magenta/blue}] {percent:>3}% {msg}",
     )
     .unwrap()
-    .progress_chars("#>-")
+    .progress_chars("█▌░")
 }
 
 fn sampler_step(progress: &SamplerProgress, position: u64, step: &str) {
