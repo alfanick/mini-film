@@ -1,6 +1,11 @@
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use anyhow::{Context, Result, bail};
+use indicatif::ProgressBar;
 use mini_film::{GrainSettings, apply_grain, apply_grain_8bit};
 use tempfile::Builder;
 
@@ -10,7 +15,9 @@ use crate::app::export::{
 use crate::app::profile::{
     ResolvedProfile, normalize_name, rawtherapee_profiles_with_hald, resolve_profile,
 };
-use crate::app::progress::{ApplyProgress, progress_step};
+use crate::app::progress::{
+    ApplyProgress, file_progress_style, progress_length, progress_stage_adaptive, progress_step,
+};
 use crate::app::raw::{run_raw_develop, run_raw_develop_jpeg};
 use crate::app::util::{remove_temp_file, time_of_day_seed};
 use crate::cli::ExportOptions;
@@ -62,7 +69,17 @@ pub(crate) fn run_apply(args: ApplyArgs) -> Result<()> {
     }
     let grain_seed = args.grain_seed.unwrap_or_else(time_of_day_seed);
 
-    apply_resolved(
+    let file = ProgressBar::new(progress_length());
+    file.set_style(file_progress_style());
+    file.set_message("starting");
+    let started = std::time::Instant::now();
+    let progress = ApplyProgress {
+        file: &file,
+        started,
+        estimates: None,
+    };
+
+    let result = apply_resolved(
         ApplyJob {
             raw: &args.raw,
             output: &args.output,
@@ -71,13 +88,18 @@ pub(crate) fn run_apply(args: ApplyArgs) -> Result<()> {
             keep_intermediate: args.keep_intermediate.as_deref(),
             no_grain: args.no_grain,
             export: &args.export,
-            quiet: false,
+            quiet: true,
         },
         &resolved,
         grain_seed,
         temp_dir.path(),
-        None,
-    )?;
+        Some(&progress),
+    );
+    match &result {
+        Ok(()) => file.finish_and_clear(),
+        Err(_) => file.abandon_with_message("failed"),
+    }
+    result?;
 
     eprintln!(
         "wrote {} using {}",
@@ -121,8 +143,19 @@ pub(crate) fn apply_resolved(
         });
     let cleanup_intermediate = job.keep_intermediate.is_none();
 
-    progress_step(progress, 1, "rawtherapee");
     let rawtherapee_profiles = rawtherapee_profiles_with_hald(resolved, temp_dir)?;
+    let raw_stage = progress_stage_adaptive(
+        progress,
+        1,
+        3,
+        if jpeg_intermediate {
+            "rawtherapee-jpeg"
+        } else {
+            "rawtherapee-tiff"
+        },
+        "rawtherapee",
+        estimate_rawtherapee_duration(job.raw, jpeg_intermediate),
+    );
     if jpeg_intermediate {
         run_raw_develop_jpeg(
             job.rawtherapee,
@@ -142,36 +175,82 @@ pub(crate) fn apply_resolved(
             job.quiet,
         )?;
     }
+    raw_stage.finish();
 
     if grain_enabled && jpeg_output {
-        progress_step(progress, 3, "grain");
+        let grain_stage = progress_stage_adaptive(
+            progress,
+            3,
+            4,
+            "grain-jpeg",
+            "grain",
+            estimate_grain_duration(job.raw, true),
+        );
         let grained = temp_dir.join("grained-8.ppm");
         apply_grain_8bit(&intermediate, &grained, resolved.grain, grain_seed)?;
+        grain_stage.finish();
         if progress.is_none() {
             eprintln!(
                 "applied grain amount={} size={} frequency={}",
                 resolved.grain.amount, resolved.grain.size, resolved.grain.frequency
             );
         }
-        progress_step(progress, 4, "jpeg export");
+        let export_stage = progress_stage_adaptive(
+            progress,
+            4,
+            5,
+            "export-jpeg",
+            "jpeg export",
+            estimate_export_duration(true),
+        );
         finalize_output(job.convert, &grained, job.output, job.export)?;
+        export_stage.finish();
         remove_temp_file(&grained)?;
     } else if grain_enabled {
-        progress_step(progress, 3, "grain");
+        let grain_stage = progress_stage_adaptive(
+            progress,
+            3,
+            4,
+            "grain-tiff",
+            "grain",
+            estimate_grain_duration(job.raw, false),
+        );
         let grained = temp_dir.join("grained.tif");
         apply_grain(&intermediate, &grained, resolved.grain, grain_seed)?;
+        grain_stage.finish();
         if progress.is_none() {
             eprintln!(
                 "applied grain amount={} size={} frequency={}",
                 resolved.grain.amount, resolved.grain.size, resolved.grain.frequency
             );
         }
-        progress_step(progress, 4, "export");
+        let export_stage = progress_stage_adaptive(
+            progress,
+            4,
+            5,
+            "export-tiff",
+            "export",
+            estimate_export_duration(false),
+        );
         finalize_output(job.convert, &grained, job.output, job.export)?;
+        export_stage.finish();
         remove_temp_file(&grained)?;
     } else {
-        progress_step(progress, 4, "export");
+        progress_step(progress, 3, "grain skipped");
+        let export_stage = progress_stage_adaptive(
+            progress,
+            4,
+            5,
+            if jpeg_output {
+                "export-jpeg"
+            } else {
+                "export-tiff"
+            },
+            "export",
+            estimate_export_duration(jpeg_output),
+        );
         finalize_output(job.convert, &intermediate, job.output, job.export)?;
+        export_stage.finish();
     }
 
     if cleanup_intermediate {
@@ -180,6 +259,38 @@ pub(crate) fn apply_resolved(
 
     progress_step(progress, 5, "done");
     Ok(())
+}
+
+fn estimate_rawtherapee_duration(raw: &Path, jpeg_intermediate: bool) -> Duration {
+    let mib = file_size_mib(raw).unwrap_or(45.0);
+    let seconds = if jpeg_intermediate {
+        1.2 + mib * 0.075
+    } else {
+        2.0 + mib * 0.11
+    };
+    Duration::from_secs_f64(seconds.clamp(2.0, 18.0))
+}
+
+fn estimate_grain_duration(raw: &Path, jpeg_output: bool) -> Duration {
+    let mib = file_size_mib(raw).unwrap_or(45.0);
+    let seconds = if jpeg_output {
+        0.35 + mib * 0.018
+    } else {
+        0.9 + mib * 0.045
+    };
+    Duration::from_secs_f64(seconds.clamp(0.6, 8.0))
+}
+
+fn estimate_export_duration(jpeg_output: bool) -> Duration {
+    if jpeg_output {
+        Duration::from_millis(900)
+    } else {
+        Duration::from_secs(2)
+    }
+}
+
+fn file_size_mib(path: &Path) -> Option<f64> {
+    Some(fs::metadata(path).ok()?.len() as f64 / 1_048_576.0)
 }
 
 /// Resolve command-line grain overrides.

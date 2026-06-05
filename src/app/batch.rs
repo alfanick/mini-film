@@ -18,7 +18,8 @@ use crate::app::apply::{ApplyArgs, ApplyJob, apply_resolved, resolve_grain_overr
 use crate::app::export::validate_export_options;
 use crate::app::profile::resolve_profile;
 use crate::app::progress::{
-    ApplyProgress, batch_progress_style, file_progress_style, format_duration,
+    ApplyProgress, StageEstimates, batch_progress_style, file_progress_style, format_duration,
+    progress_length,
 };
 use crate::app::util::{half_cpu_thread_count, time_of_day_seed};
 use crate::cli::{BatchOutputFormat, ExportOptions};
@@ -95,7 +96,7 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
     batch.set_message("starting");
     let worker_bars: Vec<_> = (0..jobs)
         .map(|index| {
-            let file = multi.add(ProgressBar::new(5));
+            let file = multi.add(ProgressBar::new(progress_length()));
             file.set_style(file_progress_style());
             file.set_message(format!("worker {} waiting", index + 1));
             file
@@ -105,6 +106,7 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
     let batch_start = Instant::now();
     let pool = rayon::ThreadPoolBuilder::new().num_threads(jobs).build()?;
     let bar_pool = Arc::new(Mutex::new(worker_bars.clone()));
+    let estimates = Arc::new(StageEstimates::default());
     let results: Vec<_> = pool.install(|| {
         raws.par_iter()
             .enumerate()
@@ -117,6 +119,7 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
                     temp_dir.path(),
                     &batch,
                     &file,
+                    Arc::clone(&estimates),
                     index,
                     raw,
                 );
@@ -178,11 +181,12 @@ fn process_batch_file(
     temp_root: &Path,
     batch: &ProgressBar,
     file: &ProgressBar,
+    estimates: Arc<StageEstimates>,
     index: usize,
     raw: &Path,
 ) -> Result<(), (PathBuf, anyhow::Error)> {
     process_batch_file_inner(
-        args, resolved, base_seed, temp_root, batch, file, index, raw,
+        args, resolved, base_seed, temp_root, batch, file, estimates, index, raw,
     )
     .map_err(|err| (raw.to_path_buf(), err))
 }
@@ -194,6 +198,7 @@ fn process_batch_file_inner(
     temp_root: &Path,
     batch: &ProgressBar,
     file: &ProgressBar,
+    estimates: Arc<StageEstimates>,
     index: usize,
     raw: &Path,
 ) -> Result<()> {
@@ -215,6 +220,7 @@ fn process_batch_file_inner(
     let progress = ApplyProgress {
         file,
         started: file_start,
+        estimates: Some(estimates),
     };
     let file_temp = temp_root.join(format!("file-{index}"));
     fs::create_dir_all(&file_temp).with_context(|| format!("creating {}", file_temp.display()))?;

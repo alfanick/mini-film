@@ -2,8 +2,11 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
-    sync::atomic::{AtomicUsize, Ordering},
-    time::Instant,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail};
@@ -15,7 +18,10 @@ use walkdir::WalkDir;
 
 use crate::app::export::{add_convert_thread_limit, finalize_output, validate_output_format};
 use crate::app::profile::{profile_from_xmp_quiet, rawtherapee_profiles_with_hald};
-use crate::app::progress::format_duration;
+use crate::app::progress::{
+    ApplyProgress, StageEstimates, format_duration, progress_length, progress_position,
+    progress_stage, progress_stage_adaptive, set_progress,
+};
 use crate::app::raw::run_raw_develop_jpeg;
 use crate::app::util::{remove_temp_file, time_of_day_seed};
 use crate::cli::{ExportOptions, JpegSubsampling};
@@ -48,6 +54,7 @@ struct SampleThumb {
 struct SamplerProgress {
     profile: ProgressBar,
     started: Instant,
+    estimates: Arc<StageEstimates>,
 }
 
 /// Render a labeled contact sheet showing every resolvable XMP profile.
@@ -88,13 +95,14 @@ pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
     let started = Instant::now();
     let workers: Vec<_> = (0..SAMPLER_PARALLEL_PROFILES)
         .map(|index| {
-            let bar = multi.add(ProgressBar::new(5));
+            let bar = multi.add(ProgressBar::new(progress_length()));
             bar.set_style(profile_progress_style());
             bar.set_message(format!("worker {} waiting", index + 1));
             bar
         })
         .collect();
     let next_worker = AtomicUsize::new(0);
+    let estimates = Arc::new(StageEstimates::default());
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(SAMPLER_PARALLEL_PROFILES)
         .build()?;
@@ -116,13 +124,14 @@ pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
                             .unwrap_or("<unknown>")
                             .to_string(),
                     );
-                    profile_progress.set_length(5);
+                    profile_progress.set_length(progress_length());
                     profile_progress.set_position(0);
                     profile_progress.set_message("queued");
                     let profile_started = Instant::now();
                     let progress = SamplerProgress {
                         profile: profile_progress.clone(),
                         started: profile_started,
+                        estimates: Arc::clone(&estimates),
                     };
                     let result = render_profile_thumbnail(
                         &args,
@@ -174,9 +183,22 @@ pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
     }
 
     sampler.set_message("montage");
-    let montage_progress = multi.add(ProgressBar::new(1));
+    let montage_progress = multi.add(ProgressBar::new(progress_length()));
     montage_progress.set_style(profile_progress_style());
     montage_progress.set_message(format!("montage {} thumbnails", thumbs.len()));
+    let montage_started = Instant::now();
+    let montage_apply_progress = ApplyProgress {
+        file: &montage_progress,
+        started: montage_started,
+        estimates: None,
+    };
+    let montage_stage = progress_stage(
+        Some(&montage_apply_progress),
+        0,
+        5,
+        "montage",
+        estimate_montage_duration(thumbs.len()),
+    );
     run_montage(
         &args.montage,
         &args.output,
@@ -184,7 +206,7 @@ pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
         args.jpg_quality,
         args.progressive_jpeg,
     )?;
-    montage_progress.set_position(1);
+    montage_stage.finish();
     montage_progress.finish_and_clear();
     sampler.finish_with_message(format!(
         "wrote {} thumbnails, skipped {} in {}",
@@ -287,12 +309,24 @@ fn render_profile_thumbnail(
     )
     .with_context(|| format!("resolving profile {}", profile.display()))?;
     let developed = profile_temp.join("rawtherapee.jpg");
-    sampler_step(progress, 2, "rawtherapee");
     let mut rawtherapee_profiles = rawtherapee_profiles_with_hald(&resolved, &profile_temp)?;
     rawtherapee_profiles.push(write_rawtherapee_resize_profile(
         &profile_temp.join("resize.pp3"),
         args.thumbnail_long_edge,
     )?);
+    let apply_progress = ApplyProgress {
+        file: &progress.profile,
+        started: progress.started,
+        estimates: Some(Arc::clone(&progress.estimates)),
+    };
+    let raw_stage = progress_stage_adaptive(
+        Some(&apply_progress),
+        2,
+        3,
+        "sampler-rawtherapee",
+        "rawtherapee",
+        estimate_sampler_raw_duration(args.thumbnail_long_edge),
+    );
     run_raw_develop_jpeg(
         &args.rawtherapee,
         &rawtherapee_profiles,
@@ -302,9 +336,17 @@ fn render_profile_thumbnail(
         args.jpeg_subsampling,
         true,
     )?;
+    raw_stage.finish();
 
     let source = if !args.no_grain && resolved.grain.is_enabled() {
-        sampler_step(progress, 3, "grain");
+        let grain_stage = progress_stage_adaptive(
+            Some(&apply_progress),
+            3,
+            4,
+            "sampler-grain",
+            "grain",
+            estimate_sampler_grain_duration(args.thumbnail_long_edge),
+        );
         let grained = profile_temp.join("grained-8.ppm");
         apply_grain_8bit(
             &developed,
@@ -312,6 +354,7 @@ fn render_profile_thumbnail(
             resolved.grain,
             sample_seed(base_seed, index, profile),
         )?;
+        grain_stage.finish();
         remove_temp_file(&developed)?;
         grained
     } else {
@@ -319,9 +362,17 @@ fn render_profile_thumbnail(
         developed
     };
 
-    sampler_step(progress, 4, "thumbnail");
+    let thumbnail_stage = progress_stage_adaptive(
+        Some(&apply_progress),
+        4,
+        5,
+        "sampler-thumbnail",
+        "thumbnail",
+        estimate_sampler_thumbnail_duration(args.thumbnail_long_edge),
+    );
     let thumb = profile_temp.join("thumb.jpg");
     finalize_output(&args.convert, &source, &thumb, export)?;
+    thumbnail_stage.finish();
     remove_temp_file(&source)?;
 
     let label = profile
@@ -400,12 +451,31 @@ fn profile_progress_style() -> ProgressStyle {
 }
 
 fn sampler_step(progress: &SamplerProgress, position: u64, step: &str) {
-    progress.profile.set_position(position);
-    progress.profile.set_message(format!(
-        "{} ({})",
+    set_progress(
+        &progress.profile,
+        progress.started,
+        progress_position(position),
         step,
-        format_duration(progress.started.elapsed())
-    ));
+    );
+}
+
+fn estimate_sampler_raw_duration(thumbnail_long_edge: u32) -> Duration {
+    let scale = (thumbnail_long_edge.max(128) as f64 / 512.0).sqrt();
+    Duration::from_secs_f64((1.2 * scale).clamp(0.8, 5.0))
+}
+
+fn estimate_sampler_grain_duration(thumbnail_long_edge: u32) -> Duration {
+    let pixels = thumbnail_long_edge.max(128) as f64;
+    Duration::from_secs_f64((0.20 + pixels / 2400.0).clamp(0.25, 1.5))
+}
+
+fn estimate_sampler_thumbnail_duration(thumbnail_long_edge: u32) -> Duration {
+    let pixels = thumbnail_long_edge.max(128) as f64;
+    Duration::from_secs_f64((0.15 + pixels / 4000.0).clamp(0.2, 1.0))
+}
+
+fn estimate_montage_duration(thumbs: usize) -> Duration {
+    Duration::from_secs_f64((0.5 + thumbs as f64 * 0.01).clamp(1.0, 20.0))
 }
 
 fn montage_font_path() -> Option<&'static str> {
