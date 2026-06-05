@@ -636,6 +636,7 @@ fn render_sheet_svg(layout: &SheetLayout) -> String {
 <rect width="100%" height="100%" fill="white"/>
 <style>
 {font_css}
+.tile {{ stroke: #dddddd; stroke-width: 1; fill: none; }}
 .thumb {{ stroke: #d0d0d0; stroke-width: 1; fill: #f8f8f8; }}
 </style>
 {body}
@@ -731,6 +732,7 @@ impl LayoutContext {
             let tx = x + col * tile;
             let thumb = entry.thumb;
             let (display_width, display_height) = thumb_display_size(thumb, self.thumb);
+            self.tile_rect(tx, self.y, self.thumb, self.thumb + label_height);
             self.text(tx, self.y + 84, &entry.label, 65, 500, "#444444");
             self.text(tx, self.y + 157, &entry.full_name, 17, 400, "#777777");
             let ty = self.y + label_height + (self.thumb - display_height) / 2;
@@ -751,6 +753,13 @@ impl LayoutContext {
     fn rect(&mut self, x: u32, y: u32, width: u32, height: u32) {
         self.body.push_str(&format!(
             r#"<rect class="thumb" x="{x}" y="{y}" width="{width}" height="{height}" rx="2"/>
+"#
+        ));
+    }
+
+    fn tile_rect(&mut self, x: u32, y: u32, width: u32, height: u32) {
+        self.body.push_str(&format!(
+            r#"<rect class="tile" x="{x}" y="{y}" width="{width}" height="{height}" rx="2"/>
 "#
         ));
     }
