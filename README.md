@@ -118,18 +118,19 @@ cargo run --release -- sampler \
   --output /home/alfanick/profile-sampler.jpg
 ```
 
-`sampler` renders one thumbnail per XMP file from `emulations/` and uses `montage` to build a contact sheet with six thumbnails per row. Each thumbnail is developed with its profile-specific generated RawTherapee `.pp3` files, including Film Simulation for the Hald, before the grain stage. Each label is relative to the emulation directory. Thumbnail longest edge defaults to 512 px:
+`sampler` renders one thumbnail per XMP file from `emulations/` and builds a structured contact sheet grouped by shared profile-name prefixes. For example, Kodak profiles are shown under progressively deeper headings like `Kodak`, `Kodak Portra`, `Kodak Portra 400`, and `Kodak Portra 400 Grainy`; indentation makes the level visible. Each thumbnail is developed with its profile-specific generated RawTherapee `.pp3` files, including Film Simulation for the Hald, before the grain stage. Like `batch`, sampler renders half of the detected CPU threads in parallel by default; override with `--jobs N`. Thumbnail longest edge defaults to 512 px:
 
 ```sh
+--jobs 8
 --thumbnail-long-edge 768
 --jpg-quality 92
 --no-grain
 ```
 
-Use a non-default montage binary with:
+Use a non-default convert binary or write a progressive sampler JPEG with:
 
 ```sh
---montage /path/to/montage
+--convert /path/to/convert
 --progressive
 ```
 
@@ -242,8 +243,7 @@ mini-film internally handles:
 ImageMagick/GraphicsMagick `convert` handles:
 
 - final resize, bit depth, metadata stripping, JPEG quality/subsampling, progressive JPEG, TIFF Zip compression, and TIFF/JPEG encoding
-
-`montage` handles only the sampler contact sheet assembly and labels. Texture is not faithfully mapped yet.
+- structured sampler contact sheet rendering from mini-film's generated SVG layout
 
 ## RAW Development
 

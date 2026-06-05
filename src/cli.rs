@@ -283,7 +283,7 @@ pub(crate) enum CommandKind {
         progressive_jpeg: bool,
     },
 
-    /// Render every resolvable XMP profile as a labeled contact-sheet thumbnail.
+    /// Render every resolvable XMP profile as a structured contact-sheet thumbnail.
     Sampler {
         /// RAW file to use as the sampler source.
         raw: PathBuf,
@@ -312,8 +312,8 @@ pub(crate) enum CommandKind {
         #[arg(long, default_value = "convert")]
         convert: PathBuf,
 
-        /// Path to montage binary.
-        #[arg(long, default_value = "montage")]
+        /// Legacy compatibility option; sampler sheet assembly now uses convert.
+        #[arg(long, default_value = "montage", hide = true)]
         montage: PathBuf,
 
         /// Disable Lightroom XMP grain emulation.
@@ -323,6 +323,10 @@ pub(crate) enum CommandKind {
         /// Base seed for deterministic generated grain. Defaults to current time of day.
         #[arg(long)]
         grain_seed: Option<u64>,
+
+        /// Number of profiles to render in parallel. Defaults to half of CPU threads.
+        #[arg(long)]
+        jobs: Option<usize>,
 
         /// Thumbnail longest edge in pixels.
         #[arg(long, default_value_t = 512)]
@@ -473,6 +477,20 @@ mod tests {
         assert!(matches!(
             cli.command,
             CommandKind::Sampler { hald_level: 16, .. }
+        ));
+
+        let cli = Cli::parse_from([
+            "mini-film",
+            "sampler",
+            "input.dng",
+            "--output",
+            "out.jpg",
+            "--jobs",
+            "8",
+        ]);
+        assert!(matches!(
+            cli.command,
+            CommandKind::Sampler { jobs: Some(8), .. }
         ));
     }
 }

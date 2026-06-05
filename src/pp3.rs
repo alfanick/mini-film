@@ -102,19 +102,19 @@ fn write_exposure_section(out: &mut String, adjustments: &ProfileAdjustments) {
     let _ = writeln!(out, "Auto=false");
     let _ = writeln!(out, "Clip=0.02");
     let _ = writeln!(out, "Compensation={}", fmt_f32(adjustments.exposure));
-    let _ = writeln!(out, "Brightness={}", fmt_f32(adjustments.whites * 0.5));
-    let _ = writeln!(out, "Contrast={}", fmt_f32(adjustments.contrast));
-    let _ = writeln!(out, "Saturation={}", fmt_f32(adjustments.saturation));
-    let _ = writeln!(out, "Black={}", fmt_f32(-adjustments.blacks));
+    let _ = writeln!(out, "Brightness={}", fmt_slider(adjustments.whites * 0.5));
+    let _ = writeln!(out, "Contrast={}", fmt_slider(adjustments.contrast));
+    let _ = writeln!(out, "Saturation={}", fmt_slider(adjustments.saturation));
+    let _ = writeln!(out, "Black={}", fmt_slider(-adjustments.blacks));
     let _ = writeln!(
         out,
         "HighlightCompr={}",
-        fmt_f32((-adjustments.highlights).clamp(0.0, 100.0))
+        fmt_slider((-adjustments.highlights).clamp(0.0, 100.0))
     );
     let _ = writeln!(
         out,
         "ShadowCompr={}",
-        fmt_f32(adjustments.shadows.clamp(0.0, 100.0))
+        fmt_slider(adjustments.shadows.clamp(0.0, 100.0))
     );
     let _ = writeln!(out, "HighlightComprThreshold=0");
     let _ = writeln!(out, "CurveFromHistogramMatching=false");
@@ -136,7 +136,7 @@ fn write_luminance_section(out: &mut String, adjustments: &ProfileAdjustments) {
     let _ = writeln!(out, "[Luminance Curve]");
     let _ = writeln!(out, "Enabled={enabled}");
     let _ = writeln!(out, "Brightness=0");
-    let _ = writeln!(out, "Contrast={}", fmt_f32(adjustments.clarity));
+    let _ = writeln!(out, "Contrast={}", fmt_slider(adjustments.clarity));
     let _ = writeln!(out, "Chromaticity=0");
     let _ = writeln!(out, "AvoidColorShift=false");
     let _ = writeln!(out, "RedAndSkinTonesProtection=0");
@@ -196,11 +196,15 @@ fn write_vibrance_section(out: &mut String, adjustments: &ProfileAdjustments) {
 
     let _ = writeln!(out, "[Vibrance]");
     let _ = writeln!(out, "Enabled=true");
-    let _ = writeln!(out, "Pastels={}", fmt_f32(pastels + calibration_sat * 0.25));
+    let _ = writeln!(
+        out,
+        "Pastels={}",
+        fmt_slider(pastels + calibration_sat * 0.25)
+    );
     let _ = writeln!(
         out,
         "Saturated={}",
-        fmt_f32(saturated + calibration_sat * 0.25)
+        fmt_slider(saturated + calibration_sat * 0.25)
     );
     let _ = writeln!(out, "ProtectSkins=false");
     let _ = writeln!(out, "AvoidColorShift=true");
@@ -353,6 +357,10 @@ fn fmt_f32(value: f32) -> String {
     value
 }
 
+fn fmt_slider(value: f32) -> i32 {
+    value.round().clamp(-100.0, 100.0) as i32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,7 +384,7 @@ mod tests {
             contrast: 20.0,
             highlights: -30.0,
             shadows: 40.0,
-            whites: 10.0,
+            whites: 25.0,
             blacks: -5.0,
             vibrance: 25.0,
             parametric: ParametricTone {
@@ -398,11 +406,32 @@ mod tests {
 
         let profile = rawtherapee_profile_text(&adjustments, sharpening);
         assert!(profile.contains("Compensation=0.5\n"));
+        assert!(profile.contains("Brightness=13\n"));
+        assert!(profile.contains("Contrast=20\n"));
+        assert!(profile.contains("Black=5\n"));
         assert!(profile.contains("HighlightCompr=30\n"));
         assert!(profile.contains("ShadowCompr=40\n"));
+        assert!(!profile.contains("Brightness=12.5\n"));
         assert!(profile.contains("[Vibrance]\nEnabled=true\n"));
         assert!(profile.contains("[Sharpening]\nEnabled=true\n"));
         assert!(profile.contains("Amount=40\n"));
+    }
+
+    #[test]
+    fn vibrance_section_uses_integer_slider_values_for_rawtherapee() {
+        let mut adjustments = ProfileAdjustments {
+            vibrance: 2.25,
+            ..ProfileAdjustments::default()
+        };
+        adjustments.hsl.saturation[3] = 9.0;
+        adjustments.hsl.saturation[5] = 10.0;
+
+        let profile = rawtherapee_profile_text(&adjustments, SharpeningSettings::default());
+
+        assert!(profile.contains("[Vibrance]\nEnabled=true\n"));
+        assert!(profile.contains("Pastels=2\n"));
+        assert!(profile.contains("Saturated=5\n"));
+        assert!(!profile.contains("Saturated=4.625\n"));
     }
 
     #[test]
@@ -466,5 +495,7 @@ mod tests {
         assert_eq!(average(&[1.0, 2.0, 3.0, 4.0, 0.0, 0.0, 0.0, 0.0]), 1.25);
         assert_eq!(fmt_f32(2.0), "2");
         assert_eq!(fmt_f32(2.5), "2.5");
+        assert_eq!(fmt_slider(2.5), 3);
+        assert_eq!(fmt_slider(200.0), 100);
     }
 }
