@@ -170,6 +170,10 @@ pub(crate) enum CommandKind {
         #[arg(long)]
         grain_seed: Option<u64>,
 
+        /// Number of RAW files to process in parallel. Defaults to half of CPU threads.
+        #[arg(long)]
+        jobs: Option<usize>,
+
         /// Output format for generated batch files.
         #[arg(long, value_enum, default_value_t = BatchOutputFormat::Jpg)]
         output_format: BatchOutputFormat,

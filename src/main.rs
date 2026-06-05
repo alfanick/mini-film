@@ -95,6 +95,7 @@ fn main() -> Result<()> {
             grain,
             grain_preset,
             grain_seed,
+            jobs,
             output_format,
             jpg_quality,
             resize,
@@ -117,6 +118,7 @@ fn main() -> Result<()> {
             grain,
             grain_preset,
             grain_seed,
+            jobs,
             output_format,
             export: ExportOptions {
                 jpg_quality,

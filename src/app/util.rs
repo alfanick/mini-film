@@ -36,6 +36,10 @@ pub(crate) fn cpu_thread_count() -> usize {
         .unwrap_or(1)
 }
 
+pub(crate) fn half_cpu_thread_count() -> usize {
+    (cpu_thread_count() / 2).max(1)
+}
+
 pub(crate) fn default_hald_dir() -> PathBuf {
     env::var_os("HOME")
         .map(PathBuf::from)

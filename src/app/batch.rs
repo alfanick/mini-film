@@ -20,10 +20,8 @@ use crate::app::profile::resolve_profile;
 use crate::app::progress::{
     ApplyProgress, batch_progress_style, file_progress_style, format_duration,
 };
-use crate::app::util::time_of_day_seed;
+use crate::app::util::{half_cpu_thread_count, time_of_day_seed};
 use crate::cli::{BatchOutputFormat, ExportOptions};
-
-const BATCH_PARALLEL_FILES: usize = 4;
 
 pub(crate) struct BatchArgs {
     pub(crate) input: PathBuf,
@@ -38,6 +36,7 @@ pub(crate) struct BatchArgs {
     pub(crate) grain: Option<String>,
     pub(crate) grain_preset: Option<String>,
     pub(crate) grain_seed: Option<u64>,
+    pub(crate) jobs: Option<usize>,
     pub(crate) output_format: BatchOutputFormat,
     pub(crate) export: ExportOptions,
 }
@@ -46,13 +45,14 @@ pub(crate) struct BatchArgs {
 ///
 /// The batch pipeline validates shared export options once, creates the output
 /// directory, resolves the profile once into a reusable Hald, and then processes
-/// four files at a time with per-file temp directories. It preserves relative
-/// input paths under the output root, drives a batch progress bar plus one
-/// per-worker step bar, derives a stable grain seed per file, records failures,
-/// and reports all failures after the parallel work finishes instead of stopping
-/// at the first bad image.
+/// a bounded number of files at a time with per-file temp directories. It
+/// preserves relative input paths under the output root, drives a batch progress
+/// bar plus one per-worker step bar, derives a stable grain seed per file,
+/// records failures, and reports all failures after the parallel work finishes
+/// instead of stopping at the first bad image.
 pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
     validate_export_options(&args.export)?;
+    let jobs = resolve_batch_jobs(args.jobs)?;
     if !args.input.is_dir() {
         bail!("batch input is not a directory: {}", args.input.display());
     }
@@ -93,7 +93,7 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
     let batch = multi.add(ProgressBar::new(raws.len() as u64));
     batch.set_style(batch_progress_style());
     batch.set_message("starting");
-    let worker_bars: Vec<_> = (0..BATCH_PARALLEL_FILES)
+    let worker_bars: Vec<_> = (0..jobs)
         .map(|index| {
             let file = multi.add(ProgressBar::new(5));
             file.set_style(file_progress_style());
@@ -103,9 +103,7 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
         .collect();
 
     let batch_start = Instant::now();
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(BATCH_PARALLEL_FILES)
-        .build()?;
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(jobs).build()?;
     let bar_pool = Arc::new(Mutex::new(worker_bars.clone()));
     let results: Vec<_> = pool.install(|| {
         raws.par_iter()
@@ -279,6 +277,14 @@ fn is_batch_raw(path: &Path) -> bool {
         Some(ext)
             if ext.eq_ignore_ascii_case("dng") || ext.eq_ignore_ascii_case("nef")
     )
+}
+
+fn resolve_batch_jobs(jobs: Option<usize>) -> Result<usize> {
+    let jobs = jobs.unwrap_or_else(half_cpu_thread_count);
+    if jobs == 0 {
+        bail!("--jobs must be at least 1");
+    }
+    Ok(jobs)
 }
 
 fn batch_output_path(

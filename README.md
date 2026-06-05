@@ -81,10 +81,13 @@ cargo run --release -- batch \
   /home/alfanick/batch-output \
   --profile 'Agfa Scala 200 + grainy' \
   --profiles-root /home/alfanick/Pictures/RNI \
-  --output-format jpg
+  --output-format jpg \
+  --jobs 8
 ```
 
 The output directory is created if it does not exist. Nested input folders are preserved, and each RAW output uses the same relative path with a `.jpg` extension by default. Use `--output-format tiff` to write `.tif` files through the 16-bit TIFF path.
+
+By default, `batch` processes half of the detected CPU threads at once. On a 16-thread CPU that means 8 files in parallel. Override it with `--jobs N` when tuning for a different machine, output format, or memory budget.
 
 `batch` shows two progress bars:
 
