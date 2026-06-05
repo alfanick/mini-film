@@ -214,7 +214,7 @@ fn adobe_digit(byte: u8) -> Option<u8> {
 /// independently. For 3D tables the coordinate is scaled into table space,
 /// split into low/high corners, and trilinearly interpolated across the eight
 /// neighboring RGB samples to produce one 16-bit output color.
-pub(crate) fn sample_table(table: &RgbTable, r: u32, g: u32, b: u32, axis: u32) -> [u16; 3] {
+pub fn sample_rgb_table(table: &RgbTable, r: u32, g: u32, b: u32, axis: u32) -> [u16; 3] {
     if table.dimensions == 1 {
         return [
             sample_1d(table, r, axis, 0),
@@ -253,6 +253,10 @@ pub(crate) fn sample_table(table: &RgbTable, r: u32, g: u32, b: u32, axis: u32) 
     }
 
     out
+}
+
+pub(crate) fn sample_table(table: &RgbTable, r: u32, g: u32, b: u32, axis: u32) -> [u16; 3] {
+    sample_rgb_table(table, r, g, b, axis)
 }
 
 /// Interpolate one channel from a 1D RGBTable.

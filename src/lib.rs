@@ -4,6 +4,7 @@ mod adjustments;
 mod grain;
 mod hald;
 mod model;
+mod nikon;
 mod pp3;
 mod rgb_table;
 mod xmp;
@@ -18,9 +19,13 @@ pub use model::{
     HslAdjustments, ParametricTone, ProfileAdjustments, RgbTable, SharpeningSettings, ToneCurves,
     XmpFilmRecipe, XmpRgbTable,
 };
+pub use nikon::{
+    NikonPictureControl, NikonReport, fit_nikon_picture_control,
+    fit_nikon_picture_control_from_hald, write_ncp, write_report,
+};
 pub use pp3::{
     rawtherapee_hald_clut_profile_text, rawtherapee_profile_text, rawtherapee_resize_profile_text,
     write_rawtherapee_profile, write_rawtherapee_resize_profile,
 };
-pub use rgb_table::{decode_rgb_table, parse_rgb_table};
+pub use rgb_table::{decode_rgb_table, parse_rgb_table, sample_rgb_table};
 pub use xmp::{extract_film_recipe, extract_rgb_table};

@@ -7,6 +7,7 @@ use clap::Parser;
 use crate::app::apply::{ApplyArgs, run_apply};
 use crate::app::batch::{BatchArgs, run_batch};
 use crate::app::info::{InfoArgs, run_info};
+use crate::app::nikon::{NikonArgs, run_nikon};
 use crate::app::pp3::{Pp3Args, run_pp3};
 use crate::app::run_hald;
 use crate::app::sampler::{SamplerArgs, run_sampler};
@@ -57,6 +58,23 @@ fn main() -> Result<()> {
         } => run_pp3(Pp3Args {
             profile,
             output,
+            profiles_root,
+            hald_dir: hald_dir.unwrap_or_else(default_hald_dir),
+            hald_level,
+        }),
+        CommandKind::Nikon {
+            profile,
+            output,
+            report,
+            name,
+            profiles_root,
+            hald_dir,
+            hald_level,
+        } => run_nikon(NikonArgs {
+            profile,
+            output,
+            report,
+            name,
             profiles_root,
             hald_dir: hald_dir.unwrap_or_else(default_hald_dir),
             hald_level,

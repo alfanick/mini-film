@@ -13,6 +13,7 @@ It can:
 - render a profile sampler contact sheet for one RAW file
 - inspect emulation/profile XMP adjustments
 - print generated RawTherapee PP3 profiles
+- fit XMP/Hald looks into experimental Nikon `.NCP` Picture Controls
 - add deterministic procedural film grain
 - export either 16-bit TIFF or 8-bit JPEG
 
@@ -200,6 +201,22 @@ cargo run --release -- pp3 \
 ```
 
 `pp3` uses the same profile/emulation resolver as `info`. It writes to `/dev/stdout` by default, or to `--output`. The output contains the RawTherapee adjustment profile sections that mini-film would pass to `rawtherapee-cli`, followed by the Film Simulation section pointing at the cached Hald PNG.
+
+## Nikon Picture Control Output
+
+Fit an emulation XMP, internal RGBTable XMP, or Hald PNG into a Nikon classic `.NCP` Picture Control:
+
+```sh
+cargo run --release -- nikon \
+  'Polaroid 600 v3 grainy' \
+  --profiles-root /home/alfanick/Pictures/RNI \
+  --output polaroid-600-v3.ncp \
+  --report polaroid-600-v3.ncp.txt
+```
+
+The `nikon` command writes a real classic NCP file using a neutral base Picture Control plus a fitted 257-point user-defined luminosity curve. It also estimates coarse saturation, hue, and sharpening fields from the profile. Use `--name 'Short Name'` to set the in-camera Picture Control name; NCP names are ASCII and short, so mini-film sanitizes and truncates them.
+
+This is necessarily lossy. Nikon classic NCP does not store a full 3D LUT, RGBTable, Hald CLUT, or grain model. Color-specific film behavior is compressed into a 1D luma curve plus coarse sliders. Use the optional report to inspect mean/max luma and color error before trusting the result.
 
 ## Processing Split
 

@@ -78,6 +78,36 @@ pub(crate) enum CommandKind {
         hald_level: u32,
     },
 
+    /// Fit an XMP/RGBTable/Hald look into a Nikon classic .NCP Picture Control.
+    Nikon {
+        /// Profile selector: emulation XMP path/name, internal RGBTable XMP path/name, or Hald PNG path/name.
+        profile: String,
+
+        /// Output .NCP path.
+        #[arg(short, long)]
+        output: PathBuf,
+
+        /// Optional report path describing approximation error and fitted controls.
+        #[arg(long)]
+        report: Option<PathBuf>,
+
+        /// Picture Control display name. NCP names are ASCII and truncated to 19 bytes.
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Film library root. Emulation XMPs are selected from emulations/ and RGBTable profiles from profiles/.
+        #[arg(long, default_value = ".")]
+        profiles_root: PathBuf,
+
+        /// Directory containing generated cached Hald PNGs. Defaults to $HOME/.cache/mini-film/hald.
+        #[arg(long)]
+        hald_dir: Option<PathBuf>,
+
+        /// Hald level used when resolving cached Hald paths for XMP profiles.
+        #[arg(short = 'l', long, default_value_t = DEFAULT_HALD_LEVEL)]
+        hald_level: u32,
+    },
+
     /// Run RawTherapee, then apply a Hald CLUT with GraphicsMagick/ImageMagick convert.
     Apply {
         /// RAW file to develop.
@@ -404,6 +434,12 @@ mod tests {
         assert!(matches!(
             cli.command,
             CommandKind::Pp3 { hald_level: 16, .. }
+        ));
+
+        let cli = Cli::parse_from(["mini-film", "nikon", "profile", "--output", "out.ncp"]);
+        assert!(matches!(
+            cli.command,
+            CommandKind::Nikon { hald_level: 16, .. }
         ));
 
         let cli = Cli::parse_from([
