@@ -609,17 +609,17 @@ fn build_sheet_layout_with_thumb(trie: &ProfileTrie, thumb: u32, columns: u32) -
         gap,
         thumb,
     };
-    ctx.text(margin, ctx.y, "mini-film sampler", 30, 700, "#111");
-    ctx.y += 34;
+    ctx.text(margin, ctx.y, "mini-film sampler", 90, 700, "#111");
+    ctx.y += 102;
     ctx.text(
         margin,
         ctx.y,
         "Profiles are grouped by shared name prefixes; indentation shows trie depth.",
-        15,
+        45,
         400,
         "#666",
     );
-    ctx.y += 36;
+    ctx.y += 108;
     for (part, child) in &trie.children {
         ctx.render_node(child, &[part.clone()], 0);
     }
@@ -663,15 +663,15 @@ impl LayoutContext {
         let x = self.margin + self.indent * depth as u32;
         let text = prefix.join(" ");
         let size = match depth {
-            0 => 27,
-            1 => 22,
-            2 => 18,
-            _ => 15,
+            0 => 81,
+            1 => 66,
+            2 => 54,
+            _ => 45,
         };
         let weight = if depth <= 1 { 700 } else { 600 };
-        self.y += if depth == 0 { 18 } else { 8 };
+        self.y += if depth == 0 { 54 } else { 24 };
         self.text(x, self.y, &text, size, weight, header_color(depth));
-        self.y += size + 8;
+        self.y += size + 24;
 
         if depth >= 1 || subtree_depth(node) <= 2 {
             let mut entries = Vec::new();
@@ -720,7 +720,7 @@ impl LayoutContext {
 
     fn render_labeled_thumbs(&mut self, entries: &[SheetEntry<'_>], x: u32) {
         let tile = self.thumb + self.gap;
-        let label_height = 48u32;
+        let label_height = 144u32;
         let available = self.width.saturating_sub(x + self.margin).max(self.thumb);
         let columns = (available / tile).max(1);
         for (index, entry) in entries.iter().enumerate() {
@@ -731,8 +731,8 @@ impl LayoutContext {
             let tx = x + col * tile;
             let thumb = entry.thumb;
             let (display_width, display_height) = thumb_display_size(thumb, self.thumb);
-            self.text(tx, self.y + 18, &entry.label, 16, 500, "#444444");
-            self.text(tx, self.y + 36, &entry.full_name, 12, 400, "#777777");
+            self.text(tx, self.y + 54, &entry.label, 48, 500, "#444444");
+            self.text(tx, self.y + 108, &entry.full_name, 36, 400, "#777777");
             let ty = self.y + label_height + (self.thumb - display_height) / 2;
             self.rect(tx, ty, display_width, display_height);
             self.image(tx, ty, display_width, display_height, &thumb.image);
