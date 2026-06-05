@@ -39,6 +39,7 @@ pub(crate) struct SamplerArgs {
     pub(crate) grain_seed: Option<u64>,
     pub(crate) jobs: Option<usize>,
     pub(crate) thumbnail_long_edge: u32,
+    pub(crate) columns: u32,
     pub(crate) jpg_quality: u8,
     pub(crate) jpeg_subsampling: JpegSubsampling,
     pub(crate) strip_metadata: bool,
@@ -230,6 +231,7 @@ pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
         &args.output,
         &thumbs,
         args.thumbnail_long_edge,
+        args.columns,
         args.jpg_quality,
         args.progressive_jpeg,
     )?;
@@ -257,6 +259,9 @@ fn validate_sampler_args(args: &SamplerArgs) -> Result<()> {
     }
     if args.thumbnail_long_edge == 0 {
         bail!("--thumbnail-long-edge must be greater than zero");
+    }
+    if args.columns == 0 {
+        bail!("--columns must be greater than zero");
     }
     Ok(())
 }
@@ -441,6 +446,7 @@ fn run_structured_sheet(
     output: &Path,
     thumbs: &[SampleThumb],
     thumbnail_long_edge: u32,
+    columns: u32,
     jpg_quality: u8,
     progressive_jpeg: bool,
 ) -> Result<()> {
@@ -453,7 +459,7 @@ fn run_structured_sheet(
         trie.insert(thumb.clone_for_tree());
     }
     let output_kind = sampler_output_kind(output)?.context("unsupported sampler output format")?;
-    let layout = build_sheet_layout(&trie, thumbnail_long_edge, output_kind);
+    let layout = build_sheet_layout(&trie, thumbnail_long_edge, columns, output_kind);
     let svg = render_sheet_svg(&layout);
     let svg_path = output.with_extension("mini-film-sampler.svg");
     fs::write(&svg_path, svg).with_context(|| format!("writing {}", svg_path.display()))?;
@@ -594,10 +600,11 @@ fn profile_name_parts(name: &str) -> Vec<String> {
 fn build_sheet_layout(
     trie: &ProfileTrie,
     thumbnail_long_edge: u32,
+    columns: u32,
     output_kind: SheetOutputKind,
 ) -> SheetLayout {
     let mut thumb = thumbnail_long_edge.max(64);
-    let columns = sampler_sheet_columns(trie_thumb_count(trie));
+    let columns = sampler_sheet_columns(trie_thumb_count(trie), columns);
     if output_kind == SheetOutputKind::Pdf {
         return build_sheet_layout_with_thumb(trie, thumb, columns);
     }
@@ -690,10 +697,10 @@ impl LayoutContext {
         };
         let weight = if depth <= 1 { 700 } else { 600 };
         self.y += match depth {
-            0 => 50,
-            1 => 40,
-            2 => 30,
-            _ => 20,
+            0 => 62,
+            1 => 50,
+            2 => 38,
+            _ => 26,
         };
         self.text(x, self.y, &text, size, weight, header_color(depth));
         self.y += size + 10;
@@ -967,8 +974,8 @@ fn max_rendered_grid_depth_at(node: &ProfileTrie, depth: usize) -> usize {
         .unwrap_or(depth)
 }
 
-fn sampler_sheet_columns(thumb_count: u32) -> u32 {
-    thumb_count.clamp(1, 8)
+fn sampler_sheet_columns(thumb_count: u32, requested_columns: u32) -> u32 {
+    thumb_count.clamp(1, requested_columns.max(1))
 }
 
 fn header_color(depth: usize) -> &'static str {
@@ -1100,7 +1107,7 @@ mod tests {
         thumb.image = PathBuf::from("/tmp/kodak.jpg");
         trie.insert(thumb);
 
-        let layout = build_sheet_layout(&trie, 128, SheetOutputKind::Raster);
+        let layout = build_sheet_layout(&trie, 128, 8, SheetOutputKind::Raster);
         let svg = render_sheet_svg(&layout);
 
         assert!(svg.contains(">Kodak<"));
@@ -1124,7 +1131,7 @@ mod tests {
             trie.insert(sample_thumb(name, 1024, 683));
         }
 
-        let layout = build_sheet_layout(&trie, 256, SheetOutputKind::Raster);
+        let layout = build_sheet_layout(&trie, 256, 8, SheetOutputKind::Raster);
         let svg = render_sheet_svg(&layout);
 
         assert!(svg.contains(">Fuji<"));
@@ -1150,7 +1157,7 @@ mod tests {
             trie.insert(sample_thumb(name, 1024, 683));
         }
 
-        let layout = build_sheet_layout(&trie, 256, SheetOutputKind::Raster);
+        let layout = build_sheet_layout(&trie, 256, 8, SheetOutputKind::Raster);
         let svg = render_sheet_svg(&layout);
 
         assert!(svg.contains(">Ilford<"));
@@ -1166,7 +1173,7 @@ mod tests {
             trie.insert(sample_thumb(name, 1024, 683));
         }
 
-        let layout = build_sheet_layout(&trie, 256, SheetOutputKind::Raster);
+        let layout = build_sheet_layout(&trie, 256, 8, SheetOutputKind::Raster);
         let svg = render_sheet_svg(&layout);
 
         assert!(svg.contains(">FP4<"));
@@ -1190,7 +1197,7 @@ mod tests {
             trie.insert(sample_thumb(name, 1024, 683));
         }
 
-        let layout = build_sheet_layout(&trie, 256, SheetOutputKind::Raster);
+        let layout = build_sheet_layout(&trie, 256, 8, SheetOutputKind::Raster);
         let svg = render_sheet_svg(&layout);
 
         assert!(svg.contains(">Kodak Portra 100<"));
@@ -1219,7 +1226,7 @@ mod tests {
             }
         }
 
-        let layout = build_sheet_layout(&trie, 1024, SheetOutputKind::Raster);
+        let layout = build_sheet_layout(&trie, 1024, 8, SheetOutputKind::Raster);
 
         assert_eq!(trie_thumb_count(&trie), 624);
         assert!(layout.width < 65_000);
@@ -1227,10 +1234,10 @@ mod tests {
     }
 
     #[test]
-    fn sampler_columns_are_capped_at_eight() {
-        assert_eq!(sampler_sheet_columns(414), 8);
-        assert_eq!(sampler_sheet_columns(24), 8);
-        assert_eq!(sampler_sheet_columns(4), 4);
+    fn sampler_columns_use_requested_cap() {
+        assert_eq!(sampler_sheet_columns(414, 8), 8);
+        assert_eq!(sampler_sheet_columns(24, 4), 4);
+        assert_eq!(sampler_sheet_columns(3, 4), 3);
     }
 
     #[test]
@@ -1240,9 +1247,23 @@ mod tests {
             trie.insert(sample_thumb(&format!("Kodak Portra {index}"), 1024, 683));
         }
 
-        let layout = build_sheet_layout(&trie, 1024, SheetOutputKind::Pdf);
+        let layout = build_sheet_layout(&trie, 1024, 8, SheetOutputKind::Pdf);
         let svg = render_sheet_svg(&layout);
 
+        assert!(svg.contains(r#"width="996" height="664""#));
+    }
+
+    #[test]
+    fn pdf_sampler_can_render_four_requested_columns_without_shrinking_thumbnails() {
+        let mut trie = ProfileTrie::default();
+        for index in 0..16 {
+            trie.insert(sample_thumb(&format!("Kodak Portra {index}"), 1024, 683));
+        }
+
+        let layout = build_sheet_layout(&trie, 1024, 4, SheetOutputKind::Pdf);
+        let svg = render_sheet_svg(&layout);
+
+        assert!(layout.width < 5000);
         assert!(svg.contains(r#"width="996" height="664""#));
     }
 

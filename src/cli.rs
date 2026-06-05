@@ -332,6 +332,10 @@ pub(crate) enum CommandKind {
         #[arg(long, default_value_t = 512)]
         thumbnail_long_edge: u32,
 
+        /// Maximum thumbnails per sampler row.
+        #[arg(long, default_value_t = 8)]
+        columns: u32,
+
         /// JPEG quality for thumbnails and JPEG contact sheets.
         #[arg(long, default_value_t = 95)]
         jpg_quality: u8,
@@ -487,10 +491,16 @@ mod tests {
             "out.jpg",
             "--jobs",
             "8",
+            "--columns",
+            "4",
         ]);
         assert!(matches!(
             cli.command,
-            CommandKind::Sampler { jobs: Some(8), .. }
+            CommandKind::Sampler {
+                jobs: Some(8),
+                columns: 4,
+                ..
+            }
         ));
     }
 }
