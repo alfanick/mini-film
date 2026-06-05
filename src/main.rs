@@ -7,6 +7,7 @@ use clap::Parser;
 use crate::app::apply::{ApplyArgs, run_apply};
 use crate::app::batch::{BatchArgs, run_batch};
 use crate::app::info::{InfoArgs, run_info};
+use crate::app::pp3::{Pp3Args, run_pp3};
 use crate::app::run_hald;
 use crate::app::sampler::{SamplerArgs, run_sampler};
 use crate::app::util::{configure_threads, default_hald_dir};
@@ -43,6 +44,19 @@ fn main() -> Result<()> {
             hald_level,
         } => run_info(InfoArgs {
             profile,
+            profiles_root,
+            hald_dir: hald_dir.unwrap_or_else(default_hald_dir),
+            hald_level,
+        }),
+        CommandKind::Pp3 {
+            profile,
+            output,
+            profiles_root,
+            hald_dir,
+            hald_level,
+        } => run_pp3(Pp3Args {
+            profile,
+            output,
             profiles_root,
             hald_dir: hald_dir.unwrap_or_else(default_hald_dir),
             hald_level,

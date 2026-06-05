@@ -12,6 +12,7 @@ It can:
 - batch-process DNG/NEF folders into JPEGs
 - render a profile sampler contact sheet for one RAW file
 - inspect emulation/profile XMP adjustments
+- print generated RawTherapee PP3 profiles
 - add deterministic procedural film grain
 - export either 16-bit TIFF or 8-bit JPEG
 
@@ -175,6 +176,19 @@ cargo run --release -- info \
 ```
 
 `info` resolves emulation names under `emulations/`, direct emulation XMP paths, direct internal profile XMP paths, internal profile names under `profiles/`, and cached Hald PNGs under `--hald-dir`. For emulations, it prints the preset identity, linked Look, linked internal RGBTable profile, cached Hald path, profile-side tone/color/sharpening adjustments, and emulation-side grain/adjustments.
+
+## RawTherapee PP3 Output
+
+Print the generated RawTherapee PP3 for a profile:
+
+```sh
+cargo run --release -- pp3 \
+  'Polaroid 600 v3 grainy' \
+  --profiles-root /home/alfanick/Pictures/RNI \
+  --output polaroid-600-v3.pp3
+```
+
+`pp3` uses the same profile/emulation resolver as `info`. It writes to `/dev/stdout` by default, or to `--output`. The output contains the RawTherapee adjustment profile sections that mini-film would pass to `rawtherapee-cli`, followed by the Film Simulation section pointing at the cached Hald PNG.
 
 ## Processing Split
 

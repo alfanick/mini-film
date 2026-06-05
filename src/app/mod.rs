@@ -2,6 +2,7 @@ pub(crate) mod apply;
 pub(crate) mod batch;
 pub(crate) mod export;
 pub(crate) mod info;
+pub(crate) mod pp3;
 pub(crate) mod profile;
 pub(crate) mod progress;
 pub(crate) mod raw;
