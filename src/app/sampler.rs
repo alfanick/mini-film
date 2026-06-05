@@ -586,7 +586,7 @@ fn build_sheet_layout(trie: &ProfileTrie, thumbnail_long_edge: u32) -> SheetLayo
     let columns = sampler_sheet_columns(trie_thumb_count(trie));
     loop {
         let layout = build_sheet_layout_with_thumb(trie, thumb, columns);
-        if layout.height < 64_000 || thumb <= 64 {
+        if layout.height < 60_000 || thumb <= 64 {
             return layout;
         }
         thumb = ((thumb as f64) * 0.9).round().max(64.0) as u32;
@@ -673,7 +673,7 @@ impl LayoutContext {
         self.text(x, self.y, &text, size, weight, header_color(depth));
         self.y += size + 32;
 
-        if depth >= 1 || subtree_depth(node) <= 2 {
+        if (depth >= 1 || subtree_depth(node) <= 2) && !contains_version_branch(node) {
             let mut entries = Vec::new();
             collect_subtree_entries(node, prefix.len(), &mut entries);
             if !entries.is_empty() {
@@ -731,8 +731,8 @@ impl LayoutContext {
             let tx = x + col * tile;
             let thumb = entry.thumb;
             let (display_width, display_height) = thumb_display_size(thumb, self.thumb);
-            self.text(tx, self.y + 72, &entry.label, 65, 500, "#444444");
-            self.text(tx, self.y + 145, &entry.full_name, 25, 400, "#777777");
+            self.text(tx, self.y + 84, &entry.label, 65, 500, "#444444");
+            self.text(tx, self.y + 157, &entry.full_name, 17, 400, "#777777");
             let ty = self.y + label_height + (self.thumb - display_height) / 2;
             self.rect(tx, ty, display_width, display_height);
             self.image(tx, ty, display_width, display_height, &thumb.image);
@@ -846,6 +846,12 @@ fn natural_sort_part(part: &str) -> String {
     part.to_string()
 }
 
+fn is_version_part(part: &str) -> bool {
+    part.strip_prefix('v')
+        .or_else(|| part.strip_prefix('V'))
+        .is_some_and(|version| version.parse::<u32>().is_ok())
+}
+
 fn trie_thumb_count(trie: &ProfileTrie) -> u32 {
     let children: u32 = trie.children.values().map(trie_thumb_count).sum();
     trie.thumbs.len() as u32 + children
@@ -857,6 +863,12 @@ fn subtree_depth(trie: &ProfileTrie) -> usize {
         .map(subtree_depth)
         .max()
         .map_or(0, |depth| depth + 1)
+}
+
+fn contains_version_branch(trie: &ProfileTrie) -> bool {
+    trie.children
+        .iter()
+        .any(|(part, child)| is_version_part(part) || contains_version_branch(child))
 }
 
 fn sampler_sheet_columns(thumb_count: u32) -> u32 {
@@ -1021,15 +1033,17 @@ mod tests {
 
         assert!(svg.contains(">Fuji<"));
         assert!(svg.contains(">Fuji Superia<"));
-        assert!(svg.contains(">200 v2<"));
+        assert!(svg.contains(">Fuji Superia 200 v2<"));
+        assert!(svg.contains(">v2<"));
         assert!(svg.contains(">Fuji Superia 200 v2.xmp<"));
-        assert!(svg.contains(">200 v2 grainy<"));
+        assert!(svg.contains(">v2 grainy<"));
         assert!(svg.contains(">Fuji Superia 200 v2 grainy.xmp<"));
-        assert!(svg.contains(">200 v3<"));
-        assert!(svg.contains(">200 v3 grainy<"));
-        assert!(svg.find(">200 v2<") < svg.find(">200 v2 grainy<"));
-        assert!(svg.find(">200 v2 grainy<") < svg.find(">200 v3<"));
-        assert!(svg.find(">200 v3<") < svg.find(">200 v3 grainy<"));
+        assert!(svg.contains(">Fuji Superia 200 v3<"));
+        assert!(svg.contains(">v3<"));
+        assert!(svg.contains(">v3 grainy<"));
+        assert!(svg.find(">v2<") < svg.find(">v2 grainy<"));
+        assert!(svg.find(">Fuji Superia 200 v2<") < svg.find(">Fuji Superia 200 v3<"));
+        assert!(svg.find(">v3<") < svg.find(">v3 grainy<"));
         assert!(!svg.contains(">Fuji Superia 200 v2 grainy<"));
     }
 
@@ -1056,9 +1070,9 @@ mod tests {
             for version in 1..=3 {
                 for grainy in [false, true] {
                     let name = if grainy {
-                        format!("Fuji Superia {film} v{version} grainy")
+                        format!("Fuji Superia {film} variant {version} grainy")
                     } else {
-                        format!("Fuji Superia {film} v{version}")
+                        format!("Fuji Superia {film} variant {version}")
                     };
                     trie.insert(sample_thumb(&name, 1024, 683));
                 }
