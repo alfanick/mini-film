@@ -17,6 +17,17 @@ It can:
 - add deterministic procedural film grain
 - export either 16-bit TIFF or 8-bit JPEG
 
+## Example
+
+Example sampler output: <https://sam.nakarmamana.ch/mini-film/sampler.jpg>
+
+This sampler was generated from my pictures using RNI All Films 5 Pro profiles:
+<https://reallyniceimages.com/products/rni-all-films-5-pro-for-adobe-lightroom.html>
+
+The RNI profiles are not part of this project. To use `mini-film` with those
+emulations, obtain the profiles yourself and point `--profiles-root` at your
+local profile library.
+
 ## Build
 
 ```sh

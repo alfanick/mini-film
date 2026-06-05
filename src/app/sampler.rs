@@ -602,24 +602,24 @@ fn build_sheet_layout_with_thumb(trie: &ProfileTrie, thumb: u32, columns: u32) -
         .clamp(1200, 32_000);
     let mut ctx = LayoutContext {
         body: String::new(),
-        y: margin + 90,
+        y: margin + 122,
         width,
         margin,
         indent,
         gap,
         thumb,
     };
-    ctx.text(margin, ctx.y, "mini-film sampler", 90, 700, "#111");
-    ctx.y += 102;
+    ctx.text(margin, ctx.y, "mini-film sampler", 122, 700, "#111");
+    ctx.y += 138;
     ctx.text(
         margin,
         ctx.y,
         "Profiles are grouped by shared name prefixes; indentation shows trie depth.",
-        45,
+        61,
         400,
         "#666",
     );
-    ctx.y += 108;
+    ctx.y += 132;
     for (part, child) in &trie.children {
         ctx.render_node(child, &[part.clone()], 0);
     }
@@ -663,15 +663,15 @@ impl LayoutContext {
         let x = self.margin + self.indent * depth as u32;
         let text = prefix.join(" ");
         let size = match depth {
-            0 => 81,
-            1 => 66,
-            2 => 54,
-            _ => 45,
+            0 => 108,
+            1 => 92,
+            2 => 78,
+            _ => 67,
         };
         let weight = if depth <= 1 { 700 } else { 600 };
-        self.y += if depth == 0 { 54 } else { 24 };
+        self.y += if depth == 0 { 72 } else { 32 };
         self.text(x, self.y, &text, size, weight, header_color(depth));
-        self.y += size + 24;
+        self.y += size + 32;
 
         if depth >= 1 || subtree_depth(node) <= 2 {
             let mut entries = Vec::new();
@@ -720,7 +720,7 @@ impl LayoutContext {
 
     fn render_labeled_thumbs(&mut self, entries: &[SheetEntry<'_>], x: u32) {
         let tile = self.thumb + self.gap;
-        let label_height = 144u32;
+        let label_height = 190u32;
         let available = self.width.saturating_sub(x + self.margin).max(self.thumb);
         let columns = (available / tile).max(1);
         for (index, entry) in entries.iter().enumerate() {
@@ -731,8 +731,8 @@ impl LayoutContext {
             let tx = x + col * tile;
             let thumb = entry.thumb;
             let (display_width, display_height) = thumb_display_size(thumb, self.thumb);
-            self.text(tx, self.y + 54, &entry.label, 48, 500, "#444444");
-            self.text(tx, self.y + 108, &entry.full_name, 36, 400, "#777777");
+            self.text(tx, self.y + 72, &entry.label, 65, 500, "#444444");
+            self.text(tx, self.y + 145, &entry.full_name, 25, 400, "#777777");
             let ty = self.y + label_height + (self.thumb - display_height) / 2;
             self.rect(tx, ty, display_width, display_height);
             self.image(tx, ty, display_width, display_height, &thumb.image);
@@ -782,7 +782,16 @@ fn collect_subtree_entries<'a>(
 }
 
 fn thumb_label_after_prefix(thumb: &SampleThumb, prefix_len: usize) -> String {
-    let label = thumb.parts.get(prefix_len..).unwrap_or(&[]).join(" ");
+    let suffix = thumb.parts.get(prefix_len..).unwrap_or(&[]);
+    if suffix.len() == 1
+        && suffix[0].eq_ignore_ascii_case("grainy")
+        && let Some(base) = prefix_len
+            .checked_sub(1)
+            .and_then(|index| thumb.parts.get(index))
+    {
+        return format!("{base} {}", suffix[0]);
+    }
+    let label = suffix.join(" ");
     if label.is_empty() {
         thumb
             .parts
@@ -851,7 +860,7 @@ fn subtree_depth(trie: &ProfileTrie) -> usize {
 }
 
 fn sampler_sheet_columns(thumb_count: u32) -> u32 {
-    thumb_count.clamp(1, 6)
+    thumb_count.clamp(1, 5)
 }
 
 fn header_color(depth: usize) -> &'static str {
@@ -1025,6 +1034,22 @@ mod tests {
     }
 
     #[test]
+    fn base_profile_sorts_before_grainy_when_family_name_is_the_prefix() {
+        let mut trie = ProfileTrie::default();
+        for name in ["Ilford FP4", "Ilford FP4 grainy"] {
+            trie.insert(sample_thumb(name, 1024, 683));
+        }
+
+        let layout = build_sheet_layout(&trie, 256);
+        let svg = render_sheet_svg(&layout);
+
+        assert!(svg.contains(">Ilford<"));
+        assert!(svg.contains(">FP4<"));
+        assert!(svg.contains(">FP4 grainy<"));
+        assert!(svg.find(">FP4<") < svg.find(">FP4 grainy<"));
+    }
+
+    #[test]
     fn large_sampler_layout_stays_below_jpeg_dimension_limit() {
         let mut trie = ProfileTrie::default();
         for film in 0..104 {
@@ -1048,9 +1073,9 @@ mod tests {
     }
 
     #[test]
-    fn sampler_columns_are_capped_at_six() {
-        assert_eq!(sampler_sheet_columns(414), 6);
-        assert_eq!(sampler_sheet_columns(24), 6);
+    fn sampler_columns_are_capped_at_five() {
+        assert_eq!(sampler_sheet_columns(414), 5);
+        assert_eq!(sampler_sheet_columns(24), 5);
         assert_eq!(sampler_sheet_columns(4), 4);
     }
 
