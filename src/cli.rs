@@ -36,6 +36,24 @@ pub(crate) enum CommandKind {
         info_only: bool,
     },
 
+    /// Print parsed details for an emulation or internal RGBTable profile.
+    Info {
+        /// Profile selector: emulation XMP path/name, internal RGBTable XMP path/name, or Hald PNG path/name.
+        profile: String,
+
+        /// Film library root. Emulation XMPs are selected from emulations/ and RGBTable profiles from profiles/.
+        #[arg(long, default_value = ".")]
+        profiles_root: PathBuf,
+
+        /// Directory containing generated cached Hald PNGs. Defaults to $HOME/.cache/mini-film/hald.
+        #[arg(long)]
+        hald_dir: Option<PathBuf>,
+
+        /// Hald level used when reporting the cached Hald path for XMP profiles.
+        #[arg(short = 'l', long, default_value_t = 8)]
+        hald_level: u32,
+    },
+
     /// Run RawTherapee, then apply a Hald CLUT with GraphicsMagick/ImageMagick convert.
     Apply {
         /// RAW file to develop.

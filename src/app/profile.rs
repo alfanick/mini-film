@@ -8,8 +8,9 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use mini_film::{
-    GrainSettings, HaldOptions, convert_xmp_to_hald, extract_film_recipe, profile_info_line,
-    rawtherapee_hald_clut_profile_text, write_rawtherapee_profile,
+    ConvertedProfile, GrainSettings, HaldOptions, XmpFilmRecipe, convert_xmp_to_hald,
+    extract_film_recipe, profile_info_line, rawtherapee_hald_clut_profile_text,
+    write_rawtherapee_profile,
 };
 use walkdir::WalkDir;
 
@@ -19,6 +20,66 @@ pub(crate) struct ResolvedProfile {
     pub(crate) hald_path: PathBuf,
     pub(crate) rawtherapee_profiles: Vec<PathBuf>,
     pub(crate) grain: GrainSettings,
+}
+
+pub(crate) enum ProfileInfo {
+    HaldPng {
+        path: PathBuf,
+    },
+    Emulation {
+        path: PathBuf,
+        recipe: XmpFilmRecipe,
+        source: PathBuf,
+        converted: ConvertedProfile,
+        hald_path: PathBuf,
+    },
+    RgbTableProfile {
+        path: PathBuf,
+        converted: ConvertedProfile,
+        hald_path: PathBuf,
+    },
+}
+
+pub(crate) fn inspect_profile(
+    selector: &str,
+    profiles_root: &Path,
+    hald_dir: &Path,
+    hald_level: u32,
+) -> Result<ProfileInfo> {
+    let selector_path = Path::new(selector);
+    if selector_path.exists() {
+        return inspect_profile_path(selector_path, profiles_root, hald_dir, hald_level);
+    }
+
+    if looks_like_rgb_profile_selector(selector) {
+        for root in rgb_profile_roots(profiles_root, profiles_root) {
+            if let Some(path) = find_rgb_xmp_by_name(&root, selector)? {
+                return inspect_profile_path(&path, profiles_root, hald_dir, hald_level);
+            }
+        }
+    }
+
+    for root in emulation_selector_roots(profiles_root) {
+        if let Some(path) = find_xmp_by_name(&root, selector)? {
+            return inspect_profile_path(&path, profiles_root, hald_dir, hald_level);
+        }
+    }
+
+    for root in rgb_profile_roots(profiles_root, profiles_root) {
+        if let Some(path) = find_rgb_xmp_by_name(&root, selector)? {
+            return inspect_profile_path(&path, profiles_root, hald_dir, hald_level);
+        }
+    }
+
+    if let Some(path) = find_hald_by_name(hald_dir, selector)? {
+        return Ok(ProfileInfo::HaldPng { path });
+    }
+
+    bail!(
+        "could not resolve profile {:?} as an emulation, internal RGBTable profile, or Hald under {}",
+        selector,
+        profiles_root.display()
+    )
 }
 
 pub(crate) fn rawtherapee_profiles_with_hald(
@@ -109,6 +170,70 @@ fn profile_from_path(
         Some(ext) => bail!("unsupported profile path extension .{ext}; expected .png or .xmp"),
         None => bail!("profile path has no extension: {}", path.display()),
     }
+}
+
+fn inspect_profile_path(
+    path: &Path,
+    profiles_root: &Path,
+    hald_dir: &Path,
+    hald_level: u32,
+) -> Result<ProfileInfo> {
+    match path.extension().and_then(|s| s.to_str()) {
+        Some(ext) if ext.eq_ignore_ascii_case("png") => Ok(ProfileInfo::HaldPng {
+            path: path.to_path_buf(),
+        }),
+        Some(ext) if ext.eq_ignore_ascii_case("xmp") => {
+            inspect_xmp_profile_path(path, profiles_root, hald_dir, hald_level)
+        }
+        Some(ext) => bail!("unsupported profile path extension .{ext}; expected .png or .xmp"),
+        None => bail!("profile path has no extension: {}", path.display()),
+    }
+}
+
+fn inspect_xmp_profile_path(
+    path: &Path,
+    profiles_root: &Path,
+    hald_dir: &Path,
+    hald_level: u32,
+) -> Result<ProfileInfo> {
+    let recipe = extract_film_recipe(path)?;
+    if recipe.rgb_table.is_some() {
+        let hald_path = cached_hald_path(path, hald_level, hald_dir)?;
+        let converted = convert_xmp_to_hald(
+            path,
+            &hald_path,
+            HaldOptions {
+                hald_level,
+                overwrite: false,
+                info_only: true,
+            },
+        )?;
+        return Ok(ProfileInfo::RgbTableProfile {
+            path: path.to_path_buf(),
+            converted,
+            hald_path,
+        });
+    }
+
+    let source = resolve_recipe_profile(&recipe, profiles_root, path)
+        .with_context(|| format!("resolving linked profile for preset {}", path.display()))?;
+    let hald_path = cached_hald_path(&source, hald_level, hald_dir)?;
+    let converted = convert_xmp_to_hald(
+        &source,
+        &hald_path,
+        HaldOptions {
+            hald_level,
+            overwrite: false,
+            info_only: true,
+        },
+    )?;
+    Ok(ProfileInfo::Emulation {
+        path: path.to_path_buf(),
+        recipe,
+        source,
+        converted,
+        hald_path,
+    })
 }
 
 /// Resolve an XMP file to a temporary Hald and recipe settings.
@@ -277,17 +402,15 @@ fn find_xmp_by_name(root: &Path, name: &str) -> Result<Option<PathBuf>> {
 /// normalize to the requested name after removing common `profile` suffixes, and
 /// validates candidates by parsing them for an embedded RGBTable.
 fn find_rgb_xmp_by_name(root: &Path, name: &str) -> Result<Option<PathBuf>> {
-    let Some(candidate) = find_xmp_by_name(root, name)? else {
-        return Ok(None);
-    };
-    if extract_film_recipe(&candidate)
-        .map(|recipe| recipe.rgb_table.is_some())
-        .unwrap_or(false)
+    if let Some(candidate) = find_xmp_by_name(root, name)?
+        && extract_film_recipe(&candidate)
+            .map(|recipe| recipe.rgb_table.is_some())
+            .unwrap_or(false)
     {
         return Ok(Some(candidate));
     }
 
-    let wanted = normalize_name(name);
+    let wanted = normalize_rgb_profile_name(name);
     for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
         if !entry.file_type().is_file() {
             continue;
@@ -299,10 +422,7 @@ fn find_rgb_xmp_by_name(root: &Path, name: &str) -> Result<Option<PathBuf>> {
         let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
-        let candidate_name = normalize_name(stem)
-            .trim_end_matches("profile")
-            .trim()
-            .to_string();
+        let candidate_name = normalize_rgb_profile_name(stem);
         if candidate_name != wanted {
             continue;
         }
@@ -315,6 +435,20 @@ fn find_rgb_xmp_by_name(root: &Path, name: &str) -> Result<Option<PathBuf>> {
     }
 
     Ok(None)
+}
+
+fn looks_like_rgb_profile_selector(name: &str) -> bool {
+    let normalized = normalize_name(name);
+    normalized.ends_with("profile") || normalized.ends_with("profile xmp")
+}
+
+fn normalize_rgb_profile_name(name: &str) -> String {
+    normalize_name(name)
+        .trim_end_matches("xmp")
+        .trim()
+        .trim_end_matches("profile")
+        .trim()
+        .to_string()
 }
 
 /// Find an RGBTable-bearing profile whose XMP UUID matches a Look UUID.

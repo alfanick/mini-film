@@ -11,6 +11,7 @@ It can:
 - read Lightroom preset XMPs that reference a profile and define grain
 - batch-process DNG/NEF folders into JPEGs
 - render a profile sampler contact sheet for one RAW file
+- inspect emulation/profile XMP adjustments
 - add deterministic procedural film grain
 - export either 16-bit TIFF or 8-bit JPEG
 
@@ -162,6 +163,18 @@ JPEG subsampling values:
 - a generated Hald name, searched under `--hald-dir`, which defaults to `$HOME/.cache/mini-film/hald`
 
 RGBTable XMPs under `profiles/` are internal lookup tables. `apply`, `batch`, and `sampler` do not use them as user-facing emulations; they are only used to resolve linked `crs:Look` UUID/name references from emulation XMPs. `mini-film` generates or reuses a cached Hald from the linked profile under `$HOME/.cache/mini-film/hald`, generates temporary RawTherapee `.pp3` files for supported XMP adjustments and Film Simulation, lets RawTherapee apply the Hald, then applies the emulation grain settings.
+
+## Profile Info
+
+Print parsed details for a user-facing emulation or an internal RGBTable profile:
+
+```sh
+cargo run --release -- info \
+  'Polaroid 600 v3 grainy' \
+  --profiles-root /home/alfanick/Pictures/RNI
+```
+
+`info` resolves emulation names under `emulations/`, direct emulation XMP paths, direct internal profile XMP paths, internal profile names under `profiles/`, and cached Hald PNGs under `--hald-dir`. For emulations, it prints the preset identity, linked Look, linked internal RGBTable profile, cached Hald path, profile-side tone/color/sharpening adjustments, and emulation-side grain/adjustments.
 
 ## Processing Split
 

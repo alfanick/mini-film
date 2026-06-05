@@ -6,6 +6,7 @@ use clap::Parser;
 
 use crate::app::apply::{ApplyArgs, run_apply};
 use crate::app::batch::{BatchArgs, run_batch};
+use crate::app::info::{InfoArgs, run_info};
 use crate::app::run_hald;
 use crate::app::sampler::{SamplerArgs, run_sampler};
 use crate::app::util::{configure_threads, default_hald_dir};
@@ -35,6 +36,17 @@ fn main() -> Result<()> {
             overwrite,
             info_only,
         ),
+        CommandKind::Info {
+            profile,
+            profiles_root,
+            hald_dir,
+            hald_level,
+        } => run_info(InfoArgs {
+            profile,
+            profiles_root,
+            hald_dir: hald_dir.unwrap_or_else(default_hald_dir),
+            hald_level,
+        }),
         CommandKind::Apply {
             raw,
             output,
