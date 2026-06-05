@@ -404,4 +404,67 @@ mod tests {
         assert!(profile.contains("[Sharpening]\nEnabled=true\n"));
         assert!(profile.contains("Amount=40\n"));
     }
+
+    #[test]
+    fn rawtherapee_hald_profile_points_film_simulation_at_hald() {
+        let profile = rawtherapee_hald_clut_profile_text(Path::new("/tmp/profile.hald.png"));
+        assert!(profile.contains("[Film Simulation]\n"));
+        assert!(profile.contains("Enabled=true\n"));
+        assert!(profile.contains("ClutFilename=/tmp/profile.hald.png\n"));
+        assert!(profile.contains("Strength=100\n"));
+    }
+
+    #[test]
+    fn resize_profile_uses_long_edge_without_upscaling() {
+        let profile = rawtherapee_resize_profile_text(0);
+        assert!(profile.contains("[Resize]\nEnabled=true\n"));
+        assert!(profile.contains("Width=1\n"));
+        assert!(profile.contains("Height=1\n"));
+        assert!(profile.contains("LongEdge=1\n"));
+        assert!(profile.contains("AllowUpscaling=false\n"));
+    }
+
+    #[test]
+    fn rt_curve_sorts_and_normalizes_points() {
+        let curve = rt_curve(&[(255.0, 255.0), (0.0, 0.0), (128.0, 64.0)], 255.0);
+        assert_eq!(curve, "3;0;0;0.501961;0.25098;1;1;");
+    }
+
+    #[test]
+    fn generated_hue_curves_wrap_around_color_wheel() {
+        let mut values = [0.0; 8];
+        values[0] = 10.0;
+        let curve = hue_curve(&values, 0.01);
+        assert!(curve.starts_with("3;0;0.6;"));
+        assert!(curve.contains("0.083333;0.5;"));
+        assert!(curve.ends_with("0.888889;0.5;"));
+    }
+
+    #[test]
+    fn parametric_curve_uses_split_positions_and_values() {
+        let adjustments = ProfileAdjustments {
+            parametric: ParametricTone {
+                shadows: -10.0,
+                darks: -5.0,
+                lights: 8.0,
+                highlights: 12.0,
+                shadow_split: 20.0,
+                midtone_split: 55.0,
+                highlight_split: 80.0,
+            },
+            ..ProfileAdjustments::default()
+        };
+        let curve = parametric_curve(&adjustments);
+        assert!(curve.contains("0;0;"));
+        assert!(curve.contains("0.2;0.18"));
+        assert!(curve.contains("0.55;0.553"));
+        assert!(curve.contains("0.8;0.828"));
+    }
+
+    #[test]
+    fn average_and_fmt_f32_are_stable_for_generated_profiles() {
+        assert_eq!(average(&[1.0, 2.0, 3.0, 4.0, 0.0, 0.0, 0.0, 0.0]), 1.25);
+        assert_eq!(fmt_f32(2.0), "2");
+        assert_eq!(fmt_f32(2.5), "2.5");
+    }
 }

@@ -283,3 +283,114 @@ pub(crate) fn validate_hald_level(level: u32) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{ProfileAdjustments, SharpeningSettings};
+
+    fn identity_table(divisions: u32) -> RgbTable {
+        let mut samples = Vec::new();
+        for r in 0..divisions {
+            for g in 0..divisions {
+                for b in 0..divisions {
+                    let scale =
+                        |value: u32| ((value * 65535 + (divisions >> 1)) / (divisions - 1)) as u16;
+                    samples.push([scale(r), scale(g), scale(b)]);
+                }
+            }
+        }
+        RgbTable {
+            dimensions: 3,
+            divisions,
+            samples,
+            primaries: 1,
+            gamma: 2,
+            gamut: 3,
+            min_amount: 0.0,
+            max_amount: 2.0,
+            flags: Some(7),
+        }
+    }
+
+    #[test]
+    fn validate_hald_level_rejects_degenerate_levels() {
+        assert!(validate_hald_level(1).is_err());
+        assert!(validate_hald_level(2).is_ok());
+    }
+
+    #[test]
+    fn profile_display_name_prefers_xmp_name_and_falls_back_to_path() {
+        let named = XmpRgbTable {
+            name: Some("Named Profile".to_string()),
+            group: None,
+            uuid: None,
+            table_id: "table".to_string(),
+            encoded: String::new(),
+        };
+        assert_eq!(
+            profile_display_name(Path::new("/tmp/fallback.xmp"), &named),
+            "Named Profile"
+        );
+
+        let unnamed = XmpRgbTable {
+            name: None,
+            group: None,
+            uuid: None,
+            table_id: "table".to_string(),
+            encoded: String::new(),
+        };
+        assert_eq!(
+            profile_display_name(Path::new("/tmp/fallback profile.xmp"), &unnamed),
+            "fallback profile"
+        );
+    }
+
+    #[test]
+    fn profile_info_line_marks_adjustments_and_sharpening() {
+        let converted = ConvertedProfile {
+            input: Path::new("/tmp/profile.xmp").to_path_buf(),
+            output: None,
+            profile: XmpRgbTable {
+                name: Some("Test".to_string()),
+                group: Some("Group".to_string()),
+                uuid: Some("uuid".to_string()),
+                table_id: "table".to_string(),
+                encoded: String::new(),
+            },
+            table: identity_table(2),
+            adjustments: ProfileAdjustments {
+                exposure: 0.5,
+                ..ProfileAdjustments::default()
+            },
+            sharpening: SharpeningSettings {
+                present: true,
+                amount: 40.0,
+                radius: 1.0,
+                detail: 25.0,
+                masking: 0.0,
+            },
+        };
+
+        let line = profile_info_line(&converted);
+        assert!(line.contains("Test [Group] uuid=uuid"));
+        assert!(line.contains("dims=3 divisions=2"));
+        assert!(line.contains("adjustments=pp3"));
+        assert!(line.contains("sharpening=pp3"));
+    }
+
+    #[test]
+    fn write_hald_png_creates_expected_16bit_rgb_dimensions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hald.png");
+        write_hald_png(&identity_table(2), 2, &path).unwrap();
+
+        let decoder = png::Decoder::new(File::open(path).unwrap());
+        let reader = decoder.read_info().unwrap();
+        let info = reader.info();
+        assert_eq!(info.width, 8);
+        assert_eq!(info.height, 8);
+        assert_eq!(info.color_type, png::ColorType::Rgb);
+        assert_eq!(info.bit_depth, png::BitDepth::Sixteen);
+    }
+}

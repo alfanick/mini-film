@@ -317,3 +317,49 @@ fn per_file_seed(base_seed: u64, index: u64, path: &Path) -> u64 {
     path.hash(&mut hasher);
     base_seed ^ index.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ hasher.finish()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn batch_output_path_preserves_relative_folders_and_extension() {
+        let input = Path::new("/input");
+        let output = Path::new("/output");
+        let raw = Path::new("/input/day1/DSC_0001.NEF");
+
+        assert_eq!(
+            batch_output_path(input, output, BatchOutputFormat::Jpg, raw).unwrap(),
+            Path::new("/output/day1/DSC_0001.jpg")
+        );
+        assert_eq!(
+            batch_output_path(input, output, BatchOutputFormat::Tiff, raw).unwrap(),
+            Path::new("/output/day1/DSC_0001.tif")
+        );
+    }
+
+    #[test]
+    fn batch_raw_detection_is_case_insensitive_for_supported_raws() {
+        assert!(is_batch_raw(Path::new("a.dng")));
+        assert!(is_batch_raw(Path::new("a.DNG")));
+        assert!(is_batch_raw(Path::new("a.nef")));
+        assert!(is_batch_raw(Path::new("a.NEF")));
+        assert!(!is_batch_raw(Path::new("a.jpg")));
+    }
+
+    #[test]
+    fn resolve_batch_jobs_defaults_and_rejects_zero() {
+        assert!(resolve_batch_jobs(None).unwrap() >= 1);
+        assert_eq!(resolve_batch_jobs(Some(3)).unwrap(), 3);
+        assert!(resolve_batch_jobs(Some(0)).is_err());
+    }
+
+    #[test]
+    fn per_file_seed_changes_with_index_path_or_base_seed() {
+        let a = per_file_seed(1, 0, Path::new("a.dng"));
+        assert_eq!(a, per_file_seed(1, 0, Path::new("a.dng")));
+        assert_ne!(a, per_file_seed(2, 0, Path::new("a.dng")));
+        assert_ne!(a, per_file_seed(1, 1, Path::new("a.dng")));
+        assert_ne!(a, per_file_seed(1, 0, Path::new("b.dng")));
+    }
+}

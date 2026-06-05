@@ -619,3 +619,103 @@ fn push_unique_root(roots: &mut Vec<PathBuf>, root: PathBuf) {
         roots.push(root);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::{ExportOptions, JpegSubsampling};
+
+    fn apply_args(profile: String, profiles_root: PathBuf, hald_dir: PathBuf) -> ApplyArgs {
+        ApplyArgs {
+            raw: PathBuf::from("input.dng"),
+            output: PathBuf::from("output.jpg"),
+            profile,
+            hald_dir,
+            profiles_root,
+            hald_level: 8,
+            rawtherapee: PathBuf::from("rawtherapee-cli"),
+            convert: PathBuf::from("convert"),
+            keep_intermediate: None,
+            no_grain: false,
+            grain: None,
+            grain_preset: None,
+            grain_seed: None,
+            export: ExportOptions {
+                jpg_quality: 95,
+                resize: None,
+                long_edge: None,
+                max_width: None,
+                max_height: None,
+                jpeg_subsampling: JpegSubsampling::S444,
+                strip_metadata: false,
+                progressive_jpeg: false,
+            },
+        }
+    }
+
+    #[test]
+    fn normalize_name_removes_case_punctuation_and_extra_spaces() {
+        assert_eq!(
+            normalize_name(" Kodak_Portra-400.profile "),
+            "kodak portra 400 profile"
+        );
+    }
+
+    #[test]
+    fn rgb_profile_selector_detection_handles_profile_suffixes() {
+        assert!(looks_like_rgb_profile_selector("Polaroid 600 profile"));
+        assert!(looks_like_rgb_profile_selector("Polaroid 600 profile.xmp"));
+        assert_eq!(
+            normalize_rgb_profile_name("Polaroid 600 profile.xmp"),
+            "polaroid 600"
+        );
+        assert!(!looks_like_rgb_profile_selector("Polaroid 600 grainy"));
+    }
+
+    #[test]
+    fn push_unique_root_ignores_missing_and_duplicate_roots() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut roots = Vec::new();
+        push_unique_root(&mut roots, dir.path().join("missing"));
+        assert!(roots.is_empty());
+        push_unique_root(&mut roots, dir.path().to_path_buf());
+        push_unique_root(&mut roots, dir.path().to_path_buf());
+        assert_eq!(roots, vec![dir.path().to_path_buf()]);
+    }
+
+    #[test]
+    fn pp3_path_resolves_as_rawtherapee_only_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let pp3 = dir.path().join("edited.pp3");
+        std::fs::write(&pp3, "[Exposure]\nCompensation=1\n").unwrap();
+        let args = apply_args(
+            pp3.display().to_string(),
+            dir.path().to_path_buf(),
+            dir.path().join("hald"),
+        );
+
+        let resolved = resolve_profile(&args, dir.path()).unwrap();
+        assert!(resolved.hald_path.is_none());
+        assert_eq!(resolved.rawtherapee_profiles, vec![pp3]);
+        assert!(!resolved.grain.is_enabled());
+    }
+
+    #[test]
+    fn inspect_profile_identifies_direct_pp3_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let pp3 = dir.path().join("edited.pp3");
+        std::fs::write(&pp3, "[Exposure]\nCompensation=1\n").unwrap();
+
+        match inspect_profile(
+            &pp3.display().to_string(),
+            dir.path(),
+            &dir.path().join("hald"),
+            8,
+        )
+        .unwrap()
+        {
+            ProfileInfo::RawTherapeePp3 { path } => assert_eq!(path, pp3),
+            _ => panic!("expected pp3 profile info"),
+        }
+    }
+}

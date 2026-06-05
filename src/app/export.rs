@@ -156,3 +156,99 @@ pub(crate) fn output_ext(output: &Path) -> Result<String> {
         .map(|s| s.to_ascii_lowercase())
         .ok_or_else(|| anyhow::anyhow!("output path must have .tif/.tiff or .jpg/.jpeg extension"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::JpegSubsampling;
+
+    fn export_options() -> ExportOptions {
+        ExportOptions {
+            jpg_quality: 91,
+            resize: None,
+            long_edge: None,
+            max_width: None,
+            max_height: None,
+            jpeg_subsampling: JpegSubsampling::S422,
+            strip_metadata: false,
+            progressive_jpeg: false,
+        }
+    }
+
+    fn command_args(command: &Command) -> Vec<String> {
+        command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn jpeg_export_args_force_8bit_quality_and_sampling() {
+        let mut command = Command::new("convert");
+        let mut export = export_options();
+        export.long_edge = Some(2048);
+        export.strip_metadata = true;
+        export.progressive_jpeg = true;
+
+        add_final_convert_args(&mut command, Path::new("out.jpg"), &export).unwrap();
+
+        let args = command_args(&command);
+        assert_eq!(
+            args,
+            [
+                "-resize",
+                "2048x2048>",
+                "-strip",
+                "-interlace",
+                "Line",
+                "-depth",
+                "8",
+                "-sampling-factor",
+                "2x1,1x1,1x1",
+                "-quality",
+                "91",
+                "out.jpg",
+            ]
+        );
+    }
+
+    #[test]
+    fn tiff_export_keeps_depth_and_accepts_structured_resize() {
+        let mut command = Command::new("convert");
+        let mut export = export_options();
+        export.max_width = Some(3000);
+        export.max_height = Some(2000);
+        export.strip_metadata = true;
+
+        add_final_convert_args(&mut command, Path::new("out.tif"), &export).unwrap();
+
+        assert_eq!(
+            command_args(&command),
+            ["-resize", "3000x2000>", "-strip", "out.tif"]
+        );
+    }
+
+    #[test]
+    fn validate_export_options_rejects_ambiguous_or_zero_resize() {
+        let mut export = export_options();
+        export.resize = Some("3000x3000>".to_string());
+        export.long_edge = Some(3000);
+        assert!(validate_export_options(&export).is_err());
+
+        let mut export = export_options();
+        export.max_width = Some(0);
+        assert!(validate_export_options(&export).is_err());
+
+        let mut export = export_options();
+        export.resize = Some(String::new());
+        assert!(validate_export_options(&export).is_err());
+    }
+
+    #[test]
+    fn output_extension_validation_is_case_insensitive() {
+        assert_eq!(output_ext(Path::new("x.JPG")).unwrap(), "jpg");
+        assert!(validate_output_format(Path::new("x.TIFF")).is_ok());
+        assert!(validate_output_format(Path::new("x.png")).is_err());
+        assert!(output_ext(Path::new("no-extension")).is_err());
+    }
+}

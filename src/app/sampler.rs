@@ -544,3 +544,42 @@ fn sample_seed(base_seed: u64, index: usize, path: &Path) -> u64 {
         });
     base_seed ^ (index as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ path_hash
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn label_width_tracks_thumbnail_size_with_bounds() {
+        assert_eq!(label_width_chars(64), 18);
+        assert_eq!(label_width_chars(512), 64);
+        assert_eq!(label_width_chars(4096), 96);
+    }
+
+    #[test]
+    fn wrap_label_prefers_path_boundaries_and_splits_long_segments() {
+        assert_eq!(wrap_label("folder/profile.xmp", 12), "folder/\nprofile.xmp");
+        assert_eq!(wrap_label("averylongprofile", 5), "avery\nlongp\nrofil\ne");
+    }
+
+    #[test]
+    fn sample_seed_changes_with_index_path_or_base_seed() {
+        let path = Path::new("emulations/Fuji.xmp");
+        let seed = sample_seed(10, 0, path);
+        assert_eq!(seed, sample_seed(10, 0, path));
+        assert_ne!(seed, sample_seed(11, 0, path));
+        assert_ne!(seed, sample_seed(10, 1, path));
+        assert_ne!(seed, sample_seed(10, 0, Path::new("emulations/Kodak.xmp")));
+    }
+
+    #[test]
+    fn sampler_duration_estimates_are_clamped_and_monotonic() {
+        assert_eq!(
+            estimate_sampler_raw_duration(1),
+            estimate_sampler_raw_duration(128)
+        );
+        assert!(estimate_sampler_raw_duration(1024) > estimate_sampler_raw_duration(512));
+        assert!(estimate_sampler_grain_duration(4096) <= Duration::from_secs_f64(1.5));
+        assert!(estimate_montage_duration(10_000) <= Duration::from_secs(20));
+    }
+}

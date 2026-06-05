@@ -330,3 +330,140 @@ impl<'a> LeReader<'a> {
         Ok(f64::from_le_bytes(self.take()?))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_table_1d() -> RgbTable {
+        RgbTable {
+            dimensions: 1,
+            divisions: 2,
+            samples: vec![[0, 0, 0], [100, 200, 300]],
+            primaries: 0,
+            gamma: 0,
+            gamut: 0,
+            min_amount: 0.0,
+            max_amount: 1.0,
+            flags: None,
+        }
+    }
+
+    fn test_table_3d() -> RgbTable {
+        let mut samples = Vec::new();
+        for r in 0..2 {
+            for g in 0..2 {
+                for b in 0..2 {
+                    samples.push([r * 1000, g * 2000, b * 3000]);
+                }
+            }
+        }
+        RgbTable {
+            dimensions: 3,
+            divisions: 2,
+            samples,
+            primaries: 0,
+            gamma: 0,
+            gamut: 0,
+            min_amount: 0.0,
+            max_amount: 1.0,
+            flags: None,
+        }
+    }
+
+    fn push_u16(out: &mut Vec<u8>, value: u16) {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn push_u32(out: &mut Vec<u8>, value: u32) {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn push_f64(out: &mut Vec<u8>, value: f64) {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+
+    #[test]
+    fn adobe_base85_decodes_little_endian_full_and_partial_groups() {
+        assert_eq!(adobe_base85_decode("00000"), [0, 0, 0, 0]);
+        assert_eq!(adobe_base85_decode("10000"), [1, 0, 0, 0]);
+        assert_eq!(adobe_base85_decode("120"), [171, 0]);
+    }
+
+    #[test]
+    fn scaled_and_split_positions_cover_edges_and_midpoints() {
+        assert_eq!(scaled_pos(0, 3, 2), 0.0);
+        assert_eq!(scaled_pos(1, 3, 2), 0.5);
+        assert_eq!(scaled_pos(2, 3, 2), 1.0);
+        assert_eq!(split_pos(-1.0, 4), (0, 1, -1.0));
+        assert_eq!(split_pos(1.25, 4), (1, 2, 0.25));
+        assert_eq!(split_pos(9.0, 4), (3, 3, 6.0));
+    }
+
+    #[test]
+    fn sample_1d_interpolates_each_channel_independently() {
+        let table = test_table_1d();
+        assert_eq!(sample_table(&table, 0, 0, 0, 3), [0, 0, 0]);
+        assert_eq!(sample_table(&table, 1, 1, 1, 3), [50, 100, 150]);
+        assert_eq!(sample_table(&table, 2, 2, 2, 3), [100, 200, 300]);
+    }
+
+    #[test]
+    fn sample_3d_trilinearly_interpolates_cube_corners() {
+        let table = test_table_3d();
+        assert_eq!(sample_table(&table, 0, 0, 0, 3), [0, 0, 0]);
+        assert_eq!(sample_table(&table, 2, 2, 2, 3), [1000, 2000, 3000]);
+        assert_eq!(sample_table(&table, 1, 1, 1, 3), [500, 1000, 1500]);
+    }
+
+    #[test]
+    fn parse_rgb_table_reconstructs_delta_encoded_samples_and_metadata() {
+        let mut bytes = Vec::new();
+        push_u32(&mut bytes, BTT_RGB_TABLE);
+        push_u32(&mut bytes, RGB_TABLE_VERSION);
+        push_u32(&mut bytes, 1);
+        push_u32(&mut bytes, 2);
+        for sample in [[10u16, 20, 30], [1000, 2000, 3000]] {
+            for value in sample {
+                push_u16(&mut bytes, value);
+            }
+        }
+        push_u32(&mut bytes, 11);
+        push_u32(&mut bytes, 22);
+        push_u32(&mut bytes, 33);
+        push_f64(&mut bytes, 0.25);
+        push_f64(&mut bytes, 1.75);
+        push_u32(&mut bytes, 44);
+
+        let parsed = parse_rgb_table(&bytes).unwrap();
+        assert_eq!(parsed.dimensions, 1);
+        assert_eq!(parsed.divisions, 2);
+        assert_eq!(parsed.samples[0], [11, 21, 31]);
+        assert_eq!(parsed.samples[1], [1000, 2000, 3000]);
+        assert_eq!(parsed.primaries, 11);
+        assert_eq!(parsed.gamma, 22);
+        assert_eq!(parsed.gamut, 33);
+        assert_eq!(parsed.min_amount, 0.25);
+        assert_eq!(parsed.max_amount, 1.75);
+        assert_eq!(parsed.flags, Some(44));
+    }
+
+    #[test]
+    fn parse_rgb_table_rejects_invalid_headers_and_truncation() {
+        assert!(parse_rgb_table(&[]).is_err());
+
+        let mut bytes = Vec::new();
+        push_u32(&mut bytes, 999);
+        push_u32(&mut bytes, RGB_TABLE_VERSION);
+        push_u32(&mut bytes, 1);
+        push_u32(&mut bytes, 2);
+        assert!(parse_rgb_table(&bytes).is_err());
+
+        let mut bytes = Vec::new();
+        push_u32(&mut bytes, BTT_RGB_TABLE);
+        push_u32(&mut bytes, RGB_TABLE_VERSION);
+        push_u32(&mut bytes, 2);
+        push_u32(&mut bytes, 2);
+        assert!(parse_rgb_table(&bytes).is_err());
+    }
+}

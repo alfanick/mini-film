@@ -841,3 +841,96 @@ fn approx_normal_from_hash(hash: u64) -> f32 {
     let d = unit_from_hash(hash.rotate_left(53));
     (a + b + c + d - 2.0) * 0.866_025_4
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grain_channel_addition_rounds_and_clamps() {
+        assert_eq!(add_grain(10, 2.4), 12);
+        assert_eq!(add_grain(10, -20.0), 0);
+        assert_eq!(add_grain(65530, 20.0), 65535);
+        assert_eq!(add_grain_u8(10, 2.6), 13);
+        assert_eq!(add_grain_u8(10, -20.0), 0);
+        assert_eq!(add_grain_u8(250, 20.0), 255);
+    }
+
+    #[test]
+    fn luma_helpers_weight_channels_and_scale_to_lut_indexes() {
+        assert_eq!(luma_u8(255, 255, 255), 255);
+        assert_eq!(luma_u8(0, 0, 0), 0);
+        assert_eq!(luma_u16(65535, 65535, 65535), 65535);
+        assert_eq!(luma_u16(0, 0, 0), 0);
+    }
+
+    #[test]
+    fn luma_weight_luts_are_shadow_weighted_and_bounded() {
+        let lut8 = luma_weight_lut_u8();
+        let lut16 = luma_weight_lut_u16();
+        assert_eq!(lut8.len(), 256);
+        assert_eq!(lut16.len(), 65536);
+        assert!(lut8[0] > lut8[255]);
+        assert!(lut16[0] > lut16[65535]);
+        assert!(lut8.iter().all(|value| *value >= 0.0 && *value <= 2.0));
+    }
+
+    #[test]
+    fn grain_model_scales_amount_size_and_frequency_into_positive_parameters() {
+        let low = GrainModel::from_settings(GrainSettings {
+            amount: 10,
+            size: 10,
+            frequency: 10,
+        });
+        let high = GrainModel::from_settings(GrainSettings {
+            amount: 80,
+            size: 80,
+            frequency: 80,
+        });
+        assert!(high.sigma_8 > low.sigma_8);
+        assert!(high.sigma_16 > low.sigma_16);
+        assert!(low.cell_size > 0.0);
+        assert!(high.clump_radius > 0.0);
+        assert!(matches!(adaptive_clump_grid_step(5.0), 2));
+        assert!(matches!(adaptive_clump_grid_step(12.0), 4));
+        assert!(matches!(adaptive_clump_grid_step(20.0), 8));
+    }
+
+    #[test]
+    fn kernel_and_hash_functions_are_deterministic_and_bounded() {
+        let lut = build_kernel_lut();
+        assert_eq!(lut.len(), KERNEL_LUT_SIZE + 1);
+        assert!((radial_kernel(0.0, &lut) - 1.0).abs() < 1e-6);
+        assert_eq!(radial_kernel(KERNEL_MAX_RADIUS2, &lut), 0.0);
+
+        let hash = hash_pixel(1, 2, 3, 4);
+        assert_eq!(hash, hash_pixel(1, 2, 3, 4));
+        assert_ne!(hash, hash_pixel(1, 2, 3, 5));
+        assert!((0.0..=1.0).contains(&unit_from_hash(hash)));
+        assert!((-2.0..=2.0).contains(&approx_normal_from_hash(hash)));
+    }
+
+    #[test]
+    fn grain_texture_is_deterministic_for_same_seed_and_changes_for_different_seed() {
+        let model = GrainModel::from_settings(GrainSettings {
+            amount: 30,
+            size: 40,
+            frequency: 50,
+        });
+        let a = GrainTexture::build(8, 6, 123, &model);
+        let b = GrainTexture::build(8, 6, 123, &model);
+        let c = GrainTexture::build(8, 6, 124, &model);
+        assert_eq!(a.values, b.values);
+        assert_ne!(a.values, c.values);
+        assert_eq!(a.row(0).len(), 8);
+        assert_eq!(a.row(5).len(), 8);
+    }
+
+    #[test]
+    fn channel_jitter_stays_within_expected_range() {
+        let (r, g, b) = channel_dye_jitters(1, 2, 3, 0.25);
+        for value in [r, g, b] {
+            assert!((0.62..=1.38).contains(&value));
+        }
+    }
+}

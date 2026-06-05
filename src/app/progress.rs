@@ -245,3 +245,40 @@ pub(crate) fn format_duration(duration: Duration) -> String {
         format!("{seconds}.{millis:03}s")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn progress_positions_scale_logical_steps_to_fixed_units() {
+        assert_eq!(progress_position(0), 0);
+        assert_eq!(progress_position(3), 300);
+        assert_eq!(progress_length(), 500);
+    }
+
+    #[test]
+    fn stage_estimates_use_fallback_then_exponential_smoothing() {
+        let estimates = StageEstimates::default();
+        assert_eq!(
+            estimates.estimate("raw", Duration::from_secs(2)),
+            Duration::from_secs(2)
+        );
+
+        estimates.record("raw", Duration::from_secs(10));
+        assert_eq!(
+            estimates.estimate("raw", Duration::from_secs(2)),
+            Duration::from_secs(10)
+        );
+
+        estimates.record("raw", Duration::from_secs(2));
+        let blended = estimates.estimate("raw", Duration::from_secs(1));
+        assert!((blended.as_secs_f64() - 7.2).abs() < 0.001);
+    }
+
+    #[test]
+    fn format_duration_switches_to_minute_format_after_sixty_seconds() {
+        assert_eq!(format_duration(Duration::from_millis(1234)), "1.234s");
+        assert_eq!(format_duration(Duration::from_millis(61_002)), "1m01.002s");
+    }
+}

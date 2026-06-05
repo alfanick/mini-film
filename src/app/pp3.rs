@@ -82,3 +82,40 @@ fn push_adjustment_profile(
     }
     out.push_str(&rawtherapee_profile_text(adjustments, sharpening));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pp3_text_for_hald_profile_generates_film_simulation_section() {
+        let text = pp3_text(&ProfileInfo::HaldPng {
+            path: PathBuf::from("/tmp/look.hald.png"),
+        })
+        .unwrap();
+
+        assert!(text.contains("[Film Simulation]\n"));
+        assert!(text.contains("ClutFilename=/tmp/look.hald.png\n"));
+        assert!(text.contains("Strength=100\n"));
+    }
+
+    #[test]
+    fn pp3_text_for_rawtherapee_profile_reads_existing_file_verbatim() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("human.pp3");
+        fs::write(&path, "[Exposure]\nCompensation=0.25\n").unwrap();
+
+        let text = pp3_text(&ProfileInfo::RawTherapeePp3 { path }).unwrap();
+        assert_eq!(text, "[Exposure]\nCompensation=0.25\n");
+    }
+
+    #[test]
+    fn write_pp3_output_creates_parent_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("nested/generated.pp3");
+
+        write_pp3_output(&output, "profile text\n").unwrap();
+
+        assert_eq!(fs::read_to_string(output).unwrap(), "profile text\n");
+    }
+}

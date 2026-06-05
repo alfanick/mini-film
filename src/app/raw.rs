@@ -124,3 +124,15 @@ fn rawtherapee_subsampling(subsampling: JpegSubsampling) -> u8 {
         JpegSubsampling::S444 => 3,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn jpeg_subsampling_maps_to_rawtherapee_js_values() {
+        assert_eq!(rawtherapee_subsampling(JpegSubsampling::S420), 1);
+        assert_eq!(rawtherapee_subsampling(JpegSubsampling::S422), 2);
+        assert_eq!(rawtherapee_subsampling(JpegSubsampling::S444), 3);
+    }
+}

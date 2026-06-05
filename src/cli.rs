@@ -357,3 +357,30 @@ pub(crate) struct ExportOptions {
     pub(crate) strip_metadata: bool,
     pub(crate) progressive_jpeg: bool,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn batch_output_format_extensions_match_generated_files() {
+        assert_eq!(BatchOutputFormat::Jpg.extension(), "jpg");
+        assert_eq!(BatchOutputFormat::Tiff.extension(), "tif");
+    }
+
+    #[test]
+    fn jpeg_subsampling_maps_to_graphicsmagick_sampling_factors() {
+        assert_eq!(
+            JpegSubsampling::S444.graphicsmagick_sampling_factor(),
+            "1x1,1x1,1x1"
+        );
+        assert_eq!(
+            JpegSubsampling::S422.graphicsmagick_sampling_factor(),
+            "2x1,1x1,1x1"
+        );
+        assert_eq!(
+            JpegSubsampling::S420.graphicsmagick_sampling_factor(),
+            "2x2,1x1,1x1"
+        );
+    }
+}

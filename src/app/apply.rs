@@ -354,3 +354,63 @@ fn parse_grain_part(value: &str, name: &str) -> Result<u8> {
     }
     Ok(parsed as u8)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn grain_override_accepts_tuple_presets_and_none() {
+        let grain = resolve_grain_override(Some("10, 20,30"), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(grain.amount, 10);
+        assert_eq!(grain.size, 20);
+        assert_eq!(grain.frequency, 30);
+
+        let grain = resolve_grain_override(None, Some("heavy"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(grain.amount, 45);
+        assert_eq!(grain.size, 60);
+        assert_eq!(grain.frequency, 55);
+
+        assert!(
+            !resolve_grain_override(None, Some("none"))
+                .unwrap()
+                .unwrap()
+                .is_enabled()
+        );
+    }
+
+    #[test]
+    fn grain_override_rejects_ambiguous_or_out_of_range_values() {
+        assert!(resolve_grain_override(Some("1,2,3"), Some("light")).is_err());
+        assert!(resolve_grain_override(Some("1,2"), None).is_err());
+        assert!(resolve_grain_override(Some("1,2,101"), None).is_err());
+        assert!(resolve_grain_override(None, Some("huge")).is_err());
+    }
+
+    #[test]
+    fn duration_estimates_are_clamped_and_depend_on_output_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = dir.path().join("raw.dng");
+        std::fs::File::create(&raw)
+            .unwrap()
+            .write_all(&vec![0u8; 2 * 1024 * 1024])
+            .unwrap();
+
+        let jpeg = estimate_rawtherapee_duration(&raw, true);
+        let tiff = estimate_rawtherapee_duration(&raw, false);
+        assert!(jpeg >= Duration::from_secs(2));
+        assert!(tiff >= jpeg);
+        assert_eq!(estimate_export_duration(true), Duration::from_millis(900));
+        assert_eq!(estimate_export_duration(false), Duration::from_secs(2));
+    }
+
+    #[test]
+    fn missing_file_size_returns_none() {
+        assert!(file_size_mib(Path::new("/definitely/missing/raw.dng")).is_none());
+    }
+}

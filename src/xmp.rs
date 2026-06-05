@@ -407,3 +407,167 @@ enum TextTarget {
     Name,
     Group,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{fs, io::Write};
+
+    #[test]
+    fn parse_helpers_accept_valid_numbers_and_reject_bad_values() {
+        assert_eq!(parse_f32("1.25", "Exposure").unwrap(), 1.25);
+        assert!(parse_f32("bright", "Exposure").is_err());
+        assert_eq!(parse_u8("30", "GrainAmount").unwrap(), 30);
+        assert_eq!(parse_u8("150", "GrainAmount").unwrap(), 100);
+        assert!(parse_u8("large", "GrainAmount").is_err());
+        assert_eq!(parse_curve_point(" 12.5, 99 ").unwrap(), (12.5, 99.0));
+        assert!(parse_curve_point("12.5").is_none());
+    }
+
+    #[test]
+    fn hsl_attr_maps_lightroom_names_to_channel_arrays() {
+        let (kind, index) = hsl_attr("HueAdjustmentOrange").unwrap();
+        assert!(matches!(kind, HslAttr::Hue));
+        assert_eq!(index, 1);
+
+        let (kind, index) = hsl_attr("SaturationAdjustmentBlue").unwrap();
+        assert!(matches!(kind, HslAttr::Saturation));
+        assert_eq!(index, 5);
+
+        let (kind, index) = hsl_attr("LuminanceAdjustmentMagenta").unwrap();
+        assert!(matches!(kind, HslAttr::Luminance));
+        assert_eq!(index, 7);
+
+        assert!(hsl_attr("HueAdjustmentTeal").is_none());
+        assert!(hsl_attr("Temperature").is_none());
+    }
+
+    #[test]
+    fn adjustment_and_sharpening_attrs_populate_supported_fields() {
+        let mut adjustments = ProfileAdjustments::default();
+        parse_adjustment_attr(&mut adjustments, "crs:Exposure2012", "0.5").unwrap();
+        parse_adjustment_attr(&mut adjustments, "crs:ParametricShadowSplit", "20").unwrap();
+        parse_adjustment_attr(&mut adjustments, "crs:HueAdjustmentBlue", "-12").unwrap();
+        parse_adjustment_attr(&mut adjustments, "crs:RedSaturation", "9").unwrap();
+        parse_adjustment_attr(&mut adjustments, "xmp:Ignored", "bad").unwrap();
+        parse_adjustment_attr(&mut adjustments, "crs:Unknown", "bad").unwrap();
+
+        assert_eq!(adjustments.exposure, 0.5);
+        assert_eq!(adjustments.parametric.shadow_split, 20.0);
+        assert_eq!(adjustments.hsl.hue[5], -12.0);
+        assert_eq!(adjustments.calibration.red_saturation, 9.0);
+
+        let mut sharpening = SharpeningSettings::default();
+        parse_sharpening_attr(&mut sharpening, "crs:Sharpness", "40").unwrap();
+        parse_sharpening_attr(&mut sharpening, "crs:SharpenRadius", "1.2").unwrap();
+        parse_sharpening_attr(&mut sharpening, "crs:SharpenDetail", "25").unwrap();
+        parse_sharpening_attr(&mut sharpening, "crs:SharpenEdgeMasking", "10").unwrap();
+
+        assert!(sharpening.present);
+        assert_eq!(sharpening.amount, 40.0);
+        assert_eq!(sharpening.radius, 1.2);
+        assert_eq!(sharpening.detail, 25.0);
+        assert_eq!(sharpening.masking, 10.0);
+    }
+
+    #[test]
+    fn curve_points_are_routed_to_the_active_color_channel() {
+        let mut curves = ToneCurves::default();
+        push_curve_point(&mut curves, Some(CurveTarget::Composite), (0.0, 0.0));
+        push_curve_point(&mut curves, Some(CurveTarget::Red), (1.0, 2.0));
+        push_curve_point(&mut curves, Some(CurveTarget::Green), (3.0, 4.0));
+        push_curve_point(&mut curves, Some(CurveTarget::Blue), (5.0, 6.0));
+        push_curve_point(&mut curves, None, (7.0, 8.0));
+
+        assert_eq!(curves.composite, vec![(0.0, 0.0)]);
+        assert_eq!(curves.red, vec![(1.0, 2.0)]);
+        assert_eq!(curves.green, vec![(3.0, 4.0)]);
+        assert_eq!(curves.blue, vec![(5.0, 6.0)]);
+    }
+
+    #[test]
+    fn extract_film_recipe_collects_profile_grain_adjustments_and_linked_look() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("preset.xmp");
+        let mut file = fs::File::create(&path).unwrap();
+        file.write_all(
+            br#"
+<x:xmpmeta xmlns:x="adobe:ns:meta/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/">
+  <rdf:RDF>
+    <rdf:Description
+      crs:UUID="preset-uuid"
+      crs:RGBTable="abc"
+      crs:Table_abc="encoded-table"
+      crs:GrainAmount="150"
+      crs:GrainSize="40"
+      crs:GrainFrequency="30"
+      crs:Exposure2012="0.5"
+      crs:Contrast2012="20"
+      crs:HueAdjustmentBlue="-12"
+      crs:Sharpness="40"
+      crs:SharpenRadius="1.2">
+      <crs:Name>Preset Name</crs:Name>
+      <crs:Group>Preset Group</crs:Group>
+      <crs:Look>
+        <rdf:Description crs:Name="Linked Look" crs:UUID="look-uuid"/>
+      </crs:Look>
+      <crs:ToneCurvePV2012>
+        <rdf:Seq>
+          <rdf:li>0, 0</rdf:li>
+          <rdf:li>255, 220</rdf:li>
+        </rdf:Seq>
+      </crs:ToneCurvePV2012>
+      <crs:ToneCurvePV2012Blue>
+        <rdf:Seq>
+          <rdf:li>0, 10</rdf:li>
+        </rdf:Seq>
+      </crs:ToneCurvePV2012Blue>
+    </rdf:Description>
+  </rdf:RDF>
+</x:xmpmeta>
+"#,
+        )
+        .unwrap();
+
+        let recipe = extract_film_recipe(&path).unwrap();
+        assert_eq!(recipe.name.as_deref(), Some("Preset Name"));
+        assert_eq!(recipe.group.as_deref(), Some("Preset Group"));
+        assert_eq!(recipe.uuid.as_deref(), Some("preset-uuid"));
+        assert_eq!(recipe.look_uuid.as_deref(), Some("look-uuid"));
+        assert_eq!(recipe.look_name.as_deref(), Some("Linked Look"));
+        assert_eq!(recipe.grain.amount, 100);
+        assert_eq!(recipe.grain.size, 40);
+        assert_eq!(recipe.adjustments.exposure, 0.5);
+        assert_eq!(recipe.adjustments.contrast, 20.0);
+        assert_eq!(recipe.adjustments.hsl.hue[5], -12.0);
+        assert_eq!(
+            recipe.adjustments.tone_curve.composite,
+            vec![(0.0, 0.0), (255.0, 220.0)]
+        );
+        assert_eq!(recipe.adjustments.tone_curve.blue, vec![(0.0, 10.0)]);
+        assert!(recipe.sharpening.present);
+        assert_eq!(recipe.sharpening.amount, 40.0);
+        assert_eq!(recipe.sharpening.radius, 1.2);
+
+        let table = recipe.rgb_table.unwrap();
+        assert_eq!(table.name.as_deref(), Some("Preset Name"));
+        assert_eq!(table.group.as_deref(), Some("Preset Group"));
+        assert_eq!(table.uuid.as_deref(), Some("preset-uuid"));
+        assert_eq!(table.table_id, "abc");
+        assert_eq!(table.encoded, "encoded-table");
+    }
+
+    #[test]
+    fn raw_attribute_fallback_extracts_compact_look_blocks() {
+        let block = r#"<crs:Look crs:Name="Fallback Look" crs:UUID="fallback-uuid"></crs:Look>"#;
+        assert_eq!(extract_tag_block(block, "crs:Look").unwrap(), block);
+        assert_eq!(
+            extract_attr(block, "crs:Name").as_deref(),
+            Some("Fallback Look")
+        );
+        assert_eq!(
+            extract_attr(block, "crs:UUID").as_deref(),
+            Some("fallback-uuid")
+        );
+    }
+}
