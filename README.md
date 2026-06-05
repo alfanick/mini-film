@@ -73,6 +73,16 @@ cargo run --release -- apply input.RAW \
 
 `output.jpg` / `output.jpeg` is exported as 8-bit JPEG.
 
+Use a human-edited RawTherapee profile directly:
+
+```sh
+cargo run --release -- apply input.RAW \
+  --profile edited-profile.pp3 \
+  -o output.jpg
+```
+
+When `--profile` points at a `.pp3`, mini-film passes that PP3 directly to RawTherapee. If the PP3 contains a `[Film Simulation]` section, RawTherapee applies its referenced Hald during RAW development. PP3-only profiles do not carry mini-film grain metadata.
+
 ## Batch Apply
 
 Process every `.dng`, `.DNG`, `.nef`, and `.NEF` under an input directory and write JPGs or 16-bit TIFFs under an output directory:
@@ -159,6 +169,7 @@ JPEG subsampling values:
 `--profile` accepts:
 
 - a Hald PNG path
+- a RawTherapee `.pp3` path
 - an emulation XMP path containing `crs:Look` plus optional grain settings
 - an emulation name, searched under `emulations/`
 - a generated Hald name, searched under `--hald-dir`, which defaults to `$HOME/.cache/mini-film/hald`

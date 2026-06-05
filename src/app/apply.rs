@@ -101,11 +101,15 @@ pub(crate) fn run_apply(args: ApplyArgs) -> Result<()> {
     }
     result?;
 
-    eprintln!(
-        "wrote {} using {}",
-        args.output.display(),
-        resolved.hald_path.display()
-    );
+    if let Some(hald_path) = &resolved.hald_path {
+        eprintln!(
+            "wrote {} using {}",
+            args.output.display(),
+            hald_path.display()
+        );
+    } else {
+        eprintln!("wrote {} using RawTherapee PP3", args.output.display());
+    }
     Ok(())
 }
 

@@ -38,7 +38,7 @@ pub(crate) enum CommandKind {
 
     /// Print parsed details for an emulation or internal RGBTable profile.
     Info {
-        /// Profile selector: emulation XMP path/name, internal RGBTable XMP path/name, or Hald PNG path/name.
+        /// Profile selector: emulation XMP path/name, internal RGBTable XMP path/name, Hald PNG path/name, or PP3 path.
         profile: String,
 
         /// Film library root. Emulation XMPs are selected from emulations/ and RGBTable profiles from profiles/.
@@ -56,7 +56,7 @@ pub(crate) enum CommandKind {
 
     /// Print the RawTherapee PP3 generated for an emulation or RGBTable profile.
     Pp3 {
-        /// Profile selector: emulation XMP path/name, internal RGBTable XMP path/name, or Hald PNG path/name.
+        /// Profile selector: emulation XMP path/name, internal RGBTable XMP path/name, Hald PNG path/name, or PP3 path.
         profile: String,
 
         /// Output PP3 path.
@@ -85,7 +85,7 @@ pub(crate) enum CommandKind {
         #[arg(short, long)]
         output: PathBuf,
 
-        /// Profile selector: Hald PNG path, emulation XMP path, or emulation name.
+        /// Profile selector: Hald PNG path/name, emulation XMP path/name, or RawTherapee PP3 path.
         #[arg(short, long)]
         profile: String,
 
@@ -170,7 +170,7 @@ pub(crate) enum CommandKind {
         /// Output folder. It is created if it does not exist.
         output: PathBuf,
 
-        /// Profile selector: Hald PNG path, emulation XMP path, or emulation name.
+        /// Profile selector: Hald PNG path/name, emulation XMP path/name, or RawTherapee PP3 path.
         #[arg(short, long)]
         profile: String,
 

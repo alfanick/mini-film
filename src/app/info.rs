@@ -34,6 +34,12 @@ fn print_profile_info(info: &ProfileInfo) {
             println!("Adjustments: none attached");
             println!("Grain: none attached");
         }
+        ProfileInfo::RawTherapeePp3 { path } => {
+            println!("Kind: RawTherapee PP3");
+            println!("Path: {}", path.display());
+            println!("Adjustments: defined by PP3 file");
+            println!("Grain: none attached");
+        }
         ProfileInfo::RgbTableProfile {
             path,
             converted,

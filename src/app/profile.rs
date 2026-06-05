@@ -17,7 +17,7 @@ use walkdir::WalkDir;
 use crate::app::apply::ApplyArgs;
 
 pub(crate) struct ResolvedProfile {
-    pub(crate) hald_path: PathBuf,
+    pub(crate) hald_path: Option<PathBuf>,
     pub(crate) rawtherapee_profiles: Vec<PathBuf>,
     pub(crate) grain: GrainSettings,
 }
@@ -37,6 +37,9 @@ pub(crate) enum ProfileInfo {
         path: PathBuf,
         converted: ConvertedProfile,
         hald_path: PathBuf,
+    },
+    RawTherapeePp3 {
+        path: PathBuf,
     },
 }
 
@@ -86,25 +89,24 @@ pub(crate) fn rawtherapee_profiles_with_hald(
     resolved: &ResolvedProfile,
     temp_dir: &Path,
 ) -> Result<Vec<PathBuf>> {
-    let lut_profile = temp_dir.join("rt-hald-clut.pp3");
-    std::fs::write(
-        &lut_profile,
-        rawtherapee_hald_clut_profile_text(&resolved.hald_path),
-    )
-    .with_context(|| format!("writing {}", lut_profile.display()))?;
-
     let mut profiles = resolved.rawtherapee_profiles.clone();
-    profiles.push(lut_profile);
+    if let Some(hald_path) = &resolved.hald_path {
+        let lut_profile = temp_dir.join("rt-hald-clut.pp3");
+        std::fs::write(&lut_profile, rawtherapee_hald_clut_profile_text(hald_path))
+            .with_context(|| format!("writing {}", lut_profile.display()))?;
+        profiles.push(lut_profile);
+    }
     Ok(profiles)
 }
 
 /// Resolve a CLI profile selector into a concrete Hald file plus recipe metadata.
 ///
 /// The selector can be a real path, an emulation XMP name under `emulations/`,
-/// or a generated Hald name under `hald_dir`. Emulation XMP inputs generate a
-/// temporary Hald from their linked internal RGBTable profile and may generate
-/// RawTherapee `.pp3` files for tone/color/sharpening metadata; raw PNG Hald
-/// inputs have no attached recipe metadata, so they resolve with defaults.
+/// a generated Hald name under `hald_dir`, or a human-authored `.pp3` path.
+/// Emulation XMP inputs generate a temporary Hald from their linked internal
+/// RGBTable profile and may generate RawTherapee `.pp3` files for
+/// tone/color/sharpening metadata; raw PNG Hald and PP3 inputs have no attached
+/// mini-film grain metadata, so they resolve with defaults.
 pub(crate) fn resolve_profile(args: &ApplyArgs, temp_dir: &Path) -> Result<ResolvedProfile> {
     let selector_path = Path::new(&args.profile);
     if selector_path.exists() {
@@ -131,14 +133,14 @@ pub(crate) fn resolve_profile(args: &ApplyArgs, temp_dir: &Path) -> Result<Resol
 
     if let Some(path) = find_hald_by_name(&args.hald_dir, &args.profile)? {
         return Ok(ResolvedProfile {
-            hald_path: path,
+            hald_path: Some(path),
             rawtherapee_profiles: Vec::new(),
             grain: GrainSettings::default(),
         });
     }
 
     bail!(
-        "could not resolve profile {:?} as a file, emulation XMP name under {}, or Hald name under {}",
+        "could not resolve profile {:?} as a file, emulation XMP name under {}, Hald name under {}, or PP3 path",
         args.profile,
         args.profiles_root.display(),
         args.hald_dir.display()
@@ -160,14 +162,21 @@ fn profile_from_path(
 ) -> Result<ResolvedProfile> {
     match path.extension().and_then(|s| s.to_str()) {
         Some(ext) if ext.eq_ignore_ascii_case("png") => Ok(ResolvedProfile {
-            hald_path: path.to_path_buf(),
+            hald_path: Some(path.to_path_buf()),
             rawtherapee_profiles: Vec::new(),
             grain: GrainSettings::default(),
         }),
         Some(ext) if ext.eq_ignore_ascii_case("xmp") => {
             profile_from_xmp(path, hald_level, profiles_root, hald_dir, temp_dir)
         }
-        Some(ext) => bail!("unsupported profile path extension .{ext}; expected .png or .xmp"),
+        Some(ext) if ext.eq_ignore_ascii_case("pp3") => Ok(ResolvedProfile {
+            hald_path: None,
+            rawtherapee_profiles: vec![path.to_path_buf()],
+            grain: GrainSettings::default(),
+        }),
+        Some(ext) => {
+            bail!("unsupported profile path extension .{ext}; expected .png, .xmp, or .pp3")
+        }
         None => bail!("profile path has no extension: {}", path.display()),
     }
 }
@@ -185,7 +194,12 @@ fn inspect_profile_path(
         Some(ext) if ext.eq_ignore_ascii_case("xmp") => {
             inspect_xmp_profile_path(path, profiles_root, hald_dir, hald_level)
         }
-        Some(ext) => bail!("unsupported profile path extension .{ext}; expected .png or .xmp"),
+        Some(ext) if ext.eq_ignore_ascii_case("pp3") => Ok(ProfileInfo::RawTherapeePp3 {
+            path: path.to_path_buf(),
+        }),
+        Some(ext) => {
+            bail!("unsupported profile path extension .{ext}; expected .png, .xmp, or .pp3")
+        }
         None => bail!("profile path has no extension: {}", path.display()),
     }
 }
@@ -322,7 +336,7 @@ fn profile_from_xmp_inner(
         rawtherapee_profiles.push(path);
     }
     Ok(ResolvedProfile {
-        hald_path: output,
+        hald_path: Some(output),
         rawtherapee_profiles,
         grain: recipe.grain,
     })

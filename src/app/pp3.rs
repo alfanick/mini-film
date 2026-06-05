@@ -20,7 +20,7 @@ pub(crate) fn run_pp3(args: Pp3Args) -> Result<()> {
         &args.hald_dir,
         args.hald_level,
     )?;
-    let text = pp3_text(&info);
+    let text = pp3_text(&info)?;
     write_pp3_output(&args.output, &text)?;
     Ok(())
 }
@@ -39,11 +39,16 @@ fn write_pp3_output(output: &PathBuf, text: &str) -> Result<()> {
     fs::write(output, text).with_context(|| format!("writing {}", output.display()))
 }
 
-fn pp3_text(info: &ProfileInfo) -> String {
+fn pp3_text(info: &ProfileInfo) -> Result<String> {
     let mut out = String::new();
     match info {
         ProfileInfo::HaldPng { path } => {
             out.push_str(&rawtherapee_hald_clut_profile_text(path));
+        }
+        ProfileInfo::RawTherapeePp3 { path } => {
+            out.push_str(
+                &fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?,
+            );
         }
         ProfileInfo::RgbTableProfile {
             converted,
@@ -64,7 +69,7 @@ fn pp3_text(info: &ProfileInfo) -> String {
             out.push_str(&rawtherapee_hald_clut_profile_text(hald_path));
         }
     }
-    out
+    Ok(out)
 }
 
 fn push_adjustment_profile(
