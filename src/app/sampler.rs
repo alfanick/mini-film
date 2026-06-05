@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use mini_film::apply_grain_8bit;
+use mini_film::{apply_grain_8bit, write_rawtherapee_resize_profile};
 use rayon::prelude::*;
 use tempfile::Builder;
 use walkdir::WalkDir;
@@ -16,7 +16,7 @@ use walkdir::WalkDir;
 use crate::app::export::{add_convert_thread_limit, finalize_output, validate_output_format};
 use crate::app::profile::{profile_from_xmp_quiet, rawtherapee_profiles_with_hald};
 use crate::app::progress::format_duration;
-use crate::app::raw::run_raw_develop;
+use crate::app::raw::run_raw_develop_jpeg;
 use crate::app::util::{remove_temp_file, time_of_day_seed};
 use crate::cli::{ExportOptions, JpegSubsampling};
 
@@ -286,14 +286,20 @@ fn render_profile_thumbnail(
         &profile_temp,
     )
     .with_context(|| format!("resolving profile {}", profile.display()))?;
-    let developed = profile_temp.join("rawtherapee.tif");
+    let developed = profile_temp.join("rawtherapee.jpg");
     sampler_step(progress, 2, "rawtherapee");
-    let rawtherapee_profiles = rawtherapee_profiles_with_hald(&resolved, &profile_temp)?;
-    run_raw_develop(
+    let mut rawtherapee_profiles = rawtherapee_profiles_with_hald(&resolved, &profile_temp)?;
+    rawtherapee_profiles.push(write_rawtherapee_resize_profile(
+        &profile_temp.join("resize.pp3"),
+        args.thumbnail_long_edge,
+    )?);
+    run_raw_develop_jpeg(
         &args.rawtherapee,
         &rawtherapee_profiles,
         &args.raw,
         &developed,
+        args.jpg_quality,
+        args.jpeg_subsampling,
         true,
     )?;
 

@@ -34,6 +34,15 @@ pub fn write_rawtherapee_profile(
     Ok(Some(path.to_path_buf()))
 }
 
+pub fn write_rawtherapee_resize_profile(path: &Path, long_edge: u32) -> Result<PathBuf> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+    fs::write(path, rawtherapee_resize_profile_text(long_edge))
+        .with_context(|| format!("writing {}", path.display()))?;
+    Ok(path.to_path_buf())
+}
+
 /// Render a RawTherapee `.pp3` string from parsed Lightroom-style settings.
 ///
 /// The generated profile is deliberately partial. `rawtherapee-cli -p` starts
@@ -67,6 +76,23 @@ pub fn rawtherapee_hald_clut_profile_text(hald: &Path) -> String {
     let _ = writeln!(out, "Enabled=true");
     let _ = writeln!(out, "ClutFilename={}", hald.display());
     let _ = writeln!(out, "Strength=100");
+    let _ = writeln!(out);
+    out
+}
+
+pub fn rawtherapee_resize_profile_text(long_edge: u32) -> String {
+    let long_edge = long_edge.max(1);
+    let mut out = String::new();
+    let _ = writeln!(out, "[Resize]");
+    let _ = writeln!(out, "Enabled=true");
+    let _ = writeln!(out, "AppliesTo=Full image");
+    let _ = writeln!(out, "Method=Lanczos");
+    let _ = writeln!(out, "DataSpecified=3");
+    let _ = writeln!(out, "Width={long_edge}");
+    let _ = writeln!(out, "Height={long_edge}");
+    let _ = writeln!(out, "LongEdge={long_edge}");
+    let _ = writeln!(out, "ShortEdge={long_edge}");
+    let _ = writeln!(out, "AllowUpscaling=false");
     let _ = writeln!(out);
     out
 }

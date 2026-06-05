@@ -122,7 +122,7 @@ pub(crate) enum CommandKind {
         progressive_jpeg: bool,
     },
 
-    /// Apply a profile to every DNG/NEF file in an input folder and write JPEGs.
+    /// Apply a profile to every DNG/NEF file in an input folder.
     Batch {
         /// Input folder scanned recursively for .dng/.DNG/.nef/.NEF files.
         input: PathBuf,
@@ -170,23 +170,27 @@ pub(crate) enum CommandKind {
         #[arg(long)]
         grain_seed: Option<u64>,
 
-        /// JPEG quality for every output file.
+        /// Output format for generated batch files.
+        #[arg(long, value_enum, default_value_t = BatchOutputFormat::Jpg)]
+        output_format: BatchOutputFormat,
+
+        /// JPEG quality for JPG batch outputs.
         #[arg(long, default_value_t = 95)]
         jpg_quality: u8,
 
-        /// Resize final JPEGs with GraphicsMagick geometry, for example 3000x3000 or 3000x3000>.
+        /// Resize final outputs with GraphicsMagick geometry, for example 3000x3000 or 3000x3000>.
         #[arg(long)]
         resize: Option<String>,
 
-        /// Resize final JPEGs so the longest edge is at most this many pixels.
+        /// Resize final outputs so the longest edge is at most this many pixels.
         #[arg(long)]
         long_edge: Option<u32>,
 
-        /// Resize final JPEGs so width is at most this many pixels.
+        /// Resize final outputs so width is at most this many pixels.
         #[arg(long)]
         max_width: Option<u32>,
 
-        /// Resize final JPEGs so height is at most this many pixels.
+        /// Resize final outputs so height is at most this many pixels.
         #[arg(long)]
         max_height: Option<u32>,
 
@@ -194,7 +198,7 @@ pub(crate) enum CommandKind {
         #[arg(long, value_enum, default_value_t = JpegSubsampling::S444)]
         jpeg_subsampling: JpegSubsampling,
 
-        /// Strip profiles and text metadata from final JPEGs.
+        /// Strip profiles and text metadata from final outputs.
         #[arg(long)]
         strip_metadata: bool,
 
@@ -271,6 +275,21 @@ pub(crate) enum JpegSubsampling {
     S444,
     S422,
     S420,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub(crate) enum BatchOutputFormat {
+    Jpg,
+    Tiff,
+}
+
+impl BatchOutputFormat {
+    pub(crate) fn extension(self) -> &'static str {
+        match self {
+            BatchOutputFormat::Jpg => "jpg",
+            BatchOutputFormat::Tiff => "tif",
+        }
+    }
 }
 
 impl JpegSubsampling {

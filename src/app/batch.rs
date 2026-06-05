@@ -21,7 +21,7 @@ use crate::app::progress::{
     ApplyProgress, batch_progress_style, file_progress_style, format_duration,
 };
 use crate::app::util::time_of_day_seed;
-use crate::cli::ExportOptions;
+use crate::cli::{BatchOutputFormat, ExportOptions};
 
 const BATCH_PARALLEL_FILES: usize = 4;
 
@@ -38,6 +38,7 @@ pub(crate) struct BatchArgs {
     pub(crate) grain: Option<String>,
     pub(crate) grain_preset: Option<String>,
     pub(crate) grain_seed: Option<u64>,
+    pub(crate) output_format: BatchOutputFormat,
     pub(crate) export: ExportOptions,
 }
 
@@ -198,7 +199,7 @@ fn process_batch_file_inner(
     index: usize,
     raw: &Path,
 ) -> Result<()> {
-    let output = batch_output_path(&args.input, &args.output, raw)?;
+    let output = batch_output_path(&args.input, &args.output, args.output_format, raw)?;
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
@@ -280,7 +281,12 @@ fn is_batch_raw(path: &Path) -> bool {
     )
 }
 
-fn batch_output_path(input_root: &Path, output_root: &Path, raw: &Path) -> Result<PathBuf> {
+fn batch_output_path(
+    input_root: &Path,
+    output_root: &Path,
+    output_format: BatchOutputFormat,
+    raw: &Path,
+) -> Result<PathBuf> {
     let rel = raw
         .strip_prefix(input_root)
         .with_context(|| format!("mapping {} under {}", raw.display(), input_root.display()))?;
@@ -289,7 +295,9 @@ fn batch_output_path(input_root: &Path, output_root: &Path, raw: &Path) -> Resul
         .file_stem()
         .and_then(|s| s.to_str())
         .ok_or_else(|| anyhow::anyhow!("input has no valid stem: {}", raw.display()))?;
-    Ok(output_root.join(parent).join(format!("{stem}.jpg")))
+    Ok(output_root
+        .join(parent)
+        .join(format!("{}.{}", stem, output_format.extension())))
 }
 
 fn per_file_seed(base_seed: u64, index: u64, path: &Path) -> u64 {

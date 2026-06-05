@@ -73,22 +73,23 @@ cargo run --release -- apply input.RAW \
 
 ## Batch Apply
 
-Process every `.dng`, `.DNG`, `.nef`, and `.NEF` under an input directory and write JPEGs under an output directory:
+Process every `.dng`, `.DNG`, `.nef`, and `.NEF` under an input directory and write JPGs or 16-bit TIFFs under an output directory:
 
 ```sh
 cargo run --release -- batch \
   /home/alfanick/Pictures/Lightroom/2026/05/03 \
   /home/alfanick/batch-output \
   --profile 'Agfa Scala 200 + grainy' \
-  --profiles-root /home/alfanick/Pictures/RNI
+  --profiles-root /home/alfanick/Pictures/RNI \
+  --output-format jpg
 ```
 
-The output directory is created if it does not exist. Nested input folders are preserved, and each RAW output uses the same relative path with a `.jpg` extension.
+The output directory is created if it does not exist. Nested input folders are preserved, and each RAW output uses the same relative path with a `.jpg` extension by default. Use `--output-format tiff` to write `.tif` files through the 16-bit TIFF path.
 
 `batch` shows two progress bars:
 
 - total batch progress across files
-- current file progress across RAW decode, Hald, grain, and JPEG export steps
+- current file progress across RAW decode, Hald, grain, and final export steps
 
 ## Profile Sampler Contact Sheet
 
@@ -118,7 +119,9 @@ Use a non-default montage binary with:
 
 ## JPEG Export Options
 
-`apply` and `batch` support the same final JPEG controls. `sampler` also
+`apply` and `batch` support the same final JPG controls. `batch` also accepts
+`--output-format jpg|tiff`; TIFF batch output is written as 16-bit `.tif`.
+`sampler` also
 supports `--jpg-quality`, `--jpeg-subsampling`, `--strip-metadata`, and
 `--progressive` for generated sampler JPEGs.
 
@@ -186,11 +189,19 @@ ImageMagick/GraphicsMagick `convert` handles:
 
 ## RAW Development
 
-`mini-film` uses RawTherapee as its only RAW engine. It renders a 16-bit TIFF intermediate with:
+`mini-film` uses RawTherapee as its only RAW engine. TIFF outputs and explicit `--keep-intermediate` runs render a 16-bit TIFF intermediate with:
 
 ```sh
 rawtherapee-cli -q -Y [-p generated.pp3 ...] -o intermediate.tif -t -b16 -c input.RAW
 ```
+
+JPEG-bound `apply`, `batch`, and `sampler` runs ask RawTherapee for an 8-bit JPEG intermediate instead:
+
+```sh
+rawtherapee-cli -q -Y [-p generated.pp3 ...] -o intermediate.jpg -j95 -js3 -c input.RAW
+```
+
+Sampler also adds a temporary RawTherapee resize profile so each RAW development produces a thumbnail-sized JPEG instead of a full-size TIFF.
 
 Use a non-default RawTherapee binary path with:
 
@@ -206,7 +217,7 @@ Lightroom grain fields are read from preset XMPs:
 - `crs:GrainSize`
 - `crs:GrainFrequency`
 
-Grain is rendered on a 16-bit intermediate using Gaussian noise plus smooth procedural modulation from the Rust `noise` crate. Disable it with:
+Grain is rendered internally after RawTherapee. TIFF outputs use the 16-bit grain path; JPEG outputs use the optimized 8-bit grain path. Disable it with:
 
 ```sh
 --no-grain

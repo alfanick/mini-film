@@ -11,7 +11,7 @@ use crate::app::profile::{
     ResolvedProfile, normalize_name, rawtherapee_profiles_with_hald, resolve_profile,
 };
 use crate::app::progress::{ApplyProgress, progress_step};
-use crate::app::raw::run_raw_develop;
+use crate::app::raw::{run_raw_develop, run_raw_develop_jpeg};
 use crate::app::util::{remove_temp_file, time_of_day_seed};
 use crate::cli::ExportOptions;
 
@@ -89,11 +89,13 @@ pub(crate) fn run_apply(args: ApplyArgs) -> Result<()> {
 
 /// Apply an already resolved profile to one RAW input.
 ///
-/// The function owns the processing graph. It develops RAW to TIFF with
-/// RawTherapee while applying generated `.pp3` adjustments and the Hald CLUT via
-/// Film Simulation, eagerly removes temporary files, optionally renders grain in
-/// either 8-bit JPEG space or 16-bit TIFF space, and finally exports to the
-/// requested output format while updating progress bars for batch callers.
+/// The function owns the processing graph. It develops RAW with RawTherapee
+/// while applying generated `.pp3` adjustments and the Hald CLUT via Film
+/// Simulation, using 8-bit JPEG intermediates for JPEG-bound outputs and 16-bit
+/// TIFF intermediates for TIFF-bound outputs. It eagerly removes temporary
+/// files, optionally renders grain in either 8-bit JPEG space or 16-bit TIFF
+/// space, and finally exports to the requested output format while updating
+/// progress bars for batch callers.
 pub(crate) fn apply_resolved(
     job: ApplyJob<'_>,
     resolved: &ResolvedProfile,
@@ -104,23 +106,42 @@ pub(crate) fn apply_resolved(
     validate_output_format(job.output)?;
 
     let grain_enabled = !job.no_grain && resolved.grain.is_enabled();
+    let output_ext = output_ext(job.output)?;
+    let jpeg_output = output_ext == "jpg" || output_ext == "jpeg";
+    let jpeg_intermediate = jpeg_output && job.keep_intermediate.is_none();
     let intermediate = job
         .keep_intermediate
         .map(Path::to_path_buf)
-        .unwrap_or_else(|| temp_dir.join("rawtherapee.tif"));
+        .unwrap_or_else(|| {
+            if jpeg_intermediate {
+                temp_dir.join("rawtherapee.jpg")
+            } else {
+                temp_dir.join("rawtherapee.tif")
+            }
+        });
     let cleanup_intermediate = job.keep_intermediate.is_none();
-    let output_ext = output_ext(job.output)?;
-    let jpeg_output = output_ext == "jpg" || output_ext == "jpeg";
 
     progress_step(progress, 1, "rawtherapee");
     let rawtherapee_profiles = rawtherapee_profiles_with_hald(resolved, temp_dir)?;
-    run_raw_develop(
-        job.rawtherapee,
-        &rawtherapee_profiles,
-        job.raw,
-        &intermediate,
-        job.quiet,
-    )?;
+    if jpeg_intermediate {
+        run_raw_develop_jpeg(
+            job.rawtherapee,
+            &rawtherapee_profiles,
+            job.raw,
+            &intermediate,
+            job.export.jpg_quality,
+            job.export.jpeg_subsampling,
+            job.quiet,
+        )?;
+    } else {
+        run_raw_develop(
+            job.rawtherapee,
+            &rawtherapee_profiles,
+            job.raw,
+            &intermediate,
+            job.quiet,
+        )?;
+    }
 
     if grain_enabled && jpeg_output {
         progress_step(progress, 3, "grain");
