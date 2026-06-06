@@ -64,6 +64,7 @@ struct SampleThumb {
     image: PathBuf,
     profile: PathBuf,
     pp3: Option<PathBuf>,
+    hald: Option<PathBuf>,
     name: String,
     filename: String,
     parts: Vec<String>,
@@ -361,6 +362,7 @@ fn sample_thumb_from_image(
         image,
         profile: profile.to_path_buf(),
         pp3: None,
+        hald: None,
         name,
         filename: relative,
         parts,
@@ -687,22 +689,35 @@ fn run_html_sheet(
     })?;
     html_thumbs.sort_by_key(|(index, _)| *index);
 
-    let mut pp3_names = BTreeMap::new();
-    let mut pp3_exports = Vec::with_capacity(html_thumbs.len());
-    for (_, thumb) in &mut html_thumbs {
-        let pp3_name = unique_html_pp3_file_name(&mut pp3_names, &thumb);
+    let mut sidecar_names = BTreeMap::new();
+    let mut sidecar_exports = Vec::with_capacity(html_thumbs.len());
+    for (html_index, (_, thumb)) in html_thumbs.iter_mut().enumerate() {
+        let stem = unique_html_sidecar_stem(&mut sidecar_names, &thumb);
+        let pp3_name = format!("{stem}.pp3");
         let pp3_output = pp3_dir.join(&pp3_name);
-        pp3_exports.push((thumb.profile.clone(), pp3_output));
+        sidecar_exports.push((html_index, thumb.profile.clone(), pp3_output));
         thumb.pp3 = Some(PathBuf::from("pp3").join(pp3_name));
     }
-    pool.install(|| {
-        pp3_exports
+    let mut hald_links = pool.install(|| {
+        sidecar_exports
             .par_iter()
-            .try_for_each(|(profile, pp3_output)| {
-                write_html_sampler_pp3(profile, hald_level, profiles_root, hald_dir, pp3_output)
-                    .with_context(|| format!("exporting PP3 sidecar for {}", profile.display()))
+            .map(|(html_index, profile, pp3_output)| {
+                let hald = write_html_sampler_sidecars(
+                    profile,
+                    hald_level,
+                    profiles_root,
+                    hald_dir,
+                    pp3_output,
+                )
+                .with_context(|| format!("exporting sampler sidecars for {}", profile.display()))?;
+                Ok::<_, anyhow::Error>((*html_index, hald))
             })
+            .collect::<Result<Vec<_>>>()
     })?;
+    hald_links.sort_by_key(|(html_index, _)| *html_index);
+    for (html_index, hald) in hald_links {
+        html_thumbs[html_index].1.hald = Some(hald);
+    }
 
     let mut trie = ProfileTrie::default();
     for (_, thumb) in html_thumbs {
@@ -713,13 +728,13 @@ fn run_html_sheet(
     Ok(())
 }
 
-fn write_html_sampler_pp3(
+fn write_html_sampler_sidecars(
     profile: &Path,
     hald_level: u32,
     profiles_root: &Path,
     hald_dir: &Path,
-    output: &Path,
-) -> Result<()> {
+    pp3_output: &Path,
+) -> Result<PathBuf> {
     let temp_dir = Builder::new().prefix("mini-film-sampler-pp3-").tempdir()?;
     let resolved = profile_from_xmp_quiet(
         profile,
@@ -728,6 +743,10 @@ fn write_html_sampler_pp3(
         hald_dir,
         temp_dir.path(),
     )?;
+    let hald_path = resolved
+        .hald_path
+        .as_ref()
+        .context("resolved emulation did not produce a HALD path")?;
     let rawtherapee_profiles = rawtherapee_profiles_with_hald(&resolved, temp_dir.path())?;
     let mut text = String::new();
     for profile in rawtherapee_profiles {
@@ -739,19 +758,20 @@ fn write_html_sampler_pp3(
             text.push('\n');
         }
     }
-    fs::write(output, text).with_context(|| format!("writing {}", output.display()))
+    fs::write(pp3_output, text).with_context(|| format!("writing {}", pp3_output.display()))?;
+    Ok(hald_path.clone())
 }
 
-fn unique_html_pp3_file_name(names: &mut BTreeMap<String, usize>, thumb: &SampleThumb) -> String {
+fn unique_html_sidecar_stem(names: &mut BTreeMap<String, usize>, thumb: &SampleThumb) -> String {
     let base = html_pp3_file_stem(thumb);
     let count = names.entry(base.clone()).or_insert(0);
-    let name = if *count == 0 {
-        format!("{base}.pp3")
+    let stem = if *count == 0 {
+        base
     } else {
-        format!("{base}-{}.pp3", *count + 1)
+        format!("{base}-{}", *count + 1)
     };
     *count += 1;
-    name
+    stem
 }
 
 fn html_pp3_file_stem(thumb: &SampleThumb) -> String {
@@ -1058,6 +1078,7 @@ fn render_html_grid(templates: &Handlebars<'_>, entries: &[SheetEntry<'_>]) -> R
                         "image": image,
                         "xmp_href": file_url(&entry.thumb.profile),
                         "pp3_href": entry.thumb.pp3.as_ref().map(relative_url).unwrap_or_default(),
+                        "hald_href": entry.thumb.hald.as_ref().map(|path| file_url(path)).unwrap_or_default(),
                     }),
                 )
                 .context("rendering HTML sampler tile")?,
@@ -1161,6 +1182,7 @@ impl SampleThumb {
             image: self.image.clone(),
             profile: self.profile.clone(),
             pp3: self.pp3.clone(),
+            hald: self.hald.clone(),
             name: self.name.clone(),
             filename: self.filename.clone(),
             parts: self.parts.clone(),
@@ -1701,6 +1723,7 @@ mod tests {
             image: PathBuf::from(format!("/tmp/{name}.jpg")),
             profile: PathBuf::from(format!("/tmp/{name}.xmp")),
             pp3: None,
+            hald: None,
             name: name.to_string(),
             filename: format!("{name}.xmp"),
             parts: profile_name_parts(name),
@@ -1958,6 +1981,7 @@ mod tests {
         let mut thumb = sample_thumb("Kodak Portra 400 Grainy", 1024, 683);
         thumb.image = PathBuf::from("thumbnails/kodak.jpg");
         thumb.pp3 = Some(PathBuf::from("pp3/Kodak Portra 400 Grainy.pp3"));
+        thumb.hald = Some(PathBuf::from("/tmp/Kodak Portra 400 Grainy.hald.png"));
         trie.insert(thumb);
 
         let html = render_sheet_html(&trie, 4).unwrap();
@@ -1984,10 +2008,15 @@ mod tests {
         assert!(html.contains("src=\"thumbnails/kodak.jpg\""));
         assert!(html.contains("href=\"file:///tmp/Kodak%20Portra%20400%20Grainy.xmp\""));
         assert!(html.contains("href=\"pp3/Kodak%20Portra%20400%20Grainy.pp3\""));
+        assert!(html.contains("href=\"file:///tmp/Kodak%20Portra%20400%20Grainy.hald.png\""));
         assert!(html.contains(">XMP</a>"));
         assert!(html.contains(">PP3</a>"));
+        assert!(html.contains(">HALD</a>"));
         assert!(html.contains("href=\"file:///tmp/Kodak%20Portra%20400%20Grainy.xmp\" download"));
         assert!(html.contains("href=\"pp3/Kodak%20Portra%20400%20Grainy.pp3\" download"));
+        assert!(
+            html.contains("href=\"file:///tmp/Kodak%20Portra%20400%20Grainy.hald.png\" download")
+        );
         assert!(html.contains("class=\"thumb-button\""));
         assert!(html.contains("id=\"overlay\""));
         assert!(html.contains("max-width: calc(100vw - 96px)"));
@@ -2015,13 +2044,10 @@ mod tests {
         let second = sample_thumb("Ilford FP4", 1024, 683);
         let mut names = BTreeMap::new();
 
+        assert_eq!(unique_html_sidecar_stem(&mut names, &first), "Ilford FP4");
         assert_eq!(
-            unique_html_pp3_file_name(&mut names, &first),
-            "Ilford FP4.pp3"
-        );
-        assert_eq!(
-            unique_html_pp3_file_name(&mut names, &second),
-            "Ilford FP4-2.pp3"
+            unique_html_sidecar_stem(&mut names, &second),
+            "Ilford FP4-2"
         );
     }
 
