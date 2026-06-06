@@ -6,6 +6,12 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Tag to build and publish"
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -36,6 +42,18 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+
+      - name: Resolve release tag
+        id: release-tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.release_tag }}" ]; then
+            echo "tag=${{ inputs.release_tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@v1
@@ -63,7 +81,7 @@ jobs:
           set -euo pipefail
           mkdir -p artifacts
           binary="target/${{ matrix.target }}/release/mini-film${{ matrix.extension }}"
-          artifact="artifacts/mini-film-${{ github.ref_name }}-${{ matrix.target }}${{ matrix.extension }}"
+          artifact="artifacts/mini-film-${{ steps.release-tag.outputs.tag }}-${{ matrix.target }}${{ matrix.extension }}"
           cp "$binary" "$artifact"
 
       - name: Upload artifact
@@ -82,6 +100,18 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+
+      - name: Resolve release tag
+        id: release-tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.release_tag }}" ]; then
+            echo "tag=${{ inputs.release_tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -94,8 +124,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          current_tag="${GITHUB_REF_NAME}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.release_tag }}" ]; then
+            current_tag="${{ inputs.release_tag }}"
+          else
+            current_tag="${GITHUB_REF_NAME}"
+          fi
           prev_tag=""
           prev_short=""
 
@@ -117,8 +150,8 @@ jobs:
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
+          tag_name: ${{ steps.release-tag.outputs.tag }}
+          name: ${{ steps.release-tag.outputs.tag }}
           body_path: release-notes.md
           files: |
             artifacts/*
