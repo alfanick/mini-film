@@ -100,18 +100,22 @@ jobs:
             extension: ""
             runs_on: self-hosted
             use_cross: false
+            cargo_features: "github-update"
           - target: aarch64-unknown-linux-gnu
             extension: ""
             runs_on: self-hosted
             use_cross: true
+            cargo_features: ""
           - target: aarch64-apple-darwin
             extension: ""
             runs_on: macos-latest
             use_cross: false
+            cargo_features: "github-update"
           - target: x86_64-pc-windows-msvc
             runs_on: windows-latest
             extension: ".exe"
             use_cross: false
+            cargo_features: "github-update"
 
     steps:
       - name: Checkout
@@ -146,10 +150,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          cargo_features="${{ matrix.cargo_features }}"
+          feature_args=()
+          if [ -n "$cargo_features" ]; then
+            feature_args=(--features "$cargo_features")
+          fi
+
           if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cross build --release --locked --target "${{ matrix.target }}" --features github-update
+            if ! cross build --release --locked --target "${{ matrix.target }}" "${feature_args[@]}"; then
+              echo "::warning::cross build failed; retrying native cargo build for ${{ matrix.target }}."
+              cargo build --release --locked --target "${{ matrix.target }}" "${feature_args[@]}"
+            fi
           else
-            cargo build --release --locked --target "${{ matrix.target }}" --features github-update
+            cargo build --release --locked --target "${{ matrix.target }}" "${feature_args[@]}"
           fi
 
       - name: Prepare artifact
