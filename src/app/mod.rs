@@ -8,6 +8,7 @@ pub(crate) mod profile;
 pub(crate) mod progress;
 pub(crate) mod raw;
 pub(crate) mod sampler;
+pub(crate) mod sampler_assets;
 pub(crate) mod util;
 
 use std::path::Path;

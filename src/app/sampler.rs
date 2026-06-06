@@ -29,16 +29,12 @@ use crate::app::progress::{
     progress_stage, progress_stage_adaptive, set_progress,
 };
 use crate::app::raw::run_raw_develop_jpeg;
+use crate::app::sampler_assets::{
+    html_children_template, html_grid_template, html_page_template, html_script,
+    html_section_template, html_styles, html_tile_template,
+};
 use crate::app::util::{half_cpu_thread_count, remove_temp_file, time_of_day_seed};
 use crate::cli::{ExportOptions, JpegSubsampling};
-
-const HTML_PAGE_TEMPLATE: &str = include_str!("../../assets/sampler/page.html.hbs");
-const HTML_SECTION_TEMPLATE: &str = include_str!("../../assets/sampler/section.html.hbs");
-const HTML_GRID_TEMPLATE: &str = include_str!("../../assets/sampler/grid.html.hbs");
-const HTML_TILE_TEMPLATE: &str = include_str!("../../assets/sampler/tile.html.hbs");
-const HTML_CHILDREN_TEMPLATE: &str = include_str!("../../assets/sampler/children.html.hbs");
-const HTML_STYLES: &str = include_str!("../../assets/sampler/styles.css");
-const HTML_SCRIPT: &str = include_str!("../../assets/sampler/app.js");
 
 pub(crate) struct SamplerArgs {
     pub(crate) raw: PathBuf,
@@ -880,8 +876,8 @@ fn render_sheet_html(trie: &ProfileTrie, columns: u32) -> Result<String> {
             "page",
             &json!({
                 "columns": columns.max(1),
-                "styles": HTML_STYLES,
-                "script": HTML_SCRIPT,
+                "styles": html_styles(),
+                "script": html_script(),
                 "sections": sections,
                 "version": env!("CARGO_PKG_VERSION"),
             }),
@@ -892,19 +888,19 @@ fn render_sheet_html(trie: &ProfileTrie, columns: u32) -> Result<String> {
 fn html_templates() -> Result<Handlebars<'static>> {
     let mut templates = Handlebars::new();
     templates
-        .register_template_string("page", HTML_PAGE_TEMPLATE)
+        .register_template_string("page", html_page_template())
         .context("registering page template")?;
     templates
-        .register_template_string("section", HTML_SECTION_TEMPLATE)
+        .register_template_string("section", html_section_template())
         .context("registering section template")?;
     templates
-        .register_template_string("grid", HTML_GRID_TEMPLATE)
+        .register_template_string("grid", html_grid_template())
         .context("registering grid template")?;
     templates
-        .register_template_string("tile", HTML_TILE_TEMPLATE)
+        .register_template_string("tile", html_tile_template())
         .context("registering tile template")?;
     templates
-        .register_template_string("children", HTML_CHILDREN_TEMPLATE)
+        .register_template_string("children", html_children_template())
         .context("registering children template")?;
     Ok(templates)
 }
