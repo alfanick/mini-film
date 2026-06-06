@@ -102,7 +102,7 @@ jobs:
     name: Tag release
     runs-on: self-hosted
     needs: test-and-lint
-    if: github.event_name == 'push'
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.test-and-lint.result == 'success' }}
     steps:
       - uses: actions/checkout@v4
         with:
