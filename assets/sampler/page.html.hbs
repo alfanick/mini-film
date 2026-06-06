@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mini-film sampler</title>
+<style>
+{{{styles}}}
+</style>
+</head>
+<body style="--columns: {{columns}}">
+<main>
+<h1>mini-film sampler</h1>
+<p class="subtitle">Profiles are grouped by shared name prefixes; indentation shows trie depth.</p>
+{{{sections}}}
+<footer class="footer">
+  Picture by me. Presets from <a href="https://reallyniceimages.com/products/rni-all-films-5-pro-for-adobe-lightroom.html">RNI All Films 5 Pro</a>.
+</footer>
+</main>
+<div class="overlay" id="overlay" aria-hidden="true">
+  <button class="overlay-close" type="button" aria-label="Close">&times;</button>
+  <img id="overlay-image" alt="">
+  <div class="overlay-caption" id="overlay-caption"></div>
+</div>
+<script>
+{{{script}}}
+</script>
+</body>
+</html>

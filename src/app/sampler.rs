@@ -13,9 +13,11 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use handlebars::Handlebars;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use mini_film::{GrainSettings, apply_grain_8bit, write_rawtherapee_resize_profile};
 use rayon::prelude::*;
+use serde_json::json;
 use sha1::{Digest, Sha1};
 use tempfile::Builder;
 use walkdir::WalkDir;
@@ -29,6 +31,14 @@ use crate::app::progress::{
 use crate::app::raw::run_raw_develop_jpeg;
 use crate::app::util::{half_cpu_thread_count, remove_temp_file, time_of_day_seed};
 use crate::cli::{ExportOptions, JpegSubsampling};
+
+const HTML_PAGE_TEMPLATE: &str = include_str!("../../assets/sampler/page.html.hbs");
+const HTML_SECTION_TEMPLATE: &str = include_str!("../../assets/sampler/section.html.hbs");
+const HTML_GRID_TEMPLATE: &str = include_str!("../../assets/sampler/grid.html.hbs");
+const HTML_TILE_TEMPLATE: &str = include_str!("../../assets/sampler/tile.html.hbs");
+const HTML_CHILDREN_TEMPLATE: &str = include_str!("../../assets/sampler/children.html.hbs");
+const HTML_STYLES: &str = include_str!("../../assets/sampler/styles.css");
+const HTML_SCRIPT: &str = include_str!("../../assets/sampler/app.js");
 
 pub(crate) struct SamplerArgs {
     pub(crate) raw: PathBuf,
@@ -663,7 +673,7 @@ fn run_html_sheet(
     for (_, thumb) in html_thumbs {
         trie.insert(thumb);
     }
-    let html = render_sheet_html(&trie, columns);
+    let html = render_sheet_html(&trie, columns)?;
     fs::write(output, html).with_context(|| format!("writing {}", output.display()))?;
     Ok(())
 }
@@ -756,237 +766,64 @@ fn html_thumbnail_file_name(index: usize, thumb: &SampleThumb) -> String {
     format!("{index:04}-{stem}.jpg")
 }
 
-fn render_sheet_html(trie: &ProfileTrie, columns: u32) -> String {
-    let mut out = String::new();
-    out.push_str("<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n");
-    out.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n");
-    out.push_str("<title>mini-film sampler</title>\n");
-    out.push_str("<style>\n");
-    out.push_str(&html_font_css());
-    out.push_str(
-        r#"
-:root {
-  color-scheme: light;
-  --columns: 8;
-  --indent: clamp(24px, 3vw, 72px);
-  --gap: 22px;
-  --border: #dddddd;
-  --text: #111111;
-  --muted: #777777;
-  --overlay: rgba(0, 0, 0, 0.88);
-}
-* { box-sizing: border-box; }
-body {
-  margin: 0;
-  background: #ffffff;
-  color: var(--text);
-  font-family: "PragmataPro", "Courier New", monospace;
-}
-main {
-  padding: 92px 40px 48px;
-}
-h1 {
-  margin: 0 0 52px;
-  font-size: 44px;
-  line-height: 1.1;
-}
-.subtitle {
-  margin: 0 0 62px;
-  color: #666666;
-  font-size: 18px;
-}
-.branch {
-  margin-top: 62px;
-}
-.branch.depth-1 { margin-top: 50px; }
-.branch.depth-2 { margin-top: 38px; }
-.branch.depth-deep { margin-top: 26px; }
-.branch-title {
-  margin: 0 0 22px;
-  font-weight: 700;
-  line-height: 1.15;
-}
-.depth-0 > .branch-title { font-size: 32px; }
-.depth-1 > .branch-title { font-size: 25px; color: #333333; }
-.depth-2 > .branch-title { font-size: 19px; color: #4b4b4b; }
-.depth-deep > .branch-title { font-size: 15px; color: #666666; }
-.children,
-.grid {
-  margin-left: var(--indent);
-}
-.grid {
-  display: grid;
-  grid-template-columns: repeat(var(--columns), minmax(0, 1fr));
-  grid-auto-rows: 1fr;
-  gap: calc(var(--gap) * 1.15);
-  align-items: start;
-  width: 100%;
-}
-.tile {
-  border: 1px solid var(--border);
-  display: grid;
-  grid-template-rows: auto 1fr;
-  height: 100%;
-  margin: 0;
-  padding: 16px;
-}
-.tile figcaption {
-  min-width: 0;
-}
-.label {
-  min-height: 2.1em;
-  margin: 0 0 5px;
-  color: #444444;
-  font-size: 30px;
-  font-weight: 500;
-  line-height: 1.05;
-  overflow: hidden;
-}
-.filename {
-  min-height: 2.3em;
-  margin: 0 0 14px;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.15;
-  overflow-wrap: anywhere;
-  overflow: hidden;
-}
-.tile img {
-  display: block;
-  width: 100%;
-  height: 100%;
-  border: 1px solid #d0d0d0;
-  background: #f8f8f8;
-  object-fit: contain;
-}
-.thumb-button {
-  display: block;
-  width: 100%;
-  aspect-ratio: 3 / 2;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  cursor: zoom-in;
-  text-align: inherit;
-}
-.overlay {
-  position: fixed;
-  inset: 0;
-  display: none;
-  align-items: center;
-  justify-content: center;
-  padding: 32px;
-  background: var(--overlay);
-  z-index: 10;
-}
-.overlay.open { display: flex; }
-.overlay img {
-  width: auto;
-  height: auto;
-  max-width: calc(100vw - 96px);
-  max-height: calc(100vh - 128px);
-  object-fit: contain;
-}
-.overlay-caption {
-  position: fixed;
-  left: 32px;
-  right: 32px;
-  bottom: 20px;
-  color: #ffffff;
-  font-size: 16px;
-  text-align: center;
-}
-.overlay-close {
-  position: fixed;
-  top: 18px;
-  right: 24px;
-  width: 44px;
-  height: 44px;
-  border: 1px solid rgba(255, 255, 255, 0.45);
-  background: rgba(0, 0, 0, 0.2);
-  color: #ffffff;
-  font-size: 32px;
-  line-height: 38px;
-  cursor: pointer;
-}
-@media (max-width: 760px) {
-  main { padding: 48px 18px 32px; }
-  .grid { grid-template-columns: 1fr; max-width: none; }
-  .children, .grid { margin-left: 18px; }
-}
-@media (min-width: 761px) and (max-width: 1400px) {
-  .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-"#,
-    );
-    out.push_str("</style>\n</head>\n");
-    out.push_str(&format!(
-        "<body style=\"--columns: {}\">\n<main>\n",
-        columns.max(1)
-    ));
-    out.push_str("<h1>mini-film sampler</h1>\n");
-    out.push_str("<p class=\"subtitle\">Profiles are grouped by shared name prefixes; indentation shows trie depth.</p>\n");
+fn render_sheet_html(trie: &ProfileTrie, columns: u32) -> Result<String> {
+    let templates = html_templates()?;
+    let mut sections = String::new();
     for (part, child) in &trie.children {
-        render_html_node(&mut out, child, &[part.clone()], 0);
+        sections.push_str(&render_html_node(&templates, child, &[part.clone()], 0)?);
     }
-    out.push_str("</main>\n");
-    out.push_str(
-        r#"<div class="overlay" id="overlay" aria-hidden="true">
-  <button class="overlay-close" type="button" aria-label="Close">×</button>
-  <img id="overlay-image" alt="">
-  <div class="overlay-caption" id="overlay-caption"></div>
-</div>
-<script>
-const overlay = document.getElementById("overlay");
-const overlayImage = document.getElementById("overlay-image");
-const overlayCaption = document.getElementById("overlay-caption");
-function closeOverlay() {
-  overlay.classList.remove("open");
-  overlay.setAttribute("aria-hidden", "true");
-  overlayImage.removeAttribute("src");
-}
-document.querySelectorAll(".thumb-button").forEach((button) => {
-  button.addEventListener("click", () => {
-    overlayImage.src = button.dataset.full;
-    overlayImage.alt = button.dataset.title;
-    overlayCaption.textContent = button.dataset.title;
-    overlay.classList.add("open");
-    overlay.setAttribute("aria-hidden", "false");
-  });
-});
-overlay.addEventListener("click", (event) => {
-  if (event.target === overlay || event.target.classList.contains("overlay-close")) {
-    closeOverlay();
-  }
-});
-document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") {
-    closeOverlay();
-  }
-});
-</script>
-"#,
-    );
-    out.push_str("</body>\n</html>\n");
-    out
+
+    templates
+        .render(
+            "page",
+            &json!({
+                "columns": columns.max(1),
+                "styles": HTML_STYLES,
+                "script": HTML_SCRIPT,
+                "sections": sections,
+            }),
+        )
+        .context("rendering HTML sampler page")
 }
 
-fn render_html_node(out: &mut String, node: &ProfileTrie, prefix: &[String], depth: usize) {
+fn html_templates() -> Result<Handlebars<'static>> {
+    let mut templates = Handlebars::new();
+    templates
+        .register_template_string("page", HTML_PAGE_TEMPLATE)
+        .context("registering page template")?;
+    templates
+        .register_template_string("section", HTML_SECTION_TEMPLATE)
+        .context("registering section template")?;
+    templates
+        .register_template_string("grid", HTML_GRID_TEMPLATE)
+        .context("registering grid template")?;
+    templates
+        .register_template_string("tile", HTML_TILE_TEMPLATE)
+        .context("registering tile template")?;
+    templates
+        .register_template_string("children", HTML_CHILDREN_TEMPLATE)
+        .context("registering children template")?;
+    Ok(templates)
+}
+
+fn render_html_node(
+    templates: &Handlebars<'_>,
+    node: &ProfileTrie,
+    prefix: &[String],
+    depth: usize,
+) -> Result<String> {
     let depth_class = html_depth_class(depth);
-    out.push_str(&format!(
-        "<section class=\"branch {depth_class}\">\n<h2 class=\"branch-title\">{}</h2>\n",
-        escape_xml(&prefix.join(" "))
-    ));
+    let title = prefix.join(" ");
+    let key = html_branch_key(prefix);
+    let mut body = String::new();
 
     if (depth >= 1 || subtree_depth(node) <= 2) && !contains_forced_branch(node) {
         let mut entries = Vec::new();
         collect_subtree_entries(node, prefix.len(), &mut entries);
         if !entries.is_empty() {
-            render_html_grid(out, &entries);
+            body.push_str(&render_html_grid(templates, &entries)?);
         }
-        out.push_str("</section>\n");
-        return;
+        return render_html_section(templates, depth_class, &key, &title, body);
     }
 
     let mut leaf_entries: Vec<_> = node
@@ -1013,40 +850,77 @@ fn render_html_node(out: &mut String, node: &ProfileTrie, prefix: &[String], dep
     );
     leaf_entries.sort_by(|left, right| left.sort_key.cmp(&right.sort_key));
     if !leaf_entries.is_empty() {
-        render_html_grid(out, &leaf_entries);
+        body.push_str(&render_html_grid(templates, &leaf_entries)?);
     }
 
-    out.push_str("<div class=\"children\">\n");
+    let mut children = String::new();
     for (part, child) in &node.children {
         if child.children.is_empty() && !child.thumbs.is_empty() {
             continue;
         }
         let mut child_prefix = prefix.to_vec();
         child_prefix.push(part.clone());
-        render_html_node(out, child, &child_prefix, depth + 1);
+        children.push_str(&render_html_node(
+            templates,
+            child,
+            &child_prefix,
+            depth + 1,
+        )?);
     }
-    out.push_str("</div>\n</section>\n");
+    if !children.is_empty() {
+        body.push_str(
+            &templates
+                .render("children", &json!({ "children": children }))
+                .context("rendering HTML sampler children")?,
+        );
+    }
+    render_html_section(templates, depth_class, &key, &title, body)
 }
 
-fn render_html_grid(out: &mut String, entries: &[SheetEntry<'_>]) {
-    out.push_str("<div class=\"grid\">\n");
+fn render_html_section(
+    templates: &Handlebars<'_>,
+    depth_class: &str,
+    key: &str,
+    title: &str,
+    body: String,
+) -> Result<String> {
+    templates
+        .render(
+            "section",
+            &json!({
+                "depth_class": depth_class,
+                "branch_key": key,
+                "title": title,
+                "body": body,
+            }),
+        )
+        .context("rendering HTML sampler section")
+}
+
+fn html_branch_key(prefix: &[String]) -> String {
+    prefix.join("/")
+}
+
+fn render_html_grid(templates: &Handlebars<'_>, entries: &[SheetEntry<'_>]) -> Result<String> {
+    let mut tiles = String::new();
     for entry in entries {
-        out.push_str("<figure class=\"tile\">\n");
-        out.push_str(&format!(
-            "<figcaption><p class=\"label\">{}</p><p class=\"filename\">{}</p></figcaption>\n",
-            escape_xml(&entry.label),
-            escape_xml(&entry.full_name)
-        ));
-        out.push_str(&format!(
-            "<button class=\"thumb-button\" type=\"button\" data-full=\"{}\" data-title=\"{}\"><img src=\"{}\" alt=\"{}\" loading=\"lazy\" decoding=\"async\"></button>\n",
-            escape_xml(&entry.thumb.image.to_string_lossy()),
-            escape_xml(&entry.full_name),
-            escape_xml(&entry.thumb.image.to_string_lossy()),
-            escape_xml(&entry.full_name)
-        ));
-        out.push_str("</figure>\n");
+        let image = entry.thumb.image.to_string_lossy();
+        tiles.push_str(
+            &templates
+                .render(
+                    "tile",
+                    &json!({
+                        "label": entry.label,
+                        "filename": entry.full_name,
+                        "image": image,
+                    }),
+                )
+                .context("rendering HTML sampler tile")?,
+        );
     }
-    out.push_str("</div>\n");
+    templates
+        .render("grid", &json!({ "tiles": tiles }))
+        .context("rendering HTML sampler grid")
 }
 
 fn html_depth_class(depth: usize) -> &'static str {
@@ -1055,21 +929,6 @@ fn html_depth_class(depth: usize) -> &'static str {
         1 => "depth-1",
         2 => "depth-2",
         _ => "depth-deep",
-    }
-}
-
-fn html_font_css() -> String {
-    if let Some(font) = pragmata_font_path() {
-        format!(
-            r#"@font-face {{
-  font-family: "PragmataPro";
-  src: url("{}") format("truetype");
-}}
-"#,
-            escape_xml(&font.to_string_lossy())
-        )
-    } else {
-        String::new()
     }
 }
 
@@ -1615,8 +1474,8 @@ fn escape_xml(value: &str) -> String {
 fn sampler_font_css() -> String {
     if let Some(path) = pragmata_font_path() {
         format!(
-            r#"@font-face {{ font-family: "PragmataPro"; src: url("{}"); }}
-text {{ font-family: "PragmataPro", "DejaVu Sans", "Noto Sans", Arial, sans-serif; letter-spacing: 0; }}"#,
+            r#"@font-face {{ font-family: "PragmataPro Mono Liga"; src: url("{}"); }}
+text {{ font-family: "PragmataPro Mono Liga", "DejaVu Sans", "Noto Sans", Arial, sans-serif; letter-spacing: 0; }}"#,
             escape_xml(&file_uri(&path))
         )
     } else {
@@ -1645,13 +1504,13 @@ fn pragmata_font_path() -> Option<PathBuf> {
     if !fonts.is_dir() {
         return None;
     }
-    WalkDir::new(fonts)
+    let mut candidates: Vec<_> = WalkDir::new(fonts)
         .follow_links(true)
         .into_iter()
         .filter_map(Result::ok)
         .filter(|entry| entry.file_type().is_file())
         .map(|entry| entry.into_path())
-        .find(|path| {
+        .filter(|path| {
             let stem = path
                 .file_stem()
                 .and_then(|s| s.to_str())
@@ -1664,6 +1523,18 @@ fn pragmata_font_path() -> Option<PathBuf> {
                 .unwrap_or_default();
             stem.contains("pragmata") && matches!(ext.as_str(), "ttf" | "otf" | "ttc")
         })
+        .collect();
+    candidates.sort();
+    candidates
+        .iter()
+        .find(|path| {
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .map(str::to_ascii_lowercase)
+                .is_some_and(|stem| stem.contains("mono") && stem.contains("liga"))
+        })
+        .cloned()
+        .or_else(|| candidates.into_iter().next())
 }
 
 #[cfg(test)]
@@ -1932,21 +1803,33 @@ mod tests {
         thumb.image = PathBuf::from("thumbnails/kodak.jpg");
         trie.insert(thumb);
 
-        let html = render_sheet_html(&trie, 4);
+        let html = render_sheet_html(&trie, 4).unwrap();
 
         assert!(html.contains("<!doctype html>"));
         assert!(html.contains("--columns: 4"));
-        assert!(html.contains("font-family: \"PragmataPro\", \"Courier New\", monospace"));
+        assert!(
+            html.contains("font-family: \"PragmataPro Mono Liga\", \"Courier New\", monospace")
+        );
+        assert!(!html.contains("@font-face"));
         assert!(html.contains("repeat(var(--columns), minmax(0, 1fr))"));
         assert!(html.contains("grid-auto-rows: 1fr"));
         assert!(html.contains(">Kodak<"));
         assert!(html.contains(">Kodak Portra<"));
         assert!(html.contains(">400 Grainy<"));
+        assert!(html.contains("class=\"branch-toggle\""));
+        assert!(html.contains("class=\"branch-body\""));
+        assert!(html.contains("data-branch-key=\"Kodak/Portra\""));
+        assert!(html.contains("mini-film-collapsed-branches"));
+        assert!(html.contains("localStorage.setItem"));
         assert!(html.contains("src=\"thumbnails/kodak.jpg\""));
         assert!(html.contains("class=\"thumb-button\""));
         assert!(html.contains("id=\"overlay\""));
         assert!(html.contains("max-width: calc(100vw - 96px)"));
         assert!(html.contains("max-height: calc(100vh - 128px)"));
+        assert!(html.contains("Picture by me"));
+        assert!(html.contains(
+            "https://reallyniceimages.com/products/rni-all-films-5-pro-for-adobe-lightroom.html"
+        ));
         assert!(html.contains("loading=\"lazy\""));
     }
 
@@ -2011,7 +1894,7 @@ mod tests {
     fn sampler_font_css_prefers_pragmata_when_available() {
         let css = sampler_font_css();
         if pragmata_font_path().is_some() {
-            assert!(css.contains("PragmataPro"));
+            assert!(css.contains("PragmataPro Mono Liga"));
             assert!(css.contains("@font-face"));
         } else {
             assert!(css.contains("DejaVu Sans"));
