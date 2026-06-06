@@ -1513,24 +1513,40 @@ fn profile_filename_without_xmp(filename: &str) -> String {
 }
 
 fn variant_sort_key(label: &str) -> String {
-    let normalized = profile_name_parts(label)
-        .into_iter()
-        .filter(|part| !part.eq_ignore_ascii_case("grainy"))
-        .map(|part| natural_sort_part(&part))
+    let parts = profile_name_parts(label);
+    let normalized = parts
+        .iter()
+        .filter(|part| !is_variant_marker(part))
+        .map(|part| natural_sort_part(part))
         .collect::<Vec<_>>()
         .join(" ")
         .to_ascii_lowercase();
-    let grain_rank = if label
-        .split_whitespace()
-        .any(|part| part.eq_ignore_ascii_case("grainy"))
-    {
-        "1"
-    } else {
-        "0"
-    };
+    let variant_rank = parts.iter().filter(|part| is_variant_marker(part)).count();
     format!(
-        "{normalized}\u{0}{grain_rank}\u{0}{}",
+        "{normalized}\u{0}{variant_rank:03}\u{0}{}",
         label.to_ascii_lowercase()
+    )
+}
+
+fn is_variant_marker(part: &str) -> bool {
+    let normalized = part.trim_matches('+').to_ascii_lowercase();
+    if normalized.is_empty() {
+        return true;
+    }
+    matches!(
+        normalized.as_str(),
+        "grainy"
+            | "plus"
+            | "hc"
+            | "faded"
+            | "fade"
+            | "warm"
+            | "cool"
+            | "vibrant"
+            | "muted"
+            | "contrast"
+            | "contrasty"
+            | "expired"
     )
 }
 
@@ -1859,6 +1875,36 @@ mod tests {
     }
 
     #[test]
+    fn base_profile_sorts_before_common_variant_suffixes() {
+        let base = variant_sort_key("Kodak Portra 160");
+
+        for variant in [
+            "Kodak Portra 160 HC",
+            "Kodak Portra 160 plus",
+            "Kodak Portra 160 faded",
+            "Kodak Portra 160 grainy",
+            "Kodak Portra 160 warm",
+            "Kodak Portra 160 muted",
+        ] {
+            assert!(base < variant_sort_key(variant), "{variant}");
+        }
+    }
+
+    #[test]
+    fn base_profile_sorts_before_plus_variants() {
+        let base = variant_sort_key("Agfa Scala 200");
+
+        for variant in [
+            "Agfa Scala 200 +",
+            "Agfa Scala 200 ++",
+            "Agfa Scala 200 + grainy",
+            "Agfa Scala 200 ++ grainy",
+        ] {
+            assert!(base < variant_sort_key(variant), "{variant}");
+        }
+    }
+
+    #[test]
     fn film_speeds_render_as_separate_branches() {
         let mut trie = ProfileTrie::default();
         for name in [
@@ -2023,8 +2069,8 @@ mod tests {
         assert!(html.contains("max-width: calc(100vw - 96px)"));
         assert!(html.contains("max-height: calc(100vh - 128px)"));
         assert!(html.contains("https://github.com/alfanick/mini-film"));
-        assert!(html.contains("mini-film</a> 1.0.0"));
-        assert!(html.contains("Picture by me"));
+        assert!(html.contains("mini-film</a> 1.0.1"));
+        assert!(html.contains("Picture by Amadeus Juskowiak"));
         assert!(html.contains(
             "https://reallyniceimages.com/products/rni-all-films-5-pro-for-adobe-lightroom.html"
         ));
