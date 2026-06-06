@@ -324,6 +324,10 @@ pub(crate) enum CommandKind {
         #[arg(long)]
         grain_seed: Option<u64>,
 
+        /// Disable /tmp sampler thumbnail cache and regenerate every profile thumbnail.
+        #[arg(long)]
+        no_cache: bool,
+
         /// Number of profiles to render in parallel. Defaults to half of CPU threads.
         #[arg(long)]
         jobs: Option<usize>,
@@ -493,12 +497,14 @@ mod tests {
             "8",
             "--columns",
             "4",
+            "--no-cache",
         ]);
         assert!(matches!(
             cli.command,
             CommandKind::Sampler {
                 jobs: Some(8),
                 columns: 4,
+                no_cache: true,
                 ..
             }
         ));

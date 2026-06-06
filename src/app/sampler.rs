@@ -1,6 +1,8 @@
 use std::{
     collections::BTreeMap,
-    env, fs,
+    env,
+    fs::{self, File},
+    io::{self, Read},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
@@ -14,6 +16,7 @@ use anyhow::{Context, Result, bail};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use mini_film::{apply_grain_8bit, write_rawtherapee_resize_profile};
 use rayon::prelude::*;
+use sha1::{Digest, Sha1};
 use tempfile::Builder;
 use walkdir::WalkDir;
 
@@ -37,6 +40,7 @@ pub(crate) struct SamplerArgs {
     pub(crate) convert: PathBuf,
     pub(crate) no_grain: bool,
     pub(crate) grain_seed: Option<u64>,
+    pub(crate) no_cache: bool,
     pub(crate) jobs: Option<usize>,
     pub(crate) thumbnail_long_edge: u32,
     pub(crate) columns: u32,
@@ -87,6 +91,11 @@ struct SamplerProgress {
     estimates: Arc<StageEstimates>,
 }
 
+struct ThumbnailCache {
+    dir: PathBuf,
+    raw_sha1: String,
+}
+
 /// Render a structured contact sheet showing every resolvable XMP profile.
 ///
 /// Each XMP is resolved to a temporary Hald plus generated RawTherapee `.pp3`
@@ -107,6 +116,11 @@ pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
 
     let temp_dir = Builder::new().prefix("mini-film-sampler-").tempdir()?;
     let base_seed = args.grain_seed.unwrap_or_else(time_of_day_seed);
+    let cache = if args.no_cache {
+        None
+    } else {
+        Some(Arc::new(ThumbnailCache::new(&args.raw)?))
+    };
     let export = ExportOptions {
         jpg_quality: args.jpg_quality,
         resize: None,
@@ -169,6 +183,7 @@ pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
                         index,
                         base_seed,
                         &export,
+                        cache.as_deref(),
                         &progress,
                     );
                     if result.is_err() {
@@ -267,6 +282,74 @@ fn validate_sampler_args(args: &SamplerArgs) -> Result<()> {
     Ok(())
 }
 
+impl ThumbnailCache {
+    fn new(raw: &Path) -> Result<Self> {
+        let raw_sha1 = sha1_file(raw).with_context(|| format!("hashing RAW {}", raw.display()))?;
+        let dir = env::temp_dir().join("mini-film-sampler-cache");
+        fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+        Ok(Self { dir, raw_sha1 })
+    }
+
+    fn path_for(&self, profile: &Path, args: &SamplerArgs) -> Result<PathBuf> {
+        let xmp_sha1 =
+            sha1_file(profile).with_context(|| format!("hashing XMP {}", profile.display()))?;
+        let grain_mode = if args.no_grain { "nograin" } else { "grain" };
+        let subsampling = format!("{:?}", args.jpeg_subsampling).to_ascii_lowercase();
+        Ok(self.dir.join(format!(
+            "{}-{}-l{}-{}px-q{}-{}-{}-strip{}-prog{}.jpg",
+            self.raw_sha1,
+            xmp_sha1,
+            args.hald_level,
+            args.thumbnail_long_edge,
+            args.jpg_quality,
+            subsampling,
+            grain_mode,
+            args.strip_metadata as u8,
+            args.progressive_jpeg as u8,
+        )))
+    }
+}
+
+fn sha1_file(path: &Path) -> Result<String> {
+    let mut file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let mut hasher = Sha1::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .with_context(|| format!("reading {}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn sample_thumb_from_image(
+    image: PathBuf,
+    profile: &Path,
+    emulation_root: &Path,
+) -> Result<SampleThumb> {
+    let (width, height) =
+        image::image_dimensions(&image).with_context(|| format!("reading {}", image.display()))?;
+    let relative = profile
+        .strip_prefix(emulation_root)
+        .unwrap_or(profile)
+        .display()
+        .to_string();
+    let name = profile_display_name_from_relative(&relative);
+    let parts = profile_name_parts(&name);
+    Ok(SampleThumb {
+        image,
+        name,
+        filename: relative,
+        parts,
+        width,
+        height,
+    })
+}
+
 fn sampler_output_kind(output: &Path) -> Result<Option<SheetOutputKind>> {
     Ok(match output_ext(output)?.as_str() {
         "jpg" | "jpeg" => Some(SheetOutputKind::Jpeg),
@@ -340,8 +423,17 @@ fn render_profile_thumbnail(
     index: usize,
     base_seed: u64,
     export: &ExportOptions,
+    cache: Option<&ThumbnailCache>,
     progress: &SamplerProgress,
 ) -> Result<SampleThumb> {
+    if let Some(cache) = cache {
+        let cached = cache.path_for(profile, args)?;
+        if cached.is_file() {
+            sampler_step(progress, 5, "cache hit");
+            return sample_thumb_from_image(cached, profile, emulation_root);
+        }
+    }
+
     sampler_step(progress, 1, "resolve");
     let profile_temp = temp_root.join(format!("profile-{index}"));
     fs::create_dir_all(&profile_temp)
@@ -421,26 +513,33 @@ fn render_profile_thumbnail(
     finalize_output(&args.convert, &source, &thumb, export)?;
     thumbnail_stage.finish();
     remove_temp_file(&source)?;
-    let (width, height) =
-        image::image_dimensions(&thumb).with_context(|| format!("reading {}", thumb.display()))?;
-
-    let relative = profile
-        .strip_prefix(emulation_root)
-        .unwrap_or(profile)
-        .display()
-        .to_string();
-    let name = profile_display_name_from_relative(&relative);
-    let parts = profile_name_parts(&name);
-    let thumb = SampleThumb {
-        image: thumb,
-        name,
-        filename: relative,
-        parts,
-        width,
-        height,
+    let image = if let Some(cache) = cache {
+        let cached = cache.path_for(profile, args)?;
+        copy_thumbnail_to_cache(&thumb, &cached)?;
+        cached
+    } else {
+        thumb
     };
     sampler_step(progress, 5, "done");
-    Ok(thumb)
+    sample_thumb_from_image(image, profile, emulation_root)
+}
+
+fn copy_thumbnail_to_cache(source: &Path, destination: &Path) -> Result<()> {
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+    let temp = destination.with_extension("jpg.tmp");
+    fs::copy(source, &temp)
+        .with_context(|| format!("copying {} to {}", source.display(), temp.display()))?;
+    match fs::rename(&temp, destination) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+            remove_temp_file(&temp)?;
+            Ok(())
+        }
+        Err(err) => Err(err)
+            .with_context(|| format!("renaming {} to {}", temp.display(), destination.display())),
+    }
 }
 
 fn run_structured_sheet(
@@ -1091,6 +1190,32 @@ mod tests {
         }
     }
 
+    fn sampler_args_for_cache(
+        raw: PathBuf,
+        profiles_root: PathBuf,
+        hald_dir: PathBuf,
+    ) -> SamplerArgs {
+        SamplerArgs {
+            raw,
+            output: PathBuf::from("sheet.jpg"),
+            profiles_root,
+            hald_dir,
+            hald_level: 16,
+            rawtherapee: PathBuf::from("rawtherapee-cli"),
+            convert: PathBuf::from("convert"),
+            no_grain: false,
+            grain_seed: Some(123),
+            no_cache: false,
+            jobs: Some(1),
+            thumbnail_long_edge: 512,
+            columns: 8,
+            jpg_quality: 95,
+            jpeg_subsampling: JpegSubsampling::S444,
+            strip_metadata: false,
+            progressive_jpeg: false,
+        }
+    }
+
     #[test]
     fn profile_names_strip_extension_and_split_into_visible_levels() {
         assert_eq!(
@@ -1303,6 +1428,33 @@ mod tests {
             Some(SheetOutputKind::Pdf)
         );
         assert_eq!(sampler_output_kind(Path::new("sheet.png")).unwrap(), None);
+    }
+
+    #[test]
+    fn thumbnail_cache_path_uses_raw_and_xmp_sha1_plus_render_options() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = dir.path().join("input.dng");
+        let xmp = dir.path().join("profile.xmp");
+        fs::write(&raw, b"raw bytes").unwrap();
+        fs::write(&xmp, b"xmp bytes").unwrap();
+
+        let mut args = sampler_args_for_cache(
+            raw.clone(),
+            dir.path().to_path_buf(),
+            dir.path().join("hald"),
+        );
+        let cache = ThumbnailCache::new(&raw).unwrap();
+        let cached = cache.path_for(&xmp, &args).unwrap();
+        let name = cached.file_name().unwrap().to_string_lossy();
+
+        assert!(cached.starts_with(env::temp_dir().join("mini-film-sampler-cache")));
+        assert!(name.contains(&sha1_file(&raw).unwrap()));
+        assert!(name.contains(&sha1_file(&xmp).unwrap()));
+        assert!(name.contains("512px"));
+
+        args.thumbnail_long_edge = 1024;
+        let larger = cache.path_for(&xmp, &args).unwrap();
+        assert_ne!(cached, larger);
     }
 
     #[test]
