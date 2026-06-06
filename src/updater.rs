@@ -1,8 +1,9 @@
 #[cfg(feature = "github-update")]
-use self_update::Status;
-
-#[cfg(feature = "github-update")]
 use self_update::cargo_crate_version;
+
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
 /// Runs a GitHub release update check for official binaries.
 ///
@@ -10,16 +11,26 @@ use self_update::cargo_crate_version;
 /// network/configuration errors are reported as failures.
 #[cfg(feature = "github-update")]
 pub(crate) fn run_auto_update_if_enabled() -> bool {
-    if let Err(error) = check_for_update() {
-        eprintln!("auto-update failed: {error}");
-        return false;
-    }
+    let _ = check_for_update_with_timeout(Duration::from_millis(1000));
     true
 }
 
 #[cfg(feature = "github-update")]
+fn check_for_update_with_timeout(timeout: Duration) -> bool {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = sender.send(check_for_update());
+    });
+
+    match receiver.recv_timeout(timeout) {
+        Ok(Ok(())) => true,
+        _ => false,
+    }
+}
+
+#[cfg(feature = "github-update")]
 fn check_for_update() -> anyhow::Result<()> {
-    let status = self_update::backends::github::Update::configure()
+    self_update::backends::github::Update::configure()
         .repo_owner("alfanick")
         .repo_name("mini-film")
         .bin_name("mini-film")
@@ -27,17 +38,7 @@ fn check_for_update() -> anyhow::Result<()> {
         .current_version(cargo_crate_version!())
         .build()?
         .update()?;
-
-    match status {
-        Status::UpToDate(latest) => {
-            println!("mini-film is up to date ({})", latest);
-            Ok(())
-        }
-        Status::Updated(version) => {
-            println!("mini-film updated to {version}");
-            Ok(())
-        }
-    }
+    Ok(())
 }
 
 #[cfg(feature = "github-update")]
