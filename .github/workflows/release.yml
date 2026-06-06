@@ -39,6 +39,10 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.ref_name }}
 
+      - name: Check cargo versions
+        shell: bash
+        run: ./.githooks/check-cargo-versions.sh
+
       - name: Resolve release metadata
         id: release
         shell: bash
@@ -116,6 +120,10 @@ jobs:
           fetch-depth: 0
           ref: ${{ needs.resolve-release.outputs.source_ref }}
 
+      - name: Check cargo versions
+        shell: bash
+        run: ./.githooks/check-cargo-versions.sh
+
       - name: Resolve release tag
         id: release-tag
         shell: bash
@@ -173,6 +181,10 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ needs.resolve-release.outputs.source_ref }}
+
+      - name: Check cargo versions
+        shell: bash
+        run: ./.githooks/check-cargo-versions.sh
 
       - name: Resolve release tag
         id: release-tag

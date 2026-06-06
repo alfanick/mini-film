@@ -24,6 +24,9 @@ jobs:
           toolchain: nightly
           components: clippy, rustfmt
 
+      - name: Check cargo versions
+        run: ./.githooks/check-cargo-versions.sh
+
       - name: Cache cargo registry and target
         uses: actions/cache@v4
         with:
@@ -110,6 +113,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Check cargo versions
+        run: ./.githooks/check-cargo-versions.sh
 
       - name: Create and push version tag if version changed
         run: |
