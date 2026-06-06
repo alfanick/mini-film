@@ -599,7 +599,7 @@ fn run_structured_sheet(context: &StructuredSheetContext<'_>) -> Result<()> {
     fs::write(&svg_path, svg).with_context(|| format!("writing {}", svg_path.display()))?;
 
     let mut command = Command::new(convert);
-    add_convert_thread_limit(&mut command);
+    add_convert_thread_limit(&mut command, convert);
     command.arg(&svg_path);
     match output_kind {
         SheetOutputKind::Jpeg => {
@@ -815,7 +815,7 @@ fn write_progressive_html_thumbnail(
     jpeg_subsampling: JpegSubsampling,
 ) -> Result<()> {
     let mut command = Command::new(convert);
-    add_convert_thread_limit(&mut command);
+    add_convert_thread_limit(&mut command, convert);
     command
         .arg(source)
         .arg("-interlace")

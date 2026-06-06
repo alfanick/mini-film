@@ -1,4 +1,10 @@
-use std::{fs, path::Path, process::Command};
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::{Mutex, OnceLock},
+};
 
 use anyhow::{Context, Result, bail};
 
@@ -22,7 +28,7 @@ pub(crate) fn finalize_output(
     }
 
     let mut command = Command::new(convert);
-    add_convert_thread_limit(&mut command);
+    add_convert_thread_limit(&mut command, convert);
     command.arg(input);
     add_final_convert_args(&mut command, output, export)?;
 
@@ -108,11 +114,63 @@ fn add_resize_args(command: &mut Command, export: &ExportOptions) {
 /// explicit limit prevents accidental oversubscription when Rayon or batch
 /// progress work is also active, while still letting convert use all logical
 /// CPUs available on the machine.
-pub(crate) fn add_convert_thread_limit(command: &mut Command) {
-    command
-        .arg("-limit")
-        .arg("Threads")
-        .arg(cpu_thread_count().to_string());
+pub(crate) fn add_convert_thread_limit(command: &mut Command, convert: &Path) {
+    if convert_supports_threads_limit(convert) {
+        command
+            .arg("-limit")
+            .arg("Threads")
+            .arg(cpu_thread_count().to_string());
+    }
+}
+
+fn thread_support_cache() -> &'static Mutex<HashMap<PathBuf, bool>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, bool>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn convert_supports_threads_limit(convert: &Path) -> bool {
+    let cache = thread_support_cache();
+
+    if let Ok(map) = cache.lock()
+        && let Some(supported) = map.get(convert).copied()
+    {
+        return supported;
+    }
+
+    let supported = detect_convert_threads_limit(convert);
+    if let Ok(mut map) = cache.lock() {
+        map.insert(convert.to_path_buf(), supported);
+    }
+    supported
+}
+
+fn detect_convert_threads_limit(convert: &Path) -> bool {
+    let output = Command::new(convert)
+        .arg("-list")
+        .arg("resource")
+        .output()
+        .ok();
+
+    let Some(output) = output else {
+        return false;
+    };
+
+    let listing = String::from_utf8_lossy(&output.stdout);
+    let errors = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{listing}\n{errors}");
+
+    is_threads_present_in_resource_output(&combined)
+}
+
+fn is_threads_present_in_resource_output(text: &str) -> bool {
+    text.lines().any(|line| {
+        let trimmed = line.trim_start();
+        let lower = trimmed.to_ascii_lowercase();
+        lower.starts_with("threads")
+            || trimmed
+                .split_once(':')
+                .is_some_and(|(key, _)| key.trim().eq_ignore_ascii_case("threads"))
+    })
 }
 
 /// Validate mutually exclusive export sizing options.
@@ -236,6 +294,30 @@ mod tests {
                 "out.tif"
             ]
         );
+    }
+
+    #[test]
+    fn detects_threads_resource_from_convert_listing_output() {
+        let listing = r#"
+Resource limits:
+  Width: 4096
+  Height: 4096
+  Area: 512M
+  Threads: 16
+  Time: 2.0
+"#;
+        assert!(is_threads_present_in_resource_output(listing));
+    }
+
+    #[test]
+    fn ignores_threads_resource_if_not_present() {
+        let listing = r#"
+Resource limits:
+  Width: 4096
+  Height: 4096
+  Area: 512M
+"#;
+        assert!(!is_threads_present_in_resource_output(listing));
     }
 
     #[test]
