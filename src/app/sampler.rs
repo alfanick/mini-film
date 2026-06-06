@@ -1551,6 +1551,11 @@ fn variant_sort_key(label: &str) -> String {
 }
 
 fn variant_sort_key_from_parts(parts: &[String], fallback: &str) -> String {
+    let variant_markers = parts
+        .iter()
+        .filter_map(|part| normalize_variant_marker(part))
+        .collect::<Vec<_>>();
+    let (variant_group, normalized_markers) = variant_sort_meta(&variant_markers);
     let normalized = parts
         .iter()
         .filter(|part| !is_variant_marker(part))
@@ -1558,33 +1563,64 @@ fn variant_sort_key_from_parts(parts: &[String], fallback: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
         .to_ascii_lowercase();
-    let variant_rank = parts.iter().filter(|part| is_variant_marker(part)).count();
     format!(
-        "{normalized}\u{0}{variant_rank:03}\u{0}{}",
+        "{normalized}\u{0}{variant_group:03}\u{0}{normalized_markers}\u{0}{}",
         fallback.to_ascii_lowercase()
     )
 }
 
-fn is_variant_marker(part: &str) -> bool {
+fn variant_sort_meta(parts: &[&str]) -> (u16, String) {
+    if parts.is_empty() {
+        return (0, String::new());
+    }
+    let mut sorted = parts.to_vec();
+    sorted.sort_unstable_by_key(|part| variant_marker_rank(part));
+    let marker_rank = sorted.first().copied().map_or(99, variant_marker_rank);
+    let marker_rank = marker_rank.min(999);
+    let marker_key = sorted.join(" ");
+    (marker_rank, marker_key)
+}
+
+fn normalize_variant_marker(part: &str) -> Option<&'static str> {
     let normalized = part.trim_matches('+').to_ascii_lowercase();
     if normalized.is_empty() {
-        return true;
+        return Some("plus");
     }
-    matches!(
-        normalized.as_str(),
-        "grainy"
-            | "plus"
-            | "hc"
-            | "faded"
-            | "fade"
-            | "warm"
-            | "cool"
-            | "vibrant"
-            | "muted"
-            | "contrast"
-            | "contrasty"
-            | "expired"
-    )
+    match normalized.as_str() {
+        "grainy" => Some("grainy"),
+        "plus" => Some("plus"),
+        "hc" => Some("hc"),
+        "faded" | "fade" => Some("faded"),
+        "warm" => Some("warm"),
+        "cool" => Some("cool"),
+        "vibrant" => Some("vibrant"),
+        "muted" => Some("muted"),
+        "contrast" => Some("contrast"),
+        "contrasty" => Some("contrasty"),
+        "expired" => Some("expired"),
+        _ => None,
+    }
+}
+
+fn variant_marker_rank(marker: &str) -> u16 {
+    match marker {
+        "grainy" => 1,
+        "faded" => 2,
+        "plus" => 3,
+        "hc" => 4,
+        "warm" => 5,
+        "cool" => 6,
+        "vibrant" => 7,
+        "muted" => 8,
+        "contrast" => 9,
+        "contrasty" => 10,
+        "expired" => 11,
+        _ => 98,
+    }
+}
+
+fn is_variant_marker(part: &str) -> bool {
+    normalize_variant_marker(part).is_some()
 }
 
 fn natural_sort_part(part: &str) -> String {
@@ -1897,7 +1933,7 @@ mod tests {
     #[test]
     fn base_profile_sorts_before_named_variants() {
         let mut trie = ProfileTrie::default();
-        for name in ["Ilford FP4", "Ilford FP4 faded", "Ilford FP4 contrast"] {
+        for name in ["Ilford FP4", "Ilford FP4 faded", "Ilford FP4 contrast", "Ilford FP4 grainy"] {
             trie.insert(sample_thumb(name, 1024, 683));
         }
 
@@ -1907,8 +1943,10 @@ mod tests {
         assert!(svg.contains(">FP4<"));
         assert!(svg.contains(">FP4 faded<"));
         assert!(svg.contains(">FP4 contrast<"));
-        assert!(svg.find(">FP4<") < svg.find(">FP4 contrast<"));
         assert!(svg.find(">FP4<") < svg.find(">FP4 faded<"));
+        assert!(svg.find(">FP4<") < svg.find(">FP4 grainy<"));
+        assert!(svg.find(">FP4 grainy<") < svg.find(">FP4 faded<"));
+        assert!(svg.find(">FP4 faded<") < svg.find(">FP4 contrast<"));
     }
 
     #[test]
@@ -2135,7 +2173,7 @@ mod tests {
         assert!(html.contains("max-width: calc(100vw - 96px)"));
         assert!(html.contains("max-height: calc(100vh - 128px)"));
         assert!(html.contains("https://github.com/alfanick/mini-film"));
-        assert!(html.contains("mini-film</a> 1.0.2"));
+        assert!(html.contains("mini-film</a> 1.0.3"));
         assert!(html.contains("Picture by Amadeus Juskowiak"));
         assert!(html.contains(
             "https://reallyniceimages.com/products/rni-all-films-5-pro-for-adobe-lightroom.html"
