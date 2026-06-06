@@ -11,7 +11,7 @@ permissions:
 jobs:
   build-binaries:
     name: Build ${{ matrix.target }}
-    runs-on: [self-hosted, hetzner]
+    runs-on: self-hosted
     strategy:
       fail-fast: false
       matrix:
@@ -73,7 +73,7 @@ jobs:
 
   publish-release:
     name: Publish release
-    runs-on: [self-hosted, hetzner]
+    runs-on: self-hosted
     needs: build-binaries
     steps:
       - name: Checkout
