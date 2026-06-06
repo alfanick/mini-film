@@ -7,7 +7,7 @@ It can:
 - convert Adobe Camera Raw / Lightroom `crs:RGBTable` profile XMPs to 16-bit Hald CLUT PNGs
 - generate RawTherapee `.pp3` profiles for supported Camera Raw tone/color/sharpening adjustments
 - develop a RAW file with `rawtherapee-cli`
-- apply a Hald CLUT with GraphicsMagick/ImageMagick `convert`
+- apply Hald CLUTs through RawTherapee Film Simulation
 - read Lightroom preset XMPs that reference a profile and define grain
 - batch-process DNG/NEF folders into JPEGs
 - render a profile sampler contact sheet for one RAW file
@@ -142,7 +142,7 @@ cargo run --release -- sampler \
   --output /home/alfanick/profile-sampler.jpg
 ```
 
-`sampler` renders one thumbnail per XMP file from `emulations/` and builds a structured contact sheet grouped by shared profile-name prefixes. For example, Kodak profiles are shown under progressively deeper headings like `Kodak`, `Kodak Portra`, `Kodak Portra 400`, and `Kodak Portra 400 Grainy`; indentation makes the level visible. Each thumbnail is developed with its profile-specific generated RawTherapee `.pp3` files, including Film Simulation for the Hald, before the grain stage. Like `batch`, sampler renders half of the detected CPU threads in parallel by default; override with `--jobs N`. Thumbnail longest edge defaults to 512 px:
+`sampler` renders one thumbnail per XMP file from `emulations/` and builds a structured contact sheet grouped by shared profile-name prefixes. For example, Kodak profiles are shown under progressively deeper headings like `Kodak`, `Kodak Portra`, `Kodak Portra 400`, and `Kodak Portra 400 Grainy`; indentation makes the level visible. Each thumbnail is developed with its profile-specific generated RawTherapee `.pp3` files, including Film Simulation for the Hald, which applies the LUT during RAW development, before the grain stage. Like `batch`, sampler renders half of the detected CPU threads in parallel by default; override with `--jobs N`. Thumbnail longest edge defaults to 512 px:
 
 ```sh
 --jobs 8
