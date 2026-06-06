@@ -71,6 +71,7 @@ jobs:
           cargo install --locked cross
 
       - name: Build release binary
+        shell: bash
         run: |
           set -euo pipefail
           if [ "${{ matrix.use_cross }}" = "true" ]; then
