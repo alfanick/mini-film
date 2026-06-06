@@ -204,23 +204,23 @@ pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
                     profile_progress.set_length(progress_length());
                     profile_progress.set_position(0);
                     profile_progress.set_message("queued");
-                let profile_started = Instant::now();
-                let progress = SamplerProgress {
-                    profile: profile_progress.clone(),
-                    started: profile_started,
-                    estimates: Arc::clone(&estimates),
-                };
-                let render_context = ProfileRenderContext {
-                    args: &args,
-                    temp_root: temp_dir.path(),
-                    emulation_root: &emulation_root,
-                    index,
-                    base_seed,
-                    export: &export,
-                    cache: cache.as_deref(),
-                    progress: &progress,
-                };
-                let result = render_profile_thumbnail(&render_context, profile);
+                    let profile_started = Instant::now();
+                    let progress = SamplerProgress {
+                        profile: profile_progress.clone(),
+                        started: profile_started,
+                        estimates: Arc::clone(&estimates),
+                    };
+                    let render_context = ProfileRenderContext {
+                        args: &args,
+                        temp_root: temp_dir.path(),
+                        emulation_root: &emulation_root,
+                        index,
+                        base_seed,
+                        export: &export,
+                        cache: cache.as_deref(),
+                        progress: &progress,
+                    };
+                    let result = render_profile_thumbnail(&render_context, profile);
                     if result.is_err() {
                         profile_progress.set_message(format!(
                             "failed after {}",
@@ -473,9 +473,7 @@ fn render_profile_thumbnail(
     }
 
     sampler_step(context.progress, 1, "resolve");
-    let profile_temp = context
-        .temp_root
-        .join(format!("profile-{}", context.index));
+    let profile_temp = context.temp_root.join(format!("profile-{}", context.index));
     fs::create_dir_all(&profile_temp)
         .with_context(|| format!("creating {}", profile_temp.display()))?;
 
@@ -583,9 +581,7 @@ fn copy_thumbnail_to_cache(source: &Path, destination: &Path) -> Result<()> {
     }
 }
 
-fn run_structured_sheet(
-    context: &StructuredSheetContext<'_>,
-) -> Result<()> {
+fn run_structured_sheet(context: &StructuredSheetContext<'_>) -> Result<()> {
     let convert = context.convert;
     let output = context.output;
     if let Some(parent) = output.parent() {
@@ -649,9 +645,7 @@ fn run_structured_sheet(
     Ok(())
 }
 
-fn run_html_sheet(
-    context: &StructuredSheetContext<'_>,
-) -> Result<()> {
+fn run_html_sheet(context: &StructuredSheetContext<'_>) -> Result<()> {
     let thumbs = context.thumbs;
     let output = context.output;
     let output_dir = output.parent().unwrap_or_else(|| Path::new("."));
@@ -873,7 +867,12 @@ fn render_sheet_html(trie: &ProfileTrie, columns: u32) -> Result<String> {
     let templates = html_templates()?;
     let mut sections = String::new();
     for (part, child) in &trie.children {
-        sections.push_str(&render_html_node(&templates, child, std::slice::from_ref(part), 0)?);
+        sections.push_str(&render_html_node(
+            &templates,
+            child,
+            std::slice::from_ref(part),
+            0,
+        )?);
     }
 
     templates
@@ -1574,8 +1573,8 @@ fn variant_sort_key_from_parts(parts: &[String], fallback: &str) -> String {
             .map_or(99, variant_marker_rank)
             .min(999);
         let markers_key = non_grainy_markers.join(" ");
-    let grainy_position = if marker_parts.contains(&"grainy") {
-        1u8
+        let grainy_position = if marker_parts.contains(&"grainy") {
+            1u8
         } else {
             0u8
         };
@@ -1640,7 +1639,8 @@ fn is_variant_marker(part: &str) -> bool {
 fn natural_sort_part(part: &str) -> String {
     if let Some(version) = part
         .strip_prefix('v')
-        .or_else(|| part.strip_prefix('V')).and_then(|version| version.parse::<u32>().ok())
+        .or_else(|| part.strip_prefix('V'))
+        .and_then(|version| version.parse::<u32>().ok())
     {
         return format!("v{version:06}");
     }

@@ -192,10 +192,7 @@ fn process_batch_file(
     process_batch_file_inner(context, raw).map_err(|err| (raw.to_path_buf(), err))
 }
 
-fn process_batch_file_inner(
-    context: &ProcessBatchFileContext<'_>,
-    raw: &Path,
-) -> Result<()> {
+fn process_batch_file_inner(context: &ProcessBatchFileContext<'_>, raw: &Path) -> Result<()> {
     let output = batch_output_path(
         &context.args.input,
         &context.args.output,

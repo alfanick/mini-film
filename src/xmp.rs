@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::{fs::File, io::Read, path::Path};
 
 use anyhow::{Context, Result, anyhow};
-use quick_xml::{Reader, events::Event, XmlVersion};
+use quick_xml::{Reader, XmlVersion, events::Event};
 
 use crate::model::{
     GrainSettings, ProfileAdjustments, SharpeningSettings, ToneCurves, XmpFilmRecipe, XmpRgbTable,
@@ -364,8 +364,14 @@ fn hsl_attr(key: &str) -> Option<(HslAttr, usize)> {
     let (kind, suffix) = key
         .strip_prefix("HueAdjustment")
         .map(|suffix| (HslAttr::Hue, suffix))
-        .or_else(|| key.strip_prefix("SaturationAdjustment").map(|suffix| (HslAttr::Saturation, suffix)))
-        .or_else(|| key.strip_prefix("LuminanceAdjustment").map(|suffix| (HslAttr::Luminance, suffix)))?;
+        .or_else(|| {
+            key.strip_prefix("SaturationAdjustment")
+                .map(|suffix| (HslAttr::Saturation, suffix))
+        })
+        .or_else(|| {
+            key.strip_prefix("LuminanceAdjustment")
+                .map(|suffix| (HslAttr::Luminance, suffix))
+        })?;
 
     let index = match suffix {
         "Red" => 0,
