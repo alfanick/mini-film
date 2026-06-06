@@ -34,8 +34,8 @@ jobs:
             use_cross: true
           - target: aarch64-apple-darwin
             extension: ""
-            runs_on: self-hosted
-            use_cross: true
+            runs_on: macos-latest
+            use_cross: false
           - target: x86_64-pc-windows-msvc
             runs_on: windows-latest
             extension: ".exe"
