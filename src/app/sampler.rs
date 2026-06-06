@@ -961,7 +961,7 @@ fn render_html_node(
                     .map(move |thumb| sheet_entry(label.clone(), thumb))
             }),
     );
-    leaf_entries.sort_by(|left, right| left.sort_key.cmp(&right.sort_key));
+    sort_sheet_entries_with_common_prefix(&mut leaf_entries, prefix.len());
     if !leaf_entries.is_empty() {
         body.push_str(&render_html_grid(templates, &leaf_entries)?);
     }
@@ -1363,7 +1363,7 @@ impl LayoutContext {
                         .map(move |thumb| sheet_entry(label.clone(), thumb))
                 }),
         );
-        leaf_entries.sort_by(|left, right| left.sort_key.cmp(&right.sort_key));
+        sort_sheet_entries_with_common_prefix(&mut leaf_entries, prefix.len());
         if !leaf_entries.is_empty() {
             self.render_labeled_thumbs(&leaf_entries, depth);
         }
@@ -1463,7 +1463,41 @@ fn collect_subtree_entries<'a>(
     for child in node.children.values() {
         collect_subtree_entries(child, prefix_len, out);
     }
-    out.sort_by(|left, right| left.sort_key.cmp(&right.sort_key));
+    sort_sheet_entries_with_common_prefix(out, prefix_len);
+}
+
+fn sort_sheet_entries_with_common_prefix(entries: &mut [SheetEntry<'_>], prefix_len: usize) {
+    let suffixes = entries
+        .iter()
+        .map(|entry| entry.thumb.parts.get(prefix_len..).unwrap_or(&[]))
+        .collect::<Vec<_>>();
+    let common_prefix_len = common_prefix_len(&suffixes);
+
+    for entry in entries.iter_mut() {
+        let suffix = entry.thumb.parts.get(prefix_len..).unwrap_or(&[]);
+        let start = common_prefix_len.min(suffix.len());
+        entry.sort_key = variant_sort_key_from_parts(&suffix[start..], &entry.label);
+    }
+    entries.sort_by(|left, right| left.sort_key.cmp(&right.sort_key));
+}
+
+fn common_prefix_len(parts: &[&[String]]) -> usize {
+    if parts.is_empty() {
+        return 0;
+    }
+    let mut prefix_len = parts[0].len();
+    for part in parts.iter().skip(1) {
+        let max_len = prefix_len.min(part.len());
+        let mut next = 0usize;
+        while next < max_len && parts[0][next].eq_ignore_ascii_case(&part[next]) {
+            next += 1;
+        }
+        prefix_len = next;
+        if prefix_len == 0 {
+            break;
+        }
+    }
+    prefix_len
 }
 
 fn thumb_label_after_prefix(thumb: &SampleThumb, prefix_len: usize) -> String {
@@ -1513,7 +1547,10 @@ fn profile_filename_without_xmp(filename: &str) -> String {
 }
 
 fn variant_sort_key(label: &str) -> String {
-    let parts = profile_name_parts(label);
+    variant_sort_key_from_parts(&profile_name_parts(label), label)
+}
+
+fn variant_sort_key_from_parts(parts: &[String], fallback: &str) -> String {
     let normalized = parts
         .iter()
         .filter(|part| !is_variant_marker(part))
@@ -1524,7 +1561,7 @@ fn variant_sort_key(label: &str) -> String {
     let variant_rank = parts.iter().filter(|part| is_variant_marker(part)).count();
     format!(
         "{normalized}\u{0}{variant_rank:03}\u{0}{}",
-        label.to_ascii_lowercase()
+        fallback.to_ascii_lowercase()
     )
 }
 
@@ -1891,6 +1928,35 @@ mod tests {
     }
 
     #[test]
+    fn max_common_prefix_prefers_exact_profile() {
+        let mut trie = ProfileTrie::default();
+        for name in [
+            "Agfa Scala 200",
+            "Agfa Scala 200 +",
+            "Agfa Scala 200 grainy",
+            "Agfa Scala 200 ++",
+            "Agfa Scala 200 ++ grainy",
+            "Agfa Scala 200 faded",
+        ] {
+            trie.insert(sample_thumb(name, 1024, 683));
+        }
+
+        let layout = build_sheet_layout(&trie, 256, 8, SheetOutputKind::Jpeg);
+        let svg = render_sheet_svg(&layout);
+
+        let generic = svg.find(">Scala 200<").unwrap();
+        let plus = svg.find(">Scala 200 +<").unwrap();
+        let plus_grainy = svg.find(">Scala 200 + grainy<").unwrap();
+        let plus_plus = svg.find(">Scala 200 ++<").unwrap();
+        let plus_plus_grainy = svg.find(">Scala 200 ++ grainy<").unwrap();
+
+        assert!(generic < plus);
+        assert!(plus < plus_grainy);
+        assert!(plus < plus_plus);
+        assert!(plus_plus < plus_plus_grainy);
+    }
+
+    #[test]
     fn base_profile_sorts_before_plus_variants() {
         let base = variant_sort_key("Agfa Scala 200");
 
@@ -2069,7 +2135,7 @@ mod tests {
         assert!(html.contains("max-width: calc(100vw - 96px)"));
         assert!(html.contains("max-height: calc(100vh - 128px)"));
         assert!(html.contains("https://github.com/alfanick/mini-film"));
-        assert!(html.contains("mini-film</a> 1.0.1"));
+        assert!(html.contains("mini-film</a> 1.0.2"));
         assert!(html.contains("Picture by Amadeus Juskowiak"));
         assert!(html.contains(
             "https://reallyniceimages.com/products/rni-all-films-5-pro-for-adobe-lightroom.html"
