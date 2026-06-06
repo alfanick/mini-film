@@ -103,7 +103,7 @@ jobs:
             cargo_features: "github-update"
           - target: aarch64-unknown-linux-gnu
             extension: ""
-            runs_on: self-hosted
+            runs_on: ubuntu-latest
             use_cross: true
             cargo_features: ""
           - target: aarch64-apple-darwin
