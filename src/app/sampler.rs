@@ -14,7 +14,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use mini_film::{apply_grain_8bit, write_rawtherapee_resize_profile};
+use mini_film::{GrainSettings, apply_grain_8bit, write_rawtherapee_resize_profile};
 use rayon::prelude::*;
 use sha1::{Digest, Sha1};
 use tempfile::Builder;
@@ -298,7 +298,7 @@ impl ThumbnailCache {
         let grain_mode = if args.no_grain { "nograin" } else { "grain" };
         let subsampling = format!("{:?}", args.jpeg_subsampling).to_ascii_lowercase();
         Ok(self.dir.join(format!(
-            "{}-{}-l{}-{}px-q{}-{}-{}-strip{}-prog{}.jpg",
+            "{}-{}-l{}-{}px-q{}-{}-{}-sg2-strip{}-prog{}.jpg",
             self.raw_sha1,
             xmp_sha1,
             args.hald_level,
@@ -490,10 +490,11 @@ fn render_profile_thumbnail(
             estimate_sampler_grain_duration(args.thumbnail_long_edge),
         );
         let grained = profile_temp.join("grained-8.ppm");
+        let grain = scale_sampler_grain(resolved.grain, args.thumbnail_long_edge);
         apply_grain_8bit(
             &developed,
             &grained,
-            resolved.grain,
+            grain,
             sample_seed(base_seed, index, profile),
         )?;
         grain_stage.finish();
@@ -779,7 +780,7 @@ body {
   margin: 0;
   background: #ffffff;
   color: var(--text);
-  font-family: "Pragmata Pro", "Courier New", monospace;
+  font-family: "PragmataPro", "Courier New", monospace;
 }
 main {
   padding: 92px 40px 48px;
@@ -815,11 +816,11 @@ h1 {
 }
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr));
+  grid-template-columns: repeat(var(--columns), minmax(0, 1fr));
   grid-auto-rows: 1fr;
   gap: calc(var(--gap) * 1.15);
   align-items: start;
-  max-width: calc(var(--columns) * 560px);
+  width: 100%;
 }
 .tile {
   border: 1px solid var(--border);
@@ -881,8 +882,10 @@ h1 {
 }
 .overlay.open { display: flex; }
 .overlay img {
-  max-width: min(96vw, 1800px);
-  max-height: 88vh;
+  width: auto;
+  height: auto;
+  max-width: calc(100vw - 96px);
+  max-height: calc(100vh - 128px);
   object-fit: contain;
 }
 .overlay-caption {
@@ -911,6 +914,9 @@ h1 {
   main { padding: 48px 18px 32px; }
   .grid { grid-template-columns: 1fr; max-width: none; }
   .children, .grid { margin-left: 18px; }
+}
+@media (min-width: 761px) and (max-width: 1400px) {
+  .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 "#,
     );
@@ -1056,7 +1062,7 @@ fn html_font_css() -> String {
     if let Some(font) = pragmata_font_path() {
         format!(
             r#"@font-face {{
-  font-family: "Pragmata Pro";
+  font-family: "PragmataPro";
   src: url("{}") format("truetype");
 }}
 "#,
@@ -1109,6 +1115,30 @@ fn estimate_sampler_thumbnail_duration(thumbnail_long_edge: u32) -> Duration {
 
 fn estimate_sheet_duration(thumbs: usize) -> Duration {
     Duration::from_secs_f64((0.5 + thumbs as f64 * 0.01).clamp(1.0, 20.0))
+}
+
+fn scale_sampler_grain(grain: GrainSettings, thumbnail_long_edge: u32) -> GrainSettings {
+    if !grain.is_enabled() || thumbnail_long_edge >= 3000 {
+        return grain;
+    }
+
+    let linear = (thumbnail_long_edge.max(1) as f32 / 3600.0).clamp(0.25, 1.0);
+    let amount_scale = linear.sqrt().clamp(0.45, 1.0);
+    let size_scale = linear.clamp(0.35, 1.0);
+
+    GrainSettings {
+        amount: scale_grain_byte(grain.amount, amount_scale),
+        size: scale_grain_byte(grain.size, size_scale),
+        frequency: grain.frequency,
+    }
+}
+
+fn scale_grain_byte(value: u8, scale: f32) -> u8 {
+    if value == 0 {
+        0
+    } else {
+        ((value as f32 * scale).round() as u8).clamp(1, 100)
+    }
 }
 
 fn sample_seed(base_seed: u64, index: usize, path: &Path) -> u64 {
@@ -1585,8 +1615,8 @@ fn escape_xml(value: &str) -> String {
 fn sampler_font_css() -> String {
     if let Some(path) = pragmata_font_path() {
         format!(
-            r#"@font-face {{ font-family: "Pragmata Pro"; src: url("{}"); }}
-text {{ font-family: "Pragmata Pro", "DejaVu Sans", "Noto Sans", Arial, sans-serif; letter-spacing: 0; }}"#,
+            r#"@font-face {{ font-family: "PragmataPro"; src: url("{}"); }}
+text {{ font-family: "PragmataPro", "DejaVu Sans", "Noto Sans", Arial, sans-serif; letter-spacing: 0; }}"#,
             escape_xml(&file_uri(&path))
         )
     } else {
@@ -1906,8 +1936,8 @@ mod tests {
 
         assert!(html.contains("<!doctype html>"));
         assert!(html.contains("--columns: 4"));
-        assert!(html.contains("font-family: \"Pragmata Pro\", \"Courier New\", monospace"));
-        assert!(html.contains("repeat(auto-fill, minmax(min(100%, 420px), 1fr))"));
+        assert!(html.contains("font-family: \"PragmataPro\", \"Courier New\", monospace"));
+        assert!(html.contains("repeat(var(--columns), minmax(0, 1fr))"));
         assert!(html.contains("grid-auto-rows: 1fr"));
         assert!(html.contains(">Kodak<"));
         assert!(html.contains(">Kodak Portra<"));
@@ -1915,6 +1945,8 @@ mod tests {
         assert!(html.contains("src=\"thumbnails/kodak.jpg\""));
         assert!(html.contains("class=\"thumb-button\""));
         assert!(html.contains("id=\"overlay\""));
+        assert!(html.contains("max-width: calc(100vw - 96px)"));
+        assert!(html.contains("max-height: calc(100vh - 128px)"));
         assert!(html.contains("loading=\"lazy\""));
     }
 
@@ -1946,6 +1978,27 @@ mod tests {
     }
 
     #[test]
+    fn sampler_grain_is_attenuated_for_small_thumbnails() {
+        let grain = GrainSettings {
+            amount: 50,
+            size: 50,
+            frequency: 50,
+        };
+
+        let small = scale_sampler_grain(grain, 512);
+        let medium = scale_sampler_grain(grain, 1024);
+        let full = scale_sampler_grain(grain, 4000);
+
+        assert!(small.amount < grain.amount);
+        assert!(small.size < grain.size);
+        assert!(medium.amount > small.amount);
+        assert!(medium.amount < grain.amount);
+        assert_eq!(small.frequency, grain.frequency);
+        assert_eq!(full.amount, grain.amount);
+        assert_eq!(full.size, grain.size);
+    }
+
+    #[test]
     fn thumbnail_display_size_preserves_aspect_ratio() {
         let landscape = sample_thumb("Landscape", 6000, 4000);
         let portrait = sample_thumb("Portrait", 3000, 4500);
@@ -1958,7 +2011,7 @@ mod tests {
     fn sampler_font_css_prefers_pragmata_when_available() {
         let css = sampler_font_css();
         if pragmata_font_path().is_some() {
-            assert!(css.contains("Pragmata Pro"));
+            assert!(css.contains("PragmataPro"));
             assert!(css.contains("@font-face"));
         } else {
             assert!(css.contains("DejaVu Sans"));
