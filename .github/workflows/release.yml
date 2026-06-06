@@ -174,6 +174,30 @@ jobs:
           artifact="artifacts/mini-film-${{ steps.release-tag.outputs.tag }}-${{ matrix.target }}${{ matrix.extension }}"
           cp "$binary" "$artifact"
 
+      - name: Regenerate public sampler HTML on x86_64 Linux build
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          binary="target/${{ matrix.target }}/release/mini-film${{ matrix.extension }}"
+
+          if [ ! -x "$binary" ]; then
+            echo "Built binary not found: $binary"
+            exit 1
+          fi
+
+          mkdir -p /home/alfanick/Web/mini-film
+
+          "$binary" sampler \
+            /home/alfanick/Pictures/mini-film-sample.dng \
+            --output /home/alfanick/Web/mini-film/sampler.html \
+            --profiles-root /home/alfanick/Pictures/RNI \
+            --jpg-quality 70 \
+            --progressive \
+            --columns 4 \
+            --thumbnail-long-edge 2048
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -212,31 +236,6 @@ jobs:
           path: artifacts
           pattern: mini-film-*
           merge-multiple: true
-
-      - name: Regenerate public sampler HTML
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          tag="${{ needs.resolve-release.outputs.release_tag }}"
-          sampler_binary="$(find artifacts -maxdepth 1 -type f -name "mini-film-${tag}-x86_64-unknown-linux-gnu*" | head -n 1)"
-
-          if [ -z "$sampler_binary" ]; then
-            echo "Linux sampler binary for tag ${tag} not found in artifacts/"
-            exit 1
-          fi
-
-          chmod +x "$sampler_binary"
-          mkdir -p /home/alfanick/Web/mini-film
-
-          "$sampler_binary" sampler \
-            /home/alfanick/Pictures/mini-film-sample.dng \
-            --output /home/alfanick/Web/mini-film/sampler.html \
-            --profiles-root /home/alfanick/Pictures/RNI \
-            --jpg-quality 70 \
-            --progressive \
-            --columns 4 \
-            --thumbnail-long-edge 2048
 
       - name: Generate release notes
         shell: bash
