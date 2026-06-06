@@ -886,6 +886,7 @@ fn render_sheet_html(trie: &ProfileTrie, columns: u32) -> Result<String> {
                 "styles": HTML_STYLES,
                 "script": HTML_SCRIPT,
                 "sections": sections,
+                "version": env!("CARGO_PKG_VERSION"),
             }),
         )
         .context("rendering HTML sampler page")
@@ -2021,6 +2022,8 @@ mod tests {
         assert!(html.contains("id=\"overlay\""));
         assert!(html.contains("max-width: calc(100vw - 96px)"));
         assert!(html.contains("max-height: calc(100vh - 128px)"));
+        assert!(html.contains("https://github.com/alfanick/mini-film"));
+        assert!(html.contains("mini-film</a> 1.0.0"));
         assert!(html.contains("Picture by me"));
         assert!(html.contains(
             "https://reallyniceimages.com/products/rni-all-films-5-pro-for-adobe-lightroom.html"

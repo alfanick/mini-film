@@ -108,10 +108,10 @@ pub(crate) fn rawtherapee_profiles_with_hald(
 /// tone/color/sharpening metadata; raw PNG Hald and PP3 inputs have no attached
 /// mini-film grain metadata, so they resolve with defaults.
 pub(crate) fn resolve_profile(args: &ApplyArgs, temp_dir: &Path) -> Result<ResolvedProfile> {
-    let selector_path = Path::new(&args.profile);
+    let selector_path = profile_selector_path(&args.profile)?;
     if selector_path.exists() {
         return profile_from_path(
-            selector_path,
+            &selector_path,
             args.hald_level,
             &args.profiles_root,
             &args.hald_dir,
@@ -145,6 +145,71 @@ pub(crate) fn resolve_profile(args: &ApplyArgs, temp_dir: &Path) -> Result<Resol
         args.profiles_root.display(),
         args.hald_dir.display()
     );
+}
+
+fn profile_selector_path(selector: &str) -> Result<PathBuf> {
+    if let Some(path) = local_file_url_to_path(selector)? {
+        return Ok(path);
+    }
+    Ok(PathBuf::from(selector))
+}
+
+fn local_file_url_to_path(selector: &str) -> Result<Option<PathBuf>> {
+    let Some(rest) = selector.strip_prefix("file://") else {
+        return Ok(None);
+    };
+    if rest.contains('?') || rest.contains('#') {
+        bail!("file:// profile URLs with query strings or fragments are not supported");
+    }
+
+    let path = if rest.starts_with('/') {
+        rest
+    } else {
+        let (host, path) = rest.split_once('/').ok_or_else(|| {
+            anyhow::anyhow!("file:// profile URL must include an absolute local path")
+        })?;
+        if !host.is_empty() && !host.eq_ignore_ascii_case("localhost") {
+            bail!("file:// profile URL host must be empty or localhost, got {host:?}");
+        }
+        path
+    };
+
+    let path = if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    };
+    Ok(Some(PathBuf::from(percent_decode_file_url_path(&path)?)))
+}
+
+fn percent_decode_file_url_path(path: &str) -> Result<String> {
+    let bytes = path.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len() {
+                bail!("invalid percent escape in file:// profile URL");
+            }
+            let high = hex_value(bytes[index + 1])?;
+            let low = hex_value(bytes[index + 2])?;
+            decoded.push((high << 4) | low);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).context("file:// profile URL path is not valid UTF-8")
+}
+
+fn hex_value(byte: u8) -> Result<u8> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        _ => bail!("invalid percent escape in file:// profile URL"),
+    }
 }
 
 /// Resolve an explicit profile path by extension.
@@ -698,6 +763,39 @@ mod tests {
         assert!(resolved.hald_path.is_none());
         assert_eq!(resolved.rawtherapee_profiles, vec![pp3]);
         assert!(!resolved.grain.is_enabled());
+    }
+
+    #[test]
+    fn file_url_profile_path_resolves_as_rawtherapee_only_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let pp3 = dir.path().join("edited profile.pp3");
+        std::fs::write(&pp3, "[Exposure]\nCompensation=1\n").unwrap();
+        let selector = format!("file://{}", pp3.display()).replace(' ', "%20");
+        let args = apply_args(selector, dir.path().to_path_buf(), dir.path().join("hald"));
+
+        let resolved = resolve_profile(&args, dir.path()).unwrap();
+        assert!(resolved.hald_path.is_none());
+        assert_eq!(resolved.rawtherapee_profiles, vec![pp3]);
+        assert!(!resolved.grain.is_enabled());
+    }
+
+    #[test]
+    fn file_url_profile_paths_accept_localhost_and_decode_escapes() {
+        assert_eq!(
+            local_file_url_to_path("file:///tmp/RNI%20Films/look.pp3")
+                .unwrap()
+                .unwrap(),
+            PathBuf::from("/tmp/RNI Films/look.pp3")
+        );
+        assert_eq!(
+            local_file_url_to_path("file://localhost/tmp/RNI%20Films/look.pp3")
+                .unwrap()
+                .unwrap(),
+            PathBuf::from("/tmp/RNI Films/look.pp3")
+        );
+        assert!(local_file_url_to_path("file://example.com/tmp/look.pp3").is_err());
+        assert!(local_file_url_to_path("file:///tmp/look.pp3?download=1").is_err());
+        assert!(local_file_url_to_path("look.pp3").unwrap().is_none());
     }
 
     #[test]
