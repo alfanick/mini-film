@@ -1551,11 +1551,39 @@ fn variant_sort_key(label: &str) -> String {
 }
 
 fn variant_sort_key_from_parts(parts: &[String], fallback: &str) -> String {
-    let variant_markers = parts
-        .iter()
-        .filter_map(|part| normalize_variant_marker(part))
-        .collect::<Vec<_>>();
-    let (variant_group, normalized_markers) = variant_sort_meta(&variant_markers);
+    let mut marker_parts = Vec::new();
+    let mut non_grainy_markers = Vec::new();
+    for part in parts.iter() {
+        if let Some(marker) = normalize_variant_marker(part) {
+            marker_parts.push(marker);
+            if marker != "grainy" {
+                non_grainy_markers.push(marker);
+            }
+        }
+    }
+
+    let (variant_group, variant_markers_key, grainy_position) = if non_grainy_markers.is_empty() {
+        if marker_parts.is_empty() {
+            (0u16, String::new(), 0u8)
+        } else {
+            (1u16, "grainy".to_string(), 1u8)
+        }
+    } else {
+        non_grainy_markers.sort_unstable_by_key(|part| variant_marker_rank(part));
+        let group = non_grainy_markers
+            .first()
+            .copied()
+            .map_or(99, variant_marker_rank)
+            .min(999);
+        let markers_key = non_grainy_markers.join(" ");
+        let grainy_position = if marker_parts.iter().any(|part| *part == "grainy") {
+            1u8
+        } else {
+            0u8
+        };
+        (group, markers_key, grainy_position)
+    };
+
     let normalized = parts
         .iter()
         .filter(|part| !is_variant_marker(part))
@@ -1564,21 +1592,9 @@ fn variant_sort_key_from_parts(parts: &[String], fallback: &str) -> String {
         .join(" ")
         .to_ascii_lowercase();
     format!(
-        "{normalized}\u{0}{variant_group:03}\u{0}{normalized_markers}\u{0}{}",
+        "{normalized}\u{0}{variant_group:03}\u{0}{variant_markers_key}\u{0}{grainy_position}\u{0}{}",
         fallback.to_ascii_lowercase()
     )
-}
-
-fn variant_sort_meta(parts: &[&str]) -> (u16, String) {
-    if parts.is_empty() {
-        return (0, String::new());
-    }
-    let mut sorted = parts.to_vec();
-    sorted.sort_unstable_by_key(|part| variant_marker_rank(part));
-    let marker_rank = sorted.first().copied().map_or(99, variant_marker_rank);
-    let marker_rank = marker_rank.min(999);
-    let marker_key = sorted.join(" ");
-    (marker_rank, marker_key)
 }
 
 fn normalize_variant_marker(part: &str) -> Option<&'static str> {
@@ -1933,7 +1949,12 @@ mod tests {
     #[test]
     fn base_profile_sorts_before_named_variants() {
         let mut trie = ProfileTrie::default();
-        for name in ["Ilford FP4", "Ilford FP4 faded", "Ilford FP4 contrast", "Ilford FP4 grainy"] {
+        for name in [
+            "Ilford FP4",
+            "Ilford FP4 faded",
+            "Ilford FP4 contrast",
+            "Ilford FP4 grainy",
+        ] {
             trie.insert(sample_thumb(name, 1024, 683));
         }
 
@@ -1967,31 +1988,38 @@ mod tests {
 
     #[test]
     fn max_common_prefix_prefers_exact_profile() {
-        let mut trie = ProfileTrie::default();
-        for name in [
-            "Agfa Scala 200",
-            "Agfa Scala 200 +",
-            "Agfa Scala 200 grainy",
-            "Agfa Scala 200 ++",
-            "Agfa Scala 200 ++ grainy",
-            "Agfa Scala 200 faded",
-        ] {
-            trie.insert(sample_thumb(name, 1024, 683));
-        }
+        let base = variant_sort_key("Agfa Scala 200");
+        let plus = variant_sort_key("Agfa Scala 200 +");
+        let plus_grainy = variant_sort_key("Agfa Scala 200 + grainy");
+        let plus_plus = variant_sort_key("Agfa Scala 200 ++");
+        let plus_plus_grainy = variant_sort_key("Agfa Scala 200 ++ grainy");
+        let faded = variant_sort_key("Agfa Scala 200 faded");
 
-        let layout = build_sheet_layout(&trie, 256, 8, SheetOutputKind::Jpeg);
-        let svg = render_sheet_svg(&layout);
-
-        let generic = svg.find(">Scala 200<").unwrap();
-        let plus = svg.find(">Scala 200 +<").unwrap();
-        let plus_grainy = svg.find(">Scala 200 + grainy<").unwrap();
-        let plus_plus = svg.find(">Scala 200 ++<").unwrap();
-        let plus_plus_grainy = svg.find(">Scala 200 ++ grainy<").unwrap();
-
-        assert!(generic < plus);
+        assert!(base < plus);
         assert!(plus < plus_grainy);
         assert!(plus < plus_plus);
         assert!(plus_plus < plus_plus_grainy);
+        assert!(faded < plus_plus);
+    }
+
+    #[test]
+    fn plus_and_plus_grainy_are_adjacent() {
+        let generic = variant_sort_key("Agfa Scala 200");
+        let plus = variant_sort_key("Agfa Scala 200 +");
+        let plus_grainy = variant_sort_key("Agfa Scala 200 + grainy");
+        let plus_plus = variant_sort_key("Agfa Scala 200 ++");
+        let plus_plus_grainy = variant_sort_key("Agfa Scala 200 ++ grainy");
+
+        assert!(generic < plus, "base should stay first");
+        assert!(plus < plus_grainy, "plus should sort before plus grainy");
+        assert!(
+            plus < plus_plus,
+            "plus variants should stay before ++ variants"
+        );
+        assert!(
+            plus_plus < plus_plus_grainy,
+            "++ should stay before ++ grainy"
+        );
     }
 
     #[test]
@@ -2173,7 +2201,7 @@ mod tests {
         assert!(html.contains("max-width: calc(100vw - 96px)"));
         assert!(html.contains("max-height: calc(100vh - 128px)"));
         assert!(html.contains("https://github.com/alfanick/mini-film"));
-        assert!(html.contains("mini-film</a> 1.0.3"));
+        assert!(html.contains("mini-film</a> 1.0.4"));
         assert!(html.contains("Picture by Amadeus Juskowiak"));
         assert!(html.contains(
             "https://reallyniceimages.com/products/rni-all-films-5-pro-for-adobe-lightroom.html"
