@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::{fs::File, io::Read, path::Path};
 
 use anyhow::{Context, Result, anyhow};
@@ -144,7 +145,7 @@ pub fn extract_film_recipe(path: &Path) -> Result<XmpFilmRecipe> {
                 }
             }
             Event::Text(e) => {
-                let text = e.unescape()?.into_owned();
+                let text = e.decode().map(Cow::into_owned)?;
                 match text_target {
                     _ if curve_target.is_some() && !text.is_empty() => {
                         if let Some(point) = parse_curve_point(&text) {

@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     fs::{self, File},
     io::BufWriter,
     path::Path,
@@ -59,7 +60,7 @@ pub fn convert_dir(
             .file_stem()
             .and_then(|s| s.to_str())
             .map(sanitize_filename::sanitize)
-            .unwrap_or_else(|| "profile".to_string());
+            .unwrap_or(Cow::Borrowed("profile"));
         let parent = rel.parent().unwrap_or_else(|| Path::new(""));
         let out = output_dir.join(parent).join(format!("{stem}.hald.png"));
 
@@ -97,7 +98,7 @@ pub fn try_convert_dir(
             .file_stem()
             .and_then(|s| s.to_str())
             .map(sanitize_filename::sanitize)
-            .unwrap_or_else(|| "profile".to_string());
+            .unwrap_or(Cow::Borrowed("profile"));
         let parent = rel.parent().unwrap_or_else(|| Path::new(""));
         let out = output_dir.join(parent).join(format!("{stem}.hald.png"));
 
@@ -272,9 +273,8 @@ pub fn write_hald_png_with_adjustments(
     let mut encoder = png::Encoder::new(writer, side, side);
     encoder.set_color(png::ColorType::Rgb);
     encoder.set_depth(png::BitDepth::Sixteen);
-    encoder.set_compression(png::Compression::Best);
-    encoder.set_filter(png::FilterType::Paeth);
-    encoder.set_adaptive_filter(png::AdaptiveFilterType::Adaptive);
+    encoder.set_compression(png::Compression::High);
+    encoder.set_filter(png::Filter::Adaptive);
     let mut png_writer = encoder.write_header()?;
     png_writer.write_image_data(&data)?;
     Ok(())
@@ -388,7 +388,7 @@ mod tests {
         let path = dir.path().join("hald.png");
         write_hald_png(&identity_table(2), 2, &path).unwrap();
 
-        let decoder = png::Decoder::new(File::open(path).unwrap());
+        let decoder = png::Decoder::new(std::io::BufReader::new(File::open(path).unwrap()));
         let reader = decoder.read_info().unwrap();
         let info = reader.info();
         assert_eq!(info.width, 8);

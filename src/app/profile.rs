@@ -454,7 +454,7 @@ fn cached_hald_path(source: &Path, hald_level: u32, hald_dir: &Path) -> Result<P
     let stem = source
         .file_stem()
         .and_then(|s| s.to_str())
-        .map(sanitize_filename::sanitize)
+        .map(|stem| sanitize_filename::sanitize(stem).into_owned())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "profile".to_string());
     Ok(hald_dir.join(format!("{stem}.l{hald_level}.{hash:016x}.hald.png")))

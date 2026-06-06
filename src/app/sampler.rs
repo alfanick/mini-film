@@ -337,7 +337,8 @@ fn sha1_file(path: &Path) -> Result<String> {
         }
         hasher.update(&buffer[..read]);
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    let digest = hasher.finalize();
+    Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 fn sample_thumb_from_image(
@@ -768,7 +769,8 @@ fn unique_html_sidecar_stem(names: &mut BTreeMap<String, usize>, thumb: &SampleT
 }
 
 fn html_pp3_file_stem(thumb: &SampleThumb) -> String {
-    let stem = sanitize_filename::sanitize(profile_display_name_from_relative(&thumb.filename));
+    let stem = sanitize_filename::sanitize(profile_display_name_from_relative(&thumb.filename))
+        .into_owned();
     if stem.is_empty() {
         "profile".to_string()
     } else {
@@ -855,7 +857,8 @@ fn write_progressive_html_thumbnail(
 }
 
 fn html_thumbnail_file_name(index: usize, thumb: &SampleThumb) -> String {
-    let stem = sanitize_filename::sanitize(profile_display_name_from_relative(&thumb.filename));
+    let stem = sanitize_filename::sanitize(profile_display_name_from_relative(&thumb.filename))
+        .into_owned();
     let stem = if stem.is_empty() {
         "profile".to_string()
     } else {
