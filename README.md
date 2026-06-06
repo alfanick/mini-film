@@ -38,6 +38,15 @@ local profile library.
 cargo build --release
 ```
 
+### Auto-update
+
+Release binaries are built with `github-update` enabled in CI and check
+`https://github.com/alfanick/mini-film/releases` on startup. If a newer release
+for your current platform exists, mini-film updates the executable in place.
+
+Local builds are not built with auto-update by default; add the feature explicitly
+with `--features github-update` when desired.
+
 ## Convert XMP Profiles To Hald
 
 Convert one profile XMP:

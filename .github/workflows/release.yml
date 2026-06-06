@@ -75,9 +75,9 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cross build --release --locked --target "${{ matrix.target }}"
+            cross build --release --locked --target "${{ matrix.target }}" --features github-update
           else
-            cargo build --release --locked --target "${{ matrix.target }}"
+            cargo build --release --locked --target "${{ matrix.target }}" --features github-update
           fi
 
       - name: Prepare artifact

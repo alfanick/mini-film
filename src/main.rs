@@ -1,5 +1,7 @@
 mod app;
 mod cli;
+#[cfg(feature = "github-update")]
+mod updater;
 
 use std::{
     env,
@@ -32,6 +34,7 @@ fn main() -> Result<()> {
     configure_threads();
 
     let args = env::args().collect::<Vec<_>>();
+    run_auto_update_if_enabled(&args);
     startup_dependency_check(&args)?;
     let cli = Cli::parse_from(&args);
 
@@ -226,6 +229,17 @@ fn main() -> Result<()> {
         }),
     }
 }
+
+#[cfg(feature = "github-update")]
+fn run_auto_update_if_enabled(args: &[String]) {
+    if is_help_mode(args) {
+        return;
+    }
+    updater::run_auto_update_if_enabled();
+}
+
+#[cfg(not(feature = "github-update"))]
+fn run_auto_update_if_enabled(_args: &[String]) {}
 
 const RAWTHERAPEE_BINARY: &str = "rawtherapee-cli";
 const CONVERT_BINARY: &str = "convert";
