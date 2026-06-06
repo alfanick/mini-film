@@ -272,6 +272,9 @@ pub fn write_hald_png_with_adjustments(
     let mut encoder = png::Encoder::new(writer, side, side);
     encoder.set_color(png::ColorType::Rgb);
     encoder.set_depth(png::BitDepth::Sixteen);
+    encoder.set_compression(png::Compression::Best);
+    encoder.set_filter(png::FilterType::Paeth);
+    encoder.set_adaptive_filter(png::AdaptiveFilterType::Adaptive);
     let mut png_writer = encoder.write_header()?;
     png_writer.write_image_data(&data)?;
     Ok(())
@@ -392,5 +395,37 @@ mod tests {
         assert_eq!(info.height, 8);
         assert_eq!(info.color_type, png::ColorType::Rgb);
         assert_eq!(info.bit_depth, png::BitDepth::Sixteen);
+    }
+
+    #[test]
+    fn write_hald_png_uses_best_deflate_compression() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hald.png");
+        write_hald_png(&identity_table(2), 2, &path).unwrap();
+
+        let bytes = fs::read(path).unwrap();
+        let first_idat = first_png_chunk_data(&bytes, b"IDAT").unwrap();
+        let zlib_header_flags = first_idat[1];
+        let compression_level = zlib_header_flags >> 6;
+
+        assert_eq!(compression_level, 3);
+    }
+
+    fn first_png_chunk_data<'a>(png: &'a [u8], chunk_type: &[u8; 4]) -> Option<&'a [u8]> {
+        let mut offset = 8usize;
+        while offset.checked_add(12)? <= png.len() {
+            let length = u32::from_be_bytes(png[offset..offset + 4].try_into().ok()?) as usize;
+            let kind = &png[offset + 4..offset + 8];
+            let data_start = offset + 8;
+            let data_end = data_start.checked_add(length)?;
+            if data_end.checked_add(4)? > png.len() {
+                return None;
+            }
+            if kind == chunk_type {
+                return Some(&png[data_start..data_end]);
+            }
+            offset = data_end + 4;
+        }
+        None
     }
 }
