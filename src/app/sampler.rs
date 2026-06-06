@@ -608,9 +608,6 @@ fn run_structured_sheet(
 
     let mut command = Command::new(convert);
     add_convert_thread_limit(&mut command);
-    if let Some(font) = sheet_font_path() {
-        command.arg("-font").arg(font);
-    }
     command.arg(&svg_path);
     match output_kind {
         SheetOutputKind::Jpeg => {
@@ -1737,15 +1734,6 @@ fn thumb_display_size(thumb: &SampleThumb, long_edge: u32) -> (u32, u32) {
     )
 }
 
-fn file_uri(path: &Path) -> String {
-    let encoded = path
-        .to_string_lossy()
-        .replace('%', "%25")
-        .replace(' ', "%20")
-        .replace('#', "%23");
-    format!("file://{encoded}")
-}
-
 fn escape_xml(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -1755,69 +1743,11 @@ fn escape_xml(value: &str) -> String {
 }
 
 fn sampler_font_css() -> String {
-    if let Some(path) = pragmata_font_path() {
-        format!(
-            r#"@font-face {{ font-family: "PragmataPro Mono Liga"; src: url("{}"); }}
-text {{ font-family: "PragmataPro Mono Liga", "DejaVu Sans", "Noto Sans", Arial, sans-serif; letter-spacing: 0; }}"#,
-            escape_xml(&file_uri(&path))
-        )
-    } else {
-        r#"text { font-family: "DejaVu Sans", "Noto Sans", Arial, sans-serif; letter-spacing: 0; }"#
-            .to_string()
-    }
-}
-
-fn sheet_font_path() -> Option<PathBuf> {
-    pragmata_font_path().or_else(|| {
-        [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
-            "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
-            "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
-        ]
-        .into_iter()
-        .map(PathBuf::from)
-        .find(|path| path.is_file())
-    })
-}
-
-fn pragmata_font_path() -> Option<PathBuf> {
-    let home = env::var_os("HOME").map(PathBuf::from)?;
-    let fonts = home.join(".fonts");
-    if !fonts.is_dir() {
-        return None;
-    }
-    let mut candidates: Vec<_> = WalkDir::new(fonts)
-        .follow_links(true)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_file())
-        .map(|entry| entry.into_path())
-        .filter(|path| {
-            let stem = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .map(str::to_ascii_lowercase)
-                .unwrap_or_default();
-            let ext = path
-                .extension()
-                .and_then(|s| s.to_str())
-                .map(str::to_ascii_lowercase)
-                .unwrap_or_default();
-            stem.contains("pragmata") && matches!(ext.as_str(), "ttf" | "otf" | "ttc")
-        })
-        .collect();
-    candidates.sort();
-    candidates
-        .iter()
-        .find(|path| {
-            path.file_stem()
-                .and_then(|s| s.to_str())
-                .map(str::to_ascii_lowercase)
-                .is_some_and(|stem| stem.contains("mono") && stem.contains("liga"))
-        })
-        .cloned()
-        .or_else(|| candidates.into_iter().next())
+    r#"text {
+font-family: "PragmataPro Mono Liga", "PragmataProMonoLiga", "Pragmata Pro", ui-monospace, "DejaVu Sans Mono", "Noto Sans Mono", "Cascadia Code", "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+letter-spacing: 0;
+}"#
+    .to_string()
 }
 
 #[cfg(test)]
@@ -2168,7 +2098,9 @@ mod tests {
         assert!(html.contains("<!doctype html>"));
         assert!(html.contains("--columns: 4"));
         assert!(
-            html.contains("font-family: \"PragmataPro Mono Liga\", \"Courier New\", monospace")
+            html.contains(
+                "font-family: \"PragmataPro Mono Liga\", \"PragmataProMonoLiga\", \"Pragmata Pro\", ui-monospace,"
+            )
         );
         assert!(!html.contains("@font-face"));
         assert!(html.contains("repeat(var(--columns), minmax(0, 1fr))"));
@@ -2320,12 +2252,8 @@ mod tests {
     #[test]
     fn sampler_font_css_prefers_pragmata_when_available() {
         let css = sampler_font_css();
-        if pragmata_font_path().is_some() {
-            assert!(css.contains("PragmataPro Mono Liga"));
-            assert!(css.contains("@font-face"));
-        } else {
-            assert!(css.contains("DejaVu Sans"));
-        }
+        assert!(css.contains("PragmataPro Mono Liga"));
+        assert!(css.contains("ui-monospace"));
     }
 
     #[test]

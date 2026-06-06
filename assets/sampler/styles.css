@@ -13,7 +13,7 @@ body {
   margin: 0;
   background: #ffffff;
   color: var(--text);
-  font-family: "PragmataPro Mono Liga", "Courier New", monospace;
+  font-family: "PragmataPro Mono Liga", "PragmataProMonoLiga", "Pragmata Pro", ui-monospace, "DejaVu Sans Mono", "Noto Sans Mono", "Cascadia Code", "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
 }
 main {
   padding: 92px 40px 48px;
