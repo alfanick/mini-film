@@ -90,8 +90,6 @@ struct SheetLayout {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SheetOutputKind {
     Jpeg,
-    Tiff,
-    Pdf,
     Html,
 }
 
@@ -305,7 +303,7 @@ pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
 
 fn validate_sampler_args(args: &SamplerArgs) -> Result<()> {
     if sampler_output_kind(&args.output)?.is_none() {
-        bail!("sampler output must be .jpg, .jpeg, .tif, .tiff, .pdf, or .html");
+        bail!("sampler output must be .jpg, .jpeg, or .html");
     }
     if !args.profiles_root.is_dir() {
         bail!(
@@ -397,8 +395,6 @@ fn sample_thumb_from_image(
 fn sampler_output_kind(output: &Path) -> Result<Option<SheetOutputKind>> {
     Ok(match output_ext(output)?.as_str() {
         "jpg" | "jpeg" => Some(SheetOutputKind::Jpeg),
-        "tif" | "tiff" => Some(SheetOutputKind::Tiff),
-        "pdf" => Some(SheetOutputKind::Pdf),
         "html" | "htm" => Some(SheetOutputKind::Html),
         _ => None,
     })
@@ -597,12 +593,7 @@ fn run_structured_sheet(context: &StructuredSheetContext<'_>) -> Result<()> {
     for thumb in context.thumbs {
         trie.insert(thumb.clone_for_tree());
     }
-    let layout = build_sheet_layout(
-        &trie,
-        context.thumbnail_long_edge,
-        context.columns,
-        output_kind,
-    );
+    let layout = build_sheet_layout(&trie, context.thumbnail_long_edge, context.columns);
     let svg = render_sheet_svg(&layout);
     let svg_path = output.with_extension("mini-film-sampler.svg");
     fs::write(&svg_path, svg).with_context(|| format!("writing {}", svg_path.display()))?;
@@ -619,10 +610,7 @@ fn run_structured_sheet(context: &StructuredSheetContext<'_>) -> Result<()> {
                 command.arg("-interlace").arg("Line");
             }
         }
-        SheetOutputKind::Tiff => {
-            command.arg("-compress").arg("Zip");
-        }
-        SheetOutputKind::Pdf | SheetOutputKind::Html => {}
+        SheetOutputKind::Html => {}
     }
     command.arg(output);
 
@@ -1221,17 +1209,9 @@ fn profile_name_parts(name: &str) -> Vec<String> {
     }
 }
 
-fn build_sheet_layout(
-    trie: &ProfileTrie,
-    thumbnail_long_edge: u32,
-    columns: u32,
-    output_kind: SheetOutputKind,
-) -> SheetLayout {
+fn build_sheet_layout(trie: &ProfileTrie, thumbnail_long_edge: u32, columns: u32) -> SheetLayout {
     let mut thumb = thumbnail_long_edge.max(64);
     let columns = sampler_sheet_columns(trie_thumb_count(trie), columns);
-    if output_kind != SheetOutputKind::Jpeg {
-        return build_sheet_layout_with_thumb(trie, thumb, columns);
-    }
     loop {
         let layout = build_sheet_layout_with_thumb(trie, thumb, columns);
         if layout.height < 60_000 || thumb <= 64 {
@@ -1820,7 +1800,7 @@ mod tests {
         thumb.image = PathBuf::from("/tmp/kodak.jpg");
         trie.insert(thumb);
 
-        let layout = build_sheet_layout(&trie, 128, 8, SheetOutputKind::Jpeg);
+        let layout = build_sheet_layout(&trie, 128, 8);
         let svg = render_sheet_svg(&layout);
 
         assert!(svg.contains(">Kodak<"));
@@ -1844,7 +1824,7 @@ mod tests {
             trie.insert(sample_thumb(name, 1024, 683));
         }
 
-        let layout = build_sheet_layout(&trie, 256, 8, SheetOutputKind::Jpeg);
+        let layout = build_sheet_layout(&trie, 256, 8);
         let svg = render_sheet_svg(&layout);
 
         assert!(svg.contains(">Fuji<"));
@@ -1869,7 +1849,7 @@ mod tests {
             trie.insert(sample_thumb(name, 1024, 683));
         }
 
-        let layout = build_sheet_layout(&trie, 256, 8, SheetOutputKind::Jpeg);
+        let layout = build_sheet_layout(&trie, 256, 8);
         let svg = render_sheet_svg(&layout);
 
         assert!(svg.contains(">Ilford<"));
@@ -1890,7 +1870,7 @@ mod tests {
             trie.insert(sample_thumb(name, 1024, 683));
         }
 
-        let layout = build_sheet_layout(&trie, 256, 8, SheetOutputKind::Jpeg);
+        let layout = build_sheet_layout(&trie, 256, 8);
         let svg = render_sheet_svg(&layout);
 
         assert!(svg.contains(">FP4<"));
@@ -1982,7 +1962,7 @@ mod tests {
             trie.insert(sample_thumb(name, 1024, 683));
         }
 
-        let layout = build_sheet_layout(&trie, 256, 8, SheetOutputKind::Jpeg);
+        let layout = build_sheet_layout(&trie, 256, 8);
         let svg = render_sheet_svg(&layout);
 
         assert!(svg.contains(">Kodak Portra 100<"));
@@ -2011,7 +1991,7 @@ mod tests {
             }
         }
 
-        let layout = build_sheet_layout(&trie, 1024, 8, SheetOutputKind::Jpeg);
+        let layout = build_sheet_layout(&trie, 1024, 8);
 
         assert_eq!(trie_thumb_count(&trie), 624);
         assert!(layout.width < 65_000);
@@ -2026,39 +2006,13 @@ mod tests {
     }
 
     #[test]
-    fn pdf_sampler_layout_preserves_requested_thumbnail_size() {
-        let mut trie = ProfileTrie::default();
-        for index in 0..64 {
-            trie.insert(sample_thumb(&format!("Kodak Portra {index}"), 1024, 683));
-        }
-
-        let layout = build_sheet_layout(&trie, 1024, 8, SheetOutputKind::Pdf);
-        let svg = render_sheet_svg(&layout);
-
-        assert!(svg.contains(r#"width="996" height="664""#));
-    }
-
-    #[test]
-    fn tiff_sampler_layout_preserves_requested_thumbnail_size() {
-        let mut trie = ProfileTrie::default();
-        for index in 0..64 {
-            trie.insert(sample_thumb(&format!("Kodak Portra {index}"), 1024, 683));
-        }
-
-        let layout = build_sheet_layout(&trie, 1024, 8, SheetOutputKind::Tiff);
-        let svg = render_sheet_svg(&layout);
-
-        assert!(svg.contains(r#"width="996" height="664""#));
-    }
-
-    #[test]
-    fn pdf_sampler_can_render_four_requested_columns_without_shrinking_thumbnails() {
+    fn jpeg_sampler_layout_preserves_thumbnail_size_for_small_output() {
         let mut trie = ProfileTrie::default();
         for index in 0..16 {
             trie.insert(sample_thumb(&format!("Kodak Portra {index}"), 1024, 683));
         }
 
-        let layout = build_sheet_layout(&trie, 1024, 4, SheetOutputKind::Pdf);
+        let layout = build_sheet_layout(&trie, 1024, 4);
         let svg = render_sheet_svg(&layout);
 
         assert!(layout.width < 5000);
@@ -2066,18 +2020,10 @@ mod tests {
     }
 
     #[test]
-    fn sampler_accepts_jpeg_tiff_and_pdf_outputs() {
+    fn sampler_accepts_jpeg_and_html_outputs() {
         assert_eq!(
             sampler_output_kind(Path::new("sheet.jpg")).unwrap(),
             Some(SheetOutputKind::Jpeg)
-        );
-        assert_eq!(
-            sampler_output_kind(Path::new("sheet.tiff")).unwrap(),
-            Some(SheetOutputKind::Tiff)
-        );
-        assert_eq!(
-            sampler_output_kind(Path::new("sheet.pdf")).unwrap(),
-            Some(SheetOutputKind::Pdf)
         );
         assert_eq!(
             sampler_output_kind(Path::new("sheet.html")).unwrap(),

@@ -162,9 +162,9 @@ Use a non-default convert binary or write a progressive sampler JPEG with:
 
 `apply` and `batch` support the same final JPG controls. `batch` also accepts
 `--output-format jpg|tiff`; TIFF batch output is written as 16-bit Zip-compressed `.tif`.
-`sampler` also
-supports `--jpg-quality`, `--jpeg-subsampling`, `--strip-metadata`, and
-`--progressive` for generated sampler JPEGs.
+`sampler` supports `--jpg-quality`, `--jpeg-subsampling`, `--strip-metadata`, and
+`--progressive` for generated sampler JPEGs, and accepts `.jpg/.jpeg` or `.html`
+outputs.
 
 ```sh
 --jpg-quality 90
