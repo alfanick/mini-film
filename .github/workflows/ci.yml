@@ -11,7 +11,7 @@ on:
 jobs:
   test-and-lint:
     name: Test and quality checks
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, hetzner]
     steps:
       - uses: actions/checkout@v4
 
@@ -100,7 +100,7 @@ jobs:
 
   tag-on-version-bump:
     name: Tag release
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, hetzner]
     needs: test-and-lint
     if: github.event_name == 'push'
     steps:

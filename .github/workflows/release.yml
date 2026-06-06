@@ -11,27 +11,23 @@ permissions:
 jobs:
   build-binaries:
     name: Build ${{ matrix.target }}
-    runs-on: ${{ matrix.os }}
+    runs-on: [self-hosted, hetzner]
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
+          - target: x86_64-unknown-linux-gnu
             extension: ""
             use_cross: false
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
+          - target: aarch64-unknown-linux-gnu
             extension: ""
             use_cross: true
-          - os: macos-latest
-            target: aarch64-apple-darwin
+          - target: aarch64-apple-darwin
             extension: ""
-            use_cross: false
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
+            use_cross: true
+          - target: x86_64-pc-windows-gnu
             extension: ".exe"
-            use_cross: false
+            use_cross: true
 
     steps:
       - name: Checkout
@@ -77,7 +73,7 @@ jobs:
 
   publish-release:
     name: Publish release
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, hetzner]
     needs: build-binaries
     steps:
       - name: Checkout
