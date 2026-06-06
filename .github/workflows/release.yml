@@ -12,14 +12,86 @@ on:
         description: "Tag to build and publish"
         required: false
         type: string
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
 
 permissions:
   contents: write
 
 jobs:
+  resolve-release:
+    name: Resolve release context
+    runs-on: self-hosted
+    if: |
+      github.event_name != 'workflow_run' ||
+      (github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main')
+    outputs:
+      should_release: ${{ steps.release.outputs.should_release }}
+      release_tag: ${{ steps.release.outputs.release_tag }}
+      source_ref: ${{ steps.release.outputs.source_ref }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.ref_name }}
+
+      - name: Resolve release metadata
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          event="${{ github.event_name }}"
+          should_release="false"
+          source_ref="${GITHUB_SHA}"
+          release_tag=""
+
+          if [ "$event" = "workflow_dispatch" ]; then
+            release_tag="${{ inputs.release_tag }}"
+            if [ -z "$release_tag" ]; then
+              release_tag="${GITHUB_REF_NAME}"
+            fi
+            should_release="true"
+          elif [ "$event" = "push" ]; then
+            release_tag="${GITHUB_REF_NAME}"
+            should_release="true"
+          else
+            source_ref="${{ github.event.workflow_run.head_sha }}"
+            if git cat-file -e "${source_ref}^:Cargo.toml" 2>/dev/null; then
+              old_version=$(awk -F'=' '/^version[[:space:]]*=/ { gsub(/[[:space:]]/, "", $2); gsub(/"/, "", $2); print $2; exit }' < <(
+                git show "${source_ref}^:Cargo.toml"
+              ))
+              new_version=$(awk -F'=' '/^version[[:space:]]*=/ { gsub(/[[:space:]]/, "", $2); gsub(/"/, "", $2); print $2; exit }' < <(
+                git show "${source_ref}:Cargo.toml"
+              ))
+              if [ -n "$old_version" ] && [ -n "$new_version" ] && [ "$old_version" != "$new_version" ]; then
+                release_tag="v${new_version}"
+                if git ls-remote --exit-code --tags origin "refs/tags/${release_tag}" >/dev/null 2>&1; then
+                  should_release="false"
+                else
+                  should_release="true"
+                fi
+              fi
+            fi
+          fi
+
+          if [ -z "$release_tag" ] || [ "$should_release" != "true" ]; then
+            should_release="false"
+          fi
+
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "should_release=$should_release" >> "$GITHUB_OUTPUT"
+          echo "source_ref=$source_ref" >> "$GITHUB_OUTPUT"
+
   build-binaries:
     name: Build ${{ matrix.target }}
+    needs: resolve-release
     runs-on: ${{ matrix.runs_on }}
+    if: needs.resolve-release.outputs.should_release == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -46,18 +118,14 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+          ref: ${{ needs.resolve-release.outputs.source_ref }}
 
       - name: Resolve release tag
         id: release-tag
         shell: bash
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.release_tag }}" ]; then
-            echo "tag=${{ inputs.release_tag }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-          fi
+          echo "tag=${{ needs.resolve-release.outputs.release_tag }}" >> "$GITHUB_OUTPUT"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@v1
@@ -105,18 +173,14 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+          ref: ${{ needs.resolve-release.outputs.source_ref }}
 
       - name: Resolve release tag
         id: release-tag
         shell: bash
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.release_tag }}" ]; then
-            echo "tag=${{ inputs.release_tag }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-          fi
+          echo "tag=${{ needs.resolve-release.outputs.release_tag }}" >> "$GITHUB_OUTPUT"
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -129,11 +193,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.release_tag }}" ]; then
-            current_tag="${{ inputs.release_tag }}"
-          else
-            current_tag="${GITHUB_REF_NAME}"
-          fi
+          current_tag="${{ needs.resolve-release.outputs.release_tag }}"
           prev_tag=""
           prev_short=""
 
@@ -155,8 +215,8 @@ jobs:
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.release-tag.outputs.tag }}
-          name: ${{ steps.release-tag.outputs.tag }}
+          tag_name: ${{ needs.resolve-release.outputs.release_tag }}
+          name: ${{ needs.resolve-release.outputs.release_tag }}
           body_path: release-notes.md
           files: |
             artifacts/*
