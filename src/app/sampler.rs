@@ -823,7 +823,14 @@ fn render_html_node(
         if !entries.is_empty() {
             body.push_str(&render_html_grid(templates, &entries)?);
         }
-        return render_html_section(templates, depth_class, &key, &title, body);
+        return render_html_section(
+            templates,
+            depth_class,
+            html_heading_tag(depth),
+            &key,
+            &title,
+            body,
+        );
     }
 
     let mut leaf_entries: Vec<_> = node
@@ -874,12 +881,20 @@ fn render_html_node(
                 .context("rendering HTML sampler children")?,
         );
     }
-    render_html_section(templates, depth_class, &key, &title, body)
+    render_html_section(
+        templates,
+        depth_class,
+        html_heading_tag(depth),
+        &key,
+        &title,
+        body,
+    )
 }
 
 fn render_html_section(
     templates: &Handlebars<'_>,
     depth_class: &str,
+    heading_tag: &str,
     key: &str,
     title: &str,
     body: String,
@@ -889,6 +904,7 @@ fn render_html_section(
             "section",
             &json!({
                 "depth_class": depth_class,
+                "heading_tag": heading_tag,
                 "branch_key": key,
                 "title": title,
                 "body": body,
@@ -899,6 +915,16 @@ fn render_html_section(
 
 fn html_branch_key(prefix: &[String]) -> String {
     prefix.join("/")
+}
+
+fn html_heading_tag(depth: usize) -> &'static str {
+    match depth {
+        0 => "h2",
+        1 => "h3",
+        2 => "h4",
+        3 => "h5",
+        _ => "h6",
+    }
 }
 
 fn render_html_grid(templates: &Handlebars<'_>, entries: &[SheetEntry<'_>]) -> Result<String> {
@@ -1813,8 +1839,9 @@ mod tests {
         assert!(!html.contains("@font-face"));
         assert!(html.contains("repeat(var(--columns), minmax(0, 1fr))"));
         assert!(html.contains("grid-auto-rows: 1fr"));
-        assert!(html.contains(">Kodak<"));
-        assert!(html.contains(">Kodak Portra<"));
+        assert!(html.contains("<h1>mini-film sampler</h1>"));
+        assert!(html.contains(r#"<h2 class="branch-title"><button class="branch-toggle" type="button" aria-expanded="true">Kodak</button></h2>"#));
+        assert!(html.contains(r#"<h3 class="branch-title"><button class="branch-toggle" type="button" aria-expanded="true">Kodak Portra</button></h3>"#));
         assert!(html.contains(">400 Grainy<"));
         assert!(html.contains("class=\"branch-toggle\""));
         assert!(html.contains("class=\"branch-body\""));
@@ -1831,6 +1858,16 @@ mod tests {
             "https://reallyniceimages.com/products/rni-all-films-5-pro-for-adobe-lightroom.html"
         ));
         assert!(html.contains("loading=\"lazy\""));
+    }
+
+    #[test]
+    fn html_section_heading_levels_follow_document_depth() {
+        assert_eq!(html_heading_tag(0), "h2");
+        assert_eq!(html_heading_tag(1), "h3");
+        assert_eq!(html_heading_tag(2), "h4");
+        assert_eq!(html_heading_tag(3), "h5");
+        assert_eq!(html_heading_tag(4), "h6");
+        assert_eq!(html_heading_tag(8), "h6");
     }
 
     #[test]
