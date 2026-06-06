@@ -110,7 +110,7 @@ When `--profile` points at a `.pp3`, mini-film passes that PP3 directly to RawTh
 
 ## Batch Apply
 
-Process every `.dng`, `.DNG`, `.nef`, and `.NEF` under an input directory and write JPGs or 16-bit TIFFs under an output directory:
+Process every supported RAW file (`.dng`, `.nef`, `.cr2`, `.cr3`, `.arw`, `.raf`, `.orf`, `.rw2`, etc.) under an input directory and write JPGs or 16-bit TIFFs under an output directory:
 
 ```sh
 cargo run --release -- batch \

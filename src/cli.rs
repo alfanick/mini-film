@@ -110,7 +110,8 @@ pub(crate) enum CommandKind {
 
     /// Run RawTherapee, then apply a Hald CLUT with GraphicsMagick/ImageMagick convert.
     Apply {
-        /// RAW file to develop.
+        /// RAW file to develop (supports common camera RAW formats such as `.dng`,
+        /// `.nef`, `.cr2`, `.cr3`, `.arw`, `.raf`, `.orf`, `.rw2`).
         raw: PathBuf,
 
         /// Output image path.
@@ -194,9 +195,10 @@ pub(crate) enum CommandKind {
         progressive_jpeg: bool,
     },
 
-    /// Apply a profile to every DNG/NEF file in an input folder.
+    /// Apply a profile to every supported RAW file in an input folder.
     Batch {
-        /// Input folder scanned recursively for .dng/.DNG/.nef/.NEF files.
+        /// Input folder scanned recursively for supported RAW files (case-insensitive), e.g.
+        /// `.dng`, `.nef`, `.cr2`, `.cr3`, `.arw`, `.raf`, `.orf`, `.rw2`, ...
         input: PathBuf,
 
         /// Output folder. It is created if it does not exist.
@@ -285,7 +287,8 @@ pub(crate) enum CommandKind {
 
     /// Render every resolvable XMP profile as a structured contact-sheet thumbnail.
     Sampler {
-        /// RAW file to use as the sampler source.
+        /// RAW file to use as the sampler source (supports common camera RAW formats
+        /// like `.dng`, `.nef`, `.cr2`, `.cr3`, `.arw`, `.raf`, `.orf`, `.rw2`).
         raw: PathBuf,
 
         /// Output contact sheet path (.jpg/.jpeg or .html).

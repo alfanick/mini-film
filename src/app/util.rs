@@ -8,6 +8,21 @@ use std::{
 use anyhow::{Context, Result};
 use rayon::ThreadPoolBuilder;
 
+pub(crate) const SUPPORTED_RAW_EXTENSIONS: &[&str] = &[
+    "arw", "cr2", "cr3", "crw", "dcr", "dng", "erf", "mrw", "nef", "nrw", "orf", "pef", "raf",
+    "raw", "rwl", "rw2", "rwz", "r3d", "sr2", "srf", "srw", "x3f",
+];
+
+pub(crate) fn is_supported_raw_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|s| s.to_str())
+        .is_some_and(|ext| {
+            SUPPORTED_RAW_EXTENSIONS
+                .iter()
+                .any(|supported| ext.eq_ignore_ascii_case(supported))
+        })
+}
+
 pub(crate) fn remove_temp_file(path: &Path) -> Result<()> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -47,4 +62,23 @@ pub(crate) fn default_hald_dir() -> PathBuf {
         .join(".cache")
         .join("mini-film")
         .join("hald")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn supported_raw_extension_matching_is_case_insensitive() {
+        assert!(is_supported_raw_file(Path::new("foo.ARW")));
+        assert!(is_supported_raw_file(Path::new("foo.Cr2")));
+        assert!(is_supported_raw_file(Path::new("foo.NEF")));
+        assert!(is_supported_raw_file(Path::new("foo.raf")));
+    }
+
+    #[test]
+    fn unsupported_extensions_are_rejected() {
+        assert!(!is_supported_raw_file(Path::new("foo.jpg")));
+        assert!(!is_supported_raw_file(Path::new("foo.txt")));
+    }
 }

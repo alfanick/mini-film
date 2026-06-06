@@ -21,7 +21,7 @@ use crate::app::progress::{
     ApplyProgress, StageEstimates, batch_progress_style, file_progress_style, format_duration,
     progress_length,
 };
-use crate::app::util::{half_cpu_thread_count, time_of_day_seed};
+use crate::app::util::{half_cpu_thread_count, is_supported_raw_file, time_of_day_seed};
 use crate::cli::{BatchOutputFormat, ExportOptions};
 
 pub(crate) struct BatchArgs {
@@ -62,7 +62,10 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
 
     let raws = collect_batch_inputs(&args.input)?;
     if raws.is_empty() {
-        bail!("no DNG/NEF files found under {}", args.input.display());
+        bail!(
+            "no supported RAW files found under {}",
+            args.input.display()
+        );
     }
 
     let temp_dir = Builder::new().prefix("mini-film-batch-").tempdir()?;
@@ -265,20 +268,12 @@ fn collect_batch_inputs(input: &Path) -> Result<Vec<PathBuf>> {
         if !entry.file_type().is_file() {
             continue;
         }
-        if is_batch_raw(entry.path()) {
+        if is_supported_raw_file(entry.path()) {
             raws.push(entry.path().to_path_buf());
         }
     }
     raws.sort();
     Ok(raws)
-}
-
-fn is_batch_raw(path: &Path) -> bool {
-    matches!(
-        path.extension().and_then(|s| s.to_str()),
-        Some(ext)
-            if ext.eq_ignore_ascii_case("dng") || ext.eq_ignore_ascii_case("nef")
-    )
 }
 
 fn resolve_batch_jobs(jobs: Option<usize>) -> Result<usize> {
@@ -336,11 +331,16 @@ mod tests {
 
     #[test]
     fn batch_raw_detection_is_case_insensitive_for_supported_raws() {
-        assert!(is_batch_raw(Path::new("a.dng")));
-        assert!(is_batch_raw(Path::new("a.DNG")));
-        assert!(is_batch_raw(Path::new("a.nef")));
-        assert!(is_batch_raw(Path::new("a.NEF")));
-        assert!(!is_batch_raw(Path::new("a.jpg")));
+        assert!(is_supported_raw_file(Path::new("a.dng")));
+        assert!(is_supported_raw_file(Path::new("a.DNG")));
+        assert!(is_supported_raw_file(Path::new("a.nef")));
+        assert!(is_supported_raw_file(Path::new("a.NEF")));
+        assert!(is_supported_raw_file(Path::new("a.cr2")));
+        assert!(is_supported_raw_file(Path::new("a.Cr3")));
+        assert!(is_supported_raw_file(Path::new("a.arw")));
+        assert!(is_supported_raw_file(Path::new("a.RAF")));
+        assert!(is_supported_raw_file(Path::new("a.orf")));
+        assert!(!is_supported_raw_file(Path::new("a.jpg")));
     }
 
     #[test]
