@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test-and-lint:
+    name: Test and quality checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-
+            ${{ runner.os }}-cargo-
+
+      - name: Run unit tests (with report)
+        id: unit-tests
+        run: |
+          set -o pipefail
+          cargo test --all-targets --no-fail-fast -- --nocapture | tee /tmp/unit-tests.log
+        continue-on-error: false
+
+      - name: Publish unit test report
+        if: always()
+        run: |
+          {
+            echo "## Unit test report";
+            echo;
+            echo "### Result summary";
+            if grep -q "test result:" /tmp/unit-tests.log; then
+              RESULT_LINE=$(grep -E "test result:" /tmp/unit-tests.log | tail -n 1)
+              echo "- \`$RESULT_LINE\`";
+              if echo "$RESULT_LINE" | grep -q "FAILED"; then
+                echo "- Status: ❌ failed";
+              else
+                echo "- Status: ✅ passed";
+              fi
+            else
+              echo "- No test summary was found in the test output.";
+              echo "- Status: ⚠️ unknown";
+            fi
+            echo;
+            if grep -q "FAILED" /tmp/unit-tests.log; then
+              echo "### Failed test cases";
+              echo "<details><summary>Click to expand failed tests</summary>";
+              echo "";
+              echo "```";
+              grep -n "FAILED" /tmp/unit-tests.log | head -n 120;
+              echo "```";
+              echo "</details>";
+            fi
+            echo;
+            echo "### Tail of test log";
+            echo "<details><summary>Click to expand tail</summary>";
+            echo "";
+            echo "```";
+            tail -n 120 /tmp/unit-tests.log;
+            echo "```";
+            echo "</details>";
+            echo;
+            echo "Full test log is also available as artifact: unit-test-log.";
+          } >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload unit test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-log
+          path: /tmp/unit-tests.log
+          if-no-files-found: ignore
+
+      - name: Build
+        run: cargo build --all-targets
+
+      - name: Run format check
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --all-targets -- -D warnings
