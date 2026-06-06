@@ -76,7 +76,8 @@ struct SheetLayout {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SheetOutputKind {
-    Raster,
+    Jpeg,
+    Tiff,
     Pdf,
 }
 
@@ -249,7 +250,7 @@ pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
 
 fn validate_sampler_args(args: &SamplerArgs) -> Result<()> {
     if sampler_output_kind(&args.output)?.is_none() {
-        bail!("sampler output must be .jpg, .jpeg, or .pdf");
+        bail!("sampler output must be .jpg, .jpeg, .tif, .tiff, or .pdf");
     }
     if !args.profiles_root.is_dir() {
         bail!(
@@ -268,7 +269,8 @@ fn validate_sampler_args(args: &SamplerArgs) -> Result<()> {
 
 fn sampler_output_kind(output: &Path) -> Result<Option<SheetOutputKind>> {
     Ok(match output_ext(output)?.as_str() {
-        "jpg" | "jpeg" => Some(SheetOutputKind::Raster),
+        "jpg" | "jpeg" => Some(SheetOutputKind::Jpeg),
+        "tif" | "tiff" => Some(SheetOutputKind::Tiff),
         "pdf" => Some(SheetOutputKind::Pdf),
         _ => None,
     })
@@ -470,13 +472,19 @@ fn run_structured_sheet(
         command.arg("-font").arg(font);
     }
     command.arg(&svg_path);
-    if output_kind == SheetOutputKind::Raster {
-        command
-            .arg("-quality")
-            .arg(jpg_quality.clamp(1, 100).to_string());
-    }
-    if output_kind == SheetOutputKind::Raster && progressive_jpeg {
-        command.arg("-interlace").arg("Line");
+    match output_kind {
+        SheetOutputKind::Jpeg => {
+            command
+                .arg("-quality")
+                .arg(jpg_quality.clamp(1, 100).to_string());
+            if progressive_jpeg {
+                command.arg("-interlace").arg("Line");
+            }
+        }
+        SheetOutputKind::Tiff => {
+            command.arg("-compress").arg("Zip");
+        }
+        SheetOutputKind::Pdf => {}
     }
     command.arg(output);
 
@@ -605,7 +613,7 @@ fn build_sheet_layout(
 ) -> SheetLayout {
     let mut thumb = thumbnail_long_edge.max(64);
     let columns = sampler_sheet_columns(trie_thumb_count(trie), columns);
-    if output_kind == SheetOutputKind::Pdf {
+    if output_kind != SheetOutputKind::Jpeg {
         return build_sheet_layout_with_thumb(trie, thumb, columns);
     }
     loop {
@@ -1107,7 +1115,7 @@ mod tests {
         thumb.image = PathBuf::from("/tmp/kodak.jpg");
         trie.insert(thumb);
 
-        let layout = build_sheet_layout(&trie, 128, 8, SheetOutputKind::Raster);
+        let layout = build_sheet_layout(&trie, 128, 8, SheetOutputKind::Jpeg);
         let svg = render_sheet_svg(&layout);
 
         assert!(svg.contains(">Kodak<"));
@@ -1131,7 +1139,7 @@ mod tests {
             trie.insert(sample_thumb(name, 1024, 683));
         }
 
-        let layout = build_sheet_layout(&trie, 256, 8, SheetOutputKind::Raster);
+        let layout = build_sheet_layout(&trie, 256, 8, SheetOutputKind::Jpeg);
         let svg = render_sheet_svg(&layout);
 
         assert!(svg.contains(">Fuji<"));
@@ -1157,7 +1165,7 @@ mod tests {
             trie.insert(sample_thumb(name, 1024, 683));
         }
 
-        let layout = build_sheet_layout(&trie, 256, 8, SheetOutputKind::Raster);
+        let layout = build_sheet_layout(&trie, 256, 8, SheetOutputKind::Jpeg);
         let svg = render_sheet_svg(&layout);
 
         assert!(svg.contains(">Ilford<"));
@@ -1173,7 +1181,7 @@ mod tests {
             trie.insert(sample_thumb(name, 1024, 683));
         }
 
-        let layout = build_sheet_layout(&trie, 256, 8, SheetOutputKind::Raster);
+        let layout = build_sheet_layout(&trie, 256, 8, SheetOutputKind::Jpeg);
         let svg = render_sheet_svg(&layout);
 
         assert!(svg.contains(">FP4<"));
@@ -1197,7 +1205,7 @@ mod tests {
             trie.insert(sample_thumb(name, 1024, 683));
         }
 
-        let layout = build_sheet_layout(&trie, 256, 8, SheetOutputKind::Raster);
+        let layout = build_sheet_layout(&trie, 256, 8, SheetOutputKind::Jpeg);
         let svg = render_sheet_svg(&layout);
 
         assert!(svg.contains(">Kodak Portra 100<"));
@@ -1226,7 +1234,7 @@ mod tests {
             }
         }
 
-        let layout = build_sheet_layout(&trie, 1024, 8, SheetOutputKind::Raster);
+        let layout = build_sheet_layout(&trie, 1024, 8, SheetOutputKind::Jpeg);
 
         assert_eq!(trie_thumb_count(&trie), 624);
         assert!(layout.width < 65_000);
@@ -1254,6 +1262,19 @@ mod tests {
     }
 
     #[test]
+    fn tiff_sampler_layout_preserves_requested_thumbnail_size() {
+        let mut trie = ProfileTrie::default();
+        for index in 0..64 {
+            trie.insert(sample_thumb(&format!("Kodak Portra {index}"), 1024, 683));
+        }
+
+        let layout = build_sheet_layout(&trie, 1024, 8, SheetOutputKind::Tiff);
+        let svg = render_sheet_svg(&layout);
+
+        assert!(svg.contains(r#"width="996" height="664""#));
+    }
+
+    #[test]
     fn pdf_sampler_can_render_four_requested_columns_without_shrinking_thumbnails() {
         let mut trie = ProfileTrie::default();
         for index in 0..16 {
@@ -1268,16 +1289,20 @@ mod tests {
     }
 
     #[test]
-    fn sampler_accepts_jpeg_and_pdf_outputs() {
+    fn sampler_accepts_jpeg_tiff_and_pdf_outputs() {
         assert_eq!(
             sampler_output_kind(Path::new("sheet.jpg")).unwrap(),
-            Some(SheetOutputKind::Raster)
+            Some(SheetOutputKind::Jpeg)
+        );
+        assert_eq!(
+            sampler_output_kind(Path::new("sheet.tiff")).unwrap(),
+            Some(SheetOutputKind::Tiff)
         );
         assert_eq!(
             sampler_output_kind(Path::new("sheet.pdf")).unwrap(),
             Some(SheetOutputKind::Pdf)
         );
-        assert_eq!(sampler_output_kind(Path::new("sheet.tiff")).unwrap(), None);
+        assert_eq!(sampler_output_kind(Path::new("sheet.png")).unwrap(), None);
     }
 
     #[test]

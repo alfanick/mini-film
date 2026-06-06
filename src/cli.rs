@@ -288,7 +288,7 @@ pub(crate) enum CommandKind {
         /// RAW file to use as the sampler source.
         raw: PathBuf,
 
-        /// Output contact sheet path (.jpg/.jpeg or .pdf).
+        /// Output contact sheet path (.jpg/.jpeg, .tif/.tiff, or .pdf).
         #[arg(short, long)]
         output: PathBuf,
 
