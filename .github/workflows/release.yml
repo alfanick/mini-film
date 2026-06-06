@@ -70,11 +70,7 @@ jobs:
               ))
               if [ -n "$old_version" ] && [ -n "$new_version" ] && [ "$old_version" != "$new_version" ]; then
                 release_tag="v${new_version}"
-                if git ls-remote --exit-code --tags origin "refs/tags/${release_tag}" >/dev/null 2>&1; then
-                  should_release="false"
-                else
-                  should_release="true"
-                fi
+                should_release="true"
               fi
             fi
           fi
@@ -167,7 +163,10 @@ jobs:
   publish-release:
     name: Publish release
     runs-on: self-hosted
-    needs: build-binaries
+    needs:
+      - resolve-release
+      - build-binaries
+    if: needs.resolve-release.outputs.should_release == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
