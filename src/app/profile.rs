@@ -28,14 +28,14 @@ pub(crate) enum ProfileInfo {
     },
     Emulation {
         path: PathBuf,
-        recipe: XmpFilmRecipe,
+        recipe: Box<XmpFilmRecipe>,
         source: PathBuf,
-        converted: ConvertedProfile,
+        converted: Box<ConvertedProfile>,
         hald_path: PathBuf,
     },
     RgbTableProfile {
         path: PathBuf,
-        converted: ConvertedProfile,
+        converted: Box<ConvertedProfile>,
         hald_path: PathBuf,
     },
     RawTherapeePp3 {
@@ -289,7 +289,7 @@ fn inspect_xmp_profile_path(
         )?;
         return Ok(ProfileInfo::RgbTableProfile {
             path: path.to_path_buf(),
-            converted,
+            converted: Box::new(converted),
             hald_path,
         });
     }
@@ -308,9 +308,9 @@ fn inspect_xmp_profile_path(
     )?;
     Ok(ProfileInfo::Emulation {
         path: path.to_path_buf(),
-        recipe,
+        recipe: Box::new(recipe),
         source,
-        converted,
+        converted: Box::new(converted),
         hald_path,
     })
 }
@@ -419,15 +419,15 @@ fn resolve_recipe_profile(
     preset_path: &Path,
 ) -> Result<PathBuf> {
     for root in rgb_profile_roots(profiles_root, preset_path) {
-        if let Some(uuid) = &recipe.look_uuid {
-            if let Some(path) = find_profile_by_uuid(&root, uuid)? {
-                return Ok(path);
-            }
+        if let Some(uuid) = &recipe.look_uuid
+            && let Some(path) = find_profile_by_uuid(&root, uuid)?
+        {
+            return Ok(path);
         }
-        if let Some(name) = &recipe.look_name {
-            if let Some(path) = find_rgb_xmp_by_name(&root, name)? {
-                return Ok(path);
-            }
+        if let Some(name) = &recipe.look_name
+            && let Some(path) = find_rgb_xmp_by_name(&root, name)?
+        {
+            return Ok(path);
         }
     }
 

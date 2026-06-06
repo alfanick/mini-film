@@ -76,19 +76,19 @@ pub fn parse_rgb_table(bytes: &[u8]) -> Result<RgbTable> {
     let mut samples = Vec::with_capacity(sample_count);
 
     if dimensions == 1 {
-        for i in 0..divisions as usize {
-            let rr = r.u16()?.wrapping_add(nop[i]);
-            let gg = r.u16()?.wrapping_add(nop[i]);
-            let bb = r.u16()?.wrapping_add(nop[i]);
+        for &ramp in nop.iter().take(divisions as usize) {
+            let rr = r.u16()?.wrapping_add(ramp);
+            let gg = r.u16()?.wrapping_add(ramp);
+            let bb = r.u16()?.wrapping_add(ramp);
             samples.push([rr, gg, bb]);
         }
     } else {
-        for ri in 0..divisions as usize {
-            for gi in 0..divisions as usize {
-                for bi in 0..divisions as usize {
-                    let rr = r.u16()?.wrapping_add(nop[ri]);
-                    let gg = r.u16()?.wrapping_add(nop[gi]);
-                    let bb = r.u16()?.wrapping_add(nop[bi]);
+        for &ri in nop.iter().take(divisions as usize) {
+            for &gi in nop.iter().take(divisions as usize) {
+                for &bi in nop.iter().take(divisions as usize) {
+                    let rr = r.u16()?.wrapping_add(ri);
+                    let gg = r.u16()?.wrapping_add(gi);
+                    let bb = r.u16()?.wrapping_add(bi);
                     samples.push([rr, gg, bb]);
                 }
             }
@@ -126,7 +126,7 @@ pub fn parse_rgb_table(bytes: &[u8]) -> Result<RgbTable> {
 /// trailing groups emit one to three bytes, and whitespace or unknown characters
 /// are ignored because XMP may wrap or format the encoded text.
 fn adobe_base85_decode(encoded: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity((encoded.len() + 4) / 5 * 4);
+    let mut out = Vec::with_capacity(encoded.len().div_ceil(5) * 4);
     let mut phase = 0u32;
     let mut value = 0u32;
 
@@ -233,15 +233,15 @@ pub fn sample_rgb_table(table: &RgbTable, r: u32, g: u32, b: u32, axis: u32) -> 
     let (b0, b1, bt) = split_pos(bf, d);
 
     let mut out = [0u16; 3];
-    for c in 0..3 {
-        let c000 = table.samples[idx3(d, r0, g0, b0)][c] as f64;
-        let c100 = table.samples[idx3(d, r1, g0, b0)][c] as f64;
-        let c010 = table.samples[idx3(d, r0, g1, b0)][c] as f64;
-        let c110 = table.samples[idx3(d, r1, g1, b0)][c] as f64;
-        let c001 = table.samples[idx3(d, r0, g0, b1)][c] as f64;
-        let c101 = table.samples[idx3(d, r1, g0, b1)][c] as f64;
-        let c011 = table.samples[idx3(d, r0, g1, b1)][c] as f64;
-        let c111 = table.samples[idx3(d, r1, g1, b1)][c] as f64;
+    for (channel, value) in out.iter_mut().enumerate() {
+        let c000 = table.samples[idx3(d, r0, g0, b0)][channel] as f64;
+        let c100 = table.samples[idx3(d, r1, g0, b0)][channel] as f64;
+        let c010 = table.samples[idx3(d, r0, g1, b0)][channel] as f64;
+        let c110 = table.samples[idx3(d, r1, g1, b0)][channel] as f64;
+        let c001 = table.samples[idx3(d, r0, g0, b1)][channel] as f64;
+        let c101 = table.samples[idx3(d, r1, g0, b1)][channel] as f64;
+        let c011 = table.samples[idx3(d, r0, g1, b1)][channel] as f64;
+        let c111 = table.samples[idx3(d, r1, g1, b1)][channel] as f64;
 
         let c00 = lerp(c000, c100, rt);
         let c10 = lerp(c010, c110, rt);
@@ -249,7 +249,7 @@ pub fn sample_rgb_table(table: &RgbTable, r: u32, g: u32, b: u32, axis: u32) -> 
         let c11 = lerp(c011, c111, rt);
         let c0 = lerp(c00, c10, gt);
         let c1 = lerp(c01, c11, gt);
-        out[c] = lerp(c0, c1, bt).round().clamp(0.0, 65535.0) as u16;
+        *value = lerp(c0, c1, bt).round().clamp(0.0, 65535.0) as u16;
     }
 
     out

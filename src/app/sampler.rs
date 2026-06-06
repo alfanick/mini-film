@@ -106,6 +106,31 @@ struct ThumbnailCache {
     raw_sha1: String,
 }
 
+struct ProfileRenderContext<'a> {
+    args: &'a SamplerArgs,
+    temp_root: &'a Path,
+    emulation_root: &'a Path,
+    index: usize,
+    base_seed: u64,
+    export: &'a ExportOptions,
+    cache: Option<&'a ThumbnailCache>,
+    progress: &'a SamplerProgress,
+}
+
+struct StructuredSheetContext<'a> {
+    convert: &'a Path,
+    output: &'a Path,
+    thumbs: &'a [SampleThumb],
+    profiles_root: &'a Path,
+    hald_dir: &'a Path,
+    hald_level: u32,
+    thumbnail_long_edge: u32,
+    columns: u32,
+    jpg_quality: u8,
+    jpeg_subsampling: JpegSubsampling,
+    progressive_jpeg: bool,
+}
+
 /// Render a structured contact sheet showing every resolvable XMP profile.
 ///
 /// Each XMP is resolved to a temporary Hald plus generated RawTherapee `.pp3`
@@ -179,23 +204,23 @@ pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
                     profile_progress.set_length(progress_length());
                     profile_progress.set_position(0);
                     profile_progress.set_message("queued");
-                    let profile_started = Instant::now();
-                    let progress = SamplerProgress {
-                        profile: profile_progress.clone(),
-                        started: profile_started,
-                        estimates: Arc::clone(&estimates),
-                    };
-                    let result = render_profile_thumbnail(
-                        &args,
-                        temp_dir.path(),
-                        profile,
-                        &emulation_root,
-                        index,
-                        base_seed,
-                        &export,
-                        cache.as_deref(),
-                        &progress,
-                    );
+                let profile_started = Instant::now();
+                let progress = SamplerProgress {
+                    profile: profile_progress.clone(),
+                    started: profile_started,
+                    estimates: Arc::clone(&estimates),
+                };
+                let render_context = ProfileRenderContext {
+                    args: &args,
+                    temp_root: temp_dir.path(),
+                    emulation_root: &emulation_root,
+                    index,
+                    base_seed,
+                    export: &export,
+                    cache: cache.as_deref(),
+                    progress: &progress,
+                };
+                let result = render_profile_thumbnail(&render_context, profile);
                     if result.is_err() {
                         profile_progress.set_message(format!(
                             "failed after {}",
@@ -252,19 +277,20 @@ pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
         "sheet",
         estimate_sheet_duration(thumbs.len()),
     );
-    run_structured_sheet(
-        &args.convert,
-        &args.output,
-        &thumbs,
-        &args.profiles_root,
-        &args.hald_dir,
-        args.hald_level,
-        args.thumbnail_long_edge,
-        args.columns,
-        args.jpg_quality,
-        args.jpeg_subsampling,
-        args.progressive_jpeg,
-    )?;
+    let sheet_context = StructuredSheetContext {
+        convert: &args.convert,
+        output: &args.output,
+        thumbs: &thumbs,
+        profiles_root: &args.profiles_root,
+        hald_dir: &args.hald_dir,
+        hald_level: args.hald_level,
+        thumbnail_long_edge: args.thumbnail_long_edge,
+        columns: args.columns,
+        jpg_quality: args.jpg_quality,
+        jpeg_subsampling: args.jpeg_subsampling,
+        progressive_jpeg: args.progressive_jpeg,
+    };
+    run_structured_sheet(&sheet_context)?;
     sheet_stage.finish();
     sheet_progress.finish_and_clear();
     sampler.finish_with_message(format!(
@@ -435,34 +461,29 @@ fn emulation_root(root: &Path) -> PathBuf {
 }
 
 fn render_profile_thumbnail(
-    args: &SamplerArgs,
-    temp_root: &Path,
+    context: &ProfileRenderContext<'_>,
     profile: &Path,
-    emulation_root: &Path,
-    index: usize,
-    base_seed: u64,
-    export: &ExportOptions,
-    cache: Option<&ThumbnailCache>,
-    progress: &SamplerProgress,
 ) -> Result<SampleThumb> {
-    if let Some(cache) = cache {
-        let cached = cache.path_for(profile, args)?;
+    if let Some(cache) = context.cache {
+        let cached = cache.path_for(profile, context.args)?;
         if cached.is_file() {
-            sampler_step(progress, 5, "cache hit");
-            return sample_thumb_from_image(cached, profile, emulation_root);
+            sampler_step(context.progress, 5, "cache hit");
+            return sample_thumb_from_image(cached, profile, context.emulation_root);
         }
     }
 
-    sampler_step(progress, 1, "resolve");
-    let profile_temp = temp_root.join(format!("profile-{index}"));
+    sampler_step(context.progress, 1, "resolve");
+    let profile_temp = context
+        .temp_root
+        .join(format!("profile-{}", context.index));
     fs::create_dir_all(&profile_temp)
         .with_context(|| format!("creating {}", profile_temp.display()))?;
 
     let resolved = profile_from_xmp_quiet(
         profile,
-        args.hald_level,
-        &args.profiles_root,
-        &args.hald_dir,
+        context.args.hald_level,
+        &context.args.profiles_root,
+        &context.args.hald_dir,
         &profile_temp,
     )
     .with_context(|| format!("resolving profile {}", profile.display()))?;
@@ -470,12 +491,12 @@ fn render_profile_thumbnail(
     let mut rawtherapee_profiles = rawtherapee_profiles_with_hald(&resolved, &profile_temp)?;
     rawtherapee_profiles.push(write_rawtherapee_resize_profile(
         &profile_temp.join("resize.pp3"),
-        args.thumbnail_long_edge,
+        context.args.thumbnail_long_edge,
     )?);
     let apply_progress = ApplyProgress {
-        file: &progress.profile,
-        started: progress.started,
-        estimates: Some(Arc::clone(&progress.estimates)),
+        file: &context.progress.profile,
+        started: context.progress.started,
+        estimates: Some(Arc::clone(&context.progress.estimates)),
     };
     let raw_stage = progress_stage_adaptive(
         Some(&apply_progress),
@@ -483,41 +504,41 @@ fn render_profile_thumbnail(
         3,
         "sampler-rawtherapee",
         "rawtherapee",
-        estimate_sampler_raw_duration(args.thumbnail_long_edge),
+        estimate_sampler_raw_duration(context.args.thumbnail_long_edge),
     );
     run_raw_develop_jpeg(
-        &args.rawtherapee,
+        &context.args.rawtherapee,
         &rawtherapee_profiles,
-        &args.raw,
+        &context.args.raw,
         &developed,
-        args.jpg_quality,
-        args.jpeg_subsampling,
+        context.args.jpg_quality,
+        context.args.jpeg_subsampling,
         true,
     )?;
     raw_stage.finish();
 
-    let source = if !args.no_grain && resolved.grain.is_enabled() {
+    let source = if !context.args.no_grain && resolved.grain.is_enabled() {
         let grain_stage = progress_stage_adaptive(
             Some(&apply_progress),
             3,
             4,
             "sampler-grain",
             "grain",
-            estimate_sampler_grain_duration(args.thumbnail_long_edge),
+            estimate_sampler_grain_duration(context.args.thumbnail_long_edge),
         );
         let grained = profile_temp.join("grained-8.ppm");
-        let grain = scale_sampler_grain(resolved.grain, args.thumbnail_long_edge);
+        let grain = scale_sampler_grain(resolved.grain, context.args.thumbnail_long_edge);
         apply_grain_8bit(
             &developed,
             &grained,
             grain,
-            sample_seed(base_seed, index, profile),
+            sample_seed(context.base_seed, context.index, profile),
         )?;
         grain_stage.finish();
         remove_temp_file(&developed)?;
         grained
     } else {
-        sampler_step(progress, 3, "grain skipped");
+        sampler_step(context.progress, 3, "grain skipped");
         developed
     };
 
@@ -527,21 +548,21 @@ fn render_profile_thumbnail(
         5,
         "sampler-thumbnail",
         "thumbnail",
-        estimate_sampler_thumbnail_duration(args.thumbnail_long_edge),
+        estimate_sampler_thumbnail_duration(context.args.thumbnail_long_edge),
     );
     let thumb = profile_temp.join("thumb.jpg");
-    finalize_output(&args.convert, &source, &thumb, export)?;
+    finalize_output(&context.args.convert, &source, &thumb, context.export)?;
     thumbnail_stage.finish();
     remove_temp_file(&source)?;
-    let image = if let Some(cache) = cache {
-        let cached = cache.path_for(profile, args)?;
+    let image = if let Some(cache) = context.cache {
+        let cached = cache.path_for(profile, context.args)?;
         copy_thumbnail_to_cache(&thumb, &cached)?;
         cached
     } else {
         thumb
     };
-    sampler_step(progress, 5, "done");
-    sample_thumb_from_image(image, profile, emulation_root)
+    sampler_step(context.progress, 5, "done");
+    sample_thumb_from_image(image, profile, context.emulation_root)
 }
 
 fn copy_thumbnail_to_cache(source: &Path, destination: &Path) -> Result<()> {
@@ -563,42 +584,29 @@ fn copy_thumbnail_to_cache(source: &Path, destination: &Path) -> Result<()> {
 }
 
 fn run_structured_sheet(
-    convert: &Path,
-    output: &Path,
-    thumbs: &[SampleThumb],
-    profiles_root: &Path,
-    hald_dir: &Path,
-    hald_level: u32,
-    thumbnail_long_edge: u32,
-    columns: u32,
-    jpg_quality: u8,
-    jpeg_subsampling: JpegSubsampling,
-    progressive_jpeg: bool,
+    context: &StructuredSheetContext<'_>,
 ) -> Result<()> {
+    let convert = context.convert;
+    let output = context.output;
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
 
     let output_kind = sampler_output_kind(output)?.context("unsupported sampler output format")?;
     if output_kind == SheetOutputKind::Html {
-        return run_html_sheet(
-            convert,
-            output,
-            thumbs,
-            columns,
-            jpg_quality,
-            jpeg_subsampling,
-            hald_level,
-            profiles_root,
-            hald_dir,
-        );
+        return run_html_sheet(context);
     }
 
     let mut trie = ProfileTrie::default();
-    for thumb in thumbs {
+    for thumb in context.thumbs {
         trie.insert(thumb.clone_for_tree());
     }
-    let layout = build_sheet_layout(&trie, thumbnail_long_edge, columns, output_kind);
+    let layout = build_sheet_layout(
+        &trie,
+        context.thumbnail_long_edge,
+        context.columns,
+        output_kind,
+    );
     let svg = render_sheet_svg(&layout);
     let svg_path = output.with_extension("mini-film-sampler.svg");
     fs::write(&svg_path, svg).with_context(|| format!("writing {}", svg_path.display()))?;
@@ -610,8 +618,8 @@ fn run_structured_sheet(
         SheetOutputKind::Jpeg => {
             command
                 .arg("-quality")
-                .arg(jpg_quality.clamp(1, 100).to_string());
-            if progressive_jpeg {
+                .arg(context.jpg_quality.clamp(1, 100).to_string());
+            if context.progressive_jpeg {
                 command.arg("-interlace").arg("Line");
             }
         }
@@ -642,16 +650,10 @@ fn run_structured_sheet(
 }
 
 fn run_html_sheet(
-    convert: &Path,
-    output: &Path,
-    thumbs: &[SampleThumb],
-    columns: u32,
-    jpg_quality: u8,
-    jpeg_subsampling: JpegSubsampling,
-    hald_level: u32,
-    profiles_root: &Path,
-    hald_dir: &Path,
+    context: &StructuredSheetContext<'_>,
 ) -> Result<()> {
+    let thumbs = context.thumbs;
+    let output = context.output;
     let output_dir = output.parent().unwrap_or_else(|| Path::new("."));
     let thumbnail_dir = output_dir.join("thumbnails");
     let pp3_dir = output_dir.join("pp3");
@@ -669,11 +671,11 @@ fn run_html_sheet(
                 let file_name = html_thumbnail_file_name(index, thumb);
                 let destination = thumbnail_dir.join(&file_name);
                 write_cached_progressive_html_thumbnail(
-                    convert,
+                    context.convert,
                     &thumb.image,
                     &destination,
-                    jpg_quality,
-                    jpeg_subsampling,
+                    context.jpg_quality,
+                    context.jpeg_subsampling,
                 )?;
                 let mut exported = thumb.clone_for_tree();
                 exported.image = PathBuf::from("thumbnails").join(file_name);
@@ -686,7 +688,7 @@ fn run_html_sheet(
     let mut sidecar_names = BTreeMap::new();
     let mut sidecar_exports = Vec::with_capacity(html_thumbs.len());
     for (html_index, (_, thumb)) in html_thumbs.iter_mut().enumerate() {
-        let stem = unique_html_sidecar_stem(&mut sidecar_names, &thumb);
+        let stem = unique_html_sidecar_stem(&mut sidecar_names, thumb);
         let pp3_name = format!("{stem}.pp3");
         let pp3_output = pp3_dir.join(&pp3_name);
         sidecar_exports.push((html_index, thumb.profile.clone(), pp3_output));
@@ -698,9 +700,9 @@ fn run_html_sheet(
             .map(|(html_index, profile, pp3_output)| {
                 let hald = write_html_sampler_sidecars(
                     profile,
-                    hald_level,
-                    profiles_root,
-                    hald_dir,
+                    context.hald_level,
+                    context.profiles_root,
+                    context.hald_dir,
                     pp3_output,
                 )
                 .with_context(|| format!("exporting sampler sidecars for {}", profile.display()))?;
@@ -717,7 +719,7 @@ fn run_html_sheet(
     for (_, thumb) in html_thumbs {
         trie.insert(thumb);
     }
-    let html = render_sheet_html(&trie, columns)?;
+    let html = render_sheet_html(&trie, context.columns)?;
     fs::write(output, html).with_context(|| format!("writing {}", output.display()))?;
     Ok(())
 }
@@ -871,7 +873,7 @@ fn render_sheet_html(trie: &ProfileTrie, columns: u32) -> Result<String> {
     let templates = html_templates()?;
     let mut sections = String::new();
     for (part, child) in &trie.children {
-        sections.push_str(&render_html_node(&templates, child, &[part.clone()], 0)?);
+        sections.push_str(&render_html_node(&templates, child, std::slice::from_ref(part), 0)?);
     }
 
     templates
@@ -1042,7 +1044,7 @@ fn file_url(path: &Path) -> String {
     format!("file://{}", url_escape_path(&absolute, true))
 }
 
-fn relative_url(path: &PathBuf) -> String {
+fn relative_url(path: &Path) -> String {
     url_escape_path(path, true)
 }
 
@@ -1074,7 +1076,7 @@ fn render_html_grid(templates: &Handlebars<'_>, entries: &[SheetEntry<'_>]) -> R
                         "filename": entry.full_name,
                         "image": image,
                         "xmp_href": file_url(&entry.thumb.profile),
-                        "pp3_href": entry.thumb.pp3.as_ref().map(relative_url).unwrap_or_default(),
+                        "pp3_href": entry.thumb.pp3.as_ref().map(|path| relative_url(path)).unwrap_or_default(),
                         "hald_href": entry.thumb.hald.as_ref().map(|path| file_url(path)).unwrap_or_default(),
                     }),
                 )
@@ -1270,7 +1272,7 @@ fn build_sheet_layout_with_thumb(trie: &ProfileTrie, thumb: u32, columns: u32) -
     );
     ctx.y += 38;
     for (part, child) in &trie.children {
-        ctx.render_node(child, &[part.clone()], 0);
+        ctx.render_node(child, std::slice::from_ref(part), 0);
     }
     SheetLayout {
         body: ctx.body,
@@ -1383,7 +1385,7 @@ impl LayoutContext {
         let tile_height = label_height + image_box + padding;
         let columns = self.columns.max(1);
         for (index, entry) in entries.iter().enumerate() {
-            if index > 0 && index as u32 % columns == 0 {
+            if index > 0 && (index as u32).is_multiple_of(columns) {
                 self.y += tile_height + self.gap;
             }
             let col = index as u32 % columns;
@@ -1572,8 +1574,8 @@ fn variant_sort_key_from_parts(parts: &[String], fallback: &str) -> String {
             .map_or(99, variant_marker_rank)
             .min(999);
         let markers_key = non_grainy_markers.join(" ");
-        let grainy_position = if marker_parts.iter().any(|part| *part == "grainy") {
-            1u8
+    let grainy_position = if marker_parts.contains(&"grainy") {
+        1u8
         } else {
             0u8
         };
@@ -1636,10 +1638,11 @@ fn is_variant_marker(part: &str) -> bool {
 }
 
 fn natural_sort_part(part: &str) -> String {
-    if let Some(version) = part.strip_prefix('v').or_else(|| part.strip_prefix('V')) {
-        if let Ok(number) = version.parse::<u32>() {
-            return format!("v{number:06}");
-        }
+    if let Some(version) = part
+        .strip_prefix('v')
+        .or_else(|| part.strip_prefix('V')).and_then(|version| version.parse::<u32>().ok())
+    {
+        return format!("v{version:06}");
     }
     if let Ok(number) = part.parse::<u32>() {
         return format!("{number:06}");

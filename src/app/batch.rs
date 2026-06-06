@@ -112,17 +112,17 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
             .enumerate()
             .map(|(index, raw)| {
                 let file = acquire_worker_bar(&bar_pool);
-                let result = process_batch_file(
-                    &args,
-                    &resolved,
+                let context = ProcessBatchFileContext {
+                    args: &args,
+                    resolved: &resolved,
                     base_seed,
-                    temp_dir.path(),
-                    &batch,
-                    &file,
-                    Arc::clone(&estimates),
+                    temp_root: temp_dir.path(),
+                    batch: &batch,
+                    file: &file,
+                    estimates: Arc::clone(&estimates),
                     index,
-                    raw,
-                );
+                };
+                let result = process_batch_file(&context, raw);
                 release_worker_bar(&bar_pool, file);
                 result
             })
@@ -174,35 +174,34 @@ fn release_worker_bar(bar_pool: &Arc<Mutex<Vec<ProgressBar>>>, file: ProgressBar
         .push(file);
 }
 
-fn process_batch_file(
-    args: &BatchArgs,
-    resolved: &crate::app::profile::ResolvedProfile,
+struct ProcessBatchFileContext<'a> {
+    args: &'a BatchArgs,
+    resolved: &'a crate::app::profile::ResolvedProfile,
     base_seed: u64,
-    temp_root: &Path,
-    batch: &ProgressBar,
-    file: &ProgressBar,
+    temp_root: &'a Path,
+    batch: &'a ProgressBar,
+    file: &'a ProgressBar,
     estimates: Arc<StageEstimates>,
     index: usize,
+}
+
+fn process_batch_file(
+    context: &ProcessBatchFileContext<'_>,
     raw: &Path,
 ) -> Result<(), (PathBuf, anyhow::Error)> {
-    process_batch_file_inner(
-        args, resolved, base_seed, temp_root, batch, file, estimates, index, raw,
-    )
-    .map_err(|err| (raw.to_path_buf(), err))
+    process_batch_file_inner(context, raw).map_err(|err| (raw.to_path_buf(), err))
 }
 
 fn process_batch_file_inner(
-    args: &BatchArgs,
-    resolved: &crate::app::profile::ResolvedProfile,
-    base_seed: u64,
-    temp_root: &Path,
-    batch: &ProgressBar,
-    file: &ProgressBar,
-    estimates: Arc<StageEstimates>,
-    index: usize,
+    context: &ProcessBatchFileContext<'_>,
     raw: &Path,
 ) -> Result<()> {
-    let output = batch_output_path(&args.input, &args.output, args.output_format, raw)?;
+    let output = batch_output_path(
+        &context.args.input,
+        &context.args.output,
+        context.args.output_format,
+        raw,
+    )?;
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
@@ -212,40 +211,40 @@ fn process_batch_file_inner(
         .and_then(|s| s.to_str())
         .unwrap_or("<unknown>")
         .to_string();
-    batch.set_message(display_name.clone());
-    file.set_position(0);
-    file.set_message(format!("{display_name}: queued"));
+    context.batch.set_message(display_name.clone());
+    context.file.set_position(0);
+    context.file.set_message(format!("{display_name}: queued"));
 
     let file_start = Instant::now();
     let progress = ApplyProgress {
-        file,
+        file: context.file,
         started: file_start,
-        estimates: Some(estimates),
+        estimates: Some(Arc::clone(&context.estimates)),
     };
-    let file_temp = temp_root.join(format!("file-{index}"));
+    let file_temp = context.temp_root.join(format!("file-{}", context.index));
     fs::create_dir_all(&file_temp).with_context(|| format!("creating {}", file_temp.display()))?;
-    let seed = per_file_seed(base_seed, index as u64, raw);
+    let seed = per_file_seed(context.base_seed, context.index as u64, raw);
     let result = apply_resolved(
         ApplyJob {
             raw,
             output: &output,
-            rawtherapee: &args.rawtherapee,
-            convert: &args.convert,
+            rawtherapee: &context.args.rawtherapee,
+            convert: &context.args.convert,
             keep_intermediate: None,
-            no_grain: args.no_grain,
-            export: &args.export,
+            no_grain: context.args.no_grain,
+            export: &context.args.export,
             quiet: true,
         },
-        resolved,
+        context.resolved,
         seed,
         &file_temp,
         Some(&progress),
     );
 
-    batch.inc(1);
+    context.batch.inc(1);
     match result {
         Ok(()) => {
-            file.set_message(format!(
+            context.file.set_message(format!(
                 "{}: done in {}",
                 display_name,
                 format_duration(file_start.elapsed())
@@ -253,7 +252,7 @@ fn process_batch_file_inner(
             Ok(())
         }
         Err(err) => {
-            file.set_message(format!(
+            context.file.set_message(format!(
                 "{}: failed after {}",
                 display_name,
                 format_duration(file_start.elapsed())

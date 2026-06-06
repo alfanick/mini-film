@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::{fs::File, io::Read, path::Path};
 
 use anyhow::{Context, Result, anyhow};
-use quick_xml::{Reader, events::Event};
+use quick_xml::{Reader, events::Event, XmlVersion};
 
 use crate::model::{
     GrainSettings, ProfileAdjustments, SharpeningSettings, ToneCurves, XmpFilmRecipe, XmpRgbTable,
@@ -72,9 +72,7 @@ pub fn extract_film_recipe(path: &Path) -> Result<XmpFilmRecipe> {
                 for attr in e.attributes() {
                     let attr = attr?;
                     let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
-                    let value = attr
-                        .decode_and_unescape_value(reader.decoder())?
-                        .into_owned();
+                    let value = attr.normalized_value(XmlVersion::Implicit1_0)?.into_owned();
 
                     if key == "crs:RGBTable" {
                         rgb_table_id = Some(value.clone());
@@ -111,9 +109,7 @@ pub fn extract_film_recipe(path: &Path) -> Result<XmpFilmRecipe> {
                 for attr in e.attributes() {
                     let attr = attr?;
                     let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
-                    let value = attr
-                        .decode_and_unescape_value(reader.decoder())?
-                        .into_owned();
+                    let value = attr.normalized_value(XmlVersion::Implicit1_0)?.into_owned();
 
                     if key == "crs:RGBTable" {
                         rgb_table_id = Some(value.clone());
@@ -180,14 +176,14 @@ pub fn extract_film_recipe(path: &Path) -> Result<XmpFilmRecipe> {
         }
     }
 
-    if look_uuid.is_none() || look_name.is_none() {
-        if let Some(look_block) = extract_tag_block(&xml, "crs:Look") {
-            if look_uuid.is_none() {
-                look_uuid = extract_attr(look_block, "crs:UUID");
-            }
-            if look_name.is_none() {
-                look_name = extract_attr(look_block, "crs:Name");
-            }
+    if (look_uuid.is_none() || look_name.is_none())
+        && let Some(look_block) = extract_tag_block(&xml, "crs:Look")
+    {
+        if look_uuid.is_none() {
+            look_uuid = extract_attr(look_block, "crs:UUID");
+        }
+        if look_name.is_none() {
+            look_name = extract_attr(look_block, "crs:Name");
         }
     }
 
@@ -365,15 +361,11 @@ enum HslAttr {
 /// color suffix and returns both the destination array and the fixed hue-channel
 /// index used by `ProfileAdjustments`.
 fn hsl_attr(key: &str) -> Option<(HslAttr, usize)> {
-    let (prefix, suffix) = if let Some(suffix) = key.strip_prefix("HueAdjustment") {
-        (HslAttr::Hue, suffix)
-    } else if let Some(suffix) = key.strip_prefix("SaturationAdjustment") {
-        (HslAttr::Saturation, suffix)
-    } else if let Some(suffix) = key.strip_prefix("LuminanceAdjustment") {
-        (HslAttr::Luminance, suffix)
-    } else {
-        return None;
-    };
+    let (kind, suffix) = key
+        .strip_prefix("HueAdjustment")
+        .map(|suffix| (HslAttr::Hue, suffix))
+        .or_else(|| key.strip_prefix("SaturationAdjustment").map(|suffix| (HslAttr::Saturation, suffix)))
+        .or_else(|| key.strip_prefix("LuminanceAdjustment").map(|suffix| (HslAttr::Luminance, suffix)))?;
 
     let index = match suffix {
         "Red" => 0,
@@ -386,7 +378,8 @@ fn hsl_attr(key: &str) -> Option<(HslAttr, usize)> {
         "Magenta" => 7,
         _ => return None,
     };
-    Some((prefix, index))
+
+    Some((kind, index))
 }
 
 fn extract_tag_block<'a>(xml: &'a str, tag: &str) -> Option<&'a str> {
