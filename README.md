@@ -19,7 +19,11 @@ It can:
 
 ## Example
 
-Example sampler output: <https://sam.nakarmamana.ch/mini-film/sampler.jpg>
+Example interactive HTML sampler output:
+<https://sam.nakarmamana.ch/mini-film/sampler.html>
+
+Example JPEG sampler output:
+<https://sam.nakarmamana.ch/mini-film/sampler.jpg>
 
 This sampler was generated from my pictures using RNI All Films 5 Pro profiles:
 <https://reallyniceimages.com/products/rni-all-films-5-pro-for-adobe-lightroom.html>
