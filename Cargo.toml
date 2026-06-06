@@ -1,11 +1,20 @@
 [package]
 name = "mini-film"
-version = "1.6.2"
+version = "1.7.0"
 edition = "2024"
 license = "MIT"
 
 [features]
 github-update = ["self_update"]
+
+[profile.release]
+opt-level = 3
+debug = 0
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+overflow-checks = false
+strip = "symbols"
 
 [dependencies]
 anyhow = "1.0.102"
