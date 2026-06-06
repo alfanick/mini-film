@@ -99,6 +99,9 @@ h1 {
   overflow: hidden;
 }
 .filename {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
   min-height: 2.3em;
   margin: 0 0 14px;
   color: var(--muted);
@@ -106,6 +109,22 @@ h1 {
   line-height: 1.15;
   overflow-wrap: anywhere;
   overflow: hidden;
+}
+.sidecars a:hover {
+  text-decoration: underline;
+}
+.sidecars {
+  display: flex;
+  gap: 12px;
+  flex: 0 0 auto;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.15;
+}
+.sidecars a {
+  color: inherit;
+  text-decoration: none;
 }
 .tile img {
   display: block;

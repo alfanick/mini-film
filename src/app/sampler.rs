@@ -62,6 +62,8 @@ pub(crate) struct SamplerArgs {
 
 struct SampleThumb {
     image: PathBuf,
+    profile: PathBuf,
+    pp3: Option<PathBuf>,
     name: String,
     filename: String,
     parts: Vec<String>,
@@ -257,6 +259,9 @@ pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
         &args.convert,
         &args.output,
         &thumbs,
+        &args.profiles_root,
+        &args.hald_dir,
+        args.hald_level,
         args.thumbnail_long_edge,
         args.columns,
         args.jpg_quality,
@@ -354,6 +359,8 @@ fn sample_thumb_from_image(
     let parts = profile_name_parts(&name);
     Ok(SampleThumb {
         image,
+        profile: profile.to_path_buf(),
+        pp3: None,
         name,
         filename: relative,
         parts,
@@ -560,6 +567,9 @@ fn run_structured_sheet(
     convert: &Path,
     output: &Path,
     thumbs: &[SampleThumb],
+    profiles_root: &Path,
+    hald_dir: &Path,
+    hald_level: u32,
     thumbnail_long_edge: u32,
     columns: u32,
     jpg_quality: u8,
@@ -579,6 +589,9 @@ fn run_structured_sheet(
             columns,
             jpg_quality,
             jpeg_subsampling,
+            hald_level,
+            profiles_root,
+            hald_dir,
         );
     }
 
@@ -639,15 +652,20 @@ fn run_html_sheet(
     columns: u32,
     jpg_quality: u8,
     jpeg_subsampling: JpegSubsampling,
+    hald_level: u32,
+    profiles_root: &Path,
+    hald_dir: &Path,
 ) -> Result<()> {
     let output_dir = output.parent().unwrap_or_else(|| Path::new("."));
     let thumbnail_dir = output_dir.join("thumbnails");
+    let pp3_dir = output_dir.join("pp3");
     fs::create_dir_all(&thumbnail_dir)
         .with_context(|| format!("creating {}", thumbnail_dir.display()))?;
+    fs::create_dir_all(&pp3_dir).with_context(|| format!("creating {}", pp3_dir.display()))?;
 
     let jobs = half_cpu_thread_count();
     let pool = rayon::ThreadPoolBuilder::new().num_threads(jobs).build()?;
-    let mut html_thumbs: Vec<_> = pool.install(|| {
+    let mut html_thumbs: Vec<(usize, SampleThumb)> = pool.install(|| {
         thumbs
             .par_iter()
             .enumerate()
@@ -669,6 +687,23 @@ fn run_html_sheet(
     })?;
     html_thumbs.sort_by_key(|(index, _)| *index);
 
+    let mut pp3_names = BTreeMap::new();
+    let mut pp3_exports = Vec::with_capacity(html_thumbs.len());
+    for (_, thumb) in &mut html_thumbs {
+        let pp3_name = unique_html_pp3_file_name(&mut pp3_names, &thumb);
+        let pp3_output = pp3_dir.join(&pp3_name);
+        pp3_exports.push((thumb.profile.clone(), pp3_output));
+        thumb.pp3 = Some(PathBuf::from("pp3").join(pp3_name));
+    }
+    pool.install(|| {
+        pp3_exports
+            .par_iter()
+            .try_for_each(|(profile, pp3_output)| {
+                write_html_sampler_pp3(profile, hald_level, profiles_root, hald_dir, pp3_output)
+                    .with_context(|| format!("exporting PP3 sidecar for {}", profile.display()))
+            })
+    })?;
+
     let mut trie = ProfileTrie::default();
     for (_, thumb) in html_thumbs {
         trie.insert(thumb);
@@ -676,6 +711,56 @@ fn run_html_sheet(
     let html = render_sheet_html(&trie, columns)?;
     fs::write(output, html).with_context(|| format!("writing {}", output.display()))?;
     Ok(())
+}
+
+fn write_html_sampler_pp3(
+    profile: &Path,
+    hald_level: u32,
+    profiles_root: &Path,
+    hald_dir: &Path,
+    output: &Path,
+) -> Result<()> {
+    let temp_dir = Builder::new().prefix("mini-film-sampler-pp3-").tempdir()?;
+    let resolved = profile_from_xmp_quiet(
+        profile,
+        hald_level,
+        profiles_root,
+        hald_dir,
+        temp_dir.path(),
+    )?;
+    let rawtherapee_profiles = rawtherapee_profiles_with_hald(&resolved, temp_dir.path())?;
+    let mut text = String::new();
+    for profile in rawtherapee_profiles {
+        text.push_str(
+            &fs::read_to_string(&profile)
+                .with_context(|| format!("reading generated PP3 {}", profile.display()))?,
+        );
+        if !text.ends_with('\n') {
+            text.push('\n');
+        }
+    }
+    fs::write(output, text).with_context(|| format!("writing {}", output.display()))
+}
+
+fn unique_html_pp3_file_name(names: &mut BTreeMap<String, usize>, thumb: &SampleThumb) -> String {
+    let base = html_pp3_file_stem(thumb);
+    let count = names.entry(base.clone()).or_insert(0);
+    let name = if *count == 0 {
+        format!("{base}.pp3")
+    } else {
+        format!("{base}-{}.pp3", *count + 1)
+    };
+    *count += 1;
+    name
+}
+
+fn html_pp3_file_stem(thumb: &SampleThumb) -> String {
+    let stem = sanitize_filename::sanitize(profile_display_name_from_relative(&thumb.filename));
+    if stem.is_empty() {
+        "profile".to_string()
+    } else {
+        stem
+    }
 }
 
 fn write_cached_progressive_html_thumbnail(
@@ -927,6 +1012,38 @@ fn html_heading_tag(depth: usize) -> &'static str {
     }
 }
 
+fn file_url(path: &Path) -> String {
+    let absolute = path.canonicalize().unwrap_or_else(|_| {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(path)
+        }
+    });
+    format!("file://{}", url_escape_path(&absolute, true))
+}
+
+fn relative_url(path: &PathBuf) -> String {
+    url_escape_path(path, true)
+}
+
+fn url_escape_path(path: &Path, keep_slashes: bool) -> String {
+    let mut out = String::new();
+    for byte in path.to_string_lossy().bytes() {
+        let keep = byte.is_ascii_alphanumeric()
+            || matches!(byte, b'-' | b'_' | b'.' | b'~')
+            || (keep_slashes && byte == b'/');
+        if keep {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
 fn render_html_grid(templates: &Handlebars<'_>, entries: &[SheetEntry<'_>]) -> Result<String> {
     let mut tiles = String::new();
     for entry in entries {
@@ -939,6 +1056,8 @@ fn render_html_grid(templates: &Handlebars<'_>, entries: &[SheetEntry<'_>]) -> R
                         "label": entry.label,
                         "filename": entry.full_name,
                         "image": image,
+                        "xmp_href": file_url(&entry.thumb.profile),
+                        "pp3_href": entry.thumb.pp3.as_ref().map(relative_url).unwrap_or_default(),
                     }),
                 )
                 .context("rendering HTML sampler tile")?,
@@ -1040,6 +1159,8 @@ impl SampleThumb {
     fn clone_for_tree(&self) -> Self {
         Self {
             image: self.image.clone(),
+            profile: self.profile.clone(),
+            pp3: self.pp3.clone(),
             name: self.name.clone(),
             filename: self.filename.clone(),
             parts: self.parts.clone(),
@@ -1354,10 +1475,18 @@ fn child_variant_label(prefix: &[String], part: &str) -> String {
 fn sheet_entry(label: String, thumb: &SampleThumb) -> SheetEntry<'_> {
     SheetEntry {
         sort_key: variant_sort_key(&label),
-        full_name: thumb.filename.clone(),
+        full_name: profile_filename_without_xmp(&thumb.filename),
         label,
         thumb,
     }
+}
+
+fn profile_filename_without_xmp(filename: &str) -> String {
+    filename
+        .strip_suffix(".xmp")
+        .or_else(|| filename.strip_suffix(".XMP"))
+        .unwrap_or(filename)
+        .to_string()
 }
 
 fn variant_sort_key(label: &str) -> String {
@@ -1570,6 +1699,8 @@ mod tests {
     fn sample_thumb(name: &str, width: u32, height: u32) -> SampleThumb {
         SampleThumb {
             image: PathBuf::from(format!("/tmp/{name}.jpg")),
+            profile: PathBuf::from(format!("/tmp/{name}.xmp")),
+            pp3: None,
             name: name.to_string(),
             filename: format!("{name}.xmp"),
             parts: profile_name_parts(name),
@@ -1634,7 +1765,7 @@ mod tests {
         assert!(svg.contains(">Kodak<"));
         assert!(svg.contains(">Kodak Portra<"));
         assert!(svg.contains(">400 Grainy<"));
-        assert!(svg.contains(">Kodak Portra 400 Grainy.xmp<"));
+        assert!(svg.contains(">Kodak Portra 400 Grainy<"));
         assert!(svg.contains("/tmp/kodak.jpg"));
         assert!(svg.contains(r#"width="116" height="77""#));
         assert!(svg.contains("font-family"));
@@ -1659,16 +1790,15 @@ mod tests {
         assert!(svg.contains(">Fuji Superia<"));
         assert!(svg.contains(">Fuji Superia 200 v2<"));
         assert!(svg.contains(">v2<"));
-        assert!(svg.contains(">Fuji Superia 200 v2.xmp<"));
+        assert!(svg.contains(">Fuji Superia 200 v2<"));
         assert!(svg.contains(">v2 grainy<"));
-        assert!(svg.contains(">Fuji Superia 200 v2 grainy.xmp<"));
+        assert!(svg.contains(">Fuji Superia 200 v2 grainy<"));
         assert!(svg.contains(">Fuji Superia 200 v3<"));
         assert!(svg.contains(">v3<"));
         assert!(svg.contains(">v3 grainy<"));
         assert!(svg.find(">v2<") < svg.find(">v2 grainy<"));
         assert!(svg.find(">Fuji Superia 200 v2<") < svg.find(">Fuji Superia 200 v3<"));
         assert!(svg.find(">v3<") < svg.find(">v3 grainy<"));
-        assert!(!svg.contains(">Fuji Superia 200 v2 grainy<"));
     }
 
     #[test]
@@ -1827,6 +1957,7 @@ mod tests {
         let mut trie = ProfileTrie::default();
         let mut thumb = sample_thumb("Kodak Portra 400 Grainy", 1024, 683);
         thumb.image = PathBuf::from("thumbnails/kodak.jpg");
+        thumb.pp3 = Some(PathBuf::from("pp3/Kodak Portra 400 Grainy.pp3"));
         trie.insert(thumb);
 
         let html = render_sheet_html(&trie, 4).unwrap();
@@ -1843,12 +1974,20 @@ mod tests {
         assert!(html.contains(r#"<h2 class="branch-title"><button class="branch-toggle" type="button" aria-expanded="true">Kodak</button></h2>"#));
         assert!(html.contains(r#"<h3 class="branch-title"><button class="branch-toggle" type="button" aria-expanded="true">Kodak Portra</button></h3>"#));
         assert!(html.contains(">400 Grainy<"));
+        assert!(html.contains("<span>Kodak Portra 400 Grainy</span>"));
+        assert!(!html.contains(">Kodak Portra 400 Grainy.xmp<"));
         assert!(html.contains("class=\"branch-toggle\""));
         assert!(html.contains("class=\"branch-body\""));
         assert!(html.contains("data-branch-key=\"Kodak/Portra\""));
         assert!(html.contains("mini-film-collapsed-branches"));
         assert!(html.contains("localStorage.setItem"));
         assert!(html.contains("src=\"thumbnails/kodak.jpg\""));
+        assert!(html.contains("href=\"file:///tmp/Kodak%20Portra%20400%20Grainy.xmp\""));
+        assert!(html.contains("href=\"pp3/Kodak%20Portra%20400%20Grainy.pp3\""));
+        assert!(html.contains(">XMP</a>"));
+        assert!(html.contains(">PP3</a>"));
+        assert!(html.contains("href=\"file:///tmp/Kodak%20Portra%20400%20Grainy.xmp\" download"));
+        assert!(html.contains("href=\"pp3/Kodak%20Portra%20400%20Grainy.pp3\" download"));
         assert!(html.contains("class=\"thumb-button\""));
         assert!(html.contains("id=\"overlay\""));
         assert!(html.contains("max-width: calc(100vw - 96px)"));
@@ -1868,6 +2007,50 @@ mod tests {
         assert_eq!(html_heading_tag(3), "h5");
         assert_eq!(html_heading_tag(4), "h6");
         assert_eq!(html_heading_tag(8), "h6");
+    }
+
+    #[test]
+    fn html_pp3_names_strip_xmp_extension_and_disambiguate_duplicates() {
+        let first = sample_thumb("Ilford FP4", 1024, 683);
+        let second = sample_thumb("Ilford FP4", 1024, 683);
+        let mut names = BTreeMap::new();
+
+        assert_eq!(
+            unique_html_pp3_file_name(&mut names, &first),
+            "Ilford FP4.pp3"
+        );
+        assert_eq!(
+            unique_html_pp3_file_name(&mut names, &second),
+            "Ilford FP4-2.pp3"
+        );
+    }
+
+    #[test]
+    fn profile_filenames_strip_only_xmp_extension_for_display() {
+        assert_eq!(
+            profile_filename_without_xmp("RNI/Kodak Portra 400.xmp"),
+            "RNI/Kodak Portra 400"
+        );
+        assert_eq!(
+            profile_filename_without_xmp("RNI/Kodak Portra 400.XMP"),
+            "RNI/Kodak Portra 400"
+        );
+        assert_eq!(
+            profile_filename_without_xmp("RNI/Kodak Portra 400"),
+            "RNI/Kodak Portra 400"
+        );
+    }
+
+    #[test]
+    fn html_links_escape_spaces_for_file_and_relative_urls() {
+        assert_eq!(
+            file_url(Path::new("/tmp/RNI Films/Ilford FP4.xmp")),
+            "file:///tmp/RNI%20Films/Ilford%20FP4.xmp"
+        );
+        assert_eq!(
+            relative_url(&PathBuf::from("pp3/Ilford FP4.pp3")),
+            "pp3/Ilford%20FP4.pp3"
+        );
     }
 
     #[test]
