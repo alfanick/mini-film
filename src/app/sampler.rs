@@ -2133,7 +2133,8 @@ mod tests {
         assert!(html.contains("max-width: calc(100vw - 96px)"));
         assert!(html.contains("max-height: calc(100vh - 128px)"));
         assert!(html.contains("https://github.com/alfanick/mini-film"));
-        assert!(html.contains("mini-film</a> 1.0.4"));
+        let version = env!("CARGO_PKG_VERSION");
+        assert!(html.contains(&format!("mini-film</a> {version}")));
         assert!(html.contains("Picture by Amadeus Juskowiak"));
         assert!(html.contains(
             "https://reallyniceimages.com/products/rni-all-films-5-pro-for-adobe-lightroom.html"
