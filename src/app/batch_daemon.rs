@@ -16,7 +16,6 @@ use notify::{
     event::{AccessKind, ModifyKind},
 };
 use tempfile::Builder;
-use walkdir::WalkDir;
 
 use crate::app::apply::{ApplyArgs, ApplyJob, apply_resolved, resolve_grain_override};
 use crate::app::export::validate_export_options;
@@ -179,9 +178,6 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
     let worker_bars = Arc::new(Mutex::new(worker_bars));
 
     let mut pending: HashMap<PathBuf, PendingFile> = HashMap::new();
-    for raw in collect_batch_inputs(&args.input)? {
-        queue_raw_file(&mut pending, raw, debounce);
-    }
 
     let mut queue: VecDeque<PendingTask> = VecDeque::new();
     let mut in_flight: Vec<InFlightTask> = Vec::new();
@@ -544,17 +540,6 @@ fn queue_raw_file(pending: &mut HashMap<PathBuf, PendingFile>, path: PathBuf, de
             },
         );
     }
-}
-
-fn collect_batch_inputs(input: &Path) -> Result<Vec<PathBuf>> {
-    let mut raws = Vec::new();
-    for entry in WalkDir::new(input).into_iter().filter_map(Result::ok) {
-        if entry.file_type().is_file() && is_supported_raw_file(entry.path()) {
-            raws.push(entry.path().to_path_buf());
-        }
-    }
-    raws.sort();
-    Ok(raws)
 }
 
 fn collect_due_paths(
