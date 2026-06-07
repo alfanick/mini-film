@@ -609,14 +609,14 @@ fn profile_name_distance_score(candidate: &str, wanted: &str) -> Option<u32> {
     let distance = levenshtein(candidate, wanted);
     let threshold = levenshtein_threshold(wanted.len());
 
-    if token_match.full && distance <= threshold.saturating_add(2) {
-        return Some(100 + distance as u32 + length_delta_u32(candidate.len(), wanted.len()));
+    if token_match.full {
+        return Some(length_delta_u32(candidate.len(), wanted.len()));
     }
     if token_match.partial && wanted.len() >= 4 && distance <= threshold.saturating_add(3) {
-        return Some(200 + distance as u32 + length_delta_u32(candidate.len(), wanted.len()));
+        return Some(120 + distance as u32 + length_delta_u32(candidate.len(), wanted.len()));
     }
     if contains_query && distance <= threshold.saturating_add(4) {
-        return Some(300 + distance as u32 + length_delta_u32(candidate.len(), wanted.len()));
+        return Some(240 + distance as u32 + length_delta_u32(candidate.len(), wanted.len()));
     }
     None
 }
@@ -780,12 +780,12 @@ fn profile_stem_for_output(path: &Path) -> String {
 }
 
 pub(crate) fn normalize_name(value: &str) -> String {
-    value
+    let with_spaces = value
         .to_ascii_lowercase()
-        .replace(['_', '-', '.'], " ")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+        .replace(['_', '-', '.', '/'], " ")
+        .replace('\\', " ")
+        .replace('+', " plus ");
+    with_spaces.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn emulation_selector_roots(root: &Path) -> Vec<PathBuf> {
@@ -889,6 +889,20 @@ mod tests {
             normalize_name(" Kodak_Portra-400.profile "),
             "kodak portra 400 profile"
         );
+    }
+
+    #[test]
+    fn normalize_name_keeps_plus_as_word() {
+        assert_eq!(normalize_name("Scala + grainy"), "scala plus grainy");
+        assert_eq!(normalize_name("Scala plus grainy"), "scala plus grainy");
+    }
+
+    #[test]
+    fn full_token_match_scores_scala_plus_grainy() {
+        let candidate = normalize_name("Agfa Scala 200 + grainy");
+        let wanted = normalize_name("scala + grainy");
+        assert!(wants_token_subset_match(&candidate, &wanted).full);
+        assert!(profile_name_distance_score(&candidate, &wanted).is_some());
     }
 
     #[test]
