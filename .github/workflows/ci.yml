@@ -16,7 +16,7 @@ jobs:
     name: Test and quality checks
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@v1
@@ -28,7 +28,7 @@ jobs:
         run: ./.githooks/check-cargo-versions.sh
 
       - name: Cache cargo registry and target
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -89,7 +89,7 @@ jobs:
 
       - name: Upload unit test log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v8
         with:
           name: unit-test-log
           path: /tmp/unit-tests.log
@@ -110,7 +110,7 @@ jobs:
     needs: test-and-lint
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.test-and-lint.result == 'success' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
