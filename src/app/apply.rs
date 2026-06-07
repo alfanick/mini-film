@@ -19,7 +19,7 @@ use crate::app::progress::{
     ApplyProgress, file_progress_style, progress_length, progress_stage_adaptive, progress_step,
 };
 use crate::app::raw::{run_raw_develop, run_raw_develop_jpeg};
-use crate::app::util::{remove_temp_file, time_of_day_seed};
+use crate::app::util::{remove_temp_file, sync_output_timestamps_from_exif, time_of_day_seed};
 use crate::cli::ExportOptions;
 
 pub(crate) struct ApplyArgs {
@@ -261,6 +261,7 @@ pub(crate) fn apply_resolved(
         remove_temp_file(&intermediate)?;
     }
 
+    sync_output_timestamps_from_exif(job.raw, job.output)?;
     progress_step(progress, 5, "done");
     Ok(())
 }
