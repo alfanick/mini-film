@@ -264,6 +264,7 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
                     &raw,
                     &profile,
                     profile_index as u64,
+                    &profile.stem,
                     &context,
                     &bar,
                     &raw_name,
@@ -499,6 +500,7 @@ fn process_single_profile(
     raw: &Path,
     profile: &DaemonProfile,
     profile_index: u64,
+    profile_stem: &str,
     context: &DaemonTaskContext,
     file: &ProgressBar,
     raw_name: &str,
@@ -542,6 +544,11 @@ fn process_single_profile(
             no_grain: args.no_grain,
             export: &args.export,
             quiet: true,
+            exif_comment: Some(format!(
+                "mini-film {} usage=daemon profile={}",
+                env!("CARGO_PKG_VERSION"),
+                profile_stem
+            )),
         },
         &profile.resolved,
         seed,

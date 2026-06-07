@@ -33,7 +33,9 @@ use crate::app::sampler_assets::{
     html_children_template, html_grid_template, html_page_template, html_script,
     html_section_template, html_styles, html_tile_template,
 };
-use crate::app::util::{half_cpu_thread_count, remove_temp_file, time_of_day_seed};
+use crate::app::util::{
+    half_cpu_thread_count, remove_temp_file, sync_output_metadata_from_raw, time_of_day_seed,
+};
 use crate::cli::{ExportOptions, JpegSubsampling};
 
 pub(crate) struct SamplerArgs {
@@ -548,6 +550,15 @@ fn render_profile_thumbnail(
     finalize_output(&context.args.convert, &source, &thumb, context.export)?;
     thumbnail_stage.finish();
     remove_temp_file(&source)?;
+    sync_output_metadata_from_raw(
+        &context.args.raw,
+        &thumb,
+        Some(&format!(
+            "mini-film {} usage=sampler profile={}",
+            env!("CARGO_PKG_VERSION"),
+            resolved.resolved_stem
+        )),
+    )?;
     let image = if let Some(cache) = context.cache {
         let cached = cache.path_for(profile, context.args)?;
         copy_thumbnail_to_cache(&thumb, &cached)?;

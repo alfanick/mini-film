@@ -1,6 +1,7 @@
 use std::fs::{self, File};
 use std::io::BufReader;
 use std::path::Path;
+use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
@@ -23,6 +24,36 @@ pub(crate) fn sync_output_timestamps_from_exif(raw: &Path, output: &Path) -> Res
 
     set_file_times(output, &timestamp)?;
     Ok(true)
+}
+
+pub(crate) fn sync_output_metadata_from_raw(
+    raw: &Path,
+    output: &Path,
+    exif_comment: Option<&str>,
+) -> Result<()> {
+    let mut command = Command::new("exiftool");
+    command
+        .arg("-overwrite_original")
+        .arg("-m")
+        .arg("-TagsFromFile")
+        .arg(raw)
+        .arg("-all:all")
+        .arg("-icc_profile");
+
+    if let Some(comment) = exif_comment {
+        command.arg(format!("-Comment={comment}"));
+    }
+
+    command.arg(output);
+
+    let status = command
+        .status()
+        .with_context(|| format!("running exiftool on {}", output.display()))?;
+    if !status.success() {
+        return Err(anyhow::anyhow!("exiftool failed with status {status}"));
+    }
+
+    Ok(())
 }
 
 fn set_file_times(path: &Path, timestamp: &SystemTime) -> Result<()> {

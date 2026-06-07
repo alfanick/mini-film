@@ -19,7 +19,10 @@ use crate::app::progress::{
     ApplyProgress, file_progress_style, progress_length, progress_stage_adaptive, progress_step,
 };
 use crate::app::raw::{run_raw_develop, run_raw_develop_jpeg};
-use crate::app::util::{remove_temp_file, sync_output_timestamps_from_exif, time_of_day_seed};
+use crate::app::util::{
+    remove_temp_file, sync_output_metadata_from_raw, sync_output_timestamps_from_exif,
+    time_of_day_seed,
+};
 use crate::cli::ExportOptions;
 
 pub(crate) struct ApplyArgs {
@@ -48,6 +51,14 @@ pub(crate) struct ApplyJob<'a> {
     pub(crate) no_grain: bool,
     pub(crate) export: &'a ExportOptions,
     pub(crate) quiet: bool,
+    pub(crate) exif_comment: Option<String>,
+}
+
+fn exif_comment_for_command(command: &str, profile: &str) -> String {
+    format!(
+        "mini-film {} usage={command} profile={profile}",
+        env!("CARGO_PKG_VERSION")
+    )
 }
 
 /// Run the single-file apply command.
@@ -89,6 +100,7 @@ pub(crate) fn run_apply(args: ApplyArgs) -> Result<()> {
             no_grain: args.no_grain,
             export: &args.export,
             quiet: true,
+            exif_comment: Some(exif_comment_for_command("apply", &args.profile)),
         },
         &resolved,
         grain_seed,
@@ -261,6 +273,9 @@ pub(crate) fn apply_resolved(
         remove_temp_file(&intermediate)?;
     }
 
+    if !job.export.strip_metadata {
+        sync_output_metadata_from_raw(job.raw, job.output, job.exif_comment.as_deref())?;
+    }
     sync_output_timestamps_from_exif(job.raw, job.output)?;
     progress_step(progress, 5, "done");
     Ok(())
@@ -423,7 +438,6 @@ mod tests {
     }
 
     fn write_fake_rawtherapee(path: &Path, output_image: &Path) -> Result<FakeRawtherapee> {
-        let tmp = path.with_extension("tmp");
         let rendered = RAWTHAPE_HELPER_SCRIPT
             .replace(
                 "__LOG_FILE__",
@@ -432,8 +446,7 @@ mod tests {
             .replace("__OUTPUT_IMAGE__", &output_image.display().to_string())
             .replace("__CREATE_OUTPUT__", "1")
             .replace("__EXIT_CODE__", "0");
-        fs::write(&tmp, rendered)?;
-        fs::rename(&tmp, path)?;
+        fs::write(path, rendered)?;
         let mut permissions = fs::metadata(path)?.permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(path, permissions)?;
@@ -444,15 +457,13 @@ mod tests {
     }
 
     fn write_fake_convert(path: &Path) -> Result<PathBuf> {
-        let tmp = path.with_extension("tmp");
         let rendered = CONVERT_HELPER_SCRIPT
             .replace(
                 "__LOG_FILE__",
                 &path.with_file_name("convert.log").display().to_string(),
             )
             .replace("__EXIT_CODE__", "0");
-        fs::write(&tmp, rendered)?;
-        fs::rename(&tmp, path)?;
+        fs::write(path, rendered)?;
         let mut permissions = fs::metadata(path)?.permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(path, permissions)?;
@@ -526,6 +537,7 @@ mod tests {
                 no_grain: true,
                 export: &test_export_options(),
                 quiet: true,
+                exif_comment: Some("mini-film test".to_string()),
             },
             &resolved,
             0,
@@ -574,6 +586,7 @@ mod tests {
                 no_grain: false,
                 export: &test_export_options(),
                 quiet: true,
+                exif_comment: Some("mini-film test".to_string()),
             },
             &resolved,
             1,
@@ -624,6 +637,7 @@ mod tests {
                 no_grain: false,
                 export: &export,
                 quiet: true,
+                exif_comment: Some("mini-film test".to_string()),
             },
             &resolved,
             2,

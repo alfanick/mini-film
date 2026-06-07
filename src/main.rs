@@ -296,6 +296,7 @@ fn run_auto_update_if_enabled(_args: &[String]) {}
 
 const RAWTHERAPEE_BINARY: &str = "rawtherapee-cli";
 const CONVERT_BINARY: &str = "convert";
+const EXIFTOOL_BINARY: &str = "exiftool";
 
 fn startup_dependency_check(args: &[String]) -> Result<()> {
     let command = active_command_for_dependency_check(args);
@@ -312,12 +313,16 @@ fn startup_dependency_check(args: &[String]) -> Result<()> {
 
     let rawtherapee = resolve_dependency_path(args, "--rawtherapee", RAWTHERAPEE_BINARY);
     let convert = resolve_dependency_path(args, "--convert", CONVERT_BINARY);
+    let exiftool = resolve_dependency_path(args, "--exiftool", EXIFTOOL_BINARY);
 
     let mut failures = Vec::new();
     if let Err(error) = verify_dependency_binary("rawtherapee-cli", &rawtherapee) {
         failures.push(error.to_string());
     }
     if let Err(error) = verify_dependency_binary("convert", &convert) {
+        failures.push(error.to_string());
+    }
+    if let Err(error) = verify_dependency_binary("exiftool", &exiftool) {
         failures.push(error.to_string());
     }
     if failures.is_empty() {
@@ -437,6 +442,7 @@ mod tests {
             "--rawtherapee",
             "/tmp/rt",
             "--convert=/tmp/conv",
+            "--exiftool=/tmp/et",
         ]
         .iter()
         .map(ToString::to_string)
@@ -448,6 +454,10 @@ mod tests {
         assert_eq!(
             resolve_dependency_path(&args, "--convert", "convert"),
             PathBuf::from("/tmp/conv")
+        );
+        assert_eq!(
+            resolve_dependency_path(&args, "--exiftool", "exiftool"),
+            PathBuf::from("/tmp/et")
         );
     }
 
@@ -493,6 +503,7 @@ mod tests {
         let root = tempfile::tempdir_in(cwd).unwrap();
         let rawtherapee = write_helper_binary(&root.path().join("rawtherapee-cli"), 0);
         let convert = write_helper_binary(&root.path().join("convert"), 0);
+        let exiftool = write_helper_binary(&root.path().join("exiftool"), 0);
         let args = vec![
             "mini-film".to_string(),
             "apply".to_string(),
@@ -500,6 +511,8 @@ mod tests {
             rawtherapee.display().to_string(),
             "--convert".to_string(),
             convert.display().to_string(),
+            "--exiftool".to_string(),
+            exiftool.display().to_string(),
         ];
         assert!(startup_dependency_check(&args).is_ok());
     }

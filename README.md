@@ -17,6 +17,7 @@ It can:
 - fit XMP/Hald looks into experimental Nikon `.NCP` Picture Controls
 - add deterministic procedural film grain
 - export either 16-bit TIFF or 8-bit JPEG
+- recopy source RAW metadata into outputs using `exiftool` by default
 
 ## Example
 
@@ -38,6 +39,12 @@ local profile library.
 ```sh
 cargo build --release
 ```
+
+Required external dependencies at startup for image-generation commands:
+
+- `rawtherapee-cli`
+- `convert` (ImageMagick/GraphicsMagick)
+- `exiftool`
 
 ## Coverage
 
@@ -127,6 +134,13 @@ cargo run --release -- apply input.RAW \
 ```
 
 When `--profile` points at a `.pp3`, mini-film passes that PP3 directly to RawTherapee. If the PP3 contains a `[Film Simulation]` section, RawTherapee applies its referenced Hald during RAW development. PP3-only profiles do not carry mini-film grain metadata.
+
+Output metadata behavior for `apply`, `batch`, `daemon`, and `sampler`:
+
+- source EXIF/IPTC fields are copied from the input RAW to the output file using
+  `exiftool` (unless `--strip-metadata` is set)
+- an EXIF comment is written as  
+  `mini-film <version> usage=<command> profile=<profile-or-emulation>`
 
 ## Batch Apply
 

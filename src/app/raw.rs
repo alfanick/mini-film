@@ -145,7 +145,6 @@ mod tests {
         output_image: Option<&std::path::Path>,
         exit_code: i32,
     ) -> Result<PathBuf> {
-        let tmp_path = path.with_extension("tmp");
         let log_file = path.with_file_name("command.log");
         let rendered = RAWTHAPE_HELPER_SCRIPT
             .replace("__LOG_FILE__", &log_file.display().to_string())
@@ -157,8 +156,7 @@ mod tests {
             )
             .replace("__CREATE_OUTPUT__", if create_output { "1" } else { "0" })
             .replace("__EXIT_CODE__", &exit_code.to_string());
-        fs::write(&tmp_path, rendered)?;
-        fs::rename(&tmp_path, path)?;
+        fs::write(path, rendered)?;
         let mut permissions = fs::metadata(path)?.permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(path, permissions)?;

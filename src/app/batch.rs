@@ -234,6 +234,11 @@ fn process_batch_file_inner(context: &ProcessBatchFileContext<'_>, raw: &Path) -
             no_grain: context.args.no_grain,
             export: &context.args.export,
             quiet: true,
+            exif_comment: Some(format!(
+                "mini-film {} usage=batch profile={}",
+                env!("CARGO_PKG_VERSION"),
+                context.resolved.resolved_stem
+            )),
         },
         context.resolved,
         seed,
