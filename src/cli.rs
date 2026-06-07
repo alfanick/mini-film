@@ -414,8 +414,9 @@ pub(crate) enum CommandKind {
         #[arg(long)]
         jobs: Option<usize>,
 
-        /// Debounce time in seconds for newly-created files before processing.
-        #[arg(long, default_value_t = 15)]
+        /// Debounce time in seconds for newly-created files when no inotify-style
+        /// close/move completion notification is available.
+        #[arg(long, default_value_t = 0)]
         debounce_seconds: u64,
 
         /// Output format for generated files.

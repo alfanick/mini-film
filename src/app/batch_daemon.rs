@@ -11,7 +11,10 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
-use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{
+    Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher,
+    event::{AccessKind, ModifyKind},
+};
 use rayon::prelude::*;
 use tempfile::Builder;
 use walkdir::WalkDir;
@@ -27,7 +30,7 @@ use crate::app::util::{half_cpu_thread_count, is_supported_raw_file, time_of_day
 use crate::cli::{BatchOutputFormat, ExportOptions};
 use indicatif::{MultiProgress, ProgressBar};
 
-const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(500);
+const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(75);
 
 pub(crate) struct BatchDaemonArgs {
     pub(crate) input: PathBuf,
@@ -63,10 +66,9 @@ struct PendingFile {
 
 /// Run a watcher that applies one or more profiles whenever RAW files appear.
 ///
-/// The input folder is monitored recursively. New/changed RAW files are debounced
-/// and only processed after their size/mtime stays stable for the configured
-/// period. Each output is named `<raw stem> - <profile stem>.<ext>` and stored
-/// under the same directory layout as the input in the output root.
+/// The input folder is monitored recursively. New/changed RAW files are queued on
+/// filesystem notifications and only processed after their size and mtime are
+/// observed as stable.
 pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
     validate_export_options(&args.export)?;
     let jobs = resolve_batch_daemon_jobs(args.jobs)?;
@@ -129,12 +131,16 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
         args.input.display()
     );
     eprintln!(
-        "[{}] output: {}, profiles: {}, jobs: {}, debounce: {}s",
+        "[{}] output: {}, profiles: {}, jobs: {}, debounce: {}",
         elapsed_human(start.elapsed()),
         args.output.display(),
         profiles.len(),
         jobs,
-        args.debounce_seconds
+        if debounce.is_zero() {
+            "immediate".to_string()
+        } else {
+            format!("{}s", args.debounce_seconds)
+        }
     );
     eprintln!("[{}] press Ctrl+C to stop", elapsed_human(start.elapsed()));
 
@@ -212,6 +218,35 @@ fn resolve_daemon_profiles(args: &BatchDaemonArgs, temp_dir: &Path) -> Result<Ve
         .collect()
 }
 
+fn event_stability_delay(kind: &EventKind, debounce: Duration) -> Duration {
+    if is_close_or_rename_event(kind) {
+        Duration::ZERO
+    } else if debounce.is_zero() {
+        Duration::from_millis(100)
+    } else {
+        debounce
+    }
+}
+
+fn is_close_or_rename_event(kind: &EventKind) -> bool {
+    matches!(
+        kind,
+        EventKind::Access(AccessKind::Close(_)) | EventKind::Modify(ModifyKind::Name(_))
+    )
+}
+
+fn is_relevant_daemon_event(kind: &EventKind) -> bool {
+    matches!(
+        kind,
+        EventKind::Access(AccessKind::Close(_))
+            | EventKind::Modify(ModifyKind::Data(_))
+            | EventKind::Modify(ModifyKind::Metadata(_))
+            | EventKind::Modify(ModifyKind::Name(_))
+            | EventKind::Create(_)
+            | EventKind::Any,
+    )
+}
+
 fn drain_watch_events(
     watch_rx: &Receiver<Result<Event, notify::Error>>,
     pending: &mut HashMap<PathBuf, PendingFile>,
@@ -220,9 +255,10 @@ fn drain_watch_events(
     loop {
         match watch_rx.try_recv() {
             Ok(Ok(event)) => {
-                if let EventKind::Create(_) | EventKind::Modify(_) | EventKind::Any = event.kind {
+                if is_relevant_daemon_event(&event.kind) {
+                    let delay = event_stability_delay(&event.kind, debounce);
                     for path in event.paths {
-                        queue_raw_file(pending, path, debounce);
+                        queue_raw_file(pending, path, delay);
                     }
                 }
             }

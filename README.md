@@ -146,14 +146,15 @@ mini-film daemon \
   --profile 'Agfa Scala 200 + grainy' \
   --profile 'Portra 400' \
   --profiles-root /home/alfanick/Pictures/RNI \
-  --debounce-seconds 15 \
+  --debounce-seconds 1 \
   --jobs 8 \
   --output-format jpg
 ```
 
 The command validates all profiles on startup, so mistyped `--profile` values fail
-immediately. It watches the input directory recursively, waits for a stable copy
-window (default 15s, configurable with `--debounce-seconds`), and writes each
+immediately. It watches the input directory recursively, waits for the file to
+be reported as completed by the watcher (or a short fallback window when that
+signal is not available), and writes each
 result as:
 
 ```text
