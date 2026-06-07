@@ -75,12 +75,36 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
 
     let debounce = Duration::from_secs(args.debounce_seconds);
     let temp_dir = Builder::new().prefix("mini-film-batch-daemon-").tempdir()?;
+    let start = Instant::now();
 
     let profiles = resolve_daemon_profiles(&args, temp_dir.path())?;
+    eprintln!("[{}] resolved profiles:", elapsed_human(start.elapsed()));
+    for profile in &profiles {
+        let source = if let Some(hald_path) = profile.resolved.hald_path.as_ref() {
+            hald_path.display().to_string()
+        } else {
+            "(no hald)".to_string()
+        };
+        eprintln!(
+            "[{}]   - {} => {} [{}]",
+            elapsed_human(start.elapsed()),
+            profile.selector,
+            profile.stem,
+            source
+        );
+        if !profile.resolved.rawtherapee_profiles.is_empty() {
+            for pp3 in &profile.resolved.rawtherapee_profiles {
+                eprintln!(
+                    "[{}]       + pp3: {}",
+                    elapsed_human(start.elapsed()),
+                    pp3.display()
+                );
+            }
+        }
+    }
     let base_seed = args.grain_seed.unwrap_or_else(time_of_day_seed);
     let args = Arc::new(args);
     let profiles = Arc::new(profiles);
-    let start = Instant::now();
 
     let (watch_tx, watch_rx) = mpsc::channel();
     let mut watcher = RecommendedWatcher::new(
@@ -167,7 +191,7 @@ fn resolve_daemon_profiles(args: &BatchDaemonArgs, temp_dir: &Path) -> Result<Ve
             {
                 resolved.grain = grain;
             }
-            let stem = profile_stem(selector);
+            let stem = resolved.resolved_stem.clone();
             Ok(DaemonProfile {
                 selector: selector.clone(),
                 stem,
@@ -288,12 +312,13 @@ fn process_single_profile(
     .map_err(|error| (raw.to_path_buf(), error))?;
 
     eprintln!(
-        "wrote {} (raw={}, profile={})",
+        "wrote {} (raw={}, profile_selector={}, profile_resolved={})",
         output.display(),
         raw.file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("unknown"),
-        profile.selector
+        profile.selector,
+        profile.stem
     );
     Ok(())
 }
@@ -386,22 +411,6 @@ fn collect_due_paths(
     due
 }
 
-fn profile_stem(selector: &str) -> String {
-    if let Some(path) = selector.strip_prefix("file://") {
-        let stem = Path::new(path).file_stem().and_then(|stem| stem.to_str());
-        if let Some(stem) = stem {
-            return sanitize_filename::sanitize(stem).to_string();
-        }
-    }
-
-    let path = Path::new(selector);
-    if let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) {
-        return sanitize_filename::sanitize(stem).to_string();
-    }
-
-    sanitize_filename::sanitize(selector).to_string()
-}
-
 fn stable_profile_seed(base_seed: u64, path: &Path, profile_index: u64) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     use std::hash::{Hash, Hasher};
@@ -433,13 +442,6 @@ mod tests {
             output,
             Path::new("/out/day/DSC_0001 - Portra 400 grainy.jpg")
         );
-    }
-
-    #[test]
-    fn daemon_profile_stem_from_selector() {
-        assert_eq!(profile_stem("foo/bar/Portra 400.xmp"), "Portra 400");
-        assert_eq!(profile_stem("file:///tmp/Portra 400.xmp"), "Portra 400");
-        assert_eq!(profile_stem("Portra 400 grainy"), "Portra 400 grainy");
     }
 
     #[test]

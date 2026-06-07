@@ -20,6 +20,7 @@ pub(crate) struct ResolvedProfile {
     pub(crate) hald_path: Option<PathBuf>,
     pub(crate) rawtherapee_profiles: Vec<PathBuf>,
     pub(crate) grain: GrainSettings,
+    pub(crate) resolved_stem: String,
 }
 
 pub(crate) enum ProfileInfo {
@@ -132,10 +133,12 @@ pub(crate) fn resolve_profile(args: &ApplyArgs, temp_dir: &Path) -> Result<Resol
     }
 
     if let Some(path) = find_hald_by_name(&args.hald_dir, &args.profile)? {
+        let resolved_stem = profile_stem_for_output(&path);
         return Ok(ResolvedProfile {
             hald_path: Some(path),
             rawtherapee_profiles: Vec::new(),
             grain: GrainSettings::default(),
+            resolved_stem,
         });
     }
 
@@ -225,11 +228,13 @@ fn profile_from_path(
     hald_dir: &Path,
     temp_dir: &Path,
 ) -> Result<ResolvedProfile> {
+    let resolved_stem = profile_stem_for_output(path).to_string();
     match path.extension().and_then(|s| s.to_str()) {
         Some(ext) if ext.eq_ignore_ascii_case("png") => Ok(ResolvedProfile {
             hald_path: Some(path.to_path_buf()),
             rawtherapee_profiles: Vec::new(),
             grain: GrainSettings::default(),
+            resolved_stem,
         }),
         Some(ext) if ext.eq_ignore_ascii_case("xmp") => {
             profile_from_xmp(path, hald_level, profiles_root, hald_dir, temp_dir)
@@ -238,6 +243,7 @@ fn profile_from_path(
             hald_path: None,
             rawtherapee_profiles: vec![path.to_path_buf()],
             grain: GrainSettings::default(),
+            resolved_stem,
         }),
         Some(ext) => {
             bail!("unsupported profile path extension .{ext}; expected .png, .xmp, or .pp3")
@@ -404,6 +410,7 @@ fn profile_from_xmp_inner(
         hald_path: Some(output),
         rawtherapee_profiles,
         grain: recipe.grain,
+        resolved_stem: profile_stem_for_output(path),
     })
 }
 
@@ -464,14 +471,14 @@ fn find_hald_by_name(root: &Path, name: &str) -> Result<Option<PathBuf>> {
     if !root.exists() {
         return Ok(None);
     }
-    find_named_file(root, name, &["png"], true)
+    ProfileNameIndex::build(root, &["png"], true, None)?.find_best(name)
 }
 
 fn find_xmp_by_name(root: &Path, name: &str) -> Result<Option<PathBuf>> {
     if !root.exists() {
         return Ok(None);
     }
-    find_named_file(root, name, &["xmp"], false)
+    ProfileNameIndex::build(root, &["xmp"], false, None)?.find_best(name)
 }
 
 /// Find an RGBTable-bearing XMP profile by name.
@@ -481,39 +488,241 @@ fn find_xmp_by_name(root: &Path, name: &str) -> Result<Option<PathBuf>> {
 /// normalize to the requested name after removing common `profile` suffixes, and
 /// validates candidates by parsing them for an embedded RGBTable.
 fn find_rgb_xmp_by_name(root: &Path, name: &str) -> Result<Option<PathBuf>> {
-    if let Some(candidate) = find_xmp_by_name(root, name)?
-        && extract_film_recipe(&candidate)
-            .map(|recipe| recipe.rgb_table.is_some())
-            .unwrap_or(false)
+    if let Some(path) =
+        ProfileNameIndex::build(root, &["xmp"], false, Some(true))?.find_best(name)?
     {
-        return Ok(Some(candidate));
+        return Ok(Some(path));
     }
 
     let wanted = normalize_rgb_profile_name(name);
-    for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("xmp") {
-            continue;
-        }
-        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        let candidate_name = normalize_rgb_profile_name(stem);
-        if candidate_name != wanted {
-            continue;
-        }
-        if extract_film_recipe(path)
-            .map(|recipe| recipe.rgb_table.is_some())
-            .unwrap_or(false)
-        {
-            return Ok(Some(path.to_path_buf()));
+    for path in ProfileNameIndex::build(root, &["xmp"], false, Some(true))?.candidates {
+        if normalize_rgb_profile_name(&path.normalized) == wanted {
+            return Ok(Some(path.path));
         }
     }
 
     Ok(None)
+}
+
+#[derive(Clone)]
+struct ProfileNameEntry {
+    path: PathBuf,
+    normalized: String,
+}
+
+struct ProfileNameIndex {
+    candidates: Vec<ProfileNameEntry>,
+}
+
+impl ProfileNameIndex {
+    fn build(
+        root: &Path,
+        extensions: &[&str],
+        hald_png: bool,
+        rgb_only: Option<bool>,
+    ) -> Result<Self> {
+        if !root.exists() {
+            return Ok(Self {
+                candidates: Vec::new(),
+            });
+        }
+
+        let mut candidates = Vec::new();
+        for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+
+            let path = entry.path();
+            let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
+                continue;
+            };
+            if !extensions
+                .iter()
+                .any(|candidate| ext.eq_ignore_ascii_case(candidate))
+            {
+                continue;
+            }
+
+            if let Some(expected_rgb_only) = rgb_only {
+                let has_rgb_table = extract_film_recipe(path)
+                    .ok()
+                    .is_some_and(|recipe| recipe.rgb_table.is_some());
+                if has_rgb_table != expected_rgb_only {
+                    continue;
+                }
+            }
+
+            let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+                continue;
+            };
+            let normalized = normalize_profile_stem_for_index(stem, hald_png);
+            if normalized.is_empty() {
+                continue;
+            }
+            candidates.push(ProfileNameEntry {
+                path: path.to_path_buf(),
+                normalized,
+            });
+        }
+
+        Ok(Self { candidates })
+    }
+
+    fn find_best(&self, selector: &str) -> Result<Option<PathBuf>> {
+        if self.candidates.is_empty() {
+            return Ok(None);
+        }
+        let wanted = normalize_name(selector);
+        if wanted.is_empty() {
+            return Ok(None);
+        }
+
+        let mut best: Option<(u32, &ProfileNameEntry)> = None;
+        for candidate in &self.candidates {
+            if candidate.normalized == wanted {
+                return Ok(Some(candidate.path.clone()));
+            }
+
+            if let Some(score) = profile_name_distance_score(&candidate.normalized, &wanted) {
+                if let Some((best_score, _)) = best
+                    && score >= best_score
+                {
+                    continue;
+                }
+                best = Some((score, candidate));
+            }
+        }
+
+        Ok(best.map(|(_, candidate)| candidate.path.clone()))
+    }
+}
+
+fn profile_name_distance_score(candidate: &str, wanted: &str) -> Option<u32> {
+    if wanted.is_empty() {
+        return None;
+    }
+
+    let token_match = wants_token_subset_match(candidate, wanted);
+    let contains_query =
+        wanted.len() > 3 && (candidate.contains(wanted) || wanted.contains(candidate));
+    let distance = levenshtein(candidate, wanted);
+    let threshold = levenshtein_threshold(wanted.len());
+
+    if token_match.full && distance <= threshold.saturating_add(2) {
+        return Some(100 + distance as u32 + length_delta_u32(candidate.len(), wanted.len()));
+    }
+    if token_match.partial && wanted.len() >= 4 && distance <= threshold.saturating_add(3) {
+        return Some(200 + distance as u32 + length_delta_u32(candidate.len(), wanted.len()));
+    }
+    if contains_query && distance <= threshold.saturating_add(4) {
+        return Some(300 + distance as u32 + length_delta_u32(candidate.len(), wanted.len()));
+    }
+    None
+}
+
+fn length_delta_u32(left: usize, right: usize) -> u32 {
+    left.abs_diff(right) as u32
+}
+
+struct TokenMatch {
+    full: bool,
+    partial: bool,
+}
+
+fn wants_token_subset_match(candidate: &str, wanted: &str) -> TokenMatch {
+    let wanted_tokens: Vec<_> = wanted
+        .split_whitespace()
+        .filter(|token| token.len() >= 3)
+        .collect();
+    if wanted_tokens.is_empty() {
+        return TokenMatch {
+            full: false,
+            partial: false,
+        };
+    }
+    let candidate_tokens: Vec<_> = candidate.split_whitespace().collect();
+
+    let mut matched = 0usize;
+    let mut partial_match = 0usize;
+    for token in &wanted_tokens {
+        let token_len_ge_three = token.len() >= 3;
+        if !token_len_ge_three {
+            continue;
+        }
+
+        let exact_match = candidate_tokens
+            .iter()
+            .any(|candidate_token| candidate_token == token);
+        if exact_match {
+            matched += 1;
+            continue;
+        }
+
+        let contains = candidate_tokens.iter().any(|candidate_token| {
+            candidate_token.contains(token) || token.contains(candidate_token)
+        });
+        if contains {
+            partial_match += 1;
+        }
+    }
+    TokenMatch {
+        full: matched == wanted_tokens.len(),
+        partial: partial_match > 0,
+    }
+}
+
+fn levenshtein_threshold(length: usize) -> usize {
+    match length {
+        0 => 0,
+        1 => 1,
+        2 => 1,
+        3..=5 => 2,
+        6..=8 => 3,
+        9..=12 => 4,
+        13..=18 => 5,
+        _ => 6,
+    }
+}
+
+fn normalize_profile_stem_for_index(stem: &str, hald_png: bool) -> String {
+    let mut candidate = normalize_name(stem);
+    if hald_png {
+        candidate = candidate.trim_end_matches("hald").trim().to_string();
+    }
+    candidate = candidate.trim_end_matches("profile").trim().to_string();
+    candidate
+}
+
+fn levenshtein(left: &str, right: &str) -> usize {
+    if left == right {
+        return 0;
+    }
+    let left_len = left.len();
+    let right_len = right.len();
+    if left_len == 0 {
+        return right_len;
+    }
+    if right_len == 0 {
+        return left_len;
+    }
+
+    let left_bytes = left.as_bytes();
+    let right_bytes = right.as_bytes();
+    let mut previous: Vec<usize> = (0..=right_len).collect();
+    let mut current = vec![0usize; right_len + 1];
+
+    for (i, &left_byte) in left_bytes.iter().enumerate() {
+        current[0] = i + 1;
+        for (j, &right_byte) in right_bytes.iter().enumerate() {
+            let insertion = current[j] + 1;
+            let deletion = previous[j + 1] + 1;
+            let substitution = previous[j] + if left_byte == right_byte { 0 } else { 1 };
+            current[j + 1] = insertion.min(deletion).min(substitution);
+        }
+        previous.clone_from_slice(&current);
+    }
+    previous[right_len]
 }
 
 fn looks_like_rgb_profile_selector(name: &str) -> bool {
@@ -563,55 +772,11 @@ fn find_profile_by_uuid(root: &Path, uuid: &str) -> Result<Option<PathBuf>> {
     Ok(None)
 }
 
-/// Find a named file using normalized exact match with one fuzzy fallback.
-///
-/// Matching lowercases names, treats `_`, `-`, and `.` as spaces, and removes
-/// generated suffixes such as `hald` or `profile` before comparison. Exact
-/// normalized matches win; otherwise the first candidate containing the wanted
-/// normalized text is returned to support ergonomic profile-name selectors.
-fn find_named_file(
-    root: &Path,
-    name: &str,
-    extensions: &[&str],
-    hald_png: bool,
-) -> Result<Option<PathBuf>> {
-    let wanted = normalize_name(name);
-    let mut fuzzy_match = None;
-
-    for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
-        if !entry.file_type().is_file() {
-            continue;
-        }
-
-        let path = entry.path();
-        let Some(ext) = path.extension().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        if !extensions
-            .iter()
-            .any(|candidate| ext.eq_ignore_ascii_case(candidate))
-        {
-            continue;
-        }
-
-        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        let mut candidate = normalize_name(stem);
-        if hald_png {
-            candidate = candidate.trim_end_matches("hald").trim().to_string();
-        }
-        candidate = candidate.trim_end_matches("profile").trim().to_string();
-
-        if candidate == wanted {
-            return Ok(Some(path.to_path_buf()));
-        }
-        if fuzzy_match.is_none() && candidate.contains(&wanted) {
-            fuzzy_match = Some(path.to_path_buf());
-        }
-    }
-
-    Ok(fuzzy_match)
+fn profile_stem_for_output(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("profile")
+        .to_string()
 }
 
 pub(crate) fn normalize_name(value: &str) -> String {
