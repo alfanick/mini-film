@@ -182,6 +182,32 @@ jobs:
         run: |
           set -euo pipefail
 
+          crate_name="mini-film"
+          crate_version="$(awk -F'=' '/^version[[:space:]]*=/ { gsub(/[[:space:]]/, "", $2); gsub(/"/, "", $2); print $2; exit }' Cargo.toml)"
+          if [ -z "$crate_version" ]; then
+            echo "Could not resolve crate version from Cargo.toml" >&2
+            exit 1
+          fi
+
+          skip_publish="false"
+
+          if command -v curl >/dev/null 2>&1; then
+            set +e
+            crate_json="$(curl -fsSL --max-time 30 "https://crates.io/api/v1/crates/${crate_name}" 2>/dev/null)"
+            curl_status=$?
+            set -e
+            if [ "$curl_status" -eq 0 ]; then
+              if printf '%s\n' "$crate_json" | grep -F "\"num\":\"${crate_version}\"" >/dev/null; then
+                echo "${crate_name} ${crate_version} already exists on crates.io; skipping publish."
+                skip_publish="true"
+              fi
+            else
+              echo "Could not query crates.io API (curl exit ${curl_status}); publish will rely on cargo publish error handling."
+            fi
+          else
+            echo "curl not available; publish will rely on cargo publish error handling."
+          fi
+
           token_file="${CARGO_REGISTRY_TOKEN_FILE:-/home/alfanick/.etcfiles/.cargo_registry_token}"
           if [ ! -f "$token_file" ]; then
             echo "Cargo registry token file not found: $token_file" >&2
@@ -194,26 +220,30 @@ jobs:
             exit 1
           fi
 
-          publish_output="$(mktemp)"
-          set +e
-          cargo publish --locked --no-verify --token "$token" >"$publish_output" 2>&1
-          publish_status=$?
-          set -e
-
-          if [ "$publish_status" -ne 0 ]; then
-            if grep -q "already uploaded" "$publish_output"; then
-              echo "crate version already published; skipping crates.io publish."
-            else
-              cat "$publish_output" >&2
-              rm -f "$publish_output"
-              exit "$publish_status"
-            fi
+          if [ "$skip_publish" = "true" ]; then
+            echo "Skipping publish: ${crate_name} ${crate_version} already exists in crates index."
           else
-            echo "published mini-film to crates.io"
-            cat "$publish_output"
-          fi
+            publish_output="$(mktemp)"
+            set +e
+            cargo publish --locked --no-verify --token "$token" >"$publish_output" 2>&1
+            publish_status=$?
+            set -e
 
-          rm -f "$publish_output"
+            if [ "$publish_status" -ne 0 ]; then
+              if grep -Eq "already (uploaded|exists)|crate.*already|you cannot upload a new version of this crate" "$publish_output"; then
+                echo "crate version already published; skipping crates.io publish."
+              else
+                cat "$publish_output" >&2
+                rm -f "$publish_output"
+                exit "$publish_status"
+              fi
+            else
+              echo "published mini-film to crates.io"
+              cat "$publish_output"
+            fi
+
+            rm -f "$publish_output"
+          fi
 
       - name: Prepare artifact
         shell: bash
