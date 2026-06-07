@@ -124,12 +124,6 @@ jobs:
           fetch-depth: 0
           ref: ${{ needs.resolve-release.outputs.source_ref }}
 
-      - name: Pre-run workspace cleanup (self-hosted only)
-        if: matrix.runs_on == 'self-hosted'
-        shell: bash
-        run: |
-          ./.github/scripts/cleanup-build-dir.sh
-
       - name: Check cargo versions
         shell: bash
         run: ./.githooks/check-cargo-versions.sh

@@ -18,10 +18,6 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Pre-run workspace cleanup
-        run: |
-          ./.github/scripts/cleanup-build-dir.sh
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@v1
         with:
@@ -106,7 +102,7 @@ jobs:
       - name: Run clippy
         run: cargo clippy --all-targets -- -D warnings
 
-      - name: Cleanup self-hosted workspace
+      - name: Cleanup self-hosted workspace (post-cache lifecycle)
         if: always()
         run: |
           ./.github/scripts/cleanup-build-dir.sh
