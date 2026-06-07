@@ -301,7 +301,7 @@ fn startup_dependency_check(args: &[String]) -> Result<()> {
     let command = active_command_for_dependency_check(args);
     let help_mode = is_help_mode(args);
     let needs_externals = match command {
-        Some("apply") | Some("batch") | Some("batch-daemon") | Some("sampler") => true,
+        Some("apply") | Some("batch") | Some("daemon") | Some("sampler") => true,
         Some(_) => false,
         None => help_mode,
     };

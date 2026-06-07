@@ -10,7 +10,7 @@ It can:
 - apply Hald CLUTs through RawTherapee Film Simulation
 - read Lightroom preset XMPs that reference a profile and define grain
 - batch-process DNG/NEF folders into JPEGs
-- run a raw folder watcher (`batch-daemon`) that keeps applying new files
+- run a raw folder watcher (`daemon`) that keeps applying new files
 - render a profile sampler contact sheet for one RAW file
 - inspect emulation/profile XMP adjustments
 - print generated RawTherapee PP3 profiles
@@ -134,13 +134,13 @@ By default, `batch` processes half of the detected CPU threads at once. On a 16-
 - total batch progress across files
 - current file progress across RAW decode, Hald, grain, and final export steps
 
-## Batch Daemon
+## Daemon
 
 Run a long-lived watcher that applies one or more profiles whenever new RAW files
 arrive in an input folder.
 
 ```sh
-mini-film batch-daemon \
+mini-film daemon \
   /home/alfanick/Pictures/Lightroom/inbox \
   /home/alfanick/Pictures/mini-film-output \
   --profile 'Agfa Scala 200 + grainy' \
@@ -168,7 +168,7 @@ becomes:
 
 If profile resolution fails for any selector, startup stops with a clear error.
 
-`batch-daemon` processes raw files in parallel and defaults to half the available
+`daemon` processes raw files in parallel and defaults to half the available
 CPU threads unless `--jobs` is set.
 
 ## Profile Sampler Contact Sheet

@@ -3,9 +3,10 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         mpsc::{self, Receiver, TryRecvError},
     },
+    thread,
     time::{Duration, Instant},
 };
 
@@ -18,8 +19,13 @@ use walkdir::WalkDir;
 use crate::app::apply::{ApplyArgs, ApplyJob, apply_resolved, resolve_grain_override};
 use crate::app::export::validate_export_options;
 use crate::app::profile::{ResolvedProfile, resolve_profile};
+use crate::app::progress::{
+    ApplyProgress, StageEstimates, batch_progress_style, file_progress_style, format_duration,
+    progress_length,
+};
 use crate::app::util::{half_cpu_thread_count, is_supported_raw_file, time_of_day_seed};
 use crate::cli::{BatchOutputFormat, ExportOptions};
+use indicatif::{MultiProgress, ProgressBar};
 
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
@@ -65,16 +71,13 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
     validate_export_options(&args.export)?;
     let jobs = resolve_batch_daemon_jobs(args.jobs)?;
     if !args.input.is_dir() {
-        bail!(
-            "batch-daemon input is not a directory: {}",
-            args.input.display()
-        );
+        bail!("daemon input is not a directory: {}", args.input.display());
     }
     fs::create_dir_all(&args.output)
         .with_context(|| format!("creating {}", args.output.display()))?;
 
     let debounce = Duration::from_secs(args.debounce_seconds);
-    let temp_dir = Builder::new().prefix("mini-film-batch-daemon-").tempdir()?;
+    let temp_dir = Builder::new().prefix("mini-film-daemon-").tempdir()?;
     let start = Instant::now();
 
     let profiles = resolve_daemon_profiles(&args, temp_dir.path())?;
@@ -121,7 +124,7 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
         .with_context(|| format!("watching {}", args.input.display()))?;
 
     eprintln!(
-        "[{}] batch-daemon started, watching {}",
+        "[{}] daemon started, watching {}",
         elapsed_human(start.elapsed()),
         args.input.display()
     );
@@ -233,49 +236,104 @@ fn process_due_files(
         .iter()
         .flat_map(|raw| (0..profiles.len()).map(|profile_index| (raw.clone(), profile_index)))
         .collect();
+    if tasks.is_empty() {
+        return Ok(());
+    }
 
+    let multi = MultiProgress::new();
+    let batch = multi.add(ProgressBar::new(tasks.len() as u64));
+    batch.set_style(batch_progress_style());
+    batch.set_message(format!("processing {} profile jobs", tasks.len()));
+
+    let worker_bars: Vec<_> = (0..jobs)
+        .map(|index| {
+            let file = multi.add(ProgressBar::new(progress_length()));
+            file.set_style(file_progress_style());
+            file.set_message(format!("worker {} waiting", index + 1));
+            file
+        })
+        .collect();
+
+    let batch_start = Instant::now();
+    let bar_pool = Arc::new(Mutex::new(worker_bars.clone()));
+    let estimates = Arc::new(StageEstimates::default());
     let pool = rayon::ThreadPoolBuilder::new().num_threads(jobs).build()?;
+    let context = DaemonTaskContext {
+        args: &args,
+        base_seed,
+        batch: &batch,
+        bar_pool: &bar_pool,
+        estimates: &estimates,
+    };
+
     let results: Vec<_> = pool.install(|| {
         tasks
             .par_iter()
             .map(|(raw, profile_index)| {
-                process_single_profile(
-                    raw,
-                    *profile_index,
-                    &profiles[*profile_index],
-                    &args,
-                    base_seed,
-                )
+                process_profile_task(raw, *profile_index, &profiles[*profile_index], &context)
             })
             .collect()
     });
+    for file in &worker_bars {
+        file.finish_and_clear();
+    }
 
     let mut failures = Vec::new();
     for result in results {
         if let Err((path, err)) = result {
+            batch.println(format!("failed {}: {err:#}", path.display()));
             failures.push((path, err));
         }
     }
+    if failures.is_empty() {
+        batch.finish_with_message(format!(
+            "done {} jobs in {}",
+            tasks.len(),
+            format_duration(batch_start.elapsed())
+        ));
+    } else {
+        batch.abandon_with_message(format!(
+            "failed {}/{} jobs in {}",
+            failures.len(),
+            tasks.len(),
+            format_duration(batch_start.elapsed())
+        ));
+    }
     if !failures.is_empty() {
-        for (path, err) in &failures {
-            eprintln!("failed {}: {err:#}", path.display());
-        }
-        bail!(
-            "batch-daemon processed {} failed profile jobs",
-            failures.len()
-        );
+        bail!("daemon processed {} failed profile jobs", failures.len());
     }
 
     Ok(())
 }
 
-fn process_single_profile(
+struct DaemonTaskContext<'a> {
+    args: &'a BatchDaemonArgs,
+    base_seed: u64,
+    batch: &'a ProgressBar,
+    bar_pool: &'a Arc<Mutex<Vec<ProgressBar>>>,
+    estimates: &'a Arc<StageEstimates>,
+}
+
+fn process_profile_task(
     raw: &Path,
     profile_index: usize,
     profile: &DaemonProfile,
-    args: &BatchDaemonArgs,
-    base_seed: u64,
+    context: &DaemonTaskContext<'_>,
 ) -> Result<(), (PathBuf, anyhow::Error)> {
+    let file = acquire_worker_bar(context.bar_pool);
+    let result = process_single_profile(raw, profile, profile_index as u64, context, &file);
+    release_worker_bar(context.bar_pool, file);
+    result
+}
+
+fn process_single_profile(
+    raw: &Path,
+    profile: &DaemonProfile,
+    profile_index: u64,
+    context: &DaemonTaskContext<'_>,
+    file: &ProgressBar,
+) -> Result<(), (PathBuf, anyhow::Error)> {
+    let args = context.args;
     let output = daemon_output_path(
         &args.input,
         &args.output,
@@ -292,7 +350,25 @@ fn process_single_profile(
         .prefix("mini-film-daemon-job-")
         .tempdir()
         .map_err(|err| (raw.to_path_buf(), err.into()))?;
-    let seed = stable_profile_seed(base_seed, raw, profile_index as u64);
+
+    file.set_position(0);
+    let file_name = raw
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("unknown")
+        .to_string();
+    file.set_message(format!("{} -> {}: queued", file_name, profile.stem));
+    context
+        .batch
+        .set_message(format!("{} -> {}", file_name, profile.stem));
+
+    let file_start = Instant::now();
+    let progress = ApplyProgress {
+        file,
+        started: file_start,
+        estimates: Some(Arc::clone(context.estimates)),
+    };
+    let seed = stable_profile_seed(context.base_seed, raw, profile_index);
     apply_resolved(
         ApplyJob {
             raw,
@@ -307,10 +383,17 @@ fn process_single_profile(
         &profile.resolved,
         seed,
         temp_dir.path(),
-        None,
+        Some(&progress),
     )
     .map_err(|error| (raw.to_path_buf(), error))?;
 
+    context.batch.inc(1);
+    file.set_message(format!(
+        "{} -> {}: done in {}",
+        file_name,
+        profile.stem,
+        format_duration(file_start.elapsed())
+    ));
     eprintln!(
         "wrote {} (raw={}, profile_selector={}, profile_resolved={})",
         output.display(),
@@ -321,6 +404,26 @@ fn process_single_profile(
         profile.stem
     );
     Ok(())
+}
+
+fn acquire_worker_bar(bar_pool: &Arc<Mutex<Vec<ProgressBar>>>) -> ProgressBar {
+    loop {
+        if let Some(file) = bar_pool
+            .lock()
+            .expect("worker progress bar pool poisoned")
+            .pop()
+        {
+            return file;
+        }
+        thread::yield_now();
+    }
+}
+
+fn release_worker_bar(bar_pool: &Arc<Mutex<Vec<ProgressBar>>>, file: ProgressBar) {
+    bar_pool
+        .lock()
+        .expect("worker progress bar pool poisoned")
+        .push(file);
 }
 
 fn daemon_output_path(

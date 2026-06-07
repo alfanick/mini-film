@@ -361,6 +361,7 @@ pub(crate) enum CommandKind {
     },
 
     /// Watch an input inbox folder and apply one or more profiles as files arrive.
+    #[command(name = "daemon")]
     BatchDaemon {
         /// Input folder to watch recursively for new RAW files.
         input: PathBuf,
@@ -608,7 +609,7 @@ mod tests {
 
         let cli = Cli::parse_from([
             "mini-film",
-            "batch-daemon",
+            "daemon",
             "input-dir",
             "output-dir",
             "--profile",
