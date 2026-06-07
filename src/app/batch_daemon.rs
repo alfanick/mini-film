@@ -16,6 +16,7 @@ use notify::{
     event::{AccessKind, ModifyKind},
 };
 use tempfile::Builder;
+use walkdir::WalkDir;
 
 use crate::app::apply::{ApplyArgs, ApplyJob, apply_resolved, resolve_grain_override};
 use crate::app::export::validate_export_options;
@@ -69,6 +70,13 @@ struct PendingFile {
     process_at: Instant,
     size: u64,
     modified: Option<std::time::SystemTime>,
+}
+
+struct ProfileScheduleContext<'a> {
+    input_root: &'a Path,
+    output_root: &'a Path,
+    output_format: BatchOutputFormat,
+    skip_existing: bool,
 }
 
 /// Run a watcher that applies one or more profiles whenever RAW files appear.
@@ -178,6 +186,10 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
     let worker_bars = Arc::new(Mutex::new(worker_bars));
 
     let mut pending: HashMap<PathBuf, PendingFile> = HashMap::new();
+    let startup_raws = collect_batch_inputs(&args.input)?;
+    for raw in &startup_raws {
+        queue_raw_file(&mut pending, raw.clone(), Duration::ZERO);
+    }
 
     let mut queue: VecDeque<PendingTask> = VecDeque::new();
     let mut in_flight: Vec<InFlightTask> = Vec::new();
@@ -185,11 +197,43 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
     let mut completed = 0u64;
     let mut failures = Vec::new();
 
-    schedule_pending_due_paths(&mut pending, debounce, &mut queue, &profiles, &batch);
+    let queued_from_startup = schedule_pending_due_paths(
+        &mut pending,
+        Duration::ZERO,
+        &mut queue,
+        &profiles,
+        &batch,
+        &ProfileScheduleContext {
+            input_root: &args.input,
+            output_root: &args.output,
+            output_format: args.output_format,
+            skip_existing: true,
+        },
+    )?;
+    if !startup_raws.is_empty() {
+        batch.println(format!(
+            "[{}] startup: {} files discovered, {} queued",
+            elapsed_human(start.elapsed()),
+            startup_raws.len(),
+            queued_from_startup
+        ));
+    }
 
     loop {
         drain_watch_events(&watch_rx, &mut pending, debounce);
-        schedule_pending_due_paths(&mut pending, debounce, &mut queue, &profiles, &batch);
+        schedule_pending_due_paths(
+            &mut pending,
+            debounce,
+            &mut queue,
+            &profiles,
+            &batch,
+            &ProfileScheduleContext {
+                input_root: &args.input,
+                output_root: &args.output,
+                output_format: args.output_format,
+                skip_existing: false,
+            },
+        )?;
 
         while in_flight.len() < jobs {
             let Some(task) = queue.pop_front() else {
@@ -386,29 +430,63 @@ fn schedule_pending_due_paths(
     queue: &mut VecDeque<PendingTask>,
     profiles: &[Arc<DaemonProfile>],
     batch: &ProgressBar,
-) {
+    context: &ProfileScheduleContext<'_>,
+) -> Result<usize> {
     let due = collect_due_paths(pending, debounce);
     if due.is_empty() {
-        return;
+        return Ok(0);
     }
 
+    let mut queued_count = 0u64;
     for raw in due {
-        enqueue_profile_jobs(queue, profiles, raw);
-        batch.inc_length(profiles.len() as u64);
+        queued_count += enqueue_profile_jobs(queue, profiles, raw, context)? as u64;
     }
+    if queued_count == 0 {
+        return Ok(0);
+    }
+    batch.inc_length(queued_count);
+    Ok(queued_count as usize)
 }
 
 fn enqueue_profile_jobs(
     queue: &mut VecDeque<PendingTask>,
     profiles: &[Arc<DaemonProfile>],
     raw: PathBuf,
-) {
-    for profile_index in 0..profiles.len() {
+    context: &ProfileScheduleContext<'_>,
+) -> Result<usize> {
+    let mut queued = 0usize;
+    for (profile_index, profile) in profiles.iter().enumerate() {
+        if context.skip_existing {
+            let expected_output = daemon_output_path(
+                context.input_root,
+                context.output_root,
+                context.output_format,
+                &raw,
+                &profile.stem,
+            )?;
+            if expected_output.exists() {
+                continue;
+            }
+        }
+
         queue.push_back(PendingTask {
             raw: raw.clone(),
             profile_index,
         });
+        queued += 1;
     }
+    Ok(queued)
+}
+
+fn collect_batch_inputs(input: &Path) -> Result<Vec<PathBuf>> {
+    let mut raws = Vec::new();
+    for entry in WalkDir::new(input).into_iter().filter_map(Result::ok) {
+        if entry.file_type().is_file() && is_supported_raw_file(entry.path()) {
+            raws.push(entry.path().to_path_buf());
+        }
+    }
+    raws.sort();
+    Ok(raws)
 }
 
 struct DaemonTaskContext {
