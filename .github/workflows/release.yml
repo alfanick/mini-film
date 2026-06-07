@@ -124,6 +124,12 @@ jobs:
           fetch-depth: 0
           ref: ${{ needs.resolve-release.outputs.source_ref }}
 
+      - name: Pre-run workspace cleanup (self-hosted only)
+        if: matrix.runs_on == 'self-hosted'
+        shell: bash
+        run: |
+          ./.github/scripts/cleanup-build-dir.sh
+
       - name: Check cargo versions
         shell: bash
         run: ./.githooks/check-cargo-versions.sh
@@ -248,10 +254,7 @@ jobs:
         if: always() && matrix.runs_on == 'self-hosted'
         shell: bash
         run: |
-          set -euo pipefail
-
-          rm -rf target artifacts /tmp/mini-film* /tmp/mini-film-sampler-* 2>/dev/null || true
-          du -sh /tmp 2>/dev/null || true
+          ./.github/scripts/cleanup-build-dir.sh
 
   publish-release:
     name: Publish release
@@ -321,5 +324,4 @@ jobs:
         if: always()
         shell: bash
         run: |
-          set -euo pipefail
-          rm -rf artifacts /tmp/mini-film* /tmp/mini-film-sampler-* 2>/dev/null || true
+          ./.github/scripts/cleanup-build-dir.sh

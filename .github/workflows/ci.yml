@@ -18,6 +18,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Pre-run workspace cleanup
+        run: |
+          ./.github/scripts/cleanup-build-dir.sh
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@v1
         with:
@@ -106,18 +110,7 @@ jobs:
       - name: Cleanup self-hosted workspace
         if: always()
         run: |
-          set -euo pipefail
-
-          echo "Pre-clean disk usage:"
-          du -sh target ~/.cargo/registry ~/.cargo/git /tmp 2>/dev/null || true
-
-          cargo clean --workspace --quiet
-          rm -rf target
-          rm -rf /tmp/mini-film* /tmp/mini-film-sampler-* /tmp/mini-film 2>/dev/null || true
-          find /tmp -maxdepth 1 -type d -name "mini-film*" -exec rm -rf {} + 2>/dev/null || true
-
-          echo "Post-clean disk usage:"
-          du -sh ~/.cargo/registry ~/.cargo/git /tmp 2>/dev/null || true
+          ./.github/scripts/cleanup-build-dir.sh
 
   tag-on-version-bump:
     name: Tag release
@@ -185,5 +178,4 @@ jobs:
       - name: Cleanup self-hosted runner metadata
         if: always()
         run: |
-          set -euo pipefail
-          rm -rf /tmp/mini-film* /tmp/mini-film-sampler-* /tmp/mini-film 2>/dev/null || true
+          ./.github/scripts/cleanup-build-dir.sh
