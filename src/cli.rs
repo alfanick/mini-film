@@ -359,6 +359,100 @@ pub(crate) enum CommandKind {
         #[arg(long = "progressive", alias = "progressive-jpeg")]
         progressive_jpeg: bool,
     },
+
+    /// Watch an input inbox folder and apply one or more profiles as files arrive.
+    BatchDaemon {
+        /// Input folder to watch recursively for new RAW files.
+        input: PathBuf,
+
+        /// Output root folder. It is created if it does not exist.
+        output: PathBuf,
+
+        /// Profile selectors to apply to each incoming RAW. Repeat this option for each profile.
+        /// Profiles are rendered to output files using their profile stems.
+        #[arg(short = 'p', long = "profile", required = true)]
+        profile: Vec<String>,
+
+        /// Directory containing generated cached Hald PNGs. Defaults to $HOME/.cache/mini-film/hald.
+        #[arg(long)]
+        hald_dir: Option<PathBuf>,
+
+        /// Film library root. Emulation XMPs are selected from emulations/ and RGBTables from profiles/.
+        #[arg(long, default_value = ".")]
+        profiles_root: PathBuf,
+
+        /// Hald level used when --profile resolves to emulation XMPs.
+        #[arg(short = 'l', long, default_value_t = DEFAULT_HALD_LEVEL)]
+        hald_level: u32,
+
+        /// Path to rawtherapee-cli binary.
+        #[arg(long, default_value = "rawtherapee-cli")]
+        rawtherapee: PathBuf,
+
+        /// Path to convert binary.
+        #[arg(long, default_value = "convert")]
+        convert: PathBuf,
+
+        /// Disable Lightroom XMP grain emulation.
+        #[arg(long)]
+        no_grain: bool,
+
+        /// Override grain as amount,size,frequency, for example 30,45,45.
+        #[arg(long)]
+        grain: Option<String>,
+
+        /// Built-in grain preset: light, medium, or heavy.
+        #[arg(long)]
+        grain_preset: Option<String>,
+
+        /// Base seed for deterministic generated grain. Defaults to current time of day.
+        #[arg(long)]
+        grain_seed: Option<u64>,
+
+        /// Number of files to process in parallel. Defaults to half of CPU threads.
+        #[arg(long)]
+        jobs: Option<usize>,
+
+        /// Debounce time in seconds for newly-created files before processing.
+        #[arg(long, default_value_t = 15)]
+        debounce_seconds: u64,
+
+        /// Output format for generated files.
+        #[arg(long, value_enum, default_value_t = BatchOutputFormat::Jpg)]
+        output_format: BatchOutputFormat,
+
+        /// JPEG quality for JPG outputs.
+        #[arg(long, default_value_t = 95)]
+        jpg_quality: u8,
+
+        /// Resize final outputs with GraphicsMagick geometry, for example 3000x3000 or 3000x3000>.
+        #[arg(long)]
+        resize: Option<String>,
+
+        /// Resize final outputs so the longest edge is at most this many pixels.
+        #[arg(long)]
+        long_edge: Option<u32>,
+
+        /// Resize final outputs so width is at most this many pixels.
+        #[arg(long)]
+        max_width: Option<u32>,
+
+        /// Resize final outputs so height is at most this many pixels.
+        #[arg(long)]
+        max_height: Option<u32>,
+
+        /// JPEG chroma subsampling.
+        #[arg(long, value_enum, default_value_t = JpegSubsampling::S444)]
+        jpeg_subsampling: JpegSubsampling,
+
+        /// Strip profiles and text metadata from final outputs.
+        #[arg(long)]
+        strip_metadata: bool,
+
+        /// Write progressive/interlaced JPEG output.
+        #[arg(long = "progressive", alias = "progressive-jpeg")]
+        progressive_jpeg: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -510,6 +604,33 @@ mod tests {
                 no_cache: true,
                 ..
             }
+        ));
+
+        let cli = Cli::parse_from([
+            "mini-film",
+            "batch-daemon",
+            "input-dir",
+            "output-dir",
+            "--profile",
+            "portra 400 grainy",
+            "--profile",
+            "portra 400",
+            "--jobs",
+            "12",
+            "--debounce-seconds",
+            "15",
+            "--output-format",
+            "tiff",
+        ]);
+        assert!(matches!(
+            cli.command,
+            CommandKind::BatchDaemon {
+                profile,
+                jobs: Some(12),
+                debounce_seconds: 15,
+                output_format: crate::cli::BatchOutputFormat::Tiff,
+                ..
+            } if profile == vec!["portra 400 grainy", "portra 400"]
         ));
     }
 }

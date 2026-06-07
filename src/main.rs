@@ -16,6 +16,7 @@ use clap::Parser;
 
 use crate::app::apply::{ApplyArgs, run_apply};
 use crate::app::batch::{BatchArgs, run_batch};
+use crate::app::batch_daemon::{BatchDaemonArgs, run_batch_daemon};
 use crate::app::info::{InfoArgs, run_info};
 use crate::app::nikon::{NikonArgs, run_nikon};
 use crate::app::pp3::{Pp3Args, run_pp3};
@@ -190,6 +191,57 @@ fn main() -> Result<()> {
                 progressive_jpeg,
             },
         }),
+        CommandKind::BatchDaemon {
+            input,
+            output,
+            profile,
+            hald_dir,
+            profiles_root,
+            hald_level,
+            rawtherapee,
+            convert,
+            no_grain,
+            grain,
+            grain_preset,
+            grain_seed,
+            jobs,
+            debounce_seconds,
+            output_format,
+            jpg_quality,
+            resize,
+            long_edge,
+            max_width,
+            max_height,
+            jpeg_subsampling,
+            strip_metadata,
+            progressive_jpeg,
+        } => run_batch_daemon(BatchDaemonArgs {
+            input,
+            output,
+            profile,
+            hald_dir: hald_dir.unwrap_or_else(default_hald_dir),
+            profiles_root,
+            hald_level,
+            rawtherapee,
+            convert,
+            no_grain,
+            grain,
+            grain_preset,
+            grain_seed,
+            jobs,
+            debounce_seconds,
+            output_format,
+            export: ExportOptions {
+                jpg_quality,
+                resize,
+                long_edge,
+                max_width,
+                max_height,
+                jpeg_subsampling,
+                strip_metadata,
+                progressive_jpeg,
+            },
+        }),
         CommandKind::Sampler {
             raw,
             output,
@@ -249,7 +301,7 @@ fn startup_dependency_check(args: &[String]) -> Result<()> {
     let command = active_command_for_dependency_check(args);
     let help_mode = is_help_mode(args);
     let needs_externals = match command {
-        Some("apply") | Some("batch") | Some("sampler") => true,
+        Some("apply") | Some("batch") | Some("batch-daemon") | Some("sampler") => true,
         Some(_) => false,
         None => help_mode,
     };

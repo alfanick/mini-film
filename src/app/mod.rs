@@ -1,5 +1,6 @@
 pub(crate) mod apply;
 pub(crate) mod batch;
+pub(crate) mod batch_daemon;
 pub(crate) mod export;
 pub(crate) mod info;
 pub(crate) mod nikon;
