@@ -238,7 +238,7 @@ jobs:
             --thumbnail-long-edge 2048
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v8
+        uses: actions/upload-artifact@v7
         with:
           name: mini-film-${{ matrix.target }}
           path: artifacts/*
