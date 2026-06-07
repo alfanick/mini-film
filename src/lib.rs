@@ -7,6 +7,7 @@ mod model;
 mod nikon;
 mod pp3;
 mod rgb_table;
+pub mod util;
 mod xmp;
 
 pub use grain::{apply_grain, apply_grain_8bit};
@@ -28,4 +29,8 @@ pub use pp3::{
     write_rawtherapee_profile, write_rawtherapee_resize_profile,
 };
 pub use rgb_table::{decode_rgb_table, parse_rgb_table, sample_rgb_table};
+pub use util::{
+    SUPPORTED_RAW_EXTENSIONS, configure_threads, cpu_thread_count, default_hald_dir,
+    half_cpu_thread_count, is_supported_raw_file, remove_temp_file, time_of_day_seed,
+};
 pub use xmp::{extract_film_recipe, extract_rgb_table};

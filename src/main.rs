@@ -2,6 +2,7 @@ mod app;
 mod cli;
 #[cfg(feature = "github-update")]
 mod updater;
+mod util;
 
 use std::{
     env,
