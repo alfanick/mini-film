@@ -170,7 +170,15 @@ fn resolve_batch_daemon_jobs(jobs: Option<usize>) -> Result<usize> {
 fn resolve_daemon_profiles(args: &BatchDaemonArgs, temp_dir: &Path) -> Result<Vec<DaemonProfile>> {
     args.profile
         .iter()
-        .map(|selector| {
+        .enumerate()
+        .map(|(index, selector)| {
+            let profile_tmp_dir = temp_dir.join(
+                sanitize_filename::sanitize(format!("{:03}-{}", index + 1, selector)).into_owned(),
+            );
+            fs::create_dir_all(&profile_tmp_dir).with_context(|| {
+                format!("creating profile temp dir {}", profile_tmp_dir.display())
+            })?;
+
             let apply_args = ApplyArgs {
                 raw: PathBuf::new(),
                 output: PathBuf::new(),
@@ -187,7 +195,7 @@ fn resolve_daemon_profiles(args: &BatchDaemonArgs, temp_dir: &Path) -> Result<Ve
                 grain_seed: args.grain_seed,
                 export: args.export.clone(),
             };
-            let mut resolved = resolve_profile(&apply_args, temp_dir)
+            let mut resolved = resolve_profile(&apply_args, &profile_tmp_dir)
                 .with_context(|| format!("resolving profile {selector}"))?;
             if let Some(grain) =
                 resolve_grain_override(args.grain.as_deref(), args.grain_preset.as_deref())?
