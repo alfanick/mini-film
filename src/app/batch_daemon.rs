@@ -516,11 +516,12 @@ fn daemon_output_path(
         .file_stem()
         .and_then(|stem| stem.to_str())
         .ok_or_else(|| anyhow!("raw path has no file stem: {}", raw.display()))?;
+    let profile_stem = sanitize_filename::sanitize(profile_stem);
     let parent = relative.parent().unwrap_or_else(|| Path::new(""));
     Ok(output_root.join(parent).join(format!(
-        "{} - {}.{}",
+        "{}/{}.{}",
+        profile_stem,
         sanitize_filename::sanitize(raw_stem),
-        sanitize_filename::sanitize(profile_stem),
         output_format.extension()
     )))
 }
@@ -608,7 +609,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn daemon_output_path_keeps_input_tree_and_appends_profile_stem() {
+    fn daemon_output_path_keeps_input_tree_and_uses_profile_dir() {
         let output = daemon_output_path(
             Path::new("/in"),
             Path::new("/out"),
@@ -617,10 +618,7 @@ mod tests {
             "Portra 400 grainy",
         )
         .unwrap();
-        assert_eq!(
-            output,
-            Path::new("/out/day/DSC_0001 - Portra 400 grainy.jpg")
-        );
+        assert_eq!(output, Path::new("/out/day/Portra 400 grainy/DSC_0001.jpg"));
     }
 
     #[test]
