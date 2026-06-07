@@ -174,13 +174,22 @@ CPU threads unless `--jobs` is set.
 
 ## Profile Sampler Contact Sheet
 
-Render one RAW through every resolvable emulation XMP and write a labeled JPEG contact sheet:
+Render one RAW through every resolvable emulation XMP and write a labeled contact sheet as JPEG or interactive HTML.
 
 ```sh
 cargo run --release -- sampler \
   /home/alfanick/Pictures/Lightroom/2026/05/03/DSC_1812-10.dng \
   --profiles-root /home/alfanick/Pictures/RNI \
   --output /home/alfanick/profile-sampler.jpg
+```
+
+Use `--output` with `.html` to generate the interactive HTML sampler instead:
+
+```sh
+cargo run --release -- sampler \
+  /home/alfanick/Pictures/Lightroom/2026/05/03/DSC_1812-10.dng \
+  --profiles-root /home/alfanick/Pictures/RNI \
+  --output /home/alfanick/profile-sampler.html
 ```
 
 `sampler` renders one thumbnail per XMP file from `emulations/` and builds a structured contact sheet grouped by shared profile-name prefixes. For example, Kodak profiles are shown under progressively deeper headings like `Kodak`, `Kodak Portra`, `Kodak Portra 400`, and `Kodak Portra 400 Grainy`; indentation makes the level visible. Each thumbnail is developed with its profile-specific generated RawTherapee `.pp3` files, including Film Simulation for the Hald, which applies the LUT during RAW development, before the grain stage. Like `batch`, sampler renders half of the detected CPU threads in parallel by default; override with `--jobs N`. Thumbnail longest edge defaults to 512 px:
@@ -205,7 +214,7 @@ Use a non-default convert binary or write a progressive sampler JPEG with:
 `--output-format jpg|tiff`; TIFF batch output is written as 16-bit Zip-compressed `.tif`.
 `sampler` supports `--jpg-quality`, `--jpeg-subsampling`, `--strip-metadata`, and
 `--progressive` for generated sampler JPEGs, and accepts `.jpg/.jpeg` or `.html`
-outputs.
+outputs (HTML mode produces a clickable gallery with lazy thumbnails).
 
 ```sh
 --jpg-quality 90
