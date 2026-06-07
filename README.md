@@ -39,6 +39,23 @@ local profile library.
 cargo build --release
 ```
 
+## Coverage
+
+Generate LCOV coverage locally (requires `cargo-llvm-cov`):
+
+```sh
+cargo install --locked cargo-llvm-cov
+./scripts/coverage.sh
+```
+
+The script writes:
+
+```sh
+target/coverage/lcov.info
+```
+
+CI runs the same coverage step on every push/PR and uploads `coverage-lcov` as an artifact.
+
 ### Auto-update
 
 Release binaries are built with `github-update` enabled in CI and check
