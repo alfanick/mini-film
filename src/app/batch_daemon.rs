@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -15,7 +15,6 @@ use notify::{
     Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher,
     event::{AccessKind, ModifyKind},
 };
-use rayon::prelude::*;
 use tempfile::Builder;
 use walkdir::WalkDir;
 
@@ -57,6 +56,15 @@ struct DaemonProfile {
     resolved: ResolvedProfile,
 }
 
+struct PendingTask {
+    raw: PathBuf,
+    profile_index: usize,
+}
+
+struct InFlightTask {
+    handle: thread::JoinHandle<Result<(), (PathBuf, anyhow::Error)>>,
+}
+
 struct PendingFile {
     path: PathBuf,
     process_at: Instant,
@@ -83,8 +91,10 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
     let start = Instant::now();
 
     let profiles = resolve_daemon_profiles(&args, temp_dir.path())?;
+    let profiles = profiles.into_iter().map(Arc::new).collect::<Vec<_>>();
+    let profiles = Arc::new(profiles);
     eprintln!("[{}] resolved profiles:", elapsed_human(start.elapsed()));
-    for profile in &profiles {
+    for profile in &*profiles {
         let source = if let Some(hald_path) = profile.resolved.hald_path.as_ref() {
             hald_path.display().to_string()
         } else {
@@ -109,13 +119,12 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
     }
     let base_seed = args.grain_seed.unwrap_or_else(time_of_day_seed);
     let args = Arc::new(args);
-    let profiles = Arc::new(profiles);
 
     let (watch_tx, watch_rx) = mpsc::channel();
     let mut watcher = RecommendedWatcher::new(
         move |result| {
             if watch_tx.send(result).is_err() {
-                // If the receiver disappeared, just ignore; loop will exit.
+                // If the receiver disappeared, just exit the callback silently.
             }
         },
         Config::default(),
@@ -144,23 +153,116 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
     );
     eprintln!("[{}] press Ctrl+C to stop", elapsed_human(start.elapsed()));
 
+    let multi = MultiProgress::new();
+    let batch = multi.add(ProgressBar::new(0));
+    batch.set_style(batch_progress_style());
+    batch.set_message("waiting for pictures".to_string());
+
+    let worker_bars: Vec<_> = (0..jobs)
+        .map(|index| {
+            let file = multi.add(ProgressBar::new(progress_length()));
+            file.set_style(file_progress_style());
+            file.set_message(format!("worker {} waiting", index + 1));
+            file
+        })
+        .collect();
+    let worker_bars = Arc::new(Mutex::new(worker_bars));
+
     let mut pending: HashMap<PathBuf, PendingFile> = HashMap::new();
     for raw in collect_batch_inputs(&args.input)? {
         queue_raw_file(&mut pending, raw, debounce);
     }
 
+    let mut queue: VecDeque<PendingTask> = VecDeque::new();
+    let mut in_flight: Vec<InFlightTask> = Vec::new();
+    let estimates = Arc::new(StageEstimates::default());
+    let mut completed = 0u64;
+    let mut failures = Vec::new();
+
+    schedule_pending_due_paths(&mut pending, debounce, &mut queue, &profiles, &batch);
+
     loop {
         drain_watch_events(&watch_rx, &mut pending, debounce);
-        let due = collect_due_paths(&mut pending, debounce);
-        if !due.is_empty() {
-            process_due_files(
-                due,
-                Arc::clone(&profiles),
-                Arc::clone(&args),
-                jobs,
-                base_seed,
-            )?;
+        schedule_pending_due_paths(&mut pending, debounce, &mut queue, &profiles, &batch);
+
+        while in_flight.len() < jobs {
+            let Some(task) = queue.pop_front() else {
+                break;
+            };
+            let Some(profile) = profiles.get(task.profile_index).cloned() else {
+                continue;
+            };
+            let bar = acquire_worker_bar(&worker_bars);
+            let raw = task.raw.clone();
+            let raw_name = raw
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let bar_pool = Arc::clone(&worker_bars);
+            let thread_args = Arc::clone(&args);
+            let thread_estimates = Arc::clone(&estimates);
+
+            let handle = thread::spawn(move || {
+                let profile_index = task.profile_index;
+                let context = DaemonTaskContext {
+                    args: thread_args,
+                    base_seed,
+                    estimates: thread_estimates,
+                };
+                let result = process_single_profile(
+                    &raw,
+                    &profile,
+                    profile_index as u64,
+                    &context,
+                    &bar,
+                    &raw_name,
+                );
+                release_worker_bar(&bar_pool, bar);
+                result
+            });
+            in_flight.push(InFlightTask { handle });
         }
+
+        let mut index = 0;
+        while index < in_flight.len() {
+            if !in_flight[index].handle.is_finished() {
+                index += 1;
+                continue;
+            }
+
+            let task = in_flight.swap_remove(index);
+            completed += 1;
+            batch.inc(1);
+
+            match task.handle.join() {
+                Ok(Ok(())) => {}
+                Ok(Err((path, error))) => {
+                    batch.println(format!("failed {}: {error:#}", path.display()));
+                    failures.push((path, error));
+                }
+                Err(_) => {
+                    batch.println("a worker thread panicked");
+                    failures.push((PathBuf::from("worker thread"), anyhow!("worker panic")));
+                }
+            }
+        }
+
+        if queue.is_empty() && in_flight.is_empty() {
+            batch.set_message("waiting for pictures".to_string());
+        } else {
+            batch.set_message(format!(
+                "queued {} running {} done {}",
+                queue.len(),
+                in_flight.len(),
+                completed
+            ));
+        }
+
+        if let Some((path, error)) = failures.pop() {
+            return Err(anyhow!("daemon failed {}: {error:#}", path.display()));
+        }
+
         std::thread::sleep(DEFAULT_POLL_INTERVAL);
     }
 }
@@ -269,115 +371,52 @@ fn drain_watch_events(
     }
 }
 
-fn process_due_files(
-    due: Vec<PathBuf>,
-    profiles: Arc<Vec<DaemonProfile>>,
+fn schedule_pending_due_paths(
+    pending: &mut HashMap<PathBuf, PendingFile>,
+    debounce: Duration,
+    queue: &mut VecDeque<PendingTask>,
+    profiles: &[Arc<DaemonProfile>],
+    batch: &ProgressBar,
+) {
+    let due = collect_due_paths(pending, debounce);
+    if due.is_empty() {
+        return;
+    }
+
+    for raw in due {
+        enqueue_profile_jobs(queue, profiles, raw);
+        batch.inc_length(profiles.len() as u64);
+    }
+}
+
+fn enqueue_profile_jobs(
+    queue: &mut VecDeque<PendingTask>,
+    profiles: &[Arc<DaemonProfile>],
+    raw: PathBuf,
+) {
+    for profile_index in 0..profiles.len() {
+        queue.push_back(PendingTask {
+            raw: raw.clone(),
+            profile_index,
+        });
+    }
+}
+
+struct DaemonTaskContext {
     args: Arc<BatchDaemonArgs>,
-    jobs: usize,
     base_seed: u64,
-) -> Result<()> {
-    let tasks: Vec<(PathBuf, usize)> = due
-        .iter()
-        .flat_map(|raw| (0..profiles.len()).map(|profile_index| (raw.clone(), profile_index)))
-        .collect();
-    if tasks.is_empty() {
-        return Ok(());
-    }
-
-    let multi = MultiProgress::new();
-    let batch = multi.add(ProgressBar::new(tasks.len() as u64));
-    batch.set_style(batch_progress_style());
-    batch.set_message(format!("processing {} profile jobs", tasks.len()));
-
-    let worker_bars: Vec<_> = (0..jobs)
-        .map(|index| {
-            let file = multi.add(ProgressBar::new(progress_length()));
-            file.set_style(file_progress_style());
-            file.set_message(format!("worker {} waiting", index + 1));
-            file
-        })
-        .collect();
-
-    let batch_start = Instant::now();
-    let bar_pool = Arc::new(Mutex::new(worker_bars.clone()));
-    let estimates = Arc::new(StageEstimates::default());
-    let pool = rayon::ThreadPoolBuilder::new().num_threads(jobs).build()?;
-    let context = DaemonTaskContext {
-        args: &args,
-        base_seed,
-        batch: &batch,
-        bar_pool: &bar_pool,
-        estimates: &estimates,
-    };
-
-    let results: Vec<_> = pool.install(|| {
-        tasks
-            .par_iter()
-            .map(|(raw, profile_index)| {
-                process_profile_task(raw, *profile_index, &profiles[*profile_index], &context)
-            })
-            .collect()
-    });
-    for file in &worker_bars {
-        file.finish_and_clear();
-    }
-
-    let mut failures = Vec::new();
-    for result in results {
-        if let Err((path, err)) = result {
-            batch.println(format!("failed {}: {err:#}", path.display()));
-            failures.push((path, err));
-        }
-    }
-    if failures.is_empty() {
-        batch.finish_with_message(format!(
-            "done {} jobs in {}",
-            tasks.len(),
-            format_duration(batch_start.elapsed())
-        ));
-    } else {
-        batch.abandon_with_message(format!(
-            "failed {}/{} jobs in {}",
-            failures.len(),
-            tasks.len(),
-            format_duration(batch_start.elapsed())
-        ));
-    }
-    if !failures.is_empty() {
-        bail!("daemon processed {} failed profile jobs", failures.len());
-    }
-
-    Ok(())
-}
-
-struct DaemonTaskContext<'a> {
-    args: &'a BatchDaemonArgs,
-    base_seed: u64,
-    batch: &'a ProgressBar,
-    bar_pool: &'a Arc<Mutex<Vec<ProgressBar>>>,
-    estimates: &'a Arc<StageEstimates>,
-}
-
-fn process_profile_task(
-    raw: &Path,
-    profile_index: usize,
-    profile: &DaemonProfile,
-    context: &DaemonTaskContext<'_>,
-) -> Result<(), (PathBuf, anyhow::Error)> {
-    let file = acquire_worker_bar(context.bar_pool);
-    let result = process_single_profile(raw, profile, profile_index as u64, context, &file);
-    release_worker_bar(context.bar_pool, file);
-    result
+    estimates: Arc<StageEstimates>,
 }
 
 fn process_single_profile(
     raw: &Path,
     profile: &DaemonProfile,
     profile_index: u64,
-    context: &DaemonTaskContext<'_>,
+    context: &DaemonTaskContext,
     file: &ProgressBar,
+    raw_name: &str,
 ) -> Result<(), (PathBuf, anyhow::Error)> {
-    let args = context.args;
+    let args = &context.args;
     let output = daemon_output_path(
         &args.input,
         &args.output,
@@ -386,6 +425,7 @@ fn process_single_profile(
         &profile.stem,
     )
     .map_err(|err| (raw.to_path_buf(), err))?;
+
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).map_err(|err| (raw.to_path_buf(), err.into()))?;
     }
@@ -396,21 +436,13 @@ fn process_single_profile(
         .map_err(|err| (raw.to_path_buf(), err.into()))?;
 
     file.set_position(0);
-    let file_name = raw
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("unknown")
-        .to_string();
-    file.set_message(format!("{} -> {}: queued", file_name, profile.stem));
-    context
-        .batch
-        .set_message(format!("{} -> {}", file_name, profile.stem));
+    file.set_message(format!("{} -> {}: queued", raw_name, profile.stem));
 
     let file_start = Instant::now();
     let progress = ApplyProgress {
         file,
         started: file_start,
-        estimates: Some(Arc::clone(context.estimates)),
+        estimates: Some(Arc::clone(&context.estimates)),
     };
     let seed = stable_profile_seed(context.base_seed, raw, profile_index);
     apply_resolved(
@@ -431,10 +463,9 @@ fn process_single_profile(
     )
     .map_err(|error| (raw.to_path_buf(), error))?;
 
-    context.batch.inc(1);
     file.set_message(format!(
         "{} -> {}: done in {}",
-        file_name,
+        raw_name,
         profile.stem,
         format_duration(file_start.elapsed())
     ));
@@ -529,25 +560,25 @@ fn collect_due_paths(
     let mut next = HashMap::new();
     let mut due = Vec::new();
 
-    for state in pending.drain() {
-        if state.1.process_at > now {
-            next.insert(state.0, state.1);
+    for (key, state) in pending.drain() {
+        if state.process_at > now {
+            next.insert(key, state);
             continue;
         }
 
-        if let Ok(metadata) = fs::metadata(&state.1.path) {
+        if let Ok(metadata) = fs::metadata(&state.path) {
             let size = metadata.len();
             let modified = metadata.modified().ok();
-            if size == state.1.size && modified == state.1.modified {
-                due.push(state.1.path);
+            if size == state.size && modified == state.modified {
+                due.push(state.path);
             } else {
                 next.insert(
-                    state.0,
+                    state.path.clone(),
                     PendingFile {
+                        path: state.path,
                         process_at: now + debounce,
                         size,
                         modified,
-                        ..state.1
                     },
                 );
             }
