@@ -47,22 +47,74 @@ jobs:
       - name: Publish unit test report
         if: always()
         run: |
+          set -euo pipefail
+
+          result_lines=$(grep -E "^test result:" /tmp/unit-tests.log || true)
+
+          echo "## Unit test report"
+
           {
-            echo "## Unit test report"
             echo
             echo "### Result summary"
-            if grep -q "test result:" /tmp/unit-tests.log; then
-              RESULT_LINE=$(grep -E "test result:" /tmp/unit-tests.log | tail -n 1)
-              echo "- \`$RESULT_LINE\`"
-              if echo "$RESULT_LINE" | grep -q "FAILED"; then
-                echo "- Status: failed"
+
+            if [[ -n "$result_lines" ]]; then
+              echo "| Run | Status | Passed | Failed | Ignored | Measured | Filtered | Duration |"
+              echo "| --- | --- | ---: | ---: | ---: | ---: | ---: | :-- |"
+
+              overall_failed=0
+              total_runs=0
+
+              while IFS= read -r line; do
+                if [[ -n "$line" ]]; then
+                  total_runs=$((total_runs + 1))
+
+                  status_token="${line#test result: }"
+                  status_token="${status_token%% *}"
+                  status="${status_token%.}"
+                  body="${line#test result: ${status_token} }"
+
+                  cleaned=$(printf "%s" "$body" | sed -E \
+                    's/ passed; / /g; s/ failed; / /g; s/ ignored; / /g; s/ measured; / /g; s/ filtered out; / /g; s/ finished in / /g')
+
+                  read -r passed failed ignored measured filtered duration <<< "$cleaned"
+                  [[ -z "${passed:-}" ]] && passed="-"
+                  [[ -z "${failed:-}" ]] && failed="-"
+                  [[ -z "${ignored:-}" ]] && ignored="-"
+                  [[ -z "${measured:-}" ]] && measured="-"
+                  [[ -z "${filtered:-}" ]] && filtered="-"
+                  [[ -z "${duration:-}" ]] && duration="-"
+
+                  if [[ "$status" != "ok" && "$status" != "FAILED" ]]; then
+                    status="unknown"
+                  fi
+
+                  if [[ "$status" == "FAILED" ]]; then
+                    overall_failed=1
+                    status_cell="<span style=\"color:#c0392b;font-weight:700\">FAILED</span>"
+                  elif [[ "$status" == "ok" ]]; then
+                    status_cell="<span style=\"color:#16a085;font-weight:700\">ok</span>"
+                  else
+                    status_cell="<span style=\"color:#7f8c8d\">${status}</span>"
+                  fi
+
+                  echo "| ${total_runs} | ${status_cell} | ${passed} | ${failed} | ${ignored} | ${measured} | ${filtered} | ${duration} |"
+                fi
+              done <<< "$result_lines"
+
+              if [[ "$overall_failed" -eq 0 ]]; then
+                echo
+                echo "- **Overall status:** <span style=\"color:#16a085;font-weight:700\">PASS</span>"
               else
-                echo "- Status: passed"
+                echo
+                echo "- **Overall status:** <span style=\"color:#c0392b;font-weight:700\">FAILED</span>"
               fi
             else
               echo "- No test summary was found in the output"
               echo "- Status: unknown"
             fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          {
             echo
             if grep -q "FAILED" /tmp/unit-tests.log; then
               echo "### Failed test cases"
