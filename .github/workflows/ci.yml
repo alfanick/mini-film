@@ -132,7 +132,7 @@ jobs:
             {
               echo
               echo "### Coverage summary"
-              python -c 'import json; data = json.load(open("target/coverage/coverage-summary.json", "r", encoding="utf-8")); totals = data["data"][0]["totals"]; line = totals["lines"]["percent"]; functions = totals["functions"]["percent"]; regions = totals["regions"]["percent"]; print("- Lines: {:.2f}%".format(line)); print("- Functions: {:.2f}%".format(functions)); print("- Regions: {:.2f}%".format(regions))'
+              python3 -c 'import json; data = json.load(open("target/coverage/coverage-summary.json", "r", encoding="utf-8")); totals = data["data"][0]["totals"]; line = totals["lines"]["percent"]; functions = totals["functions"]["percent"]; regions = totals["regions"]["percent"]; print("- Lines: {:.2f}%".format(line)); print("- Functions: {:.2f}%".format(functions)); print("- Regions: {:.2f}%".format(regions))'
               echo
             } >> "$GITHUB_STEP_SUMMARY"
           else
