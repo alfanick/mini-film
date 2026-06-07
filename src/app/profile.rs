@@ -50,9 +50,9 @@ pub(crate) fn inspect_profile(
     hald_dir: &Path,
     hald_level: u32,
 ) -> Result<ProfileInfo> {
-    let selector_path = Path::new(selector);
+    let selector_path = profile_selector_path(selector)?;
     if selector_path.exists() {
-        return inspect_profile_path(selector_path, profiles_root, hald_dir, hald_level);
+        return inspect_profile_path(&selector_path, profiles_root, hald_dir, hald_level);
     }
 
     if looks_like_rgb_profile_selector(selector) {
@@ -993,6 +993,33 @@ mod tests {
         {
             ProfileInfo::RawTherapeePp3 { path } => assert_eq!(path, pp3),
             _ => panic!("expected pp3 profile info"),
+        }
+    }
+
+    #[test]
+    fn inspect_profile_resolves_file_url_as_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let pp3 = dir.path().join("edited profile.pp3");
+        std::fs::write(&pp3, "[Exposure]\nCompensation=1\n").unwrap();
+        let selector = format!("file://{}", pp3.display()).replace(' ', "%20");
+
+        match inspect_profile(&selector, dir.path(), &dir.path().join("hald"), 8).unwrap() {
+            ProfileInfo::RawTherapeePp3 { path } => assert_eq!(path, pp3),
+            _ => panic!("expected pp3 profile info"),
+        }
+    }
+
+    #[test]
+    fn inspect_profile_fuzzy_hald_lookup_by_profile_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let hald_dir = dir.path().join("hald");
+        std::fs::create_dir_all(&hald_dir).unwrap();
+        let hald = hald_dir.join("Agfa Scala 200 profile.l16.a1.hald.png");
+        std::fs::write(&hald, b"x").unwrap();
+
+        match inspect_profile("agfa scala", dir.path(), &hald_dir, 16).unwrap() {
+            ProfileInfo::HaldPng { path } => assert_eq!(path, hald),
+            _ => panic!("expected hald profile info"),
         }
     }
 }
