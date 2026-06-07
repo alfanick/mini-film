@@ -93,32 +93,42 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
     let profiles = resolve_daemon_profiles(&args, temp_dir.path())?;
     let profiles = profiles.into_iter().map(Arc::new).collect::<Vec<_>>();
     let profiles = Arc::new(profiles);
-    eprintln!("[{}] resolved profiles:", elapsed_human(start.elapsed()));
+    let base_seed = args.grain_seed.unwrap_or_else(time_of_day_seed);
+    let args = Arc::new(args);
+
+    let multi = MultiProgress::new();
+    let batch = multi.add(ProgressBar::new(0));
+    batch.set_style(batch_progress_style());
+    batch.set_message("starting".to_string());
+
+    batch.println(format!(
+        "[{}] resolved profiles: {}",
+        elapsed_human(start.elapsed()),
+        profiles.len()
+    ));
     for profile in &*profiles {
         let source = if let Some(hald_path) = profile.resolved.hald_path.as_ref() {
             hald_path.display().to_string()
         } else {
             "(no hald)".to_string()
         };
-        eprintln!(
+        batch.println(format!(
             "[{}]   - {} => {} [{}]",
             elapsed_human(start.elapsed()),
             profile.selector,
             profile.stem,
             source
-        );
+        ));
         if !profile.resolved.rawtherapee_profiles.is_empty() {
             for pp3 in &profile.resolved.rawtherapee_profiles {
-                eprintln!(
+                batch.println(format!(
                     "[{}]       + pp3: {}",
                     elapsed_human(start.elapsed()),
                     pp3.display()
-                );
+                ));
             }
         }
     }
-    let base_seed = args.grain_seed.unwrap_or_else(time_of_day_seed);
-    let args = Arc::new(args);
 
     let (watch_tx, watch_rx) = mpsc::channel();
     let mut watcher = RecommendedWatcher::new(
@@ -134,12 +144,12 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
         .watch(&args.input, RecursiveMode::Recursive)
         .with_context(|| format!("watching {}", args.input.display()))?;
 
-    eprintln!(
+    batch.println(format!(
         "[{}] daemon started, watching {}",
         elapsed_human(start.elapsed()),
         args.input.display()
-    );
-    eprintln!(
+    ));
+    batch.println(format!(
         "[{}] output: {}, profiles: {}, jobs: {}, debounce: {}",
         elapsed_human(start.elapsed()),
         args.output.display(),
@@ -150,12 +160,12 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
         } else {
             format!("{}s", args.debounce_seconds)
         }
-    );
-    eprintln!("[{}] press Ctrl+C to stop", elapsed_human(start.elapsed()));
+    ));
+    batch.println(format!(
+        "[{}] press Ctrl+C to stop",
+        elapsed_human(start.elapsed())
+    ));
 
-    let multi = MultiProgress::new();
-    let batch = multi.add(ProgressBar::new(0));
-    batch.set_style(batch_progress_style());
     batch.set_message("waiting for pictures".to_string());
 
     let worker_bars: Vec<_> = (0..jobs)
@@ -364,7 +374,7 @@ fn drain_watch_events(
                     }
                 }
             }
-            Ok(Err(err)) => eprintln!("watcher event error: {err}"),
+            Ok(Err(_)) => {}
             Err(TryRecvError::Empty) => break,
             Err(TryRecvError::Disconnected) => break,
         }
@@ -469,15 +479,6 @@ fn process_single_profile(
         profile.stem,
         format_duration(file_start.elapsed())
     ));
-    eprintln!(
-        "wrote {} (raw={}, profile_selector={}, profile_resolved={})",
-        output.display(),
-        raw.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("unknown"),
-        profile.selector,
-        profile.stem
-    );
     Ok(())
 }
 
