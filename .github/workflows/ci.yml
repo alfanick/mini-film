@@ -27,17 +27,16 @@ jobs:
       - name: Check cargo versions
         run: ./.githooks/check-cargo-versions.sh
 
-      - name: Cache cargo registry and target
+      - name: Cache cargo registry and git deps
         uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('**/Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-
             ${{ runner.os }}-cargo-
+          retention-days: 7
 
       - name: Run unit tests (with report)
         id: unit-tests
@@ -104,6 +103,22 @@ jobs:
       - name: Run clippy
         run: cargo clippy --all-targets -- -D warnings
 
+      - name: Cleanup self-hosted workspace
+        if: always()
+        run: |
+          set -euo pipefail
+
+          echo "Pre-clean disk usage:"
+          du -sh target ~/.cargo/registry ~/.cargo/git /tmp 2>/dev/null || true
+
+          cargo clean --workspace --quiet
+          rm -rf target
+          rm -rf /tmp/mini-film* /tmp/mini-film-sampler-* /tmp/mini-film 2>/dev/null || true
+          find /tmp -maxdepth 1 -type d -name "mini-film*" -exec rm -rf {} + 2>/dev/null || true
+
+          echo "Post-clean disk usage:"
+          du -sh ~/.cargo/registry ~/.cargo/git /tmp 2>/dev/null || true
+
   tag-on-version-bump:
     name: Tag release
     runs-on: self-hosted
@@ -166,3 +181,9 @@ jobs:
             fi
             exit 1
           fi
+
+      - name: Cleanup self-hosted runner metadata
+        if: always()
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/mini-film* /tmp/mini-film-sampler-* /tmp/mini-film 2>/dev/null || true

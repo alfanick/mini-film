@@ -244,6 +244,15 @@ jobs:
           path: artifacts/*
           if-no-files-found: error
 
+      - name: Cleanup self-hosted build artifacts
+        if: always() && matrix.runs_on == 'self-hosted'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf target artifacts /tmp/mini-film* /tmp/mini-film-sampler-* 2>/dev/null || true
+          du -sh /tmp 2>/dev/null || true
+
   publish-release:
     name: Publish release
     runs-on: self-hosted
@@ -307,3 +316,10 @@ jobs:
           body_path: release-notes.md
           files: |
             artifacts/*
+
+      - name: Cleanup self-hosted release workspace
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf artifacts /tmp/mini-film* /tmp/mini-film-sampler-* 2>/dev/null || true
