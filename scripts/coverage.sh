@@ -19,4 +19,14 @@ cargo llvm-cov \
   --lcov \
   --output-path target/coverage/lcov.info
 
-echo "Coverage report written to target/coverage/lcov.info"
+echo "Generating coverage summary"
+cargo llvm-cov report \
+  --json \
+  --summary-only \
+  --output-path target/coverage/coverage-summary.json
+
+cat <<'EOF'
+Coverage artifacts:
+  - target/coverage/lcov.info
+  - target/coverage/coverage-summary.json
+EOF

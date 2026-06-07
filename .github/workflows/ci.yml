@@ -128,6 +128,32 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
+          if [[ -f target/coverage/coverage-summary.json ]]; then
+            {
+              echo
+              echo "### Coverage summary"
+              python - <<'PY'
+import json
+
+with open("target/coverage/coverage-summary.json", "r", encoding="utf-8") as f:
+    data = json.load(f)
+
+totals = data["data"][0]["totals"]
+line = totals["lines"]["percent"]
+function = totals["functions"]["percent"]
+region = totals["regions"]["percent"]
+
+print(f"- Lines: {line:.2f}%")
+print(f"- Functions: {function:.2f}%")
+print(f"- Regions: {region:.2f}%")
+PY
+              echo
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### Coverage summary" >> "$GITHUB_STEP_SUMMARY"
+            echo "Coverage summary artifact was not generated in this run." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
           {
             echo
             if grep -q "FAILED" /tmp/unit-tests.log; then
