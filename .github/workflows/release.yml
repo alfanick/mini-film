@@ -165,6 +165,45 @@ jobs:
             cargo build --release --locked --target "${{ matrix.target }}" "${feature_args[@]}"
           fi
 
+      - name: Publish to crates.io
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          token_file="${CARGO_REGISTRY_TOKEN_FILE:-/home/alfanick/.etcfiles/.cargo_registry_token}"
+          if [ ! -f "$token_file" ]; then
+            echo "Cargo registry token file not found: $token_file" >&2
+            exit 1
+          fi
+
+          token="$(tr -d '[:space:]' < "$token_file")"
+          if [ -z "$token" ]; then
+            echo "Cargo registry token file is empty: $token_file" >&2
+            exit 1
+          fi
+
+          publish_output="$(mktemp)"
+          set +e
+          cargo publish --locked --no-verify --token "$token" >"$publish_output" 2>&1
+          publish_status=$?
+          set -e
+
+          if [ "$publish_status" -ne 0 ]; then
+            if grep -q "already uploaded" "$publish_output"; then
+              echo "crate version already published; skipping crates.io publish."
+            else
+              cat "$publish_output" >&2
+              rm -f "$publish_output"
+              exit "$publish_status"
+            fi
+          else
+            echo "published mini-film to crates.io"
+            cat "$publish_output"
+          fi
+
+          rm -f "$publish_output"
+
       - name: Prepare artifact
         shell: bash
         run: |
