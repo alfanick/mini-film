@@ -155,17 +155,17 @@ The command validates all profiles on startup, so mistyped `--profile` values fa
 immediately. It watches the input directory recursively, waits for the file to
 be reported as completed by the watcher (or a short fallback window when that
 signal is not available), and writes each
-result as:
+result into:
 
 ```text
-<raw relative structure>/<raw stem> - <profile stem>.<ext>
+<raw relative structure>/<profile stem>/<raw stem>.<ext>
 ```
 
 For example, `/in/2026/05/03/DSC_1864-14.dng` with profiles `Foil` and `Classic`
 becomes:
 
-- `/out/2026/05/03/DSC_1864-14 - Foil.jpg`
-- `/out/2026/05/03/DSC_1864-14 - Classic.jpg`
+- `/out/2026/05/03/Foil/DSC_1864-14.jpg`
+- `/out/2026/05/03/Classic/DSC_1864-14.jpg`
 
 If profile resolution fails for any selector, startup stops with a clear error.
 
@@ -238,7 +238,7 @@ JPEG subsampling values:
 - a Hald PNG path
 - a RawTherapee `.pp3` path
 - an emulation XMP path containing `crs:Look` plus optional grain settings
-- an emulation name, searched under `emulations/`
+- an emulation name, searched under `emulations/` using case-insensitive fuzzy matching
 - a generated Hald name, searched under `--hald-dir`, which defaults to `$HOME/.cache/mini-film/hald`
 
 RGBTable XMPs under `profiles/` are internal lookup tables. `apply`, `batch`, and `sampler` do not use them as user-facing emulations; they are only used to resolve linked `crs:Look` UUID/name references from emulation XMPs. `mini-film` generates or reuses a cached Hald from the linked profile under `$HOME/.cache/mini-film/hald`, generates temporary RawTherapee `.pp3` files for supported XMP adjustments and Film Simulation, lets RawTherapee apply the Hald, then applies the emulation grain settings.
