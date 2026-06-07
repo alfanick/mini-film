@@ -259,6 +259,9 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
         }
 
         if queue.is_empty() && in_flight.is_empty() {
+            batch.reset_eta();
+            batch.set_length(0);
+            batch.set_position(0);
             batch.set_message("waiting for pictures".to_string());
         } else {
             batch.set_message(format!(
