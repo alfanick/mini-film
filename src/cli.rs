@@ -44,8 +44,8 @@ pub(crate) enum CommandKind {
         profile: String,
 
         /// Film library root. Emulation XMPs are selected from emulations/ and RGBTable profiles from profiles/.
-        #[arg(long, default_value = ".")]
-        profiles_root: PathBuf,
+        #[arg(long)]
+        profiles_root: Option<PathBuf>,
 
         /// Directory containing generated cached Hald PNGs. Defaults to $HOME/.cache/mini-film/hald.
         #[arg(long)]
@@ -66,8 +66,8 @@ pub(crate) enum CommandKind {
         output: PathBuf,
 
         /// Film library root. Emulation XMPs are selected from emulations/ and RGBTable profiles from profiles/.
-        #[arg(long, default_value = ".")]
-        profiles_root: PathBuf,
+        #[arg(long)]
+        profiles_root: Option<PathBuf>,
 
         /// Directory containing generated cached Hald PNGs. Defaults to $HOME/.cache/mini-film/hald.
         #[arg(long)]
@@ -96,8 +96,8 @@ pub(crate) enum CommandKind {
         name: Option<String>,
 
         /// Film library root. Emulation XMPs are selected from emulations/ and RGBTable profiles from profiles/.
-        #[arg(long, default_value = ".")]
-        profiles_root: PathBuf,
+        #[arg(long)]
+        profiles_root: Option<PathBuf>,
 
         /// Directory containing generated cached Hald PNGs. Defaults to $HOME/.cache/mini-film/hald.
         #[arg(long)]
@@ -127,8 +127,8 @@ pub(crate) enum CommandKind {
         hald_dir: Option<PathBuf>,
 
         /// Film library root. Emulation XMPs are selected from emulations/ and RGBTable profiles from profiles/.
-        #[arg(long, default_value = ".")]
-        profiles_root: PathBuf,
+        #[arg(long)]
+        profiles_root: Option<PathBuf>,
 
         /// Hald level to use when --profile points to an XMP or resolves to an XMP.
         #[arg(short = 'l', long, default_value_t = DEFAULT_HALD_LEVEL)]
@@ -213,8 +213,8 @@ pub(crate) enum CommandKind {
         hald_dir: Option<PathBuf>,
 
         /// Film library root. Emulation XMPs are selected from emulations/ and RGBTable profiles from profiles/.
-        #[arg(long, default_value = ".")]
-        profiles_root: PathBuf,
+        #[arg(long)]
+        profiles_root: Option<PathBuf>,
 
         /// Hald level to use when --profile points to an XMP or resolves to an XMP.
         #[arg(short = 'l', long, default_value_t = DEFAULT_HALD_LEVEL)]
@@ -296,8 +296,8 @@ pub(crate) enum CommandKind {
         output: PathBuf,
 
         /// Film library root. Sampler reads emulation XMPs from emulations/ and resolves RGBTables from profiles/.
-        #[arg(long, default_value = ".")]
-        profiles_root: PathBuf,
+        #[arg(long)]
+        profiles_root: Option<PathBuf>,
 
         /// Directory containing generated cached Hald PNGs. Defaults to $HOME/.cache/mini-film/hald.
         #[arg(long)]
@@ -379,8 +379,8 @@ pub(crate) enum CommandKind {
         hald_dir: Option<PathBuf>,
 
         /// Film library root. Emulation XMPs are selected from emulations/ and RGBTables from profiles/.
-        #[arg(long, default_value = ".")]
-        profiles_root: PathBuf,
+        #[arg(long)]
+        profiles_root: Option<PathBuf>,
 
         /// Hald level used when --profile resolves to emulation XMPs.
         #[arg(short = 'l', long, default_value_t = DEFAULT_HALD_LEVEL)]

@@ -61,7 +61,7 @@ fn main() -> Result<()> {
             hald_level,
         } => run_info(InfoArgs {
             profile,
-            profiles_root,
+            profiles_root: resolve_profiles_root(profiles_root),
             hald_dir: hald_dir.unwrap_or_else(default_hald_dir),
             hald_level,
         }),
@@ -74,7 +74,7 @@ fn main() -> Result<()> {
         } => run_pp3(Pp3Args {
             profile,
             output,
-            profiles_root,
+            profiles_root: resolve_profiles_root(profiles_root),
             hald_dir: hald_dir.unwrap_or_else(default_hald_dir),
             hald_level,
         }),
@@ -91,7 +91,7 @@ fn main() -> Result<()> {
             output,
             report,
             name,
-            profiles_root,
+            profiles_root: resolve_profiles_root(profiles_root),
             hald_dir: hald_dir.unwrap_or_else(default_hald_dir),
             hald_level,
         }),
@@ -122,7 +122,7 @@ fn main() -> Result<()> {
             output,
             profile,
             hald_dir: hald_dir.unwrap_or_else(default_hald_dir),
-            profiles_root,
+            profiles_root: resolve_profiles_root(profiles_root),
             hald_level,
             rawtherapee,
             convert,
@@ -170,7 +170,7 @@ fn main() -> Result<()> {
             output,
             profile,
             hald_dir: hald_dir.unwrap_or_else(default_hald_dir),
-            profiles_root,
+            profiles_root: resolve_profiles_root(profiles_root),
             hald_level,
             rawtherapee,
             convert,
@@ -220,7 +220,7 @@ fn main() -> Result<()> {
             output,
             profile,
             hald_dir: hald_dir.unwrap_or_else(default_hald_dir),
-            profiles_root,
+            profiles_root: resolve_profiles_root(profiles_root),
             hald_level,
             rawtherapee,
             convert,
@@ -264,7 +264,7 @@ fn main() -> Result<()> {
         } => run_sampler(SamplerArgs {
             raw,
             output,
-            profiles_root,
+            profiles_root: resolve_profiles_root(profiles_root),
             hald_dir: hald_dir.unwrap_or_else(default_hald_dir),
             hald_level,
             rawtherapee,
@@ -356,6 +356,21 @@ fn resolve_dependency_path(args: &[String], flag: &str, default: &str) -> PathBu
         }
     }
     PathBuf::from(default)
+}
+
+fn resolve_profiles_root(explicit: Option<PathBuf>) -> PathBuf {
+    if let Some(explicit) = explicit {
+        return explicit;
+    }
+
+    if let Ok(profiles_root) = env::var("MINI_FILM_PROFILES_ROOT") {
+        let trimmed = profiles_root.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+
+    PathBuf::from(".")
 }
 
 fn verify_dependency_binary(name: &str, path: &Path) -> Result<()> {
