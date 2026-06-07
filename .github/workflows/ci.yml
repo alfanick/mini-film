@@ -102,11 +102,6 @@ jobs:
       - name: Run clippy
         run: cargo clippy --all-targets -- -D warnings
 
-      - name: Cleanup self-hosted workspace (post-cache lifecycle)
-        if: always()
-        run: |
-          ./.github/scripts/cleanup-build-dir.sh
-
   tag-on-version-bump:
     name: Tag release
     runs-on: self-hosted
@@ -172,5 +167,17 @@ jobs:
 
       - name: Cleanup self-hosted runner metadata
         if: always()
+        run: |
+          ./.github/scripts/cleanup-build-dir.sh
+
+  cleanup-runner:
+    name: Cleanup self-hosted workspace
+    runs-on: self-hosted
+    needs: test-and-lint
+    if: always()
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Cleanup self-hosted workspace
         run: |
           ./.github/scripts/cleanup-build-dir.sh
