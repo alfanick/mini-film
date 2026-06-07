@@ -255,12 +255,6 @@ jobs:
           path: artifacts/*
           if-no-files-found: error
 
-      - name: Cleanup self-hosted build artifacts
-        if: always() && matrix.runs_on == 'self-hosted'
-        shell: bash
-        run: |
-          ./.github/scripts/cleanup-build-dir.sh
-
   publish-release:
     name: Publish release
     runs-on: self-hosted
@@ -324,9 +318,3 @@ jobs:
           body_path: release-notes.md
           files: |
             artifacts/*
-
-      - name: Cleanup self-hosted release workspace
-        if: always()
-        shell: bash
-        run: |
-          ./.github/scripts/cleanup-build-dir.sh
