@@ -407,7 +407,7 @@ mod tests {
 
     fn write_helper_binary(path: &Path, exit_code: i32) -> PathBuf {
         let mut file = File::create(path).unwrap();
-        writeln!(file, "#!/usr/bin/env bash").unwrap();
+        writeln!(file, "#!/bin/sh").unwrap();
         writeln!(file, "exit {exit_code}").unwrap();
         file.flush().unwrap();
         let mut permissions = fs::metadata(path).unwrap().permissions();
@@ -469,6 +469,7 @@ mod tests {
         }
         let env_path = resolve_profiles_root(None);
         assert_eq!(env_path, PathBuf::from("/tmp/from-env"));
+        let expected_when_unset = env_previous.clone();
 
         if let Some(previous) = env_previous {
             unsafe {
@@ -484,7 +485,8 @@ mod tests {
             resolve_profiles_root(Some(PathBuf::from("/tmp/explicit"))),
             PathBuf::from("/tmp/explicit")
         );
-        assert_eq!(resolve_profiles_root(None), PathBuf::from("."));
+        let expected = expected_when_unset.unwrap_or_else(|| ".".to_string());
+        assert_eq!(resolve_profiles_root(None), PathBuf::from(expected));
     }
 
     #[test]

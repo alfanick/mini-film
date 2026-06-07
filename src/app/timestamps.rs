@@ -1,7 +1,7 @@
 use std::fs::{self, File};
 use std::io::BufReader;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
@@ -33,6 +33,8 @@ pub(crate) fn sync_output_metadata_from_raw(
 ) -> Result<()> {
     let mut command = Command::new("exiftool");
     command
+        .arg("-q")
+        .arg("-quiet")
         .arg("-overwrite_original")
         .arg("-m")
         .arg("-TagsFromFile")
@@ -45,6 +47,7 @@ pub(crate) fn sync_output_metadata_from_raw(
     }
 
     command.arg(output);
+    command.stdout(Stdio::null()).stderr(Stdio::null());
 
     let status = command
         .status()
