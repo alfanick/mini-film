@@ -489,7 +489,8 @@ mod tests {
 
     #[test]
     fn startup_dependency_check_respects_fake_binaries() {
-        let root = tempfile::tempdir().unwrap();
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let root = tempfile::tempdir_in(cwd).unwrap();
         let rawtherapee = write_helper_binary(&root.path().join("rawtherapee-cli"), 0);
         let convert = write_helper_binary(&root.path().join("convert"), 0);
         let args = vec![
