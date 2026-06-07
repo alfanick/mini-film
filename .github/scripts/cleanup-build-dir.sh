@@ -33,12 +33,7 @@ if [[ -n "$GITHUB_WORKSPACE" && -d "$GITHUB_WORKSPACE" ]]; then
   find "$GITHUB_WORKSPACE" -xdev -type d -name target -print0 | xargs -0 rm -rf 2>/dev/null || true
 fi
 
-if [[ -d "$TMPDIR" ]]; then
-  find "$TMPDIR" -maxdepth 1 -type d -name "mini-film*" -print0 | xargs -0 rm -rf 2>/dev/null || true
-fi
-
-if [[ -d "$HOME/.cache" ]]; then
-  find "$HOME/.cache" -maxdepth 1 -type d -name 'mini-film*' -print0 | xargs -0 rm -rf 2>/dev/null || true
-fi
+# Keep mini-film temporary cache artifacts in /tmp untouched to preserve sampler cache
+# and avoid unnecessary recompute on subsequent runs.
 
 log_space "After cleanup"
