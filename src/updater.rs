@@ -22,10 +22,7 @@ fn check_for_update_with_timeout(timeout: Duration) -> bool {
         let _ = sender.send(check_for_update());
     });
 
-    match receiver.recv_timeout(timeout) {
-        Ok(Ok(())) => true,
-        _ => false,
-    }
+    matches!(receiver.recv_timeout(timeout), Ok(Ok(())))
 }
 
 #[cfg(feature = "github-update")]

@@ -220,3 +220,226 @@ impl Default for HaldOptions {
         }
     }
 }
+
+pub fn dummy_converted_profile() -> ConvertedProfile {
+    ConvertedProfile {
+        input: PathBuf::from("/tmp/profile-source.xmp"),
+        output: Some(PathBuf::from("/tmp/profile-output.png")),
+        profile: XmpRgbTable {
+            name: Some("Sample profile".to_string()),
+            group: Some("Test".to_string()),
+            uuid: Some("DEADBEEF".to_string()),
+            table_id: "table-id".to_string(),
+            encoded: String::from("dummy"),
+        },
+        table: RgbTable {
+            dimensions: 3,
+            divisions: 32,
+            samples: Vec::new(),
+            primaries: 1,
+            gamma: 2,
+            gamut: 1,
+            min_amount: 0.0,
+            max_amount: 1.0,
+            flags: Some(42),
+        },
+        adjustments: ProfileAdjustments::default(),
+        sharpening: SharpeningSettings::default(),
+    }
+}
+
+pub fn non_default_adjustments() -> ProfileAdjustments {
+    ProfileAdjustments {
+        exposure: 0.2,
+        contrast: 0.1,
+        highlights: 0.3,
+        shadows: -0.2,
+        whites: 0.1,
+        blacks: -0.1,
+        saturation: 0.5,
+        vibrance: -0.5,
+        clarity: 0.4,
+        parametric: ParametricTone {
+            shadows: 10.0,
+            darks: 11.0,
+            lights: 12.0,
+            highlights: 13.0,
+            shadow_split: 20.0,
+            midtone_split: 55.0,
+            highlight_split: 80.0,
+        },
+        hsl: HslAdjustments {
+            hue: [0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            saturation: [0.0; 8],
+            luminance: [0.0; 8],
+        },
+        calibration: CalibrationAdjustments {
+            red_hue: 1.0,
+            red_saturation: 0.0,
+            green_hue: 0.0,
+            green_saturation: 0.0,
+            blue_hue: 0.0,
+            blue_saturation: 0.0,
+        },
+        tone_curve: ToneCurves {
+            composite: vec![(0.0, 0.0), (1.0, 1.0)],
+            red: vec![(0.0, 0.0), (1.0, 1.0)],
+            green: vec![(0.0, 0.0), (1.0, 1.0)],
+            blue: vec![(0.0, 0.0), (1.0, 1.0)],
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grain_settings_default_is_disabled() {
+        assert!(!GrainSettings::default().is_enabled());
+        assert!(
+            GrainSettings {
+                amount: 1,
+                size: 0,
+                frequency: 0,
+            }
+            .is_enabled()
+        );
+    }
+
+    #[test]
+    fn sharpening_is_enabled_only_when_present_and_positive() {
+        assert!(!SharpeningSettings::default().is_enabled());
+        assert!(
+            !SharpeningSettings {
+                present: true,
+                amount: 0.0,
+                radius: 1.0,
+                detail: 0.0,
+                masking: 0.0,
+            }
+            .is_enabled()
+        );
+        assert!(
+            !SharpeningSettings {
+                present: true,
+                amount: 1.0,
+                radius: 0.0,
+                detail: 0.0,
+                masking: 0.0,
+            }
+            .is_enabled()
+        );
+        assert!(
+            SharpeningSettings {
+                present: true,
+                amount: 1.0,
+                radius: 1.0,
+                detail: 0.0,
+                masking: 0.0,
+            }
+            .is_enabled()
+        );
+    }
+
+    #[test]
+    fn profile_adjustments_default_detects_nested_changes() {
+        assert!(ProfileAdjustments::default().is_default());
+
+        let changed = ProfileAdjustments {
+            exposure: 0.1,
+            ..Default::default()
+        };
+        assert!(!changed.is_default());
+
+        let changed = ProfileAdjustments {
+            parametric: ParametricTone {
+                shadows: 1.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(!changed.is_default());
+
+        let changed = ProfileAdjustments {
+            hsl: HslAdjustments {
+                hue: [0.0; 8],
+                saturation: [1.0; 8],
+                luminance: [0.0; 8],
+            },
+            ..Default::default()
+        };
+        assert!(!changed.is_default());
+
+        let changed = ProfileAdjustments {
+            calibration: CalibrationAdjustments {
+                red_hue: 1.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(!changed.is_default());
+
+        let changed = ProfileAdjustments {
+            tone_curve: ToneCurves {
+                composite: vec![(0.0, 0.0), (1.0, 2.0)],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(!changed.is_default());
+    }
+
+    #[test]
+    fn hsl_adjustments_are_default_when_clear() {
+        assert!(HslAdjustments::default().is_default());
+        assert!(
+            !HslAdjustments {
+                hue: [0.1; 8],
+                saturation: [0.0; 8],
+                luminance: [0.0; 8],
+            }
+            .is_default()
+        );
+    }
+
+    #[test]
+    fn calibration_is_default_and_non_default() {
+        assert!(CalibrationAdjustments::default().is_default());
+        assert!(
+            !CalibrationAdjustments {
+                red_hue: 1.0,
+                ..Default::default()
+            }
+            .is_default()
+        );
+    }
+
+    #[test]
+    fn tone_curves_default_detects_identity() {
+        let identity = ToneCurves::default();
+        assert!(identity.is_default());
+
+        let non_identity = ToneCurves {
+            composite: vec![(0.0, 0.0), (1.0, 2.0)],
+            red: vec![(0.0, 0.0), (1.0, 1.0)],
+            green: Vec::new(),
+            blue: Vec::new(),
+        };
+        assert!(!non_identity.is_default());
+    }
+
+    #[test]
+    fn hald_options_default_values() {
+        let options = HaldOptions::default();
+        assert_eq!(options.hald_level, 16);
+        assert!(!options.overwrite);
+        assert!(!options.info_only);
+    }
+
+    #[test]
+    fn batch_summary_defaults_to_zero() {
+        assert_eq!(BatchSummary::default().converted, 0);
+        assert_eq!(BatchSummary::default().skipped, 0);
+    }
+}

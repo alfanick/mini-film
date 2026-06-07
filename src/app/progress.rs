@@ -249,6 +249,8 @@ pub(crate) fn format_duration(duration: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use indicatif::ProgressBar;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn progress_positions_scale_logical_steps_to_fixed_units() {
@@ -280,5 +282,56 @@ mod tests {
     fn format_duration_switches_to_minute_format_after_sixty_seconds() {
         assert_eq!(format_duration(Duration::from_millis(1234)), "1.234s");
         assert_eq!(format_duration(Duration::from_millis(61_002)), "1m01.002s");
+    }
+
+    #[test]
+    fn progress_step_is_noop_without_progress() {
+        progress_step(None, 1, "noop");
+    }
+
+    #[test]
+    fn progress_stage_is_inactive_without_progress() {
+        let stage = progress_stage(None, 1, 2, "step", Duration::from_millis(1));
+        stage.finish();
+    }
+
+    #[test]
+    fn progress_stage_adaptive_records_estimate_when_progress_provided() {
+        let bar = ProgressBar::new(progress_length());
+        let started = Instant::now();
+        let estimates = StageEstimates::default();
+        let progress = ApplyProgress {
+            file: &bar,
+            started,
+            estimates: Some(std::sync::Arc::new(estimates)),
+        };
+        {
+            let stage = progress_stage_adaptive(
+                Some(&progress),
+                1,
+                2,
+                "estimate",
+                "message",
+                Duration::from_millis(10),
+            );
+            stage.finish();
+        }
+
+        assert!(
+            progress
+                .estimates
+                .as_ref()
+                .expect("missing estimates")
+                .estimate("estimate", Duration::from_secs(99))
+                >= Duration::from_millis(10)
+        );
+    }
+
+    #[test]
+    fn set_progress_formats_step_message_and_position() {
+        let bar = ProgressBar::new(progress_length());
+        let started = Instant::now();
+        set_progress(&bar, started, 10, "running");
+        assert_eq!(bar.position(), 10);
     }
 }

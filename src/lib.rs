@@ -18,7 +18,7 @@ pub use hald::{
 pub use model::{
     BatchSummary, CalibrationAdjustments, ConvertedProfile, GrainSettings, HaldOptions,
     HslAdjustments, ParametricTone, ProfileAdjustments, RgbTable, SharpeningSettings, ToneCurves,
-    XmpFilmRecipe, XmpRgbTable,
+    XmpFilmRecipe, XmpRgbTable, dummy_converted_profile, non_default_adjustments,
 };
 pub use nikon::{
     NikonPictureControl, NikonReport, fit_nikon_picture_control,

@@ -246,3 +246,200 @@ fn print_nonzero_f32(label: &str, value: f32) {
         println!("{label}: {value:.2}");
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mini_film::{
+        GrainSettings, HaldOptions, ParametricTone, ProfileAdjustments, SharpeningSettings,
+        XmpFilmRecipe, dummy_converted_profile, non_default_adjustments,
+    };
+    use std::path::PathBuf;
+
+    #[test]
+    fn print_optional_ignores_empty_and_prints_value() {
+        print_optional("Name", None);
+        print_optional("Name", Some(""));
+        print_optional("Name", Some("Film"));
+    }
+
+    #[test]
+    fn print_nonzero_f32_only_prints_nonzero() {
+        print_nonzero_f32("value", 0.0);
+        print_nonzero_f32("value", 0.5);
+    }
+
+    #[test]
+    fn print_curve_handles_empty_and_non_empty() {
+        print_curve("curve", &[]);
+        print_curve("curve", &[(0.0, 0.0), (0.25, 0.35), (1.0, 1.0)]);
+    }
+
+    #[test]
+    fn print_curves_prints_all_channels() {
+        let curves = mini_film::ToneCurves {
+            composite: vec![(0.0, 0.0)],
+            red: vec![(0.0, 0.0)],
+            green: vec![(0.0, 0.0)],
+            blue: vec![],
+        };
+        print_curves(&curves);
+    }
+
+    #[test]
+    fn print_hsl_prints_non_zero_channels_only() {
+        let adjustment = mini_film::HslAdjustments {
+            hue: [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0],
+            saturation: [0.0; 8],
+            luminance: [0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        };
+        print_hsl(&adjustment);
+    }
+
+    #[test]
+    fn print_parametric_skips_default_and_prints_changed() {
+        print_parametric(ParametricTone::default());
+        print_parametric(ParametricTone {
+            shadows: 1.0,
+            darks: 0.0,
+            lights: 0.0,
+            highlights: 0.0,
+            shadow_split: 25.0,
+            midtone_split: 50.0,
+            highlight_split: 75.0,
+        });
+    }
+
+    #[test]
+    fn print_calibration_skips_default_and_prints_changed() {
+        print_calibration(mini_film::CalibrationAdjustments::default());
+        print_calibration(mini_film::CalibrationAdjustments {
+            red_hue: 1.0,
+            red_saturation: 2.0,
+            green_hue: 0.0,
+            green_saturation: 0.0,
+            blue_hue: 0.0,
+            blue_saturation: 0.0,
+        });
+    }
+
+    #[test]
+    fn print_sharpening_prints_none_and_settings() {
+        print_sharpening(SharpeningSettings {
+            present: false,
+            amount: 0.0,
+            radius: 0.0,
+            detail: 0.0,
+            masking: 0.0,
+        });
+        print_sharpening(SharpeningSettings {
+            present: true,
+            amount: 1.0,
+            radius: 2.0,
+            detail: 3.0,
+            masking: 4.0,
+        });
+    }
+
+    #[test]
+    fn print_grain_prints_none_and_settings() {
+        print_grain(GrainSettings {
+            amount: 0,
+            size: 0,
+            frequency: 0,
+        });
+        print_grain(GrainSettings {
+            amount: 1,
+            size: 2,
+            frequency: 3,
+        });
+    }
+
+    #[test]
+    fn print_adjustments_prints_default_and_non_default() {
+        let default = ProfileAdjustments::default();
+        print_adjustments(&default);
+        print_adjustments(&non_default_adjustments());
+    }
+
+    #[test]
+    fn print_converted_profile_prints_values() {
+        print_converted_profile(&dummy_converted_profile());
+    }
+
+    #[test]
+    fn print_recipe_identity_prints_selected_values() {
+        let recipe = XmpFilmRecipe {
+            name: Some("Film".into()),
+            group: Some("Color".into()),
+            uuid: Some("UUID".into()),
+            look_uuid: Some("LOOK".into()),
+            look_name: Some("LkName".into()),
+            rgb_table: None,
+            grain: GrainSettings::default(),
+            adjustments: ProfileAdjustments::default(),
+            sharpening: SharpeningSettings::default(),
+        };
+        print_recipe_identity(&recipe);
+    }
+
+    #[test]
+    fn print_profile_info_for_all_variants() {
+        print_profile_info(&ProfileInfo::HaldPng {
+            path: PathBuf::from("/tmp/hald.png"),
+        });
+        print_profile_info(&ProfileInfo::RawTherapeePp3 {
+            path: PathBuf::from("/tmp/profile.pp3"),
+        });
+        print_profile_info(&ProfileInfo::RgbTableProfile {
+            path: PathBuf::from("/tmp/table.xmp"),
+            converted: Box::new(dummy_converted_profile()),
+            hald_path: PathBuf::from("/tmp/hald-cache.png"),
+        });
+        print_profile_info(&ProfileInfo::Emulation {
+            path: PathBuf::from("/tmp/emulation.xmp"),
+            recipe: Box::new(XmpFilmRecipe {
+                name: Some("Film".into()),
+                group: Some("Group".into()),
+                uuid: Some("UUID".into()),
+                look_uuid: Some("LOOK-UUID".into()),
+                look_name: Some("Look Name".into()),
+                rgb_table: None,
+                grain: GrainSettings::default(),
+                adjustments: ProfileAdjustments::default(),
+                sharpening: SharpeningSettings::default(),
+            }),
+            source: PathBuf::from("/tmp/source.xmp"),
+            converted: Box::new(dummy_converted_profile()),
+            hald_path: PathBuf::from("/tmp/emulation.hald.png"),
+        });
+    }
+
+    #[test]
+    fn run_printing_with_non_default_converted_values() {
+        let mut converted = dummy_converted_profile();
+        converted.adjustments = non_default_adjustments();
+        converted.sharpening = SharpeningSettings {
+            present: true,
+            amount: 1.2,
+            radius: 0.8,
+            detail: 0.5,
+            masking: 0.4,
+        };
+        print_converted_profile(&converted);
+    }
+
+    #[test]
+    fn print_adjustments_are_default_when_profile_is_default() {
+        assert!(ProfileAdjustments::default().is_default());
+        assert!(!non_default_adjustments().is_default());
+    }
+
+    #[test]
+    fn test_is_supported_hald_options_default() {
+        let default = HaldOptions::default();
+        assert_eq!(default.hald_level, 16);
+        assert!(!default.overwrite);
+        assert!(!default.info_only);
+    }
+}

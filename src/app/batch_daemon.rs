@@ -610,6 +610,11 @@ fn elapsed_human(elapsed: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use notify::event::{
+        AccessKind, AccessMode, CreateKind, DataChange, EventKind, MetadataKind, ModifyKind,
+        RenameMode,
+    };
+    use std::collections::HashMap;
 
     #[test]
     fn daemon_output_path_keeps_input_tree_and_uses_profile_dir() {
@@ -638,5 +643,127 @@ mod tests {
             stable_profile_seed(1, Path::new("a.RAW"), 0),
             stable_profile_seed(2, Path::new("a.RAW"), 0)
         );
+    }
+
+    #[test]
+    fn resolve_batch_daemon_jobs_validates_bounds() {
+        assert_eq!(resolve_batch_daemon_jobs(Some(4)).unwrap(), 4);
+        assert!(resolve_batch_daemon_jobs(Some(0)).is_err());
+    }
+
+    #[test]
+    fn event_helpers_recognize_close_or_rename_events() {
+        assert_eq!(
+            event_stability_delay(
+                &EventKind::Access(AccessKind::Close(AccessMode::Any)),
+                Duration::ZERO
+            ),
+            Duration::ZERO
+        );
+        assert_eq!(
+            event_stability_delay(
+                &EventKind::Modify(ModifyKind::Name(RenameMode::Both)),
+                Duration::from_millis(250),
+            ),
+            Duration::ZERO
+        );
+        assert_eq!(
+            event_stability_delay(
+                &EventKind::Modify(ModifyKind::Data(DataChange::Any)),
+                Duration::from_millis(250),
+            ),
+            Duration::from_millis(250)
+        );
+    }
+
+    #[test]
+    fn event_relevance_matches_expected_variants() {
+        assert!(is_relevant_daemon_event(&EventKind::Access(
+            AccessKind::Close(AccessMode::Any)
+        )));
+        assert!(is_relevant_daemon_event(&EventKind::Modify(
+            ModifyKind::Data(DataChange::Any)
+        )));
+        assert!(is_relevant_daemon_event(&EventKind::Modify(
+            ModifyKind::Metadata(MetadataKind::Any)
+        )));
+        assert!(is_relevant_daemon_event(&EventKind::Modify(
+            ModifyKind::Name(RenameMode::To)
+        )));
+        assert!(is_relevant_daemon_event(&EventKind::Create(
+            CreateKind::File
+        )));
+        assert!(is_relevant_daemon_event(&EventKind::Any));
+        assert!(!is_relevant_daemon_event(&EventKind::Remove(
+            notify::event::RemoveKind::File
+        )));
+    }
+
+    #[test]
+    fn collect_due_paths_returns_stable_raws_and_requeues_changed() {
+        let root = tempfile::tempdir().unwrap();
+        let raw = root.path().join("frame.NEF");
+        fs::write(&raw, b"hello").unwrap();
+        let metadata = fs::metadata(&raw).unwrap();
+
+        let mut pending = HashMap::new();
+        pending.insert(
+            raw.clone(),
+            PendingFile {
+                path: raw.clone(),
+                process_at: Instant::now() - Duration::from_millis(1),
+                size: metadata.len(),
+                modified: metadata.modified().ok(),
+            },
+        );
+        let due = collect_due_paths(&mut pending, Duration::ZERO);
+        assert_eq!(due.len(), 1);
+        assert!(pending.is_empty());
+
+        let metadata = fs::metadata(&raw).unwrap();
+        pending.insert(
+            raw.clone(),
+            PendingFile {
+                path: raw.clone(),
+                process_at: Instant::now() - Duration::from_millis(1),
+                size: metadata.len(),
+                modified: metadata.modified().ok(),
+            },
+        );
+        fs::write(&raw, b"hello world").unwrap();
+        let due = collect_due_paths(&mut pending, Duration::ZERO);
+        assert!(due.is_empty());
+        assert!(pending.contains_key(&raw));
+
+        let future = Instant::now() + Duration::from_secs(30);
+        pending.insert(
+            raw.clone(),
+            PendingFile {
+                path: raw.clone(),
+                process_at: future,
+                size: metadata.len(),
+                modified: metadata.modified().ok(),
+            },
+        );
+        let due = collect_due_paths(&mut pending, Duration::from_secs(30));
+        assert!(due.is_empty());
+        assert_eq!(pending.len(), 1);
+    }
+
+    #[test]
+    fn queue_raw_file_ignores_non_raw_and_keeps_supported() {
+        let root = tempfile::tempdir().unwrap();
+        let mut pending = HashMap::new();
+
+        let supported = root.path().join("frame.NEF");
+        fs::write(&supported, b"raw").unwrap();
+        let unsupported = root.path().join("notes.txt");
+        fs::write(&unsupported, b"text").unwrap();
+
+        queue_raw_file(&mut pending, supported.clone(), Duration::ZERO);
+        queue_raw_file(&mut pending, unsupported.clone(), Duration::ZERO);
+
+        assert!(pending.contains_key(&supported));
+        assert!(!pending.contains_key(&unsupported));
     }
 }

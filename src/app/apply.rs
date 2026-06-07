@@ -357,8 +357,14 @@ fn parse_grain_part(value: &str, name: &str) -> Result<u8> {
 
 #[cfg(test)]
 mod tests {
+    const RAWTHAPE_HELPER_SCRIPT: &str = include_str!("../../scripts/tests/rawtherapee_helper.sh");
+    const CONVERT_HELPER_SCRIPT: &str = include_str!("../../scripts/tests/convert_helper.sh");
+
     use super::*;
-    use std::io::Write;
+    use crate::app::profile::ResolvedProfile;
+    use crate::cli::ExportOptions;
+    use image::{ImageBuffer, ImageFormat, Rgb};
+    use std::{fs, os::unix::fs::PermissionsExt};
 
     #[test]
     fn grain_override_accepts_tuple_presets_and_none() {
@@ -396,10 +402,7 @@ mod tests {
     fn duration_estimates_are_clamped_and_depend_on_output_path() {
         let dir = tempfile::tempdir().unwrap();
         let raw = dir.path().join("raw.dng");
-        std::fs::File::create(&raw)
-            .unwrap()
-            .write_all(&vec![0u8; 2 * 1024 * 1024])
-            .unwrap();
+        fs::write(&raw, vec![0u8; 2 * 1024 * 1024]).unwrap();
 
         let jpeg = estimate_rawtherapee_duration(&raw, true);
         let tiff = estimate_rawtherapee_duration(&raw, false);
@@ -412,5 +415,228 @@ mod tests {
     #[test]
     fn missing_file_size_returns_none() {
         assert!(file_size_mib(Path::new("/definitely/missing/raw.dng")).is_none());
+    }
+
+    struct FakeRawtherapee {
+        log: PathBuf,
+    }
+
+    fn write_fake_rawtherapee(path: &Path, output_image: &Path) -> Result<FakeRawtherapee> {
+        let tmp = path.with_extension("tmp");
+        let rendered = RAWTHAPE_HELPER_SCRIPT
+            .replace(
+                "__LOG_FILE__",
+                &path.with_file_name("raw.log").display().to_string(),
+            )
+            .replace("__OUTPUT_IMAGE__", &output_image.display().to_string())
+            .replace("__CREATE_OUTPUT__", "1")
+            .replace("__EXIT_CODE__", "0");
+        fs::write(&tmp, rendered)?;
+        fs::rename(&tmp, path)?;
+        let mut permissions = fs::metadata(path)?.permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions)?;
+
+        Ok(FakeRawtherapee {
+            log: path.with_file_name("raw.log"),
+        })
+    }
+
+    fn write_fake_convert(path: &Path) -> Result<PathBuf> {
+        let tmp = path.with_extension("tmp");
+        let rendered = CONVERT_HELPER_SCRIPT
+            .replace(
+                "__LOG_FILE__",
+                &path.with_file_name("convert.log").display().to_string(),
+            )
+            .replace("__EXIT_CODE__", "0");
+        fs::write(&tmp, rendered)?;
+        fs::rename(&tmp, path)?;
+        let mut permissions = fs::metadata(path)?.permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions)?;
+        Ok(path.with_file_name("convert.log"))
+    }
+
+    fn make_source_image(path: &Path) {
+        let image = ImageBuffer::from_fn(2, 2, |x, y| {
+            if (x + y) % 2 == 0 {
+                Rgb([32u8, 96, 160])
+            } else {
+                Rgb([64u8, 128, 192])
+            }
+        });
+        let ext = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        match ext.as_str() {
+            "jpg" | "jpeg" => image.save_with_format(path, ImageFormat::Jpeg).unwrap(),
+            "tif" | "tiff" => image.save_with_format(path, ImageFormat::Tiff).unwrap(),
+            _ => image.save(path).unwrap(),
+        }
+    }
+
+    fn test_export_options() -> ExportOptions {
+        ExportOptions {
+            jpg_quality: 90,
+            resize: None,
+            long_edge: None,
+            max_width: None,
+            max_height: None,
+            jpeg_subsampling: crate::cli::JpegSubsampling::S420,
+            strip_metadata: false,
+            progressive_jpeg: false,
+        }
+    }
+
+    fn resolved_profile(grain: GrainSettings, hald: Option<PathBuf>) -> ResolvedProfile {
+        ResolvedProfile {
+            hald_path: hald,
+            rawtherapee_profiles: Vec::new(),
+            grain,
+            resolved_stem: "profile".to_string(),
+        }
+    }
+
+    #[test]
+    fn apply_resolved_runs_jpeg_without_grain_and_calls_final_export() {
+        let temp = tempfile::tempdir().unwrap();
+        let raw = temp.path().join("frame.NEF");
+        fs::write(&raw, b"raw").unwrap();
+        let source_image = temp.path().join("rawtherapee.jpg");
+        make_source_image(&source_image);
+
+        let raw_log = write_fake_rawtherapee(&temp.path().join("rawtherapee"), &source_image)
+            .unwrap()
+            .log;
+        let convert_log = write_fake_convert(&temp.path().join("convert")).unwrap();
+        let out = temp.path().join("out.jpg");
+        let resolved = resolved_profile(GrainSettings::default(), None);
+
+        apply_resolved(
+            ApplyJob {
+                raw: &raw,
+                output: &out,
+                rawtherapee: &temp.path().join("rawtherapee"),
+                convert: &temp.path().join("convert"),
+                keep_intermediate: None,
+                no_grain: true,
+                export: &test_export_options(),
+                quiet: true,
+            },
+            &resolved,
+            0,
+            temp.path(),
+            None,
+        )
+        .unwrap();
+
+        assert!(out.exists());
+        let raw_invocation = fs::read_to_string(raw_log).unwrap();
+        assert!(raw_invocation.contains("-j90"));
+        assert!(raw_invocation.contains("-c"));
+        let convert_invocation = fs::read_to_string(convert_log).unwrap();
+        assert!(convert_invocation.contains(&out.to_string_lossy().to_string()));
+    }
+
+    #[test]
+    fn apply_resolved_runs_tiff_with_grain_and_intermediate_grain_step() {
+        let temp = tempfile::tempdir().unwrap();
+        let raw = temp.path().join("frame.ARW");
+        fs::write(&raw, b"raw").unwrap();
+        let source_image = temp.path().join("rawtherapee.tif");
+        make_source_image(&source_image);
+
+        let raw_log = write_fake_rawtherapee(&temp.path().join("rawtherapee"), &source_image)
+            .unwrap()
+            .log;
+        let convert_log = write_fake_convert(&temp.path().join("convert")).unwrap();
+        let out = temp.path().join("out.tif");
+        let resolved = resolved_profile(
+            GrainSettings {
+                amount: 20,
+                size: 40,
+                frequency: 40,
+            },
+            None,
+        );
+
+        apply_resolved(
+            ApplyJob {
+                raw: &raw,
+                output: &out,
+                rawtherapee: &temp.path().join("rawtherapee"),
+                convert: &temp.path().join("convert"),
+                keep_intermediate: None,
+                no_grain: false,
+                export: &test_export_options(),
+                quiet: true,
+            },
+            &resolved,
+            1,
+            temp.path(),
+            None,
+        )
+        .unwrap();
+
+        assert!(out.exists());
+        let raw_invocation = fs::read_to_string(raw_log).unwrap();
+        assert!(raw_invocation.contains("-t"));
+        let convert_invocation = fs::read_to_string(convert_log).unwrap();
+        assert!(convert_invocation.contains(&out.to_string_lossy().to_string()));
+    }
+
+    #[test]
+    fn apply_resolved_runs_grain_jpeg_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let raw = temp.path().join("frame.CRF");
+        fs::write(&raw, b"raw").unwrap();
+        let source_image = temp.path().join("rawtherapee.jpg");
+        make_source_image(&source_image);
+
+        let raw_log = write_fake_rawtherapee(&temp.path().join("rawtherapee"), &source_image)
+            .unwrap()
+            .log;
+        let convert_log = write_fake_convert(&temp.path().join("convert")).unwrap();
+        let out = temp.path().join("out.jpeg");
+        let resolved = resolved_profile(
+            GrainSettings {
+                amount: 25,
+                size: 50,
+                frequency: 55,
+            },
+            None,
+        );
+
+        let mut export = test_export_options();
+        export.jpg_quality = 84;
+
+        apply_resolved(
+            ApplyJob {
+                raw: &raw,
+                output: &out,
+                rawtherapee: &temp.path().join("rawtherapee"),
+                convert: &temp.path().join("convert"),
+                keep_intermediate: None,
+                no_grain: false,
+                export: &export,
+                quiet: true,
+            },
+            &resolved,
+            2,
+            temp.path(),
+            None,
+        )
+        .unwrap();
+
+        assert!(out.exists());
+        assert!(fs::read_to_string(raw_log).unwrap().contains("-j84"));
+        assert!(
+            fs::read_to_string(convert_log)
+                .unwrap()
+                .contains(&out.to_string_lossy().to_string())
+        );
     }
 }

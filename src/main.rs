@@ -393,6 +393,23 @@ fn verify_dependency_binary(name: &str, path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        fs::{self, File},
+        io::Write,
+        os::unix::fs::PermissionsExt,
+        path::Path,
+    };
+
+    fn write_helper_binary(path: &Path, exit_code: i32) -> PathBuf {
+        let mut file = File::create(path).unwrap();
+        writeln!(file, "#!/usr/bin/env bash").unwrap();
+        writeln!(file, "exit {exit_code}").unwrap();
+        file.flush().unwrap();
+        let mut permissions = fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).unwrap();
+        PathBuf::from(path)
+    }
 
     #[test]
     fn active_command_for_dependency_check_unwraps_help_command_prefix() {
@@ -432,5 +449,70 @@ mod tests {
             resolve_dependency_path(&args, "--convert", "convert"),
             PathBuf::from("/tmp/conv")
         );
+    }
+
+    #[test]
+    fn resolve_profiles_root_prefers_flag_and_env() {
+        let env_previous = std::env::var("MINI_FILM_PROFILES_ROOT").ok();
+        unsafe {
+            std::env::set_var("MINI_FILM_PROFILES_ROOT", "/tmp/from-env");
+        }
+        let env_path = resolve_profiles_root(None);
+        assert_eq!(env_path, PathBuf::from("/tmp/from-env"));
+
+        if let Some(previous) = env_previous {
+            unsafe {
+                std::env::set_var("MINI_FILM_PROFILES_ROOT", previous);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("MINI_FILM_PROFILES_ROOT");
+            }
+        }
+
+        assert_eq!(
+            resolve_profiles_root(Some(PathBuf::from("/tmp/explicit"))),
+            PathBuf::from("/tmp/explicit")
+        );
+        assert_eq!(resolve_profiles_root(None), PathBuf::from("."));
+    }
+
+    #[test]
+    fn startup_dependency_check_ignores_when_help_requested() {
+        let args = vec![
+            "mini-film".to_string(),
+            "--help".to_string(),
+            "apply".to_string(),
+        ];
+        assert!(startup_dependency_check(&args).is_ok());
+    }
+
+    #[test]
+    fn startup_dependency_check_respects_fake_binaries() {
+        let root = tempfile::tempdir().unwrap();
+        let rawtherapee = write_helper_binary(&root.path().join("rawtherapee-cli"), 0);
+        let convert = write_helper_binary(&root.path().join("convert"), 0);
+        let args = vec![
+            "mini-film".to_string(),
+            "apply".to_string(),
+            "--rawtherapee".to_string(),
+            rawtherapee.display().to_string(),
+            "--convert".to_string(),
+            convert.display().to_string(),
+        ];
+        assert!(startup_dependency_check(&args).is_ok());
+    }
+
+    #[test]
+    fn startup_dependency_check_rejects_missing_helpers() {
+        let args = vec![
+            "mini-film".to_string(),
+            "apply".to_string(),
+            "--rawtherapee".to_string(),
+            "/tmp/does-not-exist-rt".to_string(),
+            "--convert".to_string(),
+            "/tmp/does-not-exist-convert".to_string(),
+        ];
+        assert!(startup_dependency_check(&args).is_err());
     }
 }

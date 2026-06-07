@@ -358,4 +358,47 @@ mod tests {
         assert_ne!(a, per_file_seed(1, 1, Path::new("a.dng")));
         assert_ne!(a, per_file_seed(1, 0, Path::new("b.dng")));
     }
+
+    #[test]
+    fn collect_batch_inputs_recurse_and_sort_supported_raw_files() {
+        let root = tempfile::tempdir().unwrap();
+        let a = root.path().join("day");
+        let b = root.path().join("day2");
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+
+        let files = [
+            b.join("frame3.ARW"),
+            a.join("frame1.NEF"),
+            a.join("notes.txt"),
+            b.join("frame2.nef"),
+        ];
+        for path in &files {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(path, b"raw").unwrap();
+        }
+
+        let raw_files = collect_batch_inputs(root.path()).unwrap();
+        assert_eq!(raw_files.len(), 3);
+        assert_eq!(
+            raw_files,
+            vec![
+                root.path().join("day/frame1.NEF"),
+                root.path().join("day2/frame2.nef"),
+                root.path().join("day2/frame3.ARW"),
+            ]
+        );
+    }
+
+    #[test]
+    fn batch_output_path_errors_if_raw_has_no_stem() {
+        let input = Path::new("/input");
+        let output = Path::new("/output");
+        let raw = Path::new("/input/.");
+
+        let err = batch_output_path(input, output, BatchOutputFormat::Jpg, raw).unwrap_err();
+        assert!(err.to_string().contains("input has no valid stem"));
+    }
 }

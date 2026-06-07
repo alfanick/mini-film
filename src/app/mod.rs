@@ -47,3 +47,24 @@ pub(crate) fn run_hald(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn run_hald_handles_empty_input_dir() {
+        let input = tempdir().unwrap();
+        let output = tempdir().unwrap();
+        run_hald(input.path(), output.path(), 16, false, false).unwrap();
+    }
+
+    #[test]
+    fn run_hald_fails_for_missing_single_file() {
+        let input = tempdir().unwrap();
+        let missing = input.path().join("does-not-exist.xmp");
+        let output = input.path().join("out.png");
+        assert!(run_hald(&missing, &output, 16, false, false).is_err());
+    }
+}
