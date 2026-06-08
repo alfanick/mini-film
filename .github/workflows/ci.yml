@@ -41,7 +41,7 @@ jobs:
         id: unit-tests
         run: |
           set -o pipefail
-          cargo test --all-targets --no-fail-fast -- --nocapture | tee /tmp/unit-tests.log
+          cargo test --all-targets --no-fail-fast -- --nocapture --test-threads=1 | tee /tmp/unit-tests.log
         continue-on-error: false
 
       - name: Install llvm-tools and cargo-llvm-cov
