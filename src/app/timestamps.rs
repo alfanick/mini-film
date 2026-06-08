@@ -31,6 +31,8 @@ pub(crate) fn sync_output_metadata_from_raw(
     output: &Path,
     exif_comment: Option<&str>,
 ) -> Result<()> {
+    // Keep pixel data orientation from RawTherapee output and avoid inheriting raw
+    // orientation tags that can rotate JPEG/TIFF viewers again after encoding.
     let mut command = Command::new("exiftool");
     command
         .arg("-q")
@@ -40,7 +42,8 @@ pub(crate) fn sync_output_metadata_from_raw(
         .arg("-TagsFromFile")
         .arg(raw)
         .arg("-all:all")
-        .arg("-icc_profile");
+        .arg("-icc_profile")
+        .arg("-Orientation#=1");
 
     if let Some(comment) = exif_comment {
         command.arg(format!("-Comment={comment}"));
