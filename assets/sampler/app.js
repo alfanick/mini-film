@@ -5,6 +5,10 @@ const collapsedBranches = new Set(JSON.parse(localStorage.getItem("mini-film-col
 const HOLD_DELAY_MS = 280;
 const HOLD_LONG_DELAY_MS = 240;
 
+function suppressContextMenu(event) {
+  event.preventDefault();
+}
+
 function storeCollapsedBranches() {
   localStorage.setItem("mini-film-collapsed-branches", JSON.stringify([...collapsedBranches]));
 }
@@ -54,6 +58,15 @@ document.querySelectorAll(".branch").forEach((branch) => {
     });
   }
 });
+
+document.querySelectorAll(".thumb-button").forEach((button) => {
+  button.addEventListener("contextmenu", suppressContextMenu);
+  const image = button.querySelector("img");
+  if (image) {
+    image.addEventListener("contextmenu", suppressContextMenu);
+  }
+});
+overlayImage.addEventListener("contextmenu", suppressContextMenu);
 
 function closeOverlay() {
   overlay.classList.remove("open");
