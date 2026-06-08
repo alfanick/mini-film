@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -85,6 +85,7 @@ struct DaemonProgressState {
     started_at: Instant,
     files: Vec<DaemonFileResult>,
     profile_stats: Vec<DaemonProfileStats>,
+    profile_output_dirs: Vec<HashSet<PathBuf>>,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -149,9 +150,20 @@ impl DaemonProgressState {
             profile.succeeded += 1;
         }
         self.files.push(result.clone());
+        if let Some(parent) = result.output.parent() {
+            self.profile_output_dirs_mut(result.profile_index)
+                .insert(parent.to_path_buf());
+        }
         if self.files.len() > 3000 {
             self.files.remove(0);
         }
+    }
+
+    fn profile_output_dirs_mut(&mut self, profile_index: usize) -> &mut HashSet<PathBuf> {
+        while self.profile_output_dirs.len() <= profile_index {
+            self.profile_output_dirs.push(HashSet::new());
+        }
+        &mut self.profile_output_dirs[profile_index]
     }
 }
 
@@ -285,6 +297,7 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
         started_at: Instant::now(),
         files: Vec::new(),
         profile_stats: vec![DaemonProfileStats::default(); profiles.len()],
+        profile_output_dirs: vec![HashSet::new(); profiles.len()],
     };
 
     let queued_from_startup = schedule_pending_due_paths(
@@ -514,32 +527,42 @@ fn write_daemon_info_txt(
         }
     }
 
+    if let Some(parent) = output_root.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating output root parent {}", parent.display()))?;
+    }
+    if !output_root.exists() {
+        fs::create_dir_all(output_root)
+            .with_context(|| format!("creating output root {}", output_root.display()))?;
+    }
+
     fs::write(output_root.join("info.txt"), out)?;
 
-    for profile in profiles {
-        let profile_dir = sanitize_filename::sanitize(&profile.stem);
-        let profile_dir = output_root.join(profile_dir.into_owned()).join("info.txt");
-        if let Some(parent) = profile_dir.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("creating profile info directory {}", parent.display()))?;
-        }
+    for (index, profile) in profiles.iter().enumerate() {
         let report_for_profile = format!(
             "{}\n\nProfile report:\n{}",
             profile.selector, profile.profile_report
         );
-        fs::write(profile_dir, report_for_profile).with_context(|| {
-            format!(
-                "writing daemon profile report {}",
-                profile_selector_to_path(&profile.stem).display()
-            )
-        })?;
+        for profile_dir in state
+            .profile_output_dirs
+            .get(index)
+            .into_iter()
+            .flat_map(|dirs| dirs.iter())
+        {
+            if let Err(error) = fs::create_dir_all(profile_dir) {
+                return Err(anyhow::anyhow!(
+                    "creating profile info directory {}: {error:#}",
+                    profile_dir.display()
+                ));
+            }
+            let report_path = profile_dir.join("info.txt");
+            fs::write(&report_path, &report_for_profile).with_context(|| {
+                format!("writing daemon profile report {}", report_path.display())
+            })?;
+        }
     }
 
     Ok(())
-}
-
-fn profile_selector_to_path(stem: &str) -> PathBuf {
-    sanitize_filename::sanitize(stem).into_owned().into()
 }
 
 fn resolve_daemon_profiles(args: &BatchDaemonArgs, temp_dir: &Path) -> Result<Vec<DaemonProfile>> {
@@ -853,21 +876,33 @@ fn daemon_output_path(
     raw: &Path,
     profile_stem: &str,
 ) -> Result<PathBuf> {
-    let relative = raw
-        .strip_prefix(input_root)
-        .with_context(|| format!("mapping {} under {}", raw.display(), input_root.display()))?;
-    let raw_stem = relative
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .ok_or_else(|| anyhow!("raw path has no file stem: {}", raw.display()))?;
     let profile_stem = sanitize_filename::sanitize(profile_stem);
-    let parent = relative.parent().unwrap_or_else(|| Path::new(""));
-    Ok(output_root.join(parent).join(format!(
-        "{}/{}.{}",
-        profile_stem,
+    let profile_dir = daemon_output_dir(input_root, output_root, raw, &profile_stem)?;
+    let raw_stem = relative_raw_stem(raw)?;
+    Ok(profile_dir.join(format!(
+        "{}.{}",
         sanitize_filename::sanitize(raw_stem),
         output_format.extension()
     )))
+}
+
+fn daemon_output_dir(
+    input_root: &Path,
+    output_root: &Path,
+    raw: &Path,
+    profile_stem: &str,
+) -> Result<PathBuf> {
+    let relative = raw
+        .strip_prefix(input_root)
+        .with_context(|| format!("mapping {} under {}", raw.display(), input_root.display()))?;
+    let parent = relative.parent().unwrap_or_else(|| Path::new(""));
+    Ok(output_root.join(parent).join(profile_stem))
+}
+
+fn relative_raw_stem(raw: &Path) -> Result<&str> {
+    raw.file_stem()
+        .and_then(|stem| stem.to_str())
+        .ok_or_else(|| anyhow!("raw path has no file stem: {}", raw.display()))
 }
 
 fn queue_raw_file(pending: &mut HashMap<PathBuf, PendingFile>, path: PathBuf, debounce: Duration) {
@@ -944,7 +979,109 @@ mod tests {
         AccessKind, AccessMode, CreateKind, DataChange, EventKind, MetadataKind, ModifyKind,
         RenameMode,
     };
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
+
+    #[test]
+    fn write_daemon_info_txt_emits_tree_profile_level_info_file() {
+        let root = tempfile::tempdir().unwrap();
+        let input_root = root.path().join("in");
+        let output_root = root.path().join("out");
+        let raw = input_root.join("day1").join("DSC_0001.NEF");
+        fs::create_dir_all(raw.parent().unwrap()).unwrap();
+        fs::write(&raw, b"raw").unwrap();
+
+        let args = BatchDaemonArgs {
+            input: input_root.clone(),
+            output: output_root.clone(),
+            profile: vec!["Portra 400 grainy".into()],
+            hald_dir: root.path().to_path_buf(),
+            profiles_root: root.path().to_path_buf(),
+            hald_level: 16,
+            rawtherapee: PathBuf::from("rawtherapee"),
+            convert: PathBuf::from("convert"),
+            no_grain: false,
+            grain: None,
+            grain_preset: None,
+            grain_seed: None,
+            jobs: Some(2),
+            debounce_seconds: 0,
+            output_format: BatchOutputFormat::Jpg,
+            export: ExportOptions {
+                jpg_quality: 80,
+                resize: None,
+                long_edge: None,
+                max_width: None,
+                max_height: None,
+                jpeg_subsampling: crate::cli::JpegSubsampling::S420,
+                strip_metadata: true,
+                progressive_jpeg: false,
+            },
+        };
+
+        let mut output_dirs = HashSet::new();
+        let output = daemon_output_path(
+            &input_root,
+            &output_root,
+            BatchOutputFormat::Jpg,
+            &raw,
+            "Portra 400 grainy",
+        )
+        .unwrap();
+        output_dirs.insert(output.parent().unwrap().to_path_buf());
+
+        let profile = Arc::new(DaemonProfile {
+            selector: "Portra 400 grainy".to_string(),
+            stem: "Portra 400 grainy".to_string(),
+            resolved: ResolvedProfile {
+                hald_path: None,
+                rawtherapee_profiles: Vec::new(),
+                grain: mini_film::GrainSettings::default(),
+                resolved_stem: "Portra 400 grainy".to_string(),
+            },
+            profile_report: "profile report".to_string(),
+        });
+
+        let state = DaemonProgressState {
+            total_processed: 1,
+            total_succeeded: 1,
+            total_failed: 0,
+            total_elapsed_ms: 100,
+            started_at: Instant::now(),
+            files: vec![DaemonFileResult {
+                raw: raw.clone(),
+                output,
+                duration: Duration::from_millis(100),
+                profile_index: 0,
+                error: None,
+            }],
+            profile_stats: vec![DaemonProfileStats {
+                processed: 1,
+                succeeded: 1,
+                failed: 0,
+                elapsed_ms: 100,
+            }],
+            profile_output_dirs: vec![output_dirs],
+        };
+
+        write_daemon_info_txt(
+            &output_root,
+            &args,
+            std::slice::from_ref(&profile),
+            &state,
+            Duration::ZERO,
+            None,
+        )
+        .unwrap();
+
+        let tree_profile_info = output_root
+            .join("day1")
+            .join("Portra 400 grainy")
+            .join("info.txt");
+        assert!(tree_profile_info.exists());
+        assert!(output_root.join("info.txt").exists());
+        let txt = fs::read_to_string(tree_profile_info).unwrap();
+        assert!(txt.contains("Portra 400 grainy"));
+    }
 
     #[test]
     fn daemon_output_path_keeps_input_tree_and_uses_profile_dir() {
