@@ -9,6 +9,10 @@ const prevButton = document.getElementById("mf-overlay-prev");
 const thumbs = Array.from(document.querySelectorAll(".mf-thumb"));
 let currentIndex = null;
 
+function currentUrlBase() {
+  return `${window.location.pathname}${window.location.search}`;
+}
+
 function formatValue(value) {
   const normalized = (value || "").trim();
   return normalized.length > 0 ? normalized : "n/a";
@@ -32,6 +36,30 @@ function formatExif(button) {
   return fields.join(" · ");
 }
 
+function setOverlayHash(index) {
+  if (index === null) {
+    window.history.replaceState(null, "", currentUrlBase());
+    return;
+  }
+  window.history.replaceState(null, "", `${currentUrlBase()}#${index + 1}`);
+}
+
+function parseOverlayHashIndex() {
+  const hash = window.location.hash.trim();
+  if (hash.length <= 1) {
+    return null;
+  }
+  const match = /^#(?:i=|img-)?(\d+)$/i.exec(hash);
+  if (!match) {
+    return null;
+  }
+  const oneBased = Number.parseInt(match[1], 10);
+  if (!Number.isFinite(oneBased) || oneBased < 1 || oneBased > thumbs.length) {
+    return null;
+  }
+  return oneBased - 1;
+}
+
 function openOverlayAt(index) {
   if (index < 0 || index >= thumbs.length) {
     return;
@@ -49,6 +77,7 @@ function openOverlayAt(index) {
   currentIndex = index;
   overlay.classList.add("open");
   overlay.setAttribute("aria-hidden", "false");
+  setOverlayHash(index);
 }
 
 function closeOverlay() {
@@ -57,6 +86,7 @@ function closeOverlay() {
   overlayImage.removeAttribute("src");
   overlayMeta.textContent = "";
   currentIndex = null;
+  setOverlayHash(null);
 }
 
 function moveOverlay(step) {
@@ -66,6 +96,20 @@ function moveOverlay(step) {
 
   const next = (currentIndex + step + thumbs.length) % thumbs.length;
   openOverlayAt(next);
+}
+
+function openOverlayFromHash() {
+  const target = parseOverlayHashIndex();
+  if (target === null) {
+    if (currentIndex !== null) {
+      closeOverlay();
+    }
+    return;
+  }
+  if (target === currentIndex && overlay.classList.contains("open")) {
+    return;
+  }
+  openOverlayAt(target);
 }
 
 thumbs.forEach((button, index) => {
@@ -116,3 +160,6 @@ document.addEventListener("keydown", (event) => {
       break;
   }
 });
+
+window.addEventListener("hashchange", openOverlayFromHash);
+openOverlayFromHash();
