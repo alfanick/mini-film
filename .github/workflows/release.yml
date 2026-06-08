@@ -224,6 +224,7 @@ jobs:
             echo "Skipping publish: ${crate_name} ${crate_version} already exists in crates index."
           else
             publish_output="$(mktemp)"
+            trap 'rm -f "$publish_output"' EXIT
             set +e
             cargo publish --locked --no-verify --token "$token" >"$publish_output" 2>&1
             publish_status=$?
@@ -232,17 +233,17 @@ jobs:
             if [ "$publish_status" -ne 0 ]; then
               if grep -Eq "already (uploaded|exists)|crate.*already|you cannot upload a new version of this crate" "$publish_output"; then
                 echo "crate version already published; skipping crates.io publish."
+              elif grep -Eqi "(429|too many requests|rate.?limit|too many requests|service unavailable)" "$publish_output"; then
+                echo "::warning::crates.io publish was rate-limited or temporarily unavailable; skipping crates.io publish for this run."
+                echo "To retry, run cargo publish with the same version after rate limits clear."
               else
                 cat "$publish_output" >&2
-                rm -f "$publish_output"
                 exit "$publish_status"
               fi
             else
               echo "published mini-film to crates.io"
               cat "$publish_output"
             fi
-
-            rm -f "$publish_output"
           fi
 
       - name: Prepare artifact
