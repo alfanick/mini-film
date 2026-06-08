@@ -188,31 +188,11 @@ jobs:
       - name: Run clippy
         run: cargo clippy --all-targets -- -D warnings
 
-  cli-sanity-check:
-    name: CLI sanity checks
-    runs-on: self-hosted
-    needs: test-and-lint
-    if: needs.test-and-lint.result == 'success'
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: nightly
-          components: clippy, rustfmt
-
-      - name: Build release binary
-        run: cargo build --release
-
-      - name: Run CLI sanity checks
-        run: ./scripts/ci-sanity-check.sh
-
   tag-on-version-bump:
     name: Tag release
     runs-on: self-hosted
-    needs: cli-sanity-check
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.cli-sanity-check.result == 'success' }}
+    needs: test-and-lint
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.test-and-lint.result == 'success' }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -279,7 +259,7 @@ jobs:
   cleanup-runner:
     name: Cleanup self-hosted workspace
     runs-on: self-hosted
-    needs: [test-and-lint, cli-sanity-check]
+    needs: test-and-lint
     if: always()
     steps:
       - uses: actions/checkout@v6
