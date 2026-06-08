@@ -23,6 +23,7 @@ use tempfile::Builder;
 use walkdir::WalkDir;
 
 use crate::app::export::{add_convert_thread_limit, finalize_output, output_ext};
+use crate::app::pp3::write_rawtherapee_color_noise_profile;
 use crate::app::profile::{profile_from_xmp_quiet, rawtherapee_profiles_with_hald};
 use crate::app::progress::{
     ApplyProgress, StageEstimates, format_duration, progress_length, progress_position,
@@ -34,7 +35,7 @@ use crate::app::sampler_assets::{
     html_section_template, html_styles, html_tile_template,
 };
 use crate::app::util::{
-    half_cpu_thread_count, remove_temp_file, sync_output_metadata_from_raw,
+    extract_capture_iso, half_cpu_thread_count, remove_temp_file, sync_output_metadata_from_raw,
     sync_output_timestamps_from_exif, time_of_day_seed,
 };
 use crate::cli::{ExportOptions, JpegSubsampling};
@@ -48,6 +49,7 @@ pub(crate) struct SamplerArgs {
     pub(crate) rawtherapee: PathBuf,
     pub(crate) convert: PathBuf,
     pub(crate) no_grain: bool,
+    pub(crate) color_noise_iso_threshold: u32,
     pub(crate) grain_seed: Option<u64>,
     pub(crate) no_cache: bool,
     pub(crate) jobs: Option<usize>,
@@ -121,10 +123,12 @@ struct ProfileRenderContext<'a> {
 struct StructuredSheetContext<'a> {
     convert: &'a Path,
     output: &'a Path,
+    raw: &'a Path,
     thumbs: &'a [SampleThumb],
     profiles_root: &'a Path,
     hald_dir: &'a Path,
     hald_level: u32,
+    color_noise_iso_threshold: u32,
     thumbnail_long_edge: u32,
     columns: u32,
     jpg_quality: u8,
@@ -281,10 +285,12 @@ pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
     let sheet_context = StructuredSheetContext {
         convert: &args.convert,
         output: &args.output,
+        raw: &args.raw,
         thumbs: &thumbs,
         profiles_root: &args.profiles_root,
         hald_dir: &args.hald_dir,
         hald_level: args.hald_level,
+        color_noise_iso_threshold: args.color_noise_iso_threshold,
         thumbnail_long_edge: args.thumbnail_long_edge,
         columns: args.columns,
         jpg_quality: args.jpg_quality,
@@ -486,6 +492,12 @@ fn render_profile_thumbnail(
     .with_context(|| format!("resolving profile {}", profile.display()))?;
     let developed = profile_temp.join("rawtherapee.jpg");
     let mut rawtherapee_profiles = rawtherapee_profiles_with_hald(&resolved, &profile_temp)?;
+    append_color_noise_if_qualified(
+        &context.args.raw,
+        context.args.color_noise_iso_threshold,
+        &mut rawtherapee_profiles,
+        &profile_temp,
+    )?;
     rawtherapee_profiles.push(write_rawtherapee_resize_profile(
         &profile_temp.join("resize.pp3"),
         context.args.thumbnail_long_edge,
@@ -592,6 +604,44 @@ fn render_profile_thumbnail(
     };
     sampler_step(context.progress, 6, "done");
     sample_thumb_from_image(image, profile, context.emulation_root)
+}
+
+fn append_color_noise_if_qualified(
+    raw: &Path,
+    color_noise_iso_threshold: u32,
+    rawtherapee_profiles: &mut Vec<PathBuf>,
+    temp_dir: &Path,
+) -> Result<()> {
+    if color_noise_iso_threshold == 0 {
+        return Ok(());
+    }
+
+    let iso = match extract_capture_iso(raw)? {
+        Some(iso) => iso,
+        None => return Ok(()),
+    };
+    if iso < color_noise_iso_threshold {
+        return Ok(());
+    }
+
+    if let Some(path) =
+        write_rawtherapee_color_noise_profile(&temp_dir.join("color-noise.pp3"), iso)?
+    {
+        rawtherapee_profiles.push(path);
+    }
+
+    Ok(())
+}
+
+fn append_color_noise_to_profiles(
+    rawtherapee_profiles: Vec<PathBuf>,
+    temp_dir: &Path,
+    raw: &Path,
+    color_noise_iso_threshold: u32,
+) -> Result<Vec<PathBuf>> {
+    let mut profiles = rawtherapee_profiles;
+    append_color_noise_if_qualified(raw, color_noise_iso_threshold, &mut profiles, temp_dir)?;
+    Ok(profiles)
 }
 
 fn copy_thumbnail_to_cache(source: &Path, destination: &Path) -> Result<()> {
@@ -717,9 +767,11 @@ fn run_html_sheet(context: &StructuredSheetContext<'_>) -> Result<()> {
             .map(|(html_index, profile, pp3_output)| {
                 let hald = write_html_sampler_sidecars(
                     profile,
+                    context.raw,
                     context.hald_level,
                     context.profiles_root,
                     context.hald_dir,
+                    context.color_noise_iso_threshold,
                     pp3_output,
                 )
                 .with_context(|| format!("exporting sampler sidecars for {}", profile.display()))?;
@@ -743,9 +795,11 @@ fn run_html_sheet(context: &StructuredSheetContext<'_>) -> Result<()> {
 
 fn write_html_sampler_sidecars(
     profile: &Path,
+    raw: &Path,
     hald_level: u32,
     profiles_root: &Path,
     hald_dir: &Path,
+    color_noise_iso_threshold: u32,
     pp3_output: &Path,
 ) -> Result<PathBuf> {
     let temp_dir = Builder::new().prefix("mini-film-sampler-pp3-").tempdir()?;
@@ -761,6 +815,12 @@ fn write_html_sampler_sidecars(
         .as_ref()
         .context("resolved emulation did not produce a HALD path")?;
     let rawtherapee_profiles = rawtherapee_profiles_with_hald(&resolved, temp_dir.path())?;
+    let rawtherapee_profiles = append_color_noise_to_profiles(
+        rawtherapee_profiles,
+        temp_dir.path(),
+        raw,
+        color_noise_iso_threshold,
+    )?;
     let mut text = String::new();
     for profile in rawtherapee_profiles {
         text.push_str(
@@ -1808,6 +1868,7 @@ mod tests {
             convert: PathBuf::from("convert"),
             no_grain: false,
             grain_seed: Some(123),
+            color_noise_iso_threshold: 1600,
             no_cache: false,
             jobs: Some(1),
             thumbnail_long_edge: 512,
@@ -2209,6 +2270,12 @@ mod tests {
         args.thumbnail_long_edge = 1024;
         let larger = cache.path_for(&xmp, &args).unwrap();
         assert_ne!(cached, larger);
+
+        args.color_noise_iso_threshold = 0;
+        let no_noise = cache.path_for(&xmp, &args).unwrap();
+        args.color_noise_iso_threshold = 6400;
+        let with_noise = cache.path_for(&xmp, &args).unwrap();
+        assert_eq!(no_noise, with_noise);
     }
 
     #[test]

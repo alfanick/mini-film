@@ -12,6 +12,7 @@ use tempfile::Builder;
 use crate::app::export::{
     finalize_output, output_ext, validate_export_options, validate_output_format,
 };
+use crate::app::pp3::write_rawtherapee_color_noise_profile;
 use crate::app::profile::{
     ResolvedProfile, normalize_name, rawtherapee_profiles_with_hald, resolve_profile,
 };
@@ -20,8 +21,8 @@ use crate::app::progress::{
 };
 use crate::app::raw::{run_raw_develop, run_raw_develop_jpeg};
 use crate::app::util::{
-    remove_temp_file, sync_output_metadata_from_raw, sync_output_timestamps_from_exif,
-    time_of_day_seed,
+    extract_capture_iso, remove_temp_file, sync_output_metadata_from_raw,
+    sync_output_timestamps_from_exif, time_of_day_seed,
 };
 use crate::cli::ExportOptions;
 
@@ -36,6 +37,7 @@ pub(crate) struct ApplyArgs {
     pub(crate) convert: PathBuf,
     pub(crate) keep_intermediate: Option<PathBuf>,
     pub(crate) no_grain: bool,
+    pub(crate) color_noise_iso_threshold: u32,
     pub(crate) grain: Option<String>,
     pub(crate) grain_preset: Option<String>,
     pub(crate) grain_seed: Option<u64>,
@@ -49,6 +51,7 @@ pub(crate) struct ApplyJob<'a> {
     pub(crate) convert: &'a Path,
     pub(crate) keep_intermediate: Option<&'a Path>,
     pub(crate) no_grain: bool,
+    pub(crate) color_noise_iso_threshold: u32,
     pub(crate) export: &'a ExportOptions,
     pub(crate) quiet: bool,
     pub(crate) exif_comment: Option<String>,
@@ -98,6 +101,7 @@ pub(crate) fn run_apply(args: ApplyArgs) -> Result<()> {
             convert: &args.convert,
             keep_intermediate: args.keep_intermediate.as_deref(),
             no_grain: args.no_grain,
+            color_noise_iso_threshold: args.color_noise_iso_threshold,
             export: &args.export,
             quiet: true,
             exif_comment: Some(exif_comment_for_command("apply", &args.profile)),
@@ -160,6 +164,12 @@ pub(crate) fn apply_resolved(
     let cleanup_intermediate = job.keep_intermediate.is_none();
 
     let rawtherapee_profiles = rawtherapee_profiles_with_hald(resolved, temp_dir)?;
+    let rawtherapee_profiles = with_optional_color_noise_profile(
+        job.raw,
+        &rawtherapee_profiles,
+        temp_dir,
+        job.color_noise_iso_threshold,
+    )?;
     let raw_stage = progress_stage_adaptive(
         progress,
         1,
@@ -309,6 +319,33 @@ fn estimate_rawtherapee_duration(raw: &Path, jpeg_intermediate: bool) -> Duratio
         2.0 + mib * 0.11
     };
     Duration::from_secs_f64(seconds.clamp(2.0, 18.0))
+}
+
+fn with_optional_color_noise_profile(
+    raw: &Path,
+    base_profiles: &[PathBuf],
+    temp_dir: &Path,
+    threshold: u32,
+) -> Result<Vec<PathBuf>> {
+    let mut profiles = Vec::from(base_profiles);
+    if threshold == 0 {
+        return Ok(profiles);
+    }
+
+    let iso = match extract_capture_iso(raw)? {
+        Some(iso) => iso,
+        None => return Ok(profiles),
+    };
+    if iso < threshold {
+        return Ok(profiles);
+    }
+
+    if let Some(path) =
+        write_rawtherapee_color_noise_profile(&temp_dir.join("color-noise.pp3"), iso)?
+    {
+        profiles.push(path);
+    }
+    Ok(profiles)
 }
 
 fn estimate_grain_duration(raw: &Path, jpeg_output: bool) -> Duration {
@@ -565,6 +602,7 @@ mod tests {
                 convert: &temp.path().join("convert"),
                 keep_intermediate: None,
                 no_grain: true,
+                color_noise_iso_threshold: 0,
                 export: &test_export_options(),
                 quiet: true,
                 exif_comment: Some("mini-film test".to_string()),
@@ -614,6 +652,7 @@ mod tests {
                 convert: &temp.path().join("convert"),
                 keep_intermediate: None,
                 no_grain: false,
+                color_noise_iso_threshold: 0,
                 export: &test_export_options(),
                 quiet: true,
                 exif_comment: Some("mini-film test".to_string()),
@@ -665,6 +704,7 @@ mod tests {
                 convert: &temp.path().join("convert"),
                 keep_intermediate: None,
                 no_grain: false,
+                color_noise_iso_threshold: 0,
                 export: &export,
                 quiet: true,
                 exif_comment: Some("mini-film test".to_string()),

@@ -150,6 +150,11 @@ pub(crate) enum CommandKind {
         #[arg(long)]
         no_grain: bool,
 
+        /// Minimum raw ISO for enabling RawTherapee directional pyramid color noise.
+        /// Use 0 to disable color-noise processing.
+        #[arg(long, default_value_t = 1600)]
+        color_noise_iso_threshold: u32,
+
         /// Override grain as amount,size,frequency, each 0..100. Example: --grain 30,45,45
         #[arg(long)]
         grain: Option<String>,
@@ -231,6 +236,11 @@ pub(crate) enum CommandKind {
         /// Disable Lightroom XMP grain emulation.
         #[arg(long)]
         no_grain: bool,
+
+        /// Minimum raw ISO for enabling RawTherapee directional pyramid color noise.
+        /// Use 0 to disable color-noise processing.
+        #[arg(long, default_value_t = 1600)]
+        color_noise_iso_threshold: u32,
 
         /// Override grain as amount,size,frequency, each 0..100. Example: --grain 30,45,45
         #[arg(long)]
@@ -323,6 +333,11 @@ pub(crate) enum CommandKind {
         #[arg(long)]
         no_grain: bool,
 
+        /// Minimum raw ISO for enabling RawTherapee directional pyramid color noise.
+        /// Use 0 to disable color-noise processing.
+        #[arg(long, default_value_t = 1600)]
+        color_noise_iso_threshold: u32,
+
         /// Base seed for deterministic generated grain. Defaults to current time of day.
         #[arg(long)]
         grain_seed: Option<u64>,
@@ -397,6 +412,11 @@ pub(crate) enum CommandKind {
         /// Disable Lightroom XMP grain emulation.
         #[arg(long)]
         no_grain: bool,
+
+        /// Minimum raw ISO for enabling RawTherapee directional pyramid color noise.
+        /// Use 0 to disable color-noise processing.
+        #[arg(long, default_value_t = 1600)]
+        color_noise_iso_threshold: u32,
 
         /// Override grain as amount,size,frequency, for example 30,45,45.
         #[arg(long)]

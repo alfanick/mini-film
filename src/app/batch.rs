@@ -39,6 +39,7 @@ pub(crate) struct BatchArgs {
     pub(crate) grain: Option<String>,
     pub(crate) grain_preset: Option<String>,
     pub(crate) grain_seed: Option<u64>,
+    pub(crate) color_noise_iso_threshold: u32,
     pub(crate) jobs: Option<usize>,
     pub(crate) output_format: BatchOutputFormat,
     pub(crate) export: ExportOptions,
@@ -89,6 +90,7 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
         convert: args.convert.clone(),
         keep_intermediate: None,
         no_grain: args.no_grain,
+        color_noise_iso_threshold: args.color_noise_iso_threshold,
         grain: args.grain.clone(),
         grain_preset: args.grain_preset.clone(),
         grain_seed: args.grain_seed,
@@ -283,6 +285,7 @@ fn process_batch_file_inner(
             convert: &context.args.convert,
             keep_intermediate: None,
             no_grain: context.args.no_grain,
+            color_noise_iso_threshold: context.args.color_noise_iso_threshold,
             export: &context.args.export,
             quiet: true,
             exif_comment: Some(format!(

@@ -101,6 +101,68 @@ pub(crate) fn extract_capture_time(raw: &Path) -> Result<Option<SystemTime>> {
     Ok(None)
 }
 
+pub(crate) fn extract_capture_iso(raw: &Path) -> Result<Option<u32>> {
+    let raw_file =
+        File::open(raw).with_context(|| format!("opening raw file {}", raw.display()))?;
+    let mut reader = BufReader::new(raw_file);
+    let exif = match Reader::new().read_from_container(&mut reader) {
+        Ok(exif) => exif,
+        Err(_) => return Ok(None),
+    };
+
+    let tags = [
+        Tag::PhotographicSensitivity,
+        Tag::ISOSpeed,
+        Tag::RecommendedExposureIndex,
+        Tag::StandardOutputSensitivity,
+        Tag::ExposureIndex,
+    ];
+    for tag in tags {
+        if let Some(value) = exif_field_value(&exif, tag)
+            && let Some(iso) = parse_iso_value(&value)
+        {
+            return Ok(Some(iso));
+        }
+    }
+
+    Ok(None)
+}
+
+fn parse_iso_value(raw: &str) -> Option<u32> {
+    for token in raw.split_whitespace() {
+        let token = token.trim();
+        if token.is_empty() {
+            continue;
+        }
+
+        if let Some((num, den)) = token.split_once('/') {
+            let num: f64 = num.trim().parse().ok()?;
+            let den: f64 = den.trim().parse().ok()?;
+            if den == 0.0 {
+                continue;
+            }
+            if num < 0.0 || den < 0.0 {
+                continue;
+            }
+            let value = (num / den).round();
+            if value.is_finite() && value >= 0.0 && value <= u32::MAX as f64 {
+                return Some(value as u32);
+            }
+        }
+
+        if let Ok(value) = token.parse::<f64>()
+            && value.is_sign_positive()
+            && value.is_finite()
+            && value >= 0.0
+            && value <= u32::MAX as f64
+        {
+            return Some(value.round() as u32);
+        }
+        continue;
+    }
+    None
+}
+
 fn exif_field_value(exif: &exif::Exif, tag: Tag) -> Option<String> {
     exif.fields()
         .find(|field| field.tag == tag)
@@ -169,7 +231,8 @@ fn unix_timestamp_to_system_time(timestamp: i64) -> Option<SystemTime> {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_exif_datetime, parse_exif_datetime_with_offset, sync_output_timestamps_from_exif,
+        parse_exif_datetime, parse_exif_datetime_with_offset, parse_iso_value,
+        sync_output_timestamps_from_exif,
     };
     use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
     use filetime::{FileTime, set_file_atime, set_file_mtime};
@@ -249,6 +312,19 @@ mod tests {
     #[test]
     fn parse_exif_datetime_rejects_invalid_input() {
         assert!(parse_exif_datetime("not-a-date").is_none());
+    }
+
+    #[test]
+    fn parse_iso_value_prefers_first_parsable() {
+        assert_eq!(parse_iso_value("1600/1"), Some(1600));
+        assert_eq!(parse_iso_value("6400"), Some(6400));
+        assert_eq!(parse_iso_value("ISO 3200"), Some(3200));
+    }
+
+    #[test]
+    fn parse_iso_value_handles_fractional_ratios() {
+        assert_eq!(parse_iso_value("800/2"), Some(400));
+        assert_eq!(parse_iso_value("0/0"), None);
     }
 
     #[test]

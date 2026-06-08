@@ -877,6 +877,7 @@ mod tests {
             convert: PathBuf::from("convert"),
             keep_intermediate: None,
             no_grain: false,
+            color_noise_iso_threshold: 1600,
             grain: None,
             grain_preset: None,
             grain_seed: None,
