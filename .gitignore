@@ -1,1 +1,4 @@
 /target/
+
+# Temporary scratch file occasionally produced by external tooling in this repo.
+resource
