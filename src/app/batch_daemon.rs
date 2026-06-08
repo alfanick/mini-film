@@ -479,10 +479,7 @@ fn write_daemon_info_txt(
         state.total_processed, state.total_succeeded, state.total_failed
     )
     .ok();
-
-    if let Some(usage) = resource_usage {
-        out.push_str(&usage.report_block());
-    }
+    append_resource_usage(&mut out, resource_usage);
 
     writeln!(out, "\nProfiles:").ok();
     for (index, profile) in profiles.iter().enumerate() {
@@ -539,10 +536,8 @@ fn write_daemon_info_txt(
     fs::write(output_root.join("info.txt"), out)?;
 
     for (index, profile) in profiles.iter().enumerate() {
-        let report_for_profile = format!(
-            "{}\n\nProfile report:\n{}",
-            profile.selector, profile.profile_report
-        );
+        let report_for_profile =
+            profile_daemon_info(args, profile, state, elapsed, resource_usage, index)?;
         for profile_dir in state
             .profile_output_dirs
             .get(index)
@@ -563,6 +558,93 @@ fn write_daemon_info_txt(
     }
 
     Ok(())
+}
+
+fn append_resource_usage(
+    out: &mut String,
+    resource_usage: Option<&crate::app::system_stats::ResourceUsage>,
+) {
+    if let Some(usage) = resource_usage {
+        out.push_str(&usage.report_block());
+        out.push('\n');
+        return;
+    }
+    out.push_str("Resource usage: unavailable\n");
+}
+
+fn profile_daemon_info(
+    args: &BatchDaemonArgs,
+    profile: &DaemonProfile,
+    state: &DaemonProgressState,
+    elapsed: Duration,
+    resource_usage: Option<&crate::app::system_stats::ResourceUsage>,
+    profile_index: usize,
+) -> Result<String> {
+    use std::fmt::Write;
+
+    let mut out = String::new();
+    let started = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let runtime = format_duration(elapsed);
+    let uptime = format_duration(state.started_at.elapsed());
+    let stats = state
+        .profile_stats
+        .get(profile_index)
+        .cloned()
+        .unwrap_or_default();
+
+    writeln!(out, "mini-film daemon profile report").ok();
+    writeln!(out, "Generated: {started}").ok();
+    writeln!(out, "Mini-film version: {}", env!("CARGO_PKG_VERSION")).ok();
+    writeln!(out, "Input directory: {}", args.input.display()).ok();
+    writeln!(out, "Output directory: {}", args.output.display()).ok();
+    writeln!(out, "Profile: {}", profile.selector).ok();
+    writeln!(out, "Resolved profile: {}", profile.stem).ok();
+    writeln!(out, "Output format: {:?}", args.output_format).ok();
+    writeln!(out, "Elapsed: {runtime} (up since report start: {uptime})").ok();
+    writeln!(
+        out,
+        "Profile files: processed={}, succeeded={}, failed={}",
+        stats.processed, stats.succeeded, stats.failed
+    )
+    .ok();
+    writeln!(out, "Profile avg: {} ms/file", stats.avg_ms()).ok();
+
+    append_resource_usage(&mut out, resource_usage);
+
+    writeln!(out, "\nProfile info details:").ok();
+    for line in profile.profile_report.lines() {
+        writeln!(out, "{line}").ok();
+    }
+    writeln!(out).ok();
+
+    writeln!(out, "Files for this profile:").ok();
+    for file in state
+        .files
+        .iter()
+        .filter(|file| file.profile_index == profile_index)
+    {
+        if let Some(error) = &file.error {
+            writeln!(
+                out,
+                "  FAILURE | {} | {} | {}",
+                file.raw.display(),
+                file.output.display(),
+                error
+            )
+            .ok();
+        } else {
+            writeln!(
+                out,
+                "  OK | {} | {} | {}",
+                file.raw.display(),
+                file.output.display(),
+                format_duration(file.duration)
+            )
+            .ok();
+        }
+    }
+
+    Ok(out)
 }
 
 fn resolve_daemon_profiles(args: &BatchDaemonArgs, temp_dir: &Path) -> Result<Vec<DaemonProfile>> {
@@ -1081,6 +1163,112 @@ mod tests {
         assert!(output_root.join("info.txt").exists());
         let txt = fs::read_to_string(tree_profile_info).unwrap();
         assert!(txt.contains("Portra 400 grainy"));
+        assert!(txt.contains("Resource usage: unavailable"));
+    }
+
+    #[test]
+    fn write_daemon_info_txt_includes_resource_usage_and_timing() {
+        let root = tempfile::tempdir().unwrap();
+        let args = BatchDaemonArgs {
+            input: PathBuf::from("/input"),
+            output: root.path().join("out"),
+            profile: vec!["Portra 400 grainy".into()],
+            hald_dir: root.path().to_path_buf(),
+            profiles_root: root.path().to_path_buf(),
+            hald_level: 16,
+            rawtherapee: PathBuf::from("rawtherapee"),
+            convert: PathBuf::from("convert"),
+            no_grain: false,
+            grain: None,
+            grain_preset: None,
+            grain_seed: None,
+            jobs: Some(2),
+            debounce_seconds: 0,
+            output_format: BatchOutputFormat::Jpg,
+            export: ExportOptions {
+                jpg_quality: 80,
+                resize: None,
+                long_edge: None,
+                max_width: None,
+                max_height: None,
+                jpeg_subsampling: crate::cli::JpegSubsampling::S420,
+                strip_metadata: true,
+                progressive_jpeg: false,
+            },
+        };
+        let profile = Arc::new(DaemonProfile {
+            selector: "Portra 400 grainy".to_string(),
+            stem: "Portra 400 grainy".to_string(),
+            resolved: ResolvedProfile {
+                hald_path: None,
+                rawtherapee_profiles: Vec::new(),
+                grain: mini_film::GrainSettings::default(),
+                resolved_stem: "Portra 400 grainy".to_string(),
+            },
+            profile_report: "profile report".to_string(),
+        });
+        let state = DaemonProgressState {
+            total_processed: 1,
+            total_succeeded: 1,
+            total_failed: 0,
+            total_elapsed_ms: 1234,
+            started_at: Instant::now(),
+            files: vec![DaemonFileResult {
+                raw: PathBuf::from("/input/DSC_0001.NEF"),
+                output: PathBuf::from("/out/day/Portra 400 grainy/DSC_0001.jpg"),
+                duration: Duration::from_millis(120),
+                profile_index: 0,
+                error: None,
+            }],
+            profile_stats: vec![DaemonProfileStats {
+                processed: 1,
+                succeeded: 1,
+                failed: 0,
+                elapsed_ms: 1234,
+            }],
+            profile_output_dirs: vec![{
+                let mut dirs = HashSet::new();
+                dirs.insert(
+                    root.path()
+                        .join("out")
+                        .join("day")
+                        .join("Portra 400 grainy"),
+                );
+                dirs
+            }],
+        };
+        let usage = crate::app::system_stats::ResourceUsage {
+            process_cpu_percent: 12.3,
+            process_memory_kib: 2048,
+            system_cpu_percent: 10.0,
+            system_memory_used_kib: 10_000,
+            system_memory_total_kib: 16_000,
+            sample_age: Duration::from_secs(0),
+        };
+
+        write_daemon_info_txt(
+            &args.output,
+            &args,
+            std::slice::from_ref(&profile),
+            &state,
+            Duration::from_secs(1),
+            Some(&usage),
+        )
+        .unwrap();
+
+        let root_info = args.output.join("info.txt");
+        let tree_profile_info = args
+            .output
+            .join("day")
+            .join("Portra 400 grainy")
+            .join("info.txt");
+        let root_txt = fs::read_to_string(root_info).unwrap();
+        let profile_txt = fs::read_to_string(tree_profile_info).unwrap();
+        assert!(root_txt.contains("CPU usage:"));
+        assert!(profile_txt.contains("CPU usage:"));
+        assert!(profile_txt.contains("Profile files: processed=1, succeeded=1, failed=0"));
+        assert!(profile_txt.contains("Files for this profile:"));
+        assert!(profile_txt.contains("DSC_0001.NEF"));
     }
 
     #[test]
