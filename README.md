@@ -16,6 +16,7 @@ It can:
 - print generated RawTherapee PP3 profiles
 - fit XMP/Hald looks into experimental Nikon `.NCP` Picture Controls
 - add deterministic procedural film grain
+- apply optional RawTherapee directional pyramid color noise reduction at high ISO
 - export either 16-bit TIFF or 8-bit JPEG
 - recopy source RAW metadata into outputs using `exiftool` by default
 
@@ -404,6 +405,35 @@ or use a preset:
 --grain-preset light
 --grain-preset medium
 --grain-preset heavy
+```
+
+## Color Noise Reduction
+
+Since v3.1, `mini-film` can generate a short temporary RawTherapee pp3 block for
+directional pyramid color denoising when source EXIF ISO is above a threshold.
+
+- Controlled by `--color-noise-iso-threshold` on `apply`, `batch`, `daemon`, and
+  `sampler`.
+- Default threshold is `1600`.
+- Set to `0` to disable color-noise processing.
+- The ISO is read from raw EXIF; when no ISO is available, the step is skipped.
+
+The thresholds use stepped levels:
+
+- `ISO >= 25_600`: very strong color-denoise
+- `ISO >= 6_400`: strong
+- `ISO >= 1_600`: moderate (default threshold)
+- below threshold: skipped
+
+The denoise block is appended as an extra generated `[Directional Pyramid Denoising]`
+section in the RawTherapee profile chain, after emulation/RAW adjustments and film
+simulation and before mini-film procedural grain.
+
+Example:
+
+```sh
+--color-noise-iso-threshold 1600   # default
+--color-noise-iso-threshold 0      # disable
 ```
 
 ## Caveat
