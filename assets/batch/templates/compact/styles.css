@@ -110,15 +110,17 @@ body {
 
 #mf-overlay-meta {
   position: absolute;
-  left: 12px;
-  right: 86px;
+  left: 0;
+  right: 0;
   bottom: 52px;
   color: #d7def3;
   font-size: 0.74em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  text-align: center;
   pointer-events: none;
+  padding: 0 102px;
 }
 
 #mf-overlay-download {

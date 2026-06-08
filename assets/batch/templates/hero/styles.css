@@ -128,15 +128,17 @@ h1 {
 
 #mf-overlay-meta {
   position: absolute;
-  left: 16px;
-  right: 94px;
+  left: 0;
+  right: 0;
   bottom: 56px;
   color: #d6deee;
   font-size: 0.82em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  text-align: center;
   pointer-events: none;
+  padding: 0 106px;
 }
 
 #mf-overlay-caption {

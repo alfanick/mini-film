@@ -123,15 +123,17 @@ h1 {
 
 #mf-overlay-meta {
   position: absolute;
-  left: 14px;
-  right: 102px;
+  left: 0;
+  right: 0;
   bottom: 56px;
   color: #f0e8dc;
   font-size: 0.8em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  text-align: center;
   pointer-events: none;
+  padding: 0 106px;
 }
 
 #mf-overlay-download {
