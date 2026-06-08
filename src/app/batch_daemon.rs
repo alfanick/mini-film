@@ -26,12 +26,13 @@ use crate::app::progress::{
     ApplyProgress, StageEstimates, batch_progress_style, file_progress_style, format_duration,
     progress_length,
 };
-use crate::app::system_stats::sample_usage_block;
+use crate::app::system_stats::{ResourceUsageSummary, sample_usage_block};
 use crate::app::util::{half_cpu_thread_count, is_supported_raw_file, time_of_day_seed};
 use crate::cli::{BatchOutputFormat, ExportOptions};
 use indicatif::{MultiProgress, ProgressBar};
 
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(75);
+const RESOURCE_USAGE_SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 
 pub(crate) struct BatchDaemonArgs {
     pub(crate) input: PathBuf,
@@ -86,6 +87,8 @@ struct DaemonProgressState {
     files: Vec<DaemonFileResult>,
     profile_stats: Vec<DaemonProfileStats>,
     profile_output_dirs: Vec<HashSet<PathBuf>>,
+    resource_usage: ResourceUsageSummary,
+    last_resource_sample: Instant,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -164,6 +167,19 @@ impl DaemonProgressState {
             self.profile_output_dirs.push(HashSet::new());
         }
         &mut self.profile_output_dirs[profile_index]
+    }
+
+    fn sample_resources(&mut self) {
+        if let Some(usage) = sample_usage_block() {
+            self.resource_usage.add(&usage);
+        }
+    }
+
+    fn resource_usage_if_needed(&mut self, now: Instant) {
+        if now.duration_since(self.last_resource_sample) >= RESOURCE_USAGE_SAMPLE_INTERVAL {
+            self.sample_resources();
+            self.last_resource_sample = now;
+        }
     }
 }
 
@@ -298,6 +314,8 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
         files: Vec::new(),
         profile_stats: vec![DaemonProfileStats::default(); profiles.len()],
         profile_output_dirs: vec![HashSet::new(); profiles.len()],
+        resource_usage: ResourceUsageSummary::default(),
+        last_resource_sample: Instant::now(),
     };
 
     let queued_from_startup = schedule_pending_due_paths(
@@ -322,7 +340,16 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
         ));
     }
 
-    write_daemon_info_txt(&args.output, &args, &profiles, &state, Duration::ZERO, None)?;
+    state.sample_resources();
+    state.last_resource_sample = Instant::now();
+    write_daemon_info_txt(
+        &args.output,
+        &args,
+        &profiles,
+        &state,
+        Duration::ZERO,
+        Some(&state.resource_usage),
+    )?;
 
     loop {
         drain_watch_events(&watch_rx, &mut pending, debounce);
@@ -408,16 +435,19 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
                 batch.println(format!("failed {}: {}", result.raw.display(), error));
             }
             state.record(&result);
+            state.sample_resources();
+            state.last_resource_sample = Instant::now();
             write_daemon_info_txt(
                 &args.output,
                 &args,
                 &profiles,
                 &state,
                 start.elapsed(),
-                sample_usage_block().as_ref(),
+                Some(&state.resource_usage),
             )?;
         }
 
+        state.resource_usage_if_needed(Instant::now());
         if queue.is_empty() && in_flight.is_empty() {
             batch.reset_eta();
             batch.set_length(0);
@@ -450,7 +480,7 @@ fn write_daemon_info_txt(
     profiles: &[Arc<DaemonProfile>],
     state: &DaemonProgressState,
     elapsed: Duration,
-    resource_usage: Option<&crate::app::system_stats::ResourceUsage>,
+    resource_usage: Option<&ResourceUsageSummary>,
 ) -> Result<()> {
     use std::fmt::Write;
 
@@ -564,10 +594,7 @@ fn write_daemon_info_txt(
     Ok(())
 }
 
-fn append_resource_usage(
-    out: &mut String,
-    resource_usage: Option<&crate::app::system_stats::ResourceUsage>,
-) {
+fn append_resource_usage(out: &mut String, resource_usage: Option<&ResourceUsageSummary>) {
     if let Some(usage) = resource_usage {
         out.push_str(&usage.report_block());
         out.push('\n');
@@ -581,7 +608,7 @@ fn profile_daemon_info(
     profile: &DaemonProfile,
     state: &DaemonProgressState,
     elapsed: Duration,
-    resource_usage: Option<&crate::app::system_stats::ResourceUsage>,
+    resource_usage: Option<&ResourceUsageSummary>,
     profile_index: usize,
 ) -> Result<String> {
     use std::fmt::Write;
@@ -1151,6 +1178,8 @@ mod tests {
                 elapsed_ms: 100,
             }],
             profile_output_dirs: vec![output_dirs],
+            resource_usage: ResourceUsageSummary::default(),
+            last_resource_sample: Instant::now(),
         };
 
         write_daemon_info_txt(
@@ -1246,14 +1275,14 @@ mod tests {
                 );
                 dirs
             }],
-        };
-        let usage = crate::app::system_stats::ResourceUsage {
-            process_cpu_percent: 12.3,
-            process_memory_kib: 2048,
-            system_cpu_percent: 10.0,
-            system_memory_used_kib: 10_000,
-            system_memory_total_kib: 16_000,
-            sample_age: Duration::from_secs(0),
+            resource_usage: ResourceUsageSummary::from(&crate::app::system_stats::ResourceUsage {
+                process_cpu_percent: 12.3,
+                process_memory_kib: 2048,
+                system_cpu_percent: 10.0,
+                system_memory_used_kib: 10_000,
+                system_memory_total_kib: 16_000,
+            }),
+            last_resource_sample: Instant::now(),
         };
 
         write_daemon_info_txt(
@@ -1262,7 +1291,7 @@ mod tests {
             std::slice::from_ref(&profile),
             &state,
             Duration::from_secs(1),
-            Some(&usage),
+            Some(&state.resource_usage),
         )
         .unwrap();
 

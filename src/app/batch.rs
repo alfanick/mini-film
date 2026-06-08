@@ -22,7 +22,7 @@ use crate::app::progress::{
     ApplyProgress, StageEstimates, batch_progress_style, file_progress_style, format_duration,
     progress_length,
 };
-use crate::app::system_stats::sample_usage_block;
+use crate::app::system_stats::{ResourceUsageSummary, sample_usage_block};
 use crate::app::util::{half_cpu_thread_count, is_supported_raw_file, time_of_day_seed};
 use crate::cli::{BatchOutputFormat, ExportOptions};
 
@@ -125,6 +125,7 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
     let pool = rayon::ThreadPoolBuilder::new().num_threads(jobs).build()?;
     let bar_pool = Arc::new(Mutex::new(worker_bars.clone()));
     let estimates = Arc::new(StageEstimates::default());
+    let resource_usage = Arc::new(Mutex::new(ResourceUsageSummary::default()));
     let results: Vec<_> = pool.install(|| {
         raws.par_iter()
             .enumerate()
@@ -138,6 +139,7 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
                     batch: &batch,
                     file: &file,
                     estimates: Arc::clone(&estimates),
+                    resource_usage: Arc::clone(&resource_usage),
                     index,
                 };
                 let result = process_batch_file(&context, raw);
@@ -154,7 +156,7 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
         .into_iter()
         .partition(|result| result.error.is_none());
     let end = batch_start.elapsed();
-    let resource_usage = sample_usage_block();
+    let resource_usage = *resource_usage.lock().expect("resource usage lock poisoned");
     write_batch_report(&BatchReportContext {
         output_dir: &args.output,
         args: &args,
@@ -162,7 +164,7 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
         profile_report: &profile_report,
         raw_count: raws.len(),
         elapsed: end,
-        resource_usage: resource_usage.as_ref(),
+        resource_usage: Some(&resource_usage),
         successes: &successes,
         failures: &failures,
     });
@@ -220,6 +222,7 @@ struct ProcessBatchFileContext<'a> {
     batch: &'a ProgressBar,
     file: &'a ProgressBar,
     estimates: Arc<StageEstimates>,
+    resource_usage: Arc<Mutex<ResourceUsageSummary>>,
     index: usize,
 }
 
@@ -293,6 +296,7 @@ fn process_batch_file_inner(
         &file_temp,
         Some(&progress),
     );
+    maybe_sample_resource_usage(&context.resource_usage);
 
     context.batch.inc(1);
     match result {
@@ -427,9 +431,17 @@ struct BatchReportContext<'a> {
     profile_report: &'a str,
     raw_count: usize,
     elapsed: Duration,
-    resource_usage: Option<&'a crate::app::system_stats::ResourceUsage>,
+    resource_usage: Option<&'a ResourceUsageSummary>,
     successes: &'a [BatchFileRecord],
     failures: &'a [BatchFileRecord],
+}
+
+fn maybe_sample_resource_usage(resource_usage: &Arc<Mutex<ResourceUsageSummary>>) {
+    if let Some(usage) = sample_usage_block()
+        && let Ok(mut summary) = resource_usage.lock()
+    {
+        summary.add(&usage);
+    }
 }
 
 #[cfg(test)]
