@@ -42,8 +42,7 @@ pub(crate) struct BatchArgs {
     pub(crate) color_noise_iso_threshold: u32,
     pub(crate) jobs: Option<usize>,
     pub(crate) output_format: BatchOutputFormat,
-    pub(crate) gallery: Option<PathBuf>,
-    pub(crate) gallery_template: GalleryTemplate,
+    pub(crate) gallery: Option<GalleryTemplate>,
     pub(crate) gallery_thumbnail_long_edge: u32,
     pub(crate) gallery_columns: u32,
     pub(crate) export: ExportOptions,
@@ -170,13 +169,15 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
         .partition(|result| result.error.is_none());
     let end = batch_start.elapsed();
     let resource_usage = *resource_usage.lock().expect("resource usage lock poisoned");
-    if let Some(gallery_output) = args.gallery.as_ref() {
+    if let Some(gallery_style) = args.gallery {
+        let gallery_output = args.output.join("index.html");
         run_batch_gallery(
-            gallery_output,
+            &gallery_output,
             &args.output,
             &args.profile,
-            &args,
+            gallery_style,
             &successes,
+            &args,
         )?;
     }
     write_batch_report(&BatchReportContext {
@@ -220,8 +221,9 @@ fn run_batch_gallery(
     gallery_output: &Path,
     output_root: &Path,
     profile: &str,
-    args: &BatchArgs,
+    gallery_template: GalleryTemplate,
     successes: &[BatchFileRecord],
+    args: &BatchArgs,
 ) -> Result<()> {
     let gallery_root = gallery_output
         .parent()
@@ -275,7 +277,7 @@ fn run_batch_gallery(
     let html = render_batch_gallery_html(
         args.gallery_thumbnail_long_edge,
         args.gallery_columns,
-        args.gallery_template,
+        gallery_template,
         profile,
         &entries,
         gallery_root,

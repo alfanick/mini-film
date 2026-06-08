@@ -175,15 +175,14 @@ mini-film batch \
   /home/alfanick/Pictures/Lightroom/2026/05/03 \
   /home/alfanick/batch-output \
   --profile 'Agfa Scala 200 + grainy' \
-  --gallery /home/alfanick/Public/batch-gallery.html \
-  --gallery-template modern \
+  --gallery modern \
   --gallery-columns 4 \
   --gallery-thumbnail-long-edge 1024
 ```
 
 Batch gallery options are folder-friendly and reuse the existing batch output
-tree (including subdirectories). The gallery file links to output images generated
-by batch and creates a `thumbnails/` directory next to the gallery HTML.
+tree (including subdirectories). The gallery is written as `<output>/index.html`
+and uses an adjacent `thumbnails/` directory.
 
 ## Daemon
 

@@ -161,7 +161,6 @@ fn main() -> Result<()> {
             jobs,
             output_format,
             gallery,
-            gallery_template,
             gallery_thumbnail_long_edge,
             gallery_columns,
             jpg_quality,
@@ -189,7 +188,6 @@ fn main() -> Result<()> {
             jobs,
             output_format,
             gallery,
-            gallery_template,
             gallery_thumbnail_long_edge,
             gallery_columns,
             export: ExportOptions {

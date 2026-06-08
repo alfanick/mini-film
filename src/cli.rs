@@ -262,14 +262,10 @@ pub(crate) enum CommandKind {
         #[arg(long, value_enum, default_value_t = BatchOutputFormat::Jpg)]
         output_format: BatchOutputFormat,
 
-        /// Optional path for gallery HTML output. When set, batch mode also creates a gallery
-        /// of all successful outputs into this file.
-        #[arg(long)]
-        gallery: Option<PathBuf>,
-
-        /// Gallery rendering style.
-        #[arg(long = "gallery-template", value_enum, default_value_t = GalleryTemplate::Modern)]
-        gallery_template: GalleryTemplate,
+        /// Create a batch gallery in the output directory (`index.html`) using
+        /// the selected template.
+        #[arg(long = "gallery", value_enum)]
+        gallery: Option<GalleryTemplate>,
 
         /// Gallery thumbnail longest edge in pixels.
         #[arg(long = "gallery-thumbnail-long-edge", default_value_t = 1024)]
@@ -676,8 +672,6 @@ mod tests {
             "--profile",
             "profile",
             "--gallery",
-            "gallery.html",
-            "--gallery-template",
             "soft",
             "--gallery-thumbnail-long-edge",
             "1024",
@@ -687,12 +681,11 @@ mod tests {
         assert!(matches!(
             cli.command,
             CommandKind::Batch {
-                gallery: Some(path),
-                gallery_template: crate::cli::GalleryTemplate::Soft,
+                gallery: Some(crate::cli::GalleryTemplate::Soft),
                 gallery_thumbnail_long_edge: 1024,
                 gallery_columns: 5,
                 ..
-            } if path == std::path::Path::new("gallery.html")
+            }
         ));
 
         let cli = Cli::parse_from([
