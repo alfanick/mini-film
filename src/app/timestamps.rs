@@ -9,6 +9,15 @@ use chrono::{DateTime, Local, NaiveDateTime, TimeZone, Utc};
 use exif::{Reader, Tag};
 use filetime::{FileTime, set_file_atime, set_file_mtime};
 
+#[derive(Clone, Debug, Default)]
+pub(crate) struct GalleryExifData {
+    pub(crate) focal_length: Option<String>,
+    pub(crate) aperture: Option<String>,
+    pub(crate) shutter_speed: Option<String>,
+    pub(crate) iso: Option<String>,
+    pub(crate) camera_model: Option<String>,
+}
+
 pub(crate) fn sync_output_timestamps_from_exif(raw: &Path, output: &Path) -> Result<bool> {
     let capture_time = extract_capture_time(raw)?;
     let timestamp = match capture_time {
@@ -60,6 +69,67 @@ pub(crate) fn sync_output_metadata_from_raw(
     }
 
     Ok(())
+}
+
+pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
+    let file = File::open(file).with_context(|| format!("opening file {}", file.display()))?;
+    let mut reader = BufReader::new(file);
+    let exif = match Reader::new().read_from_container(&mut reader) {
+        Ok(exif) => exif,
+        Err(_) => return Ok(GalleryExifData::default()),
+    };
+
+    let focal_length = exif_field_value(&exif, Tag::FocalLength);
+    let aperture = exif_field_value(&exif, Tag::FNumber)
+        .or_else(|| exif_field_value(&exif, Tag::MaxApertureValue));
+    let shutter_speed = exif_field_value(&exif, Tag::ExposureTime);
+    let iso = extract_capture_iso_from_exif(&exif).map(|iso| iso.to_string());
+
+    let camera_model = exif_field_value(&exif, Tag::Model).map(strip_surrounding_quotes);
+
+    Ok(GalleryExifData {
+        focal_length,
+        aperture: aperture.map(format_exif_aperture),
+        shutter_speed,
+        iso,
+        camera_model,
+    })
+}
+
+fn strip_surrounding_quotes(value: String) -> String {
+    value
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .to_string()
+}
+
+fn format_exif_aperture(raw: String) -> String {
+    let mut value = raw.trim().trim_start_matches('f').trim_start_matches('F');
+    value = value.trim_start_matches('ƒ');
+    let value = value.trim_start_matches('/');
+    if value.is_empty() {
+        return String::new();
+    }
+    format!("ƒ/{}", value)
+}
+
+fn extract_capture_iso_from_exif(exif: &exif::Exif) -> Option<u32> {
+    let tags = [
+        Tag::PhotographicSensitivity,
+        Tag::ISOSpeed,
+        Tag::RecommendedExposureIndex,
+        Tag::StandardOutputSensitivity,
+        Tag::ExposureIndex,
+    ];
+    for tag in tags {
+        if let Some(value) = exif_field_value(exif, tag)
+            && let Some(iso) = parse_iso_value(&value)
+        {
+            return Some(iso);
+        }
+    }
+    None
 }
 
 fn set_file_times(path: &Path, timestamp: &SystemTime) -> Result<()> {
@@ -231,8 +301,8 @@ fn unix_timestamp_to_system_time(timestamp: i64) -> Option<SystemTime> {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_exif_datetime, parse_exif_datetime_with_offset, parse_iso_value,
-        sync_output_timestamps_from_exif,
+        format_exif_aperture, parse_exif_datetime, parse_exif_datetime_with_offset,
+        parse_iso_value, strip_surrounding_quotes, sync_output_timestamps_from_exif,
     };
     use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
     use filetime::{FileTime, set_file_atime, set_file_mtime};
@@ -346,6 +416,31 @@ mod tests {
         assert_eq!(
             output_time.duration_since(UNIX_EPOCH).unwrap().as_secs(),
             past_time.duration_since(UNIX_EPOCH).unwrap().as_secs(),
+        );
+    }
+
+    #[test]
+    fn format_exif_aperture_normalizes_common_notations() {
+        assert_eq!(format_exif_aperture("4".to_string()), "ƒ/4");
+        assert_eq!(format_exif_aperture("f/4".to_string()), "ƒ/4");
+        assert_eq!(format_exif_aperture("ƒ/4".to_string()), "ƒ/4");
+        assert_eq!(format_exif_aperture("ƒ4".to_string()), "ƒ/4");
+        assert_eq!(format_exif_aperture("F2.8".to_string()), "ƒ/2.8");
+    }
+
+    #[test]
+    fn strip_surrounding_quotes_removes_camera_wrappers() {
+        assert_eq!(
+            strip_surrounding_quotes("\"NIKON Z 6\"".to_string()),
+            "NIKON Z 6"
+        );
+        assert_eq!(
+            strip_surrounding_quotes("'NIKON Z 6'".to_string()),
+            "NIKON Z 6"
+        );
+        assert_eq!(
+            strip_surrounding_quotes("NIKON Z 6".to_string()),
+            "NIKON Z 6"
         );
     }
 }

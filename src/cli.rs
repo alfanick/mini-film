@@ -515,6 +515,8 @@ pub(crate) enum GalleryTemplate {
     Hero,
     /// Dense square tiles like iOS Photos.
     Phone,
+    /// Render all gallery templates into `<output>/<template>/index.html`.
+    All,
 }
 
 impl std::fmt::Display for GalleryTemplate {
@@ -525,7 +527,24 @@ impl std::fmt::Display for GalleryTemplate {
             GalleryTemplate::Compact => write!(formatter, "compact"),
             GalleryTemplate::Hero => write!(formatter, "hero"),
             GalleryTemplate::Phone => write!(formatter, "phone"),
+            GalleryTemplate::All => write!(formatter, "all"),
         }
+    }
+}
+
+impl GalleryTemplate {
+    pub(crate) const fn concrete_templates() -> &'static [GalleryTemplate; 5] {
+        &[
+            GalleryTemplate::Modern,
+            GalleryTemplate::Soft,
+            GalleryTemplate::Compact,
+            GalleryTemplate::Hero,
+            GalleryTemplate::Phone,
+        ]
+    }
+
+    pub(crate) fn is_all(self) -> bool {
+        matches!(self, GalleryTemplate::All)
     }
 }
 
@@ -693,6 +712,24 @@ mod tests {
 
         let cli = Cli::parse_from([
             "mini-film",
+            "batch",
+            "input-dir",
+            "output-dir",
+            "--profile",
+            "profile",
+            "--gallery",
+            "all",
+        ]);
+        assert!(matches!(
+            cli.command,
+            CommandKind::Batch {
+                gallery: Some(crate::cli::GalleryTemplate::All),
+                ..
+            }
+        ));
+
+        let cli = Cli::parse_from([
+            "mini-film",
             "daemon",
             "input-dir",
             "output-dir",
@@ -717,5 +754,18 @@ mod tests {
                 ..
             } if profile == vec!["portra 400 grainy", "portra 400"]
         ));
+    }
+
+    #[test]
+    fn gallery_template_concrete_list_excludes_all_variant() {
+        let templates = GalleryTemplate::concrete_templates();
+        assert_eq!(templates.len(), 5);
+        assert!(
+            !templates
+                .iter()
+                .any(|template| matches!(template, GalleryTemplate::All))
+        );
+        assert!(templates.contains(&GalleryTemplate::Modern));
+        assert!(templates.contains(&GalleryTemplate::Phone));
     }
 }

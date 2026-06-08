@@ -180,12 +180,33 @@ mini-film batch \
   --gallery-thumbnail-long-edge 1024
 ```
 
-`--gallery` accepts one of `modern`, `soft`, `compact`, `hero`, or `phone`
-(iOS/iPadOS Photos style with dense square crops).
+`--gallery` accepts one of `modern`, `soft`, `compact`, `hero`, `phone`, or `all`.
 
-Batch gallery options are folder-friendly and reuse the existing batch output
-tree (including subdirectories). The gallery is written as `<output>/index.html`
-and uses an adjacent `thumbnails/` directory.
+Template intent:
+
+- `modern`: masonry-like variable-cards layout with generous spacing and hero-like
+  first-look cadence
+- `soft`: editorial light look with warm spacing and caption emphasis
+- `compact`: dense compact grid for quick scanning
+- `hero`: story-focused layout with a large leading tile and balanced follow-ups
+- `phone`: iOS/iPadOS photos style, dense square tiles
+- `all`: render all five templates
+
+Batch gallery options are folder-friendly and reuse the existing batch output tree
+(including subdirectories). For a single template, the gallery is written as
+`<output>/index.html` and uses `<output>/thumbnails/`.
+
+`--gallery all` renders all five gallery templates into:
+
+- `<output>/modern/index.html`
+- `<output>/soft/index.html`
+- `<output>/compact/index.html`
+- `<output>/hero/index.html`
+- `<output>/phone/index.html`
+
+The template run reuses one shared thumbnail cache at
+`<output>/.mini-film-gallery-thumbnails/` so switching layouts does not reprocess
+or regenerate thumbnails.
 
 ## Daemon
 

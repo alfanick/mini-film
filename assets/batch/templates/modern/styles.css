@@ -1,0 +1,227 @@
+:root {
+  --bg: #050816;
+  --panel: rgba(13, 20, 38, 0.85);
+  --surface: rgba(18, 26, 43, 0.74);
+  --border: rgba(84, 108, 154, 0.4);
+  --text: #eff2ff;
+  --muted: #9aa5ba;
+  --shadow: rgba(0, 0, 0, 0.4);
+}
+
+* { box-sizing: border-box; }
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background: radial-gradient(circle at 16% -10%, rgba(67, 112, 255, 0.18), transparent 32%),
+    linear-gradient(130deg, #070b18 0%, #0b1324 55%, #0d172e 100%);
+  color: var(--text);
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+}
+
+.mf-shell {
+  max-width: 1300px;
+  margin: 0 auto;
+  padding: 28px 14px 32px;
+}
+
+.mf-header {
+  margin-bottom: 14px;
+  padding: 18px;
+  background: linear-gradient(180deg, var(--panel), rgba(12, 18, 30, 0.96));
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  box-shadow: 0 26px 45px var(--shadow);
+}
+
+.mf-kicker {
+  margin: 0;
+  color: #9db4f6;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-size: 0.74rem;
+}
+
+h1 {
+  margin: 8px 0 4px;
+  font-size: 1.8rem;
+  letter-spacing: 0.01em;
+}
+
+.mf-subtitle {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.mf-subtitle strong { color: #e9efff; }
+
+.mf-note {
+  margin: 9px 0 0;
+  color: #c4d2eb;
+  font-size: 0.84rem;
+  max-width: 70ch;
+}
+
+.mf-grid {
+  columns: var(--columns);
+  column-gap: 14px;
+}
+
+.mf-thumb {
+  break-inside: avoid;
+  width: 100%;
+  margin: 0 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 10px;
+  background: var(--surface);
+  display: inline-block;
+  transition: transform 0.16s ease, box-shadow 0.16s ease;
+  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.25);
+}
+
+.mf-thumb:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 18px 30px rgba(0, 0, 0, 0.36);
+}
+
+.mf-thumb img {
+  width: 100%;
+  display: block;
+  border-radius: 9px;
+  background: #050a14;
+  object-fit: cover;
+}
+
+.mf-thumb:nth-child(6n+1) img {
+  aspect-ratio: 4 / 5;
+}
+
+.mf-thumb:nth-child(5n+2) img {
+  aspect-ratio: 3 / 2;
+}
+
+.mf-thumb:nth-child(5n+3) img {
+  aspect-ratio: 16 / 10;
+}
+
+.mf-thumb-caption {
+  margin-top: 8px;
+  display: block;
+  font-size: 0.82rem;
+  color: #f2f5ff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mf-footer {
+  margin-top: 16px;
+  color: #9ab0ca;
+  font-size: 0.9rem;
+}
+
+.mf-footer a { color: inherit; }
+
+.mf-overlay {
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 8px;
+  background: rgba(4, 7, 14, 0.96);
+  padding: 20px;
+}
+
+.mf-overlay.open {
+  display: flex;
+}
+
+#mf-overlay-image {
+  max-width: min(92vw, 1900px);
+  max-height: 78vh;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}
+
+#mf-overlay-meta {
+  position: absolute;
+  left: 16px;
+  right: 108px;
+  bottom: 58px;
+  color: #dce4f8;
+  font-size: 0.82em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+#mf-overlay-caption {
+  margin: 0;
+  color: #fff;
+  max-width: min(92vw, 1900px);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
+}
+
+#mf-overlay-download {
+  position: absolute;
+  top: 16px;
+  right: 118px;
+  color: #e8edff;
+}
+
+.mf-close {
+  position: absolute;
+  top: 10px;
+  right: 16px;
+  width: 38px;
+  height: 38px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.mf-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  color: #fff;
+  background: rgba(0, 0, 0, 0.32);
+  font-size: 1.4rem;
+  line-height: 1;
+}
+
+.mf-prev { left: 14px; }
+.mf-next { right: 14px; }
+
+@media (max-width: 900px) {
+  .mf-shell {
+    padding: 16px 10px 24px;
+  }
+
+  .mf-header {
+    border-radius: 14px;
+  }
+
+  h1 {
+    font-size: 1.4rem;
+  }
+
+  .mf-note {
+    display: none;
+  }
+}

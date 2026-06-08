@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>mini-film batch gallery · compact</title>
+  <style>{{{style}}}</style>
+</head>
+<body class="batch-gallery batch-gallery-compact">
+  <main class="mf-main">
+    <section class="mf-toolbar">
+      <span class="mf-kicker">mini-film</span>
+      <strong>{{profile}}</strong>
+      <span class="mf-divider">•</span>
+      <span>{{output}}</span>
+    </section>
+
+    <section class="mf-grid" style="--columns: {{columns}}">
+{{{items}}}
+    </section>
+  </main>
+
+  <div class="mf-overlay" id="mf-overlay" aria-hidden="true">
+    <button class="mf-close" id="mf-overlay-close" type="button" aria-label="Close">×</button>
+    <a id="mf-overlay-download" href="" download>Download</a>
+    <div id="mf-overlay-meta" aria-live="polite"></div>
+    <button class="mf-nav mf-prev" id="mf-overlay-prev" type="button" aria-label="Previous">‹</button>
+    <button class="mf-nav mf-next" id="mf-overlay-next" type="button" aria-label="Next">›</button>
+    <img id="mf-overlay-image" src="" alt="" />
+    <p id="mf-overlay-caption"></p>
+  </div>
+
+  <script>{{{script}}}</script>
+</body>
+</html>
