@@ -3,6 +3,7 @@ const overlayImage = document.getElementById("overlay-image");
 const overlayCaption = document.getElementById("overlay-caption");
 const collapsedBranches = new Set(JSON.parse(localStorage.getItem("mini-film-collapsed-branches") || "[]"));
 const HOLD_DELAY_MS = 280;
+const HOLD_LONG_DELAY_MS = 240;
 
 function storeCollapsedBranches() {
   localStorage.setItem("mini-film-collapsed-branches", JSON.stringify([...collapsedBranches]));
@@ -22,8 +23,10 @@ function setBranchCollapsed(branch, collapsed) {
   }
 }
 
-function openOverlayImage(source, title) {
-  overlayImage.src = source;
+function openOverlayImage(processedSource, originalSource, title) {
+  overlayImage.dataset.processed = processedSource;
+  overlayImage.dataset.original = originalSource || processedSource;
+  overlayImage.src = processedSource;
   overlayImage.alt = title;
   overlayCaption.textContent = title;
   overlay.classList.add("open");
@@ -31,11 +34,11 @@ function openOverlayImage(source, title) {
 }
 
 function openProcessedOverlay(button) {
-  openOverlayImage(button.dataset.full, button.dataset.title);
+  openOverlayImage(button.dataset.full, button.dataset.original, button.dataset.title);
 }
 
 function openOriginalOverlay(button) {
-  openOverlayImage(button.dataset.original || button.dataset.full, button.dataset.title);
+  openOverlayImage(button.dataset.original || button.dataset.full, button.dataset.original || button.dataset.full, button.dataset.title);
 }
 
 document.querySelectorAll(".branch").forEach((branch) => {
@@ -56,6 +59,8 @@ function closeOverlay() {
   overlay.classList.remove("open");
   overlay.setAttribute("aria-hidden", "true");
   overlayImage.removeAttribute("src");
+  overlayImage.removeAttribute("data-processed");
+  overlayImage.removeAttribute("data-original");
 }
 
 document.querySelectorAll(".thumb-button").forEach((button) => {
@@ -97,6 +102,64 @@ document.querySelectorAll(".thumb-button").forEach((button) => {
     }
     openProcessedOverlay(button);
   });
+});
+
+let overlayHoldTimer = null;
+let overlayHeld = false;
+
+const clearOverlayHold = () => {
+  if (overlayHoldTimer !== null) {
+    clearTimeout(overlayHoldTimer);
+    overlayHoldTimer = null;
+  }
+};
+
+const restoreOverlayToProcessed = () => {
+  const original = overlayImage.dataset.original;
+  const processed = overlayImage.dataset.processed;
+  if (original !== processed) {
+    overlayImage.src = processed || original;
+  }
+};
+
+const onOverlayPointerDown = () => {
+  overlayHeld = false;
+  clearOverlayHold();
+  const original = overlayImage.dataset.original;
+  const processed = overlayImage.dataset.processed;
+  if (original === undefined || original === null || original === processed) {
+    return;
+  }
+  overlayHoldTimer = window.setTimeout(() => {
+    overlayHeld = true;
+    overlayImage.src = original;
+  }, HOLD_LONG_DELAY_MS);
+};
+
+const onOverlayPointerRelease = () => {
+  const wasHeld = overlayHeld;
+  clearOverlayHold();
+  overlayHeld = false;
+  if (wasHeld) {
+    restoreOverlayToProcessed();
+  }
+};
+
+overlayImage.addEventListener("pointerdown", onOverlayPointerDown);
+overlayImage.addEventListener("pointerup", onOverlayPointerRelease);
+overlayImage.addEventListener("pointerleave", () => {
+  clearOverlayHold();
+  if (overlayHeld) {
+    restoreOverlayToProcessed();
+  }
+  overlayHeld = false;
+});
+overlayImage.addEventListener("pointercancel", () => {
+  clearOverlayHold();
+  if (overlayHeld) {
+    restoreOverlayToProcessed();
+  }
+  overlayHeld = false;
 });
 
 overlay.addEventListener("click", (event) => {
