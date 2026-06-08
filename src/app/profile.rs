@@ -633,7 +633,7 @@ struct TokenMatch {
 fn wants_token_subset_match(candidate: &str, wanted: &str) -> TokenMatch {
     let wanted_tokens: Vec<_> = wanted
         .split_whitespace()
-        .filter(|token| token.len() >= 3)
+        .filter(|token| token_is_significant(token))
         .collect();
     if wanted_tokens.is_empty() {
         return TokenMatch {
@@ -646,11 +646,6 @@ fn wants_token_subset_match(candidate: &str, wanted: &str) -> TokenMatch {
     let mut matched = 0usize;
     let mut partial_match = 0usize;
     for token in &wanted_tokens {
-        let token_len_ge_three = token.len() >= 3;
-        if !token_len_ge_three {
-            continue;
-        }
-
         let exact_match = candidate_tokens
             .iter()
             .any(|candidate_token| candidate_token == token);
@@ -670,6 +665,21 @@ fn wants_token_subset_match(candidate: &str, wanted: &str) -> TokenMatch {
         full: matched == wanted_tokens.len(),
         partial: partial_match > 0,
     }
+}
+
+fn token_is_significant(token: &str) -> bool {
+    if token.len() >= 3 {
+        return true;
+    }
+    if token.len() != 2 {
+        return false;
+    }
+    let chars: Vec<_> = token.chars().collect();
+    if chars.len() != 2 {
+        return false;
+    }
+    (chars[0].eq_ignore_ascii_case(&'v') && chars[1].is_ascii_digit())
+        || chars.iter().any(|character| character.is_ascii_digit())
 }
 
 fn levenshtein_threshold(length: usize) -> usize {
@@ -903,6 +913,19 @@ mod tests {
         let wanted = normalize_name("scala + grainy");
         assert!(wants_token_subset_match(&candidate, &wanted).full);
         assert!(profile_name_distance_score(&candidate, &wanted).is_some());
+    }
+
+    #[test]
+    fn short_version_token_is_significant_in_fuzzy_match() {
+        let candidate = normalize_name("Fuji Superia 200 v6 grainy");
+        let wanted = normalize_name("superia 200 v6 grainy");
+        let token_match = wants_token_subset_match(&candidate, &wanted);
+        assert!(token_match.full);
+
+        let non_version = normalize_name("Fuji Superia 200 grainy");
+        let non_version_match = wants_token_subset_match(&non_version, &wanted);
+        assert!(!non_version_match.full);
+        assert!(!non_version_match.partial);
     }
 
     #[test]

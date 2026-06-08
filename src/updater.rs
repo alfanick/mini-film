@@ -1,8 +1,7 @@
 #[cfg(feature = "github-update")]
 use self_update::cargo_crate_version;
 
-use std::sync::mpsc;
-use std::thread;
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 /// Runs a GitHub release update check for official binaries.
@@ -17,12 +16,27 @@ pub(crate) fn run_auto_update_if_enabled() -> bool {
 
 #[cfg(feature = "github-update")]
 fn check_for_update_with_timeout(timeout: Duration) -> bool {
-    let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
-        let _ = sender.send(check_for_update());
-    });
+    if !api_host_is_reachable("api.github.com", 443, timeout) {
+        return false;
+    }
+    check_for_update().is_ok()
+}
 
-    matches!(receiver.recv_timeout(timeout), Ok(Ok(())))
+#[cfg(feature = "github-update")]
+fn api_host_is_reachable(host: &str, port: u16, timeout: Duration) -> bool {
+    let Some(target) = (host, port)
+        .to_socket_addrs()
+        .ok()
+        .and_then(|mut addresses| {
+            addresses.find(|address| match address {
+                SocketAddr::V4(_) | SocketAddr::V6(_) => true,
+            })
+        })
+    else {
+        return false;
+    };
+
+    TcpStream::connect_timeout(&target, timeout).is_ok()
 }
 
 #[cfg(feature = "github-update")]
@@ -32,6 +46,8 @@ fn check_for_update() -> anyhow::Result<()> {
         .repo_name("mini-film")
         .bin_name("mini-film")
         .target(asset_target())
+        .no_confirm(true)
+        .show_download_progress(false)
         .current_version(cargo_crate_version!())
         .build()?
         .update()?;
