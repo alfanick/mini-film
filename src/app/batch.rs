@@ -15,7 +15,7 @@ use tempfile::Builder;
 use walkdir::WalkDir;
 
 use crate::app::apply::{ApplyArgs, ApplyJob, apply_resolved, resolve_grain_override};
-use crate::app::export::validate_export_options;
+use crate::app::export::{finalize_output, validate_export_options};
 use crate::app::info::profile_info_text_for_selector;
 use crate::app::profile::resolve_profile;
 use crate::app::progress::{
@@ -24,7 +24,7 @@ use crate::app::progress::{
 };
 use crate::app::system_stats::{ResourceUsageSummary, sample_usage_block};
 use crate::app::util::{half_cpu_thread_count, is_supported_raw_file, time_of_day_seed};
-use crate::cli::{BatchOutputFormat, ExportOptions};
+use crate::cli::{BatchOutputFormat, ExportOptions, GalleryTemplate};
 
 pub(crate) struct BatchArgs {
     pub(crate) input: PathBuf,
@@ -42,6 +42,10 @@ pub(crate) struct BatchArgs {
     pub(crate) color_noise_iso_threshold: u32,
     pub(crate) jobs: Option<usize>,
     pub(crate) output_format: BatchOutputFormat,
+    pub(crate) gallery: Option<PathBuf>,
+    pub(crate) gallery_template: GalleryTemplate,
+    pub(crate) gallery_thumbnail_long_edge: u32,
+    pub(crate) gallery_columns: u32,
     pub(crate) export: ExportOptions,
 }
 
@@ -50,6 +54,13 @@ struct BatchFileRecord {
     output: PathBuf,
     duration: Duration,
     error: Option<String>,
+}
+
+#[derive(Clone)]
+struct GalleryEntry {
+    raw: PathBuf,
+    output: PathBuf,
+    thumb: PathBuf,
 }
 
 /// Run the batch command over every supported RAW file under an input tree.
@@ -159,6 +170,15 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
         .partition(|result| result.error.is_none());
     let end = batch_start.elapsed();
     let resource_usage = *resource_usage.lock().expect("resource usage lock poisoned");
+    if let Some(gallery_output) = args.gallery.as_ref() {
+        run_batch_gallery(
+            gallery_output,
+            &args.output,
+            &args.profile,
+            &args,
+            &successes,
+        )?;
+    }
     write_batch_report(&BatchReportContext {
         output_dir: &args.output,
         args: &args,
@@ -194,6 +214,374 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
         }
         bail!("batch finished with failures")
     }
+}
+
+fn run_batch_gallery(
+    gallery_output: &Path,
+    output_root: &Path,
+    profile: &str,
+    args: &BatchArgs,
+    successes: &[BatchFileRecord],
+) -> Result<()> {
+    let gallery_root = gallery_output
+        .parent()
+        .map_or(Path::new("."), |parent| parent);
+    fs::create_dir_all(gallery_root)
+        .with_context(|| format!("creating {}", gallery_root.display()))?;
+
+    let thumbs_root = gallery_root.join("thumbnails");
+    fs::create_dir_all(&thumbs_root)
+        .with_context(|| format!("creating {}", thumbs_root.display()))?;
+
+    let entries: Vec<GalleryEntry> = successes
+        .iter()
+        .filter_map(|result| {
+            let thumb = gallery_thumbnail_output(&thumbs_root, output_root, &result.output)?;
+            Some(GalleryEntry {
+                raw: result.raw.clone(),
+                output: result.output.clone(),
+                thumb,
+            })
+        })
+        .collect();
+    if entries.is_empty() {
+        return Ok(());
+    }
+
+    let jobs = resolve_batch_jobs(args.jobs)?;
+    let thread_pool = rayon::ThreadPoolBuilder::new().num_threads(jobs).build()?;
+    let thumb_export = ExportOptions {
+        jpg_quality: args.export.jpg_quality,
+        resize: None,
+        long_edge: Some(args.gallery_thumbnail_long_edge),
+        max_width: None,
+        max_height: None,
+        jpeg_subsampling: args.export.jpeg_subsampling,
+        strip_metadata: args.export.strip_metadata,
+        progressive_jpeg: args.export.progressive_jpeg,
+    };
+    let convert = args.convert.clone();
+    thread_pool.install(|| {
+        entries.par_iter().for_each(|entry| {
+            let _ = create_batch_gallery_thumbnail(
+                &convert,
+                &entry.output,
+                &entry.thumb,
+                &thumb_export,
+            );
+        });
+    });
+
+    let html = render_batch_gallery_html(
+        args.gallery_thumbnail_long_edge,
+        args.gallery_columns,
+        args.gallery_template,
+        profile,
+        &entries,
+        gallery_root,
+    )?;
+    fs::write(gallery_output, html)
+        .with_context(|| format!("writing {}", gallery_output.display()))?;
+    Ok(())
+}
+
+fn gallery_thumbnail_output(
+    thumbs_root: &Path,
+    output_root: &Path,
+    output: &Path,
+) -> Option<PathBuf> {
+    let rel = output.strip_prefix(output_root).ok()?;
+    let stem = rel.with_extension("jpg");
+    Some(thumbs_root.join(stem))
+}
+
+fn create_batch_gallery_thumbnail(
+    convert: &Path,
+    source: &Path,
+    output: &Path,
+    export: &ExportOptions,
+) -> Result<()> {
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+    finalize_output(convert, source, output, export)
+        .with_context(|| format!("creating thumbnail {}", output.display()))
+}
+
+fn batch_relative_path(base: &Path, target: &Path) -> String {
+    target
+        .strip_prefix(base)
+        .unwrap_or(target)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn render_batch_gallery_html(
+    thumbnail_long_edge: u32,
+    columns: u32,
+    template: GalleryTemplate,
+    profile: &str,
+    entries: &[GalleryEntry],
+    gallery_root: &Path,
+) -> Result<String> {
+    let mut gallery_items = String::new();
+    for entry in entries {
+        let full = batch_relative_path(gallery_root, &entry.output);
+        let thumb = batch_relative_path(gallery_root, &entry.thumb);
+        let raw_name = entry
+            .raw
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("image");
+        let caption = format!("{raw_name} — {profile}");
+        gallery_items.push_str(&format!(
+            r#"<button class="mf-thumb" type="button" data-full="{full}" data-caption="{caption}">
+  <img src="{thumb}" alt="{caption}" loading="lazy" decoding="async" />
+  <span class="mf-thumb-caption">{raw}</span>
+  <span class="mf-thumb-meta">Max edge: {max_edge}px</span>
+</button>
+"#,
+            full = html_escape(&full),
+            caption = html_escape(&caption),
+            thumb = html_escape(&thumb),
+            raw = html_escape(raw_name),
+            max_edge = thumbnail_long_edge
+        ));
+    }
+
+    let style = gallery_style(template);
+    let output_name = gallery_root
+        .parent()
+        .map_or_else(|| ".".to_string(), |parent| parent.display().to_string());
+    let output_name = output_name.to_string();
+    Ok(format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>mini-film batch gallery</title>
+  <style>{style}</style>
+</head>
+<body>
+  <main>
+    <h1>mini-film batch gallery</h1>
+    <p class="mf-subtitle">Profile: {profile}</p>
+    <p class="mf-subtitle">Output: {output}</p>
+    <section class="mf-grid" style="--columns: {columns}">
+{items}
+    </section>
+  </main>
+  <div class="mf-overlay" id="mf-overlay">
+    <button class="mf-close" id="mf-overlay-close" type="button">&times;</button>
+    <a id="mf-overlay-download" href="" download>Download</a>
+    <img id="mf-overlay-image" src="" alt="" />
+    <p id="mf-overlay-caption"></p>
+  </div>
+  <footer class="mf-footer">
+    Generated by <a href="https://github.com/alfanick/mini-film">mini-film</a> {version}
+  </footer>
+  <script>{script}</script>
+</body>
+</html>
+"#,
+        style = style,
+        profile = html_escape(profile),
+        output = html_escape(&output_name),
+        columns = columns.max(1),
+        items = gallery_items,
+        version = env!("CARGO_PKG_VERSION"),
+        script = gallery_script()
+    ))
+}
+
+fn gallery_style(template: GalleryTemplate) -> String {
+    let theme = match template {
+        GalleryTemplate::Modern => {
+            r#"
+            :root {
+              --bg: #0f1114;
+              --panel: #15181d;
+              --border: #404550;
+              --text: #eff2f6;
+              --muted: #a8b0bb;
+            }
+            "#
+        }
+        GalleryTemplate::Soft => {
+            r#"
+            :root {
+              --bg: #f6f4ef;
+              --panel: #faf8f2;
+              --border: #d4ccc2;
+              --text: #272320;
+              --muted: #655e58;
+            }
+            "#
+        }
+        GalleryTemplate::Compact => {
+            r#"
+            :root {
+              --bg: #10131a;
+              --panel: #191d27;
+              --border: #3b4556;
+              --text: #f0f5ff;
+              --muted: #7f8a9d;
+            }
+            "#
+        }
+        GalleryTemplate::Hero => {
+            r#"
+            :root {
+              --bg: #f7f8fb;
+              --panel: #ffffff;
+              --border: #d5dbe8;
+              --text: #1d2430;
+              --muted: #646f83;
+            }
+            "#
+        }
+    };
+
+    format!(
+        r#"body {{
+  margin: 0;
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  background: var(--bg);
+  color: var(--text);
+}}
+* {{ box-sizing: border-box; }}
+:root {{
+  --radius: 14px;
+  --bg: var(--bg);
+  --panel: var(--panel);
+  --border: var(--border);
+  --text: var(--text);
+  --muted: var(--muted);
+  --columns: 4;
+}}
+{theme}
+main {{ max-width: 1200px; margin: 0 auto; padding: 28px; }}
+h1 {{ margin: 0; }}
+.mf-subtitle {{ color: var(--muted); margin: 8px 0; }}
+.mf-grid {{ margin-top: 22px; display: grid; gap: 16px; grid-template-columns: repeat(var(--columns), minmax(0, 1fr)); }}
+.mf-thumb {{
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  display: block;
+  padding: 10px;
+  color: inherit;
+  text-align: left;
+}}
+.mf-thumb img {{
+  display: block;
+  width: 100%;
+  aspect-ratio: 3 / 2;
+  object-fit: cover;
+  border-radius: 8px;
+  background: #111;
+}}
+.mf-thumb-caption {{ display: block; margin-top: 8px; font-weight: 700; }}
+.mf-thumb-meta {{ color: var(--muted); font-size: 0.9em; }}
+.mf-overlay {{
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 10px;
+  background: rgba(0, 0, 0, 0.9);
+  padding: 20px;
+}}
+.mf-overlay.open {{ display: flex; }}
+#mf-overlay-image {{ width: auto; max-width: min(92vw, 1900px); max-height: 78vh; object-fit: contain; }}
+#mf-overlay-download {{
+  color: #ffffff;
+  position: absolute;
+  top: 14px;
+  right: 72px;
+}}
+.mf-close {{
+  position: absolute;
+  top: 8px;
+  right: 18px;
+  width: 40px;
+  height: 40px;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  background: transparent;
+  color: #fff;
+  font-size: 30px;
+  line-height: 32px;
+}}
+.mf-footer {{ max-width: 1200px; margin: 32px auto 20px; color: var(--muted); font-size: 0.9em; }}
+.mf-thumb:hover {{ cursor: zoom-in; }}
+.mf-footer a {{ color: inherit; }}
+{template_extra}"#,
+        theme = theme,
+        template_extra = match template {
+            GalleryTemplate::Hero =>
+                "\n.mf-grid .mf-thumb:first-child { grid-column: 1 / -1; }\n.mf-thumb:first-child img {{ aspect-ratio: 16 / 9; }}",
+            GalleryTemplate::Compact =>
+                "\n.mf-grid {{ gap: 10px; }}\n.mf-thumb {{ padding: 6px; }}\n.mf-thumb-caption {{ font-size: 0.92em; }}",
+            GalleryTemplate::Soft => "\n.mf-thumb {{ background: rgba(255,255,255,0.78); }}",
+            GalleryTemplate::Modern => "\n.mf-overlay {{ backdrop-filter: blur(1px); }}",
+        }
+    )
+}
+
+fn gallery_script() -> String {
+    r#"const overlay = document.getElementById("mf-overlay");
+const overlayImage = document.getElementById("mf-overlay-image");
+const overlayCaption = document.getElementById("mf-overlay-caption");
+const overlayDownload = document.getElementById("mf-overlay-download");
+const closeButton = document.getElementById("mf-overlay-close");
+
+function openOverlay(full, caption) {
+  overlayImage.src = full;
+  overlayImage.alt = caption;
+  overlayDownload.href = full;
+  overlayCaption.textContent = caption;
+  overlay.classList.add("open");
+}
+
+function closeOverlay() {
+  overlay.classList.remove("open");
+  overlayImage.removeAttribute("src");
+}
+
+document.querySelectorAll(".mf-thumb").forEach((button) => {
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    const full = button.getAttribute("data-full") || "";
+    const caption = button.getAttribute("data-caption") || "";
+    openOverlay(full, caption);
+  });
+});
+
+overlay.addEventListener("click", (event) => {
+  if (event.target === overlay || event.target === closeButton) {
+    closeOverlay();
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    closeOverlay();
+  }
+});
+"#
+    .to_string()
+}
+
+fn html_escape(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('\"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 fn acquire_worker_bar(bar_pool: &Arc<Mutex<Vec<ProgressBar>>>) -> ProgressBar {

@@ -166,6 +166,25 @@ By default, `batch` processes half of the detected CPU threads at once. On a 16-
 - total batch progress across files
 - current file progress across RAW decode, Hald, grain, and final export steps
 
+### Batch Gallery
+
+Pass `--gallery` to generate a gallery HTML from all successful batch outputs:
+
+```sh
+mini-film batch \
+  /home/alfanick/Pictures/Lightroom/2026/05/03 \
+  /home/alfanick/batch-output \
+  --profile 'Agfa Scala 200 + grainy' \
+  --gallery /home/alfanick/Public/batch-gallery.html \
+  --gallery-template modern \
+  --gallery-columns 4 \
+  --gallery-thumbnail-long-edge 1024
+```
+
+Batch gallery options are folder-friendly and reuse the existing batch output
+tree (including subdirectories). The gallery file links to output images generated
+by batch and creates a `thumbnails/` directory next to the gallery HTML.
+
 ## Daemon
 
 Run a long-lived watcher that applies one or more profiles whenever new RAW files

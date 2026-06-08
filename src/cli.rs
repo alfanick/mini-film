@@ -262,6 +262,23 @@ pub(crate) enum CommandKind {
         #[arg(long, value_enum, default_value_t = BatchOutputFormat::Jpg)]
         output_format: BatchOutputFormat,
 
+        /// Optional path for gallery HTML output. When set, batch mode also creates a gallery
+        /// of all successful outputs into this file.
+        #[arg(long)]
+        gallery: Option<PathBuf>,
+
+        /// Gallery rendering style.
+        #[arg(long = "gallery-template", value_enum, default_value_t = GalleryTemplate::Modern)]
+        gallery_template: GalleryTemplate,
+
+        /// Gallery thumbnail longest edge in pixels.
+        #[arg(long = "gallery-thumbnail-long-edge", default_value_t = 1024)]
+        gallery_thumbnail_long_edge: u32,
+
+        /// Maximum thumbnails per gallery row.
+        #[arg(long = "gallery-columns", default_value_t = 4)]
+        gallery_columns: u32,
+
         /// JPEG quality for JPG batch outputs.
         #[arg(long, default_value_t = 95)]
         jpg_quality: u8,
@@ -490,6 +507,29 @@ pub(crate) enum BatchOutputFormat {
     Tiff,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub(crate) enum GalleryTemplate {
+    /// Light modern card grid with generous spacing.
+    Modern,
+    /// Softer palette and muted spacing for quiet browsing.
+    Soft,
+    /// Compact dense rows with smaller text.
+    Compact,
+    /// Asymmetric hero layout with larger emphasis on the first row.
+    Hero,
+}
+
+impl std::fmt::Display for GalleryTemplate {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GalleryTemplate::Modern => write!(formatter, "modern"),
+            GalleryTemplate::Soft => write!(formatter, "soft"),
+            GalleryTemplate::Compact => write!(formatter, "compact"),
+            GalleryTemplate::Hero => write!(formatter, "hero"),
+        }
+    }
+}
+
 impl BatchOutputFormat {
     pub(crate) fn extension(self) -> &'static str {
         match self {
@@ -626,6 +666,33 @@ mod tests {
                 no_cache: true,
                 ..
             }
+        ));
+
+        let cli = Cli::parse_from([
+            "mini-film",
+            "batch",
+            "input-dir",
+            "output-dir",
+            "--profile",
+            "profile",
+            "--gallery",
+            "gallery.html",
+            "--gallery-template",
+            "soft",
+            "--gallery-thumbnail-long-edge",
+            "1024",
+            "--gallery-columns",
+            "5",
+        ]);
+        assert!(matches!(
+            cli.command,
+            CommandKind::Batch {
+                gallery: Some(path),
+                gallery_template: crate::cli::GalleryTemplate::Soft,
+                gallery_thumbnail_long_edge: 1024,
+                gallery_columns: 5,
+                ..
+            } if path == std::path::Path::new("gallery.html")
         ));
 
         let cli = Cli::parse_from([
