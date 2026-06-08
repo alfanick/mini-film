@@ -4,10 +4,10 @@ use sysinfo::{Pid, System};
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ResourceUsage {
     pub(crate) process_cpu_percent: f32,
-    pub(crate) process_memory_kib: u64,
+    pub(crate) process_memory_bytes: u64,
     pub(crate) system_cpu_percent: f32,
-    pub(crate) system_memory_used_kib: u64,
-    pub(crate) system_memory_total_kib: u64,
+    pub(crate) system_memory_used_bytes: u64,
+    pub(crate) system_memory_total_bytes: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -19,14 +19,14 @@ pub(crate) struct ResourceUsageSummary {
     system_cpu_min: f32,
     system_cpu_max: f32,
     system_cpu_sum: f32,
-    process_memory_min_kib: u64,
-    process_memory_max_kib: u64,
-    process_memory_sum_kib: u64,
-    system_memory_used_min_kib: u64,
-    system_memory_used_max_kib: u64,
-    system_memory_used_sum_kib: u64,
-    system_memory_total_min_kib: u64,
-    system_memory_total_max_kib: u64,
+    process_memory_min_bytes: u64,
+    process_memory_max_bytes: u64,
+    process_memory_sum_bytes: u64,
+    system_memory_used_min_bytes: u64,
+    system_memory_used_max_bytes: u64,
+    system_memory_used_sum_bytes: u64,
+    system_memory_total_min_bytes: u64,
+    system_memory_total_max_bytes: u64,
 }
 
 impl Default for ResourceUsageSummary {
@@ -39,14 +39,14 @@ impl Default for ResourceUsageSummary {
             system_cpu_min: f32::INFINITY,
             system_cpu_max: 0.0,
             system_cpu_sum: 0.0,
-            process_memory_min_kib: u64::MAX,
-            process_memory_max_kib: 0,
-            process_memory_sum_kib: 0,
-            system_memory_used_min_kib: u64::MAX,
-            system_memory_used_max_kib: 0,
-            system_memory_used_sum_kib: 0,
-            system_memory_total_min_kib: u64::MAX,
-            system_memory_total_max_kib: 0,
+            process_memory_min_bytes: u64::MAX,
+            process_memory_max_bytes: 0,
+            process_memory_sum_bytes: 0,
+            system_memory_used_min_bytes: u64::MAX,
+            system_memory_used_max_bytes: 0,
+            system_memory_used_sum_bytes: 0,
+            system_memory_total_min_bytes: u64::MAX,
+            system_memory_total_max_bytes: 0,
         }
     }
 }
@@ -61,28 +61,32 @@ impl ResourceUsageSummary {
         self.system_cpu_max = self.system_cpu_max.max(usage.system_cpu_percent);
         self.system_cpu_sum += usage.system_cpu_percent;
 
-        self.process_memory_min_kib = self.process_memory_min_kib.min(usage.process_memory_kib);
-        self.process_memory_max_kib = self.process_memory_max_kib.max(usage.process_memory_kib);
-        self.process_memory_sum_kib = self
-            .process_memory_sum_kib
-            .saturating_add(usage.process_memory_kib);
+        self.process_memory_min_bytes = self
+            .process_memory_min_bytes
+            .min(usage.process_memory_bytes);
+        self.process_memory_max_bytes = self
+            .process_memory_max_bytes
+            .max(usage.process_memory_bytes);
+        self.process_memory_sum_bytes = self
+            .process_memory_sum_bytes
+            .saturating_add(usage.process_memory_bytes);
 
-        self.system_memory_used_min_kib = self
-            .system_memory_used_min_kib
-            .min(usage.system_memory_used_kib);
-        self.system_memory_used_max_kib = self
-            .system_memory_used_max_kib
-            .max(usage.system_memory_used_kib);
-        self.system_memory_used_sum_kib = self
-            .system_memory_used_sum_kib
-            .saturating_add(usage.system_memory_used_kib);
+        self.system_memory_used_min_bytes = self
+            .system_memory_used_min_bytes
+            .min(usage.system_memory_used_bytes);
+        self.system_memory_used_max_bytes = self
+            .system_memory_used_max_bytes
+            .max(usage.system_memory_used_bytes);
+        self.system_memory_used_sum_bytes = self
+            .system_memory_used_sum_bytes
+            .saturating_add(usage.system_memory_used_bytes);
 
-        self.system_memory_total_min_kib = self
-            .system_memory_total_min_kib
-            .min(usage.system_memory_total_kib);
-        self.system_memory_total_max_kib = self
-            .system_memory_total_max_kib
-            .max(usage.system_memory_total_kib);
+        self.system_memory_total_min_bytes = self
+            .system_memory_total_min_bytes
+            .min(usage.system_memory_total_bytes);
+        self.system_memory_total_max_bytes = self
+            .system_memory_total_max_bytes
+            .max(usage.system_memory_total_bytes);
     }
 
     pub(crate) fn report_block(&self) -> String {
@@ -94,10 +98,10 @@ impl ResourceUsageSummary {
         let samples = self.samples as f64;
         let process_cpu_avg = self.process_cpu_sum as f64 / samples;
         let system_cpu_avg = self.system_cpu_sum as f64 / samples;
-        let process_memory_avg_mb = self.process_memory_sum_kib as f64 / 1024.0 / samples;
-        let system_memory_used_avg_mb = self.system_memory_used_sum_kib as f64 / 1024.0 / samples;
-        let system_memory_total_min_mb = self.system_memory_total_min_kib as f64 / 1024.0;
-        let system_memory_total_max_mb = self.system_memory_total_max_kib as f64 / 1024.0;
+        let process_memory_avg_mb = bytes_to_mb(self.process_memory_sum_bytes) / samples;
+        let system_memory_used_avg_mb = bytes_to_mb(self.system_memory_used_sum_bytes) / samples;
+        let system_memory_total_min_mb = bytes_to_mb(self.system_memory_total_min_bytes);
+        let system_memory_total_max_mb = bytes_to_mb(self.system_memory_total_max_bytes);
 
         writeln!(out, "Resource usage ({} samples):", self.samples).ok();
         writeln!(out, "CPU usage:").ok();
@@ -117,16 +121,16 @@ impl ResourceUsageSummary {
         writeln!(
             out,
             "  process: min {:.2} MB / max {:.2} MB / avg {:.2} MB",
-            kib_to_mb(self.process_memory_min_kib),
-            kib_to_mb(self.process_memory_max_kib),
+            bytes_to_mb(self.process_memory_min_bytes),
+            bytes_to_mb(self.process_memory_max_bytes),
             process_memory_avg_mb,
         )
         .ok();
         writeln!(
             out,
             "  system: min {:.2} MB / max {:.2} MB / avg {:.2} MB | used of {:.2}..{:.2} MB total",
-            kib_to_mb(self.system_memory_used_min_kib),
-            kib_to_mb(self.system_memory_used_max_kib),
+            bytes_to_mb(self.system_memory_used_min_bytes),
+            bytes_to_mb(self.system_memory_used_max_bytes),
             system_memory_used_avg_mb,
             system_memory_total_min_mb,
             system_memory_total_max_mb,
@@ -151,15 +155,15 @@ pub(crate) fn sample_usage_block() -> Option<ResourceUsage> {
     let process = system.process(pid)?;
     Some(ResourceUsage {
         process_cpu_percent: process.cpu_usage(),
-        process_memory_kib: process.memory(),
+        process_memory_bytes: process.memory(),
         system_cpu_percent: system.global_cpu_usage(),
-        system_memory_used_kib: system.used_memory(),
-        system_memory_total_kib: system.total_memory(),
+        system_memory_used_bytes: system.used_memory(),
+        system_memory_total_bytes: system.total_memory(),
     })
 }
 
-fn kib_to_mb(kib: u64) -> f64 {
-    kib as f64 / 1024.0
+fn bytes_to_mb(bytes: u64) -> f64 {
+    bytes as f64 / 1024.0 / 1024.0
 }
 
 #[cfg(test)]
@@ -171,17 +175,17 @@ mod tests {
         let mut summary = ResourceUsageSummary::default();
         summary.add(&ResourceUsage {
             process_cpu_percent: 5.0,
-            process_memory_kib: 1_024,
+            process_memory_bytes: 1_024,
             system_cpu_percent: 4.0,
-            system_memory_used_kib: 8_192,
-            system_memory_total_kib: 16_384,
+            system_memory_used_bytes: 8_192,
+            system_memory_total_bytes: 16_384,
         });
         summary.add(&ResourceUsage {
             process_cpu_percent: 10.0,
-            process_memory_kib: 2_048,
+            process_memory_bytes: 2_048,
             system_cpu_percent: 12.0,
-            system_memory_used_kib: 10_240,
-            system_memory_total_kib: 16_384,
+            system_memory_used_bytes: 10_240,
+            system_memory_total_bytes: 16_384,
         });
 
         let report = summary.report_block();

@@ -1277,10 +1277,10 @@ mod tests {
             }],
             resource_usage: ResourceUsageSummary::from(&crate::app::system_stats::ResourceUsage {
                 process_cpu_percent: 12.3,
-                process_memory_kib: 2048,
+                process_memory_bytes: 2048,
                 system_cpu_percent: 10.0,
-                system_memory_used_kib: 10_000,
-                system_memory_total_kib: 16_000,
+                system_memory_used_bytes: 10_000,
+                system_memory_total_bytes: 16_000,
             }),
             last_resource_sample: Instant::now(),
         };
