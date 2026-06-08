@@ -63,6 +63,7 @@ pub(crate) struct SamplerArgs {
 
 struct SampleThumb {
     image: PathBuf,
+    original_image: Option<PathBuf>,
     profile: PathBuf,
     pp3: Option<PathBuf>,
     hald: Option<PathBuf>,
@@ -121,6 +122,7 @@ struct ProfileRenderContext<'a> {
 }
 
 struct StructuredSheetContext<'a> {
+    rawtherapee: &'a Path,
     convert: &'a Path,
     output: &'a Path,
     raw: &'a Path,
@@ -283,6 +285,7 @@ pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
         estimate_sheet_duration(thumbs.len()),
     );
     let sheet_context = StructuredSheetContext {
+        rawtherapee: &args.rawtherapee,
         convert: &args.convert,
         output: &args.output,
         raw: &args.raw,
@@ -390,6 +393,7 @@ fn sample_thumb_from_image(
     let parts = profile_name_parts(&name);
     Ok(SampleThumb {
         image,
+        original_image: None,
         profile: profile.to_path_buf(),
         pp3: None,
         hald: None,
@@ -727,6 +731,19 @@ fn run_html_sheet(context: &StructuredSheetContext<'_>) -> Result<()> {
     fs::create_dir_all(&thumbnail_dir)
         .with_context(|| format!("creating {}", thumbnail_dir.display()))?;
     fs::create_dir_all(&pp3_dir).with_context(|| format!("creating {}", pp3_dir.display()))?;
+    let baseline_original = {
+        let baseline_source = thumbnail_dir.join("original.jpg");
+        let baseline_relative = PathBuf::from("thumbnails").join("original.jpg");
+        write_html_baseline_thumbnail(
+            context.rawtherapee,
+            context.convert,
+            context.raw,
+            &baseline_source,
+            context.jpg_quality,
+            context.jpeg_subsampling,
+        )?;
+        baseline_relative
+    };
 
     let jobs = half_cpu_thread_count();
     let pool = rayon::ThreadPoolBuilder::new().num_threads(jobs).build()?;
@@ -746,6 +763,7 @@ fn run_html_sheet(context: &StructuredSheetContext<'_>) -> Result<()> {
                 )?;
                 let mut exported = thumb.clone_for_tree();
                 exported.image = PathBuf::from("thumbnails").join(file_name);
+                exported.original_image = Some(baseline_original.clone());
                 Ok::<_, anyhow::Error>((index, exported))
             })
             .collect::<Result<Vec<_>>>()
@@ -873,6 +891,41 @@ fn write_cached_progressive_html_thumbnail(
     write_progressive_html_thumbnail(convert, source, &cached, jpg_quality, jpeg_subsampling)?;
     copy_file(&cached, destination)?;
     Ok(())
+}
+
+fn write_html_baseline_thumbnail(
+    rawtherapee: &Path,
+    convert: &Path,
+    raw: &Path,
+    destination: &Path,
+    jpg_quality: u8,
+    jpeg_subsampling: JpegSubsampling,
+) -> Result<PathBuf> {
+    if destination.is_file() {
+        return Ok(destination.to_path_buf());
+    }
+
+    let temp_dir = Builder::new()
+        .prefix("mini-film-sampler-baseline-")
+        .tempdir()?;
+    let raw_source = temp_dir.path().join("raw-baseline.jpg");
+    run_raw_develop_jpeg(
+        rawtherapee,
+        &[],
+        raw,
+        &raw_source,
+        jpg_quality,
+        jpeg_subsampling,
+        true,
+    )?;
+    write_cached_progressive_html_thumbnail(
+        convert,
+        &raw_source,
+        destination,
+        jpg_quality,
+        jpeg_subsampling,
+    )?;
+    Ok(destination.to_path_buf())
 }
 
 fn progressive_html_cache_path(
@@ -1157,6 +1210,12 @@ fn render_html_grid(templates: &Handlebars<'_>, entries: &[SheetEntry<'_>]) -> R
                         "label": entry.label,
                         "filename": entry.full_name,
                         "image": image,
+                        "original_image": entry
+                            .thumb
+                            .original_image
+                            .as_ref()
+                            .map(|path| relative_url(path))
+                            .unwrap_or_else(String::new),
                         "xmp_href": file_url(&entry.thumb.profile),
                         "pp3_href": entry.thumb.pp3.as_ref().map(|path| relative_url(path)).unwrap_or_default(),
                         "hald_href": entry.thumb.hald.as_ref().map(|path| file_url(path)).unwrap_or_default(),
@@ -1269,6 +1328,7 @@ impl SampleThumb {
     fn clone_for_tree(&self) -> Self {
         Self {
             image: self.image.clone(),
+            original_image: self.original_image.clone(),
             profile: self.profile.clone(),
             pp3: self.pp3.clone(),
             hald: self.hald.clone(),
@@ -1842,6 +1902,7 @@ mod tests {
     fn sample_thumb(name: &str, width: u32, height: u32) -> SampleThumb {
         SampleThumb {
             image: PathBuf::from(format!("/tmp/{name}.jpg")),
+            original_image: None,
             profile: PathBuf::from(format!("/tmp/{name}.xmp")),
             pp3: None,
             hald: None,

@@ -3,5 +3,7 @@
 <p class="label">{{label}}</p>
 <p class="filename"><span>{{filename}}</span><span class="sidecars"><a href="{{xmp_href}}" download>XMP</a><a href="{{pp3_href}}" download>PP3</a><a href="{{hald_href}}" download>HALD</a></span></p>
 </figcaption>
-<button class="thumb-button" type="button" data-full="{{image}}" data-title="{{filename}}"><img src="{{image}}" alt="{{filename}}" loading="lazy" decoding="async"></button>
+<button class="thumb-button" type="button" data-full="{{image}}" data-original="{{original_image}}" data-title="{{filename}}">
+  <img src="{{image}}" alt="{{filename}}" loading="lazy" decoding="async">
+</button>
 </figure>

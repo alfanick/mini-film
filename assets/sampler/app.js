@@ -2,6 +2,7 @@ const overlay = document.getElementById("overlay");
 const overlayImage = document.getElementById("overlay-image");
 const overlayCaption = document.getElementById("overlay-caption");
 const collapsedBranches = new Set(JSON.parse(localStorage.getItem("mini-film-collapsed-branches") || "[]"));
+const HOLD_DELAY_MS = 280;
 
 function storeCollapsedBranches() {
   localStorage.setItem("mini-film-collapsed-branches", JSON.stringify([...collapsedBranches]));
@@ -19,6 +20,22 @@ function setBranchCollapsed(branch, collapsed) {
   } else {
     collapsedBranches.delete(key);
   }
+}
+
+function openOverlayImage(source, title) {
+  overlayImage.src = source;
+  overlayImage.alt = title;
+  overlayCaption.textContent = title;
+  overlay.classList.add("open");
+  overlay.setAttribute("aria-hidden", "false");
+}
+
+function openProcessedOverlay(button) {
+  openOverlayImage(button.dataset.full, button.dataset.title);
+}
+
+function openOriginalOverlay(button) {
+  openOverlayImage(button.dataset.original || button.dataset.full, button.dataset.title);
 }
 
 document.querySelectorAll(".branch").forEach((branch) => {
@@ -42,12 +59,43 @@ function closeOverlay() {
 }
 
 document.querySelectorAll(".thumb-button").forEach((button) => {
-  button.addEventListener("click", () => {
-    overlayImage.src = button.dataset.full;
-    overlayImage.alt = button.dataset.title;
-    overlayCaption.textContent = button.dataset.title;
-    overlay.classList.add("open");
-    overlay.setAttribute("aria-hidden", "false");
+  let holdTimer = null;
+  let held = false;
+
+  const clearHold = () => {
+    if (holdTimer !== null) {
+      clearTimeout(holdTimer);
+      holdTimer = null;
+    }
+  };
+
+  const onPointerDown = () => {
+    held = false;
+    clearHold();
+    holdTimer = window.setTimeout(() => {
+      held = true;
+      openOriginalOverlay(button);
+    }, HOLD_DELAY_MS);
+  };
+
+  const onPointerRelease = () => {
+    clearHold();
+    if (held && overlay.getAttribute("aria-hidden") === "false") {
+      openProcessedOverlay(button);
+    }
+    held = false;
+  };
+
+  button.addEventListener("pointerdown", onPointerDown);
+  button.addEventListener("pointerup", onPointerRelease);
+  button.addEventListener("pointerleave", clearHold);
+  button.addEventListener("pointercancel", clearHold);
+  button.addEventListener("click", (event) => {
+    if (held) {
+      event.preventDefault();
+      return;
+    }
+    openProcessedOverlay(button);
   });
 });
 
