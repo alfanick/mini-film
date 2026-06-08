@@ -443,6 +443,17 @@ fn gallery_style(template: GalleryTemplate) -> String {
             }
             "#
         }
+        GalleryTemplate::Phone => {
+            r#"
+            :root {
+              --bg: #f2f2f7;
+              --panel: #ffffff;
+              --border: rgba(0, 0, 0, 0.08);
+              --text: #1d1d1f;
+              --muted: #86868b;
+            }
+            "#
+        }
     };
 
     format!(
@@ -529,6 +540,23 @@ h1 {{ margin: 0; }}
                 "\n.mf-grid {{ gap: 10px; }}\n.mf-thumb {{ padding: 6px; }}\n.mf-thumb-caption {{ font-size: 0.92em; }}",
             GalleryTemplate::Soft => "\n.mf-thumb {{ background: rgba(255,255,255,0.78); }}",
             GalleryTemplate::Modern => "\n.mf-overlay {{ backdrop-filter: blur(1px); }}",
+            GalleryTemplate::Phone => {
+                "
+                .mf-grid { gap: 2px; }
+                .mf-thumb {
+                  border: none;
+                  border-radius: 2px;
+                  background: transparent;
+                  padding: 0;
+                  margin: 0;
+                }
+                .mf-thumb img { aspect-ratio: 1 / 1; border-radius: 0; }
+                .mf-thumb-caption { margin-top: 4px; font-size: 0.78em; line-height: 1.2; }
+                .mf-thumb-meta { font-size: 0.64em; opacity: 0.9; }
+                .mf-overlay { backdrop-filter: none; }
+                .mf-thumb:hover { cursor: zoom-in; transform: none; }
+                "
+            }
         }
     )
 }

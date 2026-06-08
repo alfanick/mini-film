@@ -180,6 +180,9 @@ mini-film batch \
   --gallery-thumbnail-long-edge 1024
 ```
 
+`--gallery` accepts one of `modern`, `soft`, `compact`, `hero`, or `phone`
+(iOS/iPadOS Photos style with dense square crops).
+
 Batch gallery options are folder-friendly and reuse the existing batch output
 tree (including subdirectories). The gallery is written as `<output>/index.html`
 and uses an adjacent `thumbnails/` directory.

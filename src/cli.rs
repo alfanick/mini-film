@@ -513,6 +513,8 @@ pub(crate) enum GalleryTemplate {
     Compact,
     /// Asymmetric hero layout with larger emphasis on the first row.
     Hero,
+    /// Dense square tiles like iOS Photos.
+    Phone,
 }
 
 impl std::fmt::Display for GalleryTemplate {
@@ -522,6 +524,7 @@ impl std::fmt::Display for GalleryTemplate {
             GalleryTemplate::Soft => write!(formatter, "soft"),
             GalleryTemplate::Compact => write!(formatter, "compact"),
             GalleryTemplate::Hero => write!(formatter, "hero"),
+            GalleryTemplate::Phone => write!(formatter, "phone"),
         }
     }
 }
