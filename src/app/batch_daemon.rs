@@ -20,11 +20,13 @@ use walkdir::WalkDir;
 
 use crate::app::apply::{ApplyArgs, ApplyJob, apply_resolved, resolve_grain_override};
 use crate::app::export::validate_export_options;
+use crate::app::info::profile_info_text_for_selector;
 use crate::app::profile::{ResolvedProfile, resolve_profile};
 use crate::app::progress::{
     ApplyProgress, StageEstimates, batch_progress_style, file_progress_style, format_duration,
     progress_length,
 };
+use crate::app::system_stats::sample_usage_block;
 use crate::app::util::{half_cpu_thread_count, is_supported_raw_file, time_of_day_seed};
 use crate::cli::{BatchOutputFormat, ExportOptions};
 use indicatif::{MultiProgress, ProgressBar};
@@ -54,6 +56,7 @@ struct DaemonProfile {
     selector: String,
     stem: String,
     resolved: ResolvedProfile,
+    profile_report: String,
 }
 
 struct PendingTask {
@@ -62,7 +65,9 @@ struct PendingTask {
 }
 
 struct InFlightTask {
-    handle: thread::JoinHandle<Result<(), (PathBuf, anyhow::Error)>>,
+    profile_index: usize,
+    raw: PathBuf,
+    handle: thread::JoinHandle<DaemonFileResult>,
 }
 
 struct PendingFile {
@@ -70,6 +75,84 @@ struct PendingFile {
     process_at: Instant,
     size: u64,
     modified: Option<std::time::SystemTime>,
+}
+
+struct DaemonProgressState {
+    total_processed: u64,
+    total_succeeded: u64,
+    total_failed: u64,
+    total_elapsed_ms: u64,
+    started_at: Instant,
+    files: Vec<DaemonFileResult>,
+    profile_stats: Vec<DaemonProfileStats>,
+}
+
+#[derive(Default, Clone, Copy)]
+struct DaemonProfileStats {
+    processed: u64,
+    succeeded: u64,
+    failed: u64,
+    elapsed_ms: u64,
+}
+
+impl DaemonProfileStats {
+    fn avg_ms(&self) -> u64 {
+        if self.processed == 0 {
+            return 0;
+        }
+        self.elapsed_ms / self.processed
+    }
+}
+
+struct DaemonFileResult {
+    raw: PathBuf,
+    output: PathBuf,
+    duration: Duration,
+    profile_index: usize,
+    error: Option<String>,
+}
+
+impl Clone for DaemonFileResult {
+    fn clone(&self) -> Self {
+        Self {
+            raw: self.raw.clone(),
+            output: self.output.clone(),
+            duration: self.duration,
+            profile_index: self.profile_index,
+            error: self.error.clone(),
+        }
+    }
+}
+
+impl DaemonProgressState {
+    fn profile_stats_mut(&mut self, profile_index: usize) -> &mut DaemonProfileStats {
+        while self.profile_stats.len() <= profile_index {
+            self.profile_stats.push(DaemonProfileStats::default());
+        }
+        &mut self.profile_stats[profile_index]
+    }
+
+    fn record(&mut self, result: &DaemonFileResult) {
+        self.total_processed += 1;
+        self.total_elapsed_ms += result.duration.as_millis() as u64;
+        if result.error.is_some() {
+            self.total_failed += 1;
+        } else {
+            self.total_succeeded += 1;
+        }
+        let profile = self.profile_stats_mut(result.profile_index);
+        profile.processed += 1;
+        profile.elapsed_ms += result.duration.as_millis() as u64;
+        if result.error.is_some() {
+            profile.failed += 1;
+        } else {
+            profile.succeeded += 1;
+        }
+        self.files.push(result.clone());
+        if self.files.len() > 3000 {
+            self.files.remove(0);
+        }
+    }
 }
 
 struct ProfileScheduleContext<'a> {
@@ -194,8 +277,15 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
     let mut queue: VecDeque<PendingTask> = VecDeque::new();
     let mut in_flight: Vec<InFlightTask> = Vec::new();
     let estimates = Arc::new(StageEstimates::default());
-    let mut completed = 0u64;
-    let mut failures = Vec::new();
+    let mut state = DaemonProgressState {
+        total_processed: 0,
+        total_succeeded: 0,
+        total_failed: 0,
+        total_elapsed_ms: 0,
+        started_at: Instant::now(),
+        files: Vec::new(),
+        profile_stats: vec![DaemonProfileStats::default(); profiles.len()],
+    };
 
     let queued_from_startup = schedule_pending_due_paths(
         &mut pending,
@@ -218,6 +308,8 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
             queued_from_startup
         ));
     }
+
+    write_daemon_info_txt(&args.output, &args, &profiles, &state, Duration::ZERO, None)?;
 
     loop {
         drain_watch_events(&watch_rx, &mut pending, debounce);
@@ -244,6 +336,7 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
             };
             let bar = acquire_worker_bar(&worker_bars);
             let raw = task.raw.clone();
+            let worker_raw = raw.clone();
             let raw_name = raw
                 .file_name()
                 .and_then(|name| name.to_str())
@@ -261,7 +354,7 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
                     estimates: thread_estimates,
                 };
                 let result = process_single_profile(
-                    &raw,
+                    &worker_raw,
                     &profile,
                     profile_index as u64,
                     &profile.stem,
@@ -272,7 +365,11 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
                 release_worker_bar(&bar_pool, bar);
                 result
             });
-            in_flight.push(InFlightTask { handle });
+            in_flight.push(InFlightTask {
+                profile_index: task.profile_index,
+                raw,
+                handle,
+            });
         }
 
         let mut index = 0;
@@ -283,20 +380,29 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
             }
 
             let task = in_flight.swap_remove(index);
-            completed += 1;
             batch.inc(1);
-
-            match task.handle.join() {
-                Ok(Ok(())) => {}
-                Ok(Err((path, error))) => {
-                    batch.println(format!("failed {}: {error:#}", path.display()));
-                    failures.push((path, error));
-                }
-                Err(_) => {
-                    batch.println("a worker thread panicked");
-                    failures.push((PathBuf::from("worker thread"), anyhow!("worker panic")));
-                }
+            let result = match task.handle.join() {
+                Ok(result) => result,
+                Err(_) => DaemonFileResult {
+                    raw: task.raw,
+                    output: PathBuf::new(),
+                    duration: Duration::ZERO,
+                    profile_index: task.profile_index,
+                    error: Some("worker thread panicked".to_string()),
+                },
+            };
+            if let Some(error) = &result.error {
+                batch.println(format!("failed {}: {}", result.raw.display(), error));
             }
+            state.record(&result);
+            write_daemon_info_txt(
+                &args.output,
+                &args,
+                &profiles,
+                &state,
+                start.elapsed(),
+                sample_usage_block().as_ref(),
+            )?;
         }
 
         if queue.is_empty() && in_flight.is_empty() {
@@ -309,12 +415,8 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
                 "queued {} running {} done {}",
                 queue.len(),
                 in_flight.len(),
-                completed
+                state.total_processed
             ));
-        }
-
-        if let Some((path, error)) = failures.pop() {
-            return Err(anyhow!("daemon failed {}: {error:#}", path.display()));
         }
 
         std::thread::sleep(DEFAULT_POLL_INTERVAL);
@@ -327,6 +429,117 @@ fn resolve_batch_daemon_jobs(jobs: Option<usize>) -> Result<usize> {
         bail!("--jobs must be at least 1");
     }
     Ok(jobs)
+}
+
+fn write_daemon_info_txt(
+    output_root: &Path,
+    args: &BatchDaemonArgs,
+    profiles: &[Arc<DaemonProfile>],
+    state: &DaemonProgressState,
+    elapsed: Duration,
+    resource_usage: Option<&crate::app::system_stats::ResourceUsage>,
+) -> Result<()> {
+    use std::fmt::Write;
+
+    let mut out = String::new();
+    let started = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let runtime = format_duration(elapsed);
+    let uptime = format_duration(state.started_at.elapsed());
+
+    writeln!(out, "mini-film daemon report").ok();
+    writeln!(out, "Generated: {started}").ok();
+    writeln!(out, "Mini-film version: {}", env!("CARGO_PKG_VERSION")).ok();
+    writeln!(out, "Input directory: {}", args.input.display()).ok();
+    writeln!(out, "Output directory: {}", args.output.display()).ok();
+    writeln!(out, "Profiles: {}", profiles.len()).ok();
+    writeln!(out, "Output format: {:?}", args.output_format).ok();
+    writeln!(
+        out,
+        "Jobs: {}",
+        args.jobs.unwrap_or_else(half_cpu_thread_count)
+    )
+    .ok();
+    writeln!(out, "Elapsed: {runtime} (up since report start: {uptime})").ok();
+    writeln!(
+        out,
+        "Files: processed={}, succeeded={}, failed={}",
+        state.total_processed, state.total_succeeded, state.total_failed
+    )
+    .ok();
+
+    if let Some(usage) = resource_usage {
+        out.push_str(&usage.report_block());
+    }
+
+    writeln!(out, "\nProfiles:").ok();
+    for (index, profile) in profiles.iter().enumerate() {
+        let stats = &state.profile_stats[index];
+        writeln!(
+            out,
+            "  - [{}] {} => {} ({}/{} success/fail, avg {}/file ms)",
+            index + 1,
+            profile.selector,
+            profile.stem,
+            stats.succeeded,
+            stats.failed,
+            stats.avg_ms()
+        )
+        .ok();
+        out.push_str("    Profile report:\n");
+        for line in profile.profile_report.lines() {
+            writeln!(out, "      {line}").ok();
+        }
+    }
+
+    writeln!(out, "\nLatest files:").ok();
+    for file in &state.files {
+        if let Some(error) = &file.error {
+            writeln!(
+                out,
+                "  FAILURE | {} | {} | {}",
+                file.raw.display(),
+                file.output.display(),
+                error
+            )
+            .ok();
+        } else {
+            writeln!(
+                out,
+                "  OK | {} | {} | {}",
+                file.raw.display(),
+                file.output.display(),
+                format_duration(file.duration)
+            )
+            .ok();
+        }
+    }
+
+    fs::write(output_root.join("info.txt"), out)?;
+
+    for profile in profiles {
+        let profile_dir = sanitize_filename::sanitize(&profile.stem);
+        let profile_dir = output_root.join(profile_dir.into_owned()).join("info.txt");
+        if let Some(parent) = profile_dir.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("creating profile info directory {}", parent.display()))?;
+        }
+        let report_for_profile = format!(
+            "{}\n\nProfile report:\n{}",
+            profile.selector, profile.profile_report
+        );
+        fs::write(profile_dir, report_for_profile).with_context(|| {
+            format!(
+                "writing daemon profile report {}",
+                profile_selector_to_path(&profile.stem).display()
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
+fn profile_selector_to_path(stem: &str) -> PathBuf {
+    sanitize_filename::sanitize(stem).into_owned().into()
 }
 
 fn resolve_daemon_profiles(args: &BatchDaemonArgs, temp_dir: &Path) -> Result<Vec<DaemonProfile>> {
@@ -364,11 +577,18 @@ fn resolve_daemon_profiles(args: &BatchDaemonArgs, temp_dir: &Path) -> Result<Ve
             {
                 resolved.grain = grain;
             }
+            let profile_report = profile_info_text_for_selector(
+                selector,
+                &args.profiles_root,
+                &args.hald_dir,
+                args.hald_level,
+            )?;
             let stem = resolved.resolved_stem.clone();
             Ok(DaemonProfile {
                 selector: selector.clone(),
                 stem,
                 resolved,
+                profile_report,
             })
         })
         .collect()
@@ -504,25 +724,51 @@ fn process_single_profile(
     context: &DaemonTaskContext,
     file: &ProgressBar,
     raw_name: &str,
-) -> Result<(), (PathBuf, anyhow::Error)> {
+) -> DaemonFileResult {
     let args = &context.args;
-    let output = daemon_output_path(
+    let output = match daemon_output_path(
         &args.input,
         &args.output,
         args.output_format,
         raw,
         &profile.stem,
-    )
-    .map_err(|err| (raw.to_path_buf(), err))?;
+    ) {
+        Ok(output) => output,
+        Err(error) => {
+            return DaemonFileResult {
+                raw: raw.to_path_buf(),
+                output: PathBuf::new(),
+                duration: Duration::ZERO,
+                profile_index: profile_index as usize,
+                error: Some(error.to_string()),
+            };
+        }
+    };
 
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent).map_err(|err| (raw.to_path_buf(), err.into()))?;
+    if let Some(parent) = output.parent()
+        && let Err(error) = fs::create_dir_all(parent)
+    {
+        return DaemonFileResult {
+            raw: raw.to_path_buf(),
+            output,
+            duration: Duration::ZERO,
+            profile_index: profile_index as usize,
+            error: Some(error.to_string()),
+        };
     }
 
-    let temp_dir = Builder::new()
-        .prefix("mini-film-daemon-job-")
-        .tempdir()
-        .map_err(|err| (raw.to_path_buf(), err.into()))?;
+    let temp_dir = match Builder::new().prefix("mini-film-daemon-job-").tempdir() {
+        Ok(temp_dir) => temp_dir,
+        Err(error) => {
+            return DaemonFileResult {
+                raw: raw.to_path_buf(),
+                output,
+                duration: Duration::ZERO,
+                profile_index: profile_index as usize,
+                error: Some(error.to_string()),
+            };
+        }
+    };
 
     file.set_position(0);
     file.set_message(format!("{} -> {}: queued", raw_name, profile.stem));
@@ -534,7 +780,7 @@ fn process_single_profile(
         estimates: Some(Arc::clone(&context.estimates)),
     };
     let seed = stable_profile_seed(context.base_seed, raw, profile_index);
-    apply_resolved(
+    if let Err(error) = apply_resolved(
         ApplyJob {
             raw,
             output: &output,
@@ -554,8 +800,15 @@ fn process_single_profile(
         seed,
         temp_dir.path(),
         Some(&progress),
-    )
-    .map_err(|error| (raw.to_path_buf(), error))?;
+    ) {
+        return DaemonFileResult {
+            raw: raw.to_path_buf(),
+            output,
+            duration: file_start.elapsed(),
+            profile_index: profile_index as usize,
+            error: Some(error.to_string()),
+        };
+    }
 
     file.set_message(format!(
         "{} -> {}: done in {}",
@@ -563,7 +816,14 @@ fn process_single_profile(
         profile.stem,
         format_duration(file_start.elapsed())
     ));
-    Ok(())
+
+    DaemonFileResult {
+        raw: raw.to_path_buf(),
+        output,
+        duration: file_start.elapsed(),
+        profile_index: profile_index as usize,
+        error: None,
+    }
 }
 
 fn acquire_worker_bar(bar_pool: &Arc<Mutex<Vec<ProgressBar>>>) -> ProgressBar {

@@ -10,6 +10,7 @@ pub(crate) mod progress;
 pub(crate) mod raw;
 pub(crate) mod sampler;
 pub(crate) mod sampler_assets;
+pub(crate) mod system_stats;
 pub(crate) mod timestamps;
 pub(crate) mod util;
 

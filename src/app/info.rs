@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{fmt::Write, path::Path};
 
 use anyhow::Result;
 use mini_film::{
@@ -10,45 +10,69 @@ use crate::app::profile::{ProfileInfo, inspect_profile};
 
 pub(crate) struct InfoArgs {
     pub(crate) profile: String,
-    pub(crate) profiles_root: PathBuf,
-    pub(crate) hald_dir: PathBuf,
+    pub(crate) profiles_root: std::path::PathBuf,
+    pub(crate) hald_dir: std::path::PathBuf,
     pub(crate) hald_level: u32,
 }
 
 pub(crate) fn run_info(args: InfoArgs) -> Result<()> {
-    let info = inspect_profile(
+    let text = profile_info_text_for_selector(
         &args.profile,
         &args.profiles_root,
         &args.hald_dir,
         args.hald_level,
     )?;
-    print_profile_info(&info);
+    print!("{text}");
     Ok(())
 }
 
+pub(crate) fn profile_info_text_for_selector(
+    selector: &str,
+    profiles_root: &Path,
+    hald_dir: &Path,
+    hald_level: u32,
+) -> Result<String> {
+    let info = inspect_profile(selector, profiles_root, hald_dir, hald_level)?;
+    Ok(profile_info_to_string(&info))
+}
+
+pub(crate) fn profile_info_to_string(info: &ProfileInfo) -> String {
+    let mut out = String::new();
+    write_profile_info(&mut out, info);
+    out
+}
+
+#[allow(dead_code)]
 fn print_profile_info(info: &ProfileInfo) {
+    print!("{}", profile_info_to_string(info));
+}
+
+fn write_profile_info(out: &mut String, info: &ProfileInfo) {
     match info {
         ProfileInfo::HaldPng { path } => {
-            println!("Kind: Hald PNG");
-            println!("Path: {}", path.display());
-            println!("Adjustments: none attached");
-            println!("Grain: none attached");
+            writeln!(out, "Kind: Hald PNG").ok();
+            writeln!(out, "Path: {}", path.display()).ok();
+            writeln!(out, "Adjustments: none attached").ok();
+            writeln!(out, "Grain: none attached").ok();
+            writeln!(out).ok();
         }
         ProfileInfo::RawTherapeePp3 { path } => {
-            println!("Kind: RawTherapee PP3");
-            println!("Path: {}", path.display());
-            println!("Adjustments: defined by PP3 file");
-            println!("Grain: none attached");
+            writeln!(out, "Kind: RawTherapee PP3").ok();
+            writeln!(out, "Path: {}", path.display()).ok();
+            writeln!(out, "Adjustments: defined by PP3 file").ok();
+            writeln!(out, "Grain: none attached").ok();
+            writeln!(out).ok();
         }
         ProfileInfo::RgbTableProfile {
             path,
             converted,
             hald_path,
         } => {
-            println!("Kind: internal RGBTable profile");
-            println!("Profile XMP: {}", path.display());
-            println!("Cached Hald: {}", hald_path.display());
-            print_converted_profile(converted);
+            writeln!(out, "Kind: internal RGBTable profile").ok();
+            writeln!(out, "Profile XMP: {}", path.display()).ok();
+            writeln!(out, "Cached Hald: {}", hald_path.display()).ok();
+            write_converted_profile(out, converted);
+            writeln!(out).ok();
         }
         ProfileInfo::Emulation {
             path,
@@ -57,75 +81,99 @@ fn print_profile_info(info: &ProfileInfo) {
             converted,
             hald_path,
         } => {
-            println!("Kind: emulation preset");
-            println!("Emulation XMP: {}", path.display());
-            print_recipe_identity(recipe);
-            println!();
-            println!("Linked RGBTable profile: {}", source.display());
-            println!("Cached Hald: {}", hald_path.display());
-            print_converted_profile(converted);
-            println!();
-            println!("Emulation adjustments");
-            print_adjustments(&recipe.adjustments);
-            print_sharpening(recipe.sharpening);
-            print_grain(recipe.grain);
+            writeln!(out, "Kind: emulation preset").ok();
+            writeln!(out, "Emulation XMP: {}", path.display()).ok();
+            write_recipe_identity(out, recipe);
+            writeln!(out).ok();
+            writeln!(out, "Linked RGBTable profile: {}", source.display()).ok();
+            writeln!(out, "Cached Hald: {}", hald_path.display()).ok();
+            write_converted_profile(out, converted);
+            writeln!(out).ok();
+            writeln!(out, "Emulation adjustments").ok();
+            write_adjustments(out, &recipe.adjustments);
+            write_sharpening(out, recipe.sharpening);
+            write_grain(out, recipe.grain);
+            writeln!(out).ok();
         }
     }
 }
 
-fn print_recipe_identity(recipe: &XmpFilmRecipe) {
-    print_optional("Name", recipe.name.as_deref());
-    print_optional("Group", recipe.group.as_deref());
-    print_optional("UUID", recipe.uuid.as_deref());
-    print_optional("Look name", recipe.look_name.as_deref());
-    print_optional("Look UUID", recipe.look_uuid.as_deref());
+fn write_recipe_identity(out: &mut String, recipe: &XmpFilmRecipe) {
+    write_optional(out, "Name", recipe.name.as_deref());
+    write_optional(out, "Group", recipe.group.as_deref());
+    write_optional(out, "UUID", recipe.uuid.as_deref());
+    write_optional(out, "Look name", recipe.look_name.as_deref());
+    write_optional(out, "Look UUID", recipe.look_uuid.as_deref());
 }
 
-fn print_converted_profile(converted: &ConvertedProfile) {
+#[allow(dead_code)]
+fn print_recipe_identity(recipe: &XmpFilmRecipe) {
+    let mut out = String::new();
+    write_recipe_identity(&mut out, recipe);
+    print!("{}", out);
+}
+
+fn write_converted_profile(out: &mut String, converted: &ConvertedProfile) {
     let display_name = profile_display_name(&converted.input, &converted.profile);
-    println!("Profile name: {display_name}");
-    print_optional("Profile group", converted.profile.group.as_deref());
-    print_optional("Profile UUID", converted.profile.uuid.as_deref());
-    println!("RGB table");
-    println!("  input: {}", converted.input.display());
-    println!("  dimensions: {}", converted.table.dimensions);
-    println!("  divisions: {}", converted.table.divisions);
-    println!("  primaries: {}", converted.table.primaries);
-    println!("  gamma: {}", converted.table.gamma);
-    println!("  gamut: {}", converted.table.gamut);
-    println!(
+    writeln!(out, "Profile name: {display_name}").ok();
+    write_optional(out, "Profile group", converted.profile.group.as_deref());
+    write_optional(out, "Profile UUID", converted.profile.uuid.as_deref());
+    writeln!(out, "RGB table").ok();
+    writeln!(out, "  input: {}", converted.input.display()).ok();
+    writeln!(out, "  dimensions: {}", converted.table.dimensions).ok();
+    writeln!(out, "  divisions: {}", converted.table.divisions).ok();
+    writeln!(out, "  primaries: {}", converted.table.primaries).ok();
+    writeln!(out, "  gamma: {}", converted.table.gamma).ok();
+    writeln!(out, "  gamut: {}", converted.table.gamut).ok();
+    writeln!(
+        out,
         "  amount: {:.2}..{:.2}",
         converted.table.min_amount, converted.table.max_amount
-    );
-    println!("  flags: {:?}", converted.table.flags);
-    println!();
-    println!("Profile adjustments");
-    print_adjustments(&converted.adjustments);
-    print_sharpening(converted.sharpening);
+    )
+    .ok();
+    writeln!(out, "  flags: {:?}", converted.table.flags).ok();
+    writeln!(out).ok();
+    writeln!(out, "Profile adjustments").ok();
+    write_adjustments(out, &converted.adjustments);
+    write_sharpening(out, converted.sharpening);
 }
 
-fn print_adjustments(adjustments: &ProfileAdjustments) {
+#[allow(dead_code)]
+fn print_converted_profile(converted: &ConvertedProfile) {
+    let mut out = String::new();
+    write_converted_profile(&mut out, converted);
+    print!("{}", out);
+}
+
+fn write_adjustments(out: &mut String, adjustments: &ProfileAdjustments) {
     if adjustments.is_default() {
-        println!("  none");
+        writeln!(out, "  none").ok();
         return;
     }
 
-    print_nonzero_f32("  exposure", adjustments.exposure);
-    print_nonzero_f32("  contrast", adjustments.contrast);
-    print_nonzero_f32("  highlights", adjustments.highlights);
-    print_nonzero_f32("  shadows", adjustments.shadows);
-    print_nonzero_f32("  whites", adjustments.whites);
-    print_nonzero_f32("  blacks", adjustments.blacks);
-    print_nonzero_f32("  saturation", adjustments.saturation);
-    print_nonzero_f32("  vibrance", adjustments.vibrance);
-    print_nonzero_f32("  clarity", adjustments.clarity);
-    print_parametric(adjustments.parametric);
-    print_hsl(&adjustments.hsl);
-    print_calibration(adjustments.calibration);
-    print_curves(&adjustments.tone_curve);
+    write_nonzero_f32(out, "  exposure", adjustments.exposure);
+    write_nonzero_f32(out, "  contrast", adjustments.contrast);
+    write_nonzero_f32(out, "  highlights", adjustments.highlights);
+    write_nonzero_f32(out, "  shadows", adjustments.shadows);
+    write_nonzero_f32(out, "  whites", adjustments.whites);
+    write_nonzero_f32(out, "  blacks", adjustments.blacks);
+    write_nonzero_f32(out, "  saturation", adjustments.saturation);
+    write_nonzero_f32(out, "  vibrance", adjustments.vibrance);
+    write_nonzero_f32(out, "  clarity", adjustments.clarity);
+    write_parametric(out, adjustments.parametric);
+    write_hsl(out, &adjustments.hsl);
+    write_calibration(out, adjustments.calibration);
+    write_curves(out, &adjustments.tone_curve);
 }
 
-fn print_parametric(parametric: ParametricTone) {
+#[allow(dead_code)]
+fn print_adjustments(adjustments: &ProfileAdjustments) {
+    let mut out = String::new();
+    write_adjustments(&mut out, adjustments);
+    print!("{}", out);
+}
+
+fn write_parametric(out: &mut String, parametric: ParametricTone) {
     let changed = parametric.shadows != 0.0
         || parametric.darks != 0.0
         || parametric.lights != 0.0
@@ -136,18 +184,27 @@ fn print_parametric(parametric: ParametricTone) {
     if !changed {
         return;
     }
-    println!("  parametric tone:");
-    print_nonzero_f32("    shadows", parametric.shadows);
-    print_nonzero_f32("    darks", parametric.darks);
-    print_nonzero_f32("    lights", parametric.lights);
-    print_nonzero_f32("    highlights", parametric.highlights);
-    println!(
+    writeln!(out, "  parametric tone:").ok();
+    write_nonzero_f32(out, "    shadows", parametric.shadows);
+    write_nonzero_f32(out, "    darks", parametric.darks);
+    write_nonzero_f32(out, "    lights", parametric.lights);
+    write_nonzero_f32(out, "    highlights", parametric.highlights);
+    writeln!(
+        out,
         "    splits: shadow {:.2}, midtone {:.2}, highlight {:.2}",
         parametric.shadow_split, parametric.midtone_split, parametric.highlight_split
-    );
+    )
+    .ok();
 }
 
-fn print_hsl(hsl: &HslAdjustments) {
+#[allow(dead_code)]
+fn print_parametric(parametric: ParametricTone) {
+    let mut out = String::new();
+    write_parametric(&mut out, parametric);
+    print!("{}", out);
+}
+
+fn write_hsl(out: &mut String, hsl: &HslAdjustments) {
     const NAMES: [&str; 8] = [
         "red", "orange", "yellow", "green", "aqua", "blue", "purple", "magenta",
     ];
@@ -163,12 +220,19 @@ fn print_hsl(hsl: &HslAdjustments) {
             .map(|(index, value)| format!("{}={:.2}", NAMES[index], value))
             .collect();
         if !changed.is_empty() {
-            println!("  hsl {label}: {}", changed.join(", "));
+            writeln!(out, "  hsl {label}: {}", changed.join(", ")).ok();
         }
     }
 }
 
-fn print_calibration(calibration: CalibrationAdjustments) {
+#[allow(dead_code)]
+fn print_hsl(hsl: &HslAdjustments) {
+    let mut out = String::new();
+    write_hsl(&mut out, hsl);
+    print!("{}", out);
+}
+
+fn write_calibration(out: &mut String, calibration: CalibrationAdjustments) {
     let changed = calibration.red_hue != 0.0
         || calibration.red_saturation != 0.0
         || calibration.green_hue != 0.0
@@ -178,23 +242,37 @@ fn print_calibration(calibration: CalibrationAdjustments) {
     if !changed {
         return;
     }
-    println!("  calibration:");
-    print_nonzero_f32("    red hue", calibration.red_hue);
-    print_nonzero_f32("    red saturation", calibration.red_saturation);
-    print_nonzero_f32("    green hue", calibration.green_hue);
-    print_nonzero_f32("    green saturation", calibration.green_saturation);
-    print_nonzero_f32("    blue hue", calibration.blue_hue);
-    print_nonzero_f32("    blue saturation", calibration.blue_saturation);
+    writeln!(out, "  calibration:").ok();
+    write_nonzero_f32(out, "    red hue", calibration.red_hue);
+    write_nonzero_f32(out, "    red saturation", calibration.red_saturation);
+    write_nonzero_f32(out, "    green hue", calibration.green_hue);
+    write_nonzero_f32(out, "    green saturation", calibration.green_saturation);
+    write_nonzero_f32(out, "    blue hue", calibration.blue_hue);
+    write_nonzero_f32(out, "    blue saturation", calibration.blue_saturation);
 }
 
+#[allow(dead_code)]
+fn print_calibration(calibration: CalibrationAdjustments) {
+    let mut out = String::new();
+    write_calibration(&mut out, calibration);
+    print!("{}", out);
+}
+
+fn write_curves(out: &mut String, curves: &ToneCurves) {
+    write_curve(out, "  tone curve", &curves.composite);
+    write_curve(out, "  red curve", &curves.red);
+    write_curve(out, "  green curve", &curves.green);
+    write_curve(out, "  blue curve", &curves.blue);
+}
+
+#[allow(dead_code)]
 fn print_curves(curves: &ToneCurves) {
-    print_curve("  tone curve", &curves.composite);
-    print_curve("  red curve", &curves.red);
-    print_curve("  green curve", &curves.green);
-    print_curve("  blue curve", &curves.blue);
+    let mut out = String::new();
+    write_curves(&mut out, curves);
+    print!("{}", out);
 }
 
-fn print_curve(label: &str, points: &[(f32, f32)]) {
+fn write_curve(out: &mut String, label: &str, points: &[(f32, f32)]) {
     if points.is_empty() {
         return;
     }
@@ -208,39 +286,74 @@ fn print_curve(label: &str, points: &[(f32, f32)]) {
     } else {
         format!(" ({} points)", points.len())
     };
-    println!("{label}: {}{}", preview.join(" | "), suffix);
+    writeln!(out, "{label}: {}{}", preview.join(" | "), suffix).ok();
 }
 
-fn print_sharpening(sharpening: SharpeningSettings) {
-    println!("Sharpening");
+#[allow(dead_code)]
+fn print_curve(label: &str, points: &[(f32, f32)]) {
+    let mut out = String::new();
+    write_curve(&mut out, label, points);
+    print!("{}", out);
+}
+
+fn write_sharpening(out: &mut String, sharpening: SharpeningSettings) {
+    writeln!(out, "Sharpening").ok();
     if !sharpening.present {
-        println!("  none");
+        writeln!(out, "  none").ok();
         return;
     }
-    println!("  enabled: {}", sharpening.is_enabled());
-    println!("  amount: {:.2}", sharpening.amount);
-    println!("  radius: {:.2}", sharpening.radius);
-    println!("  detail: {:.2}", sharpening.detail);
-    println!("  masking: {:.2}", sharpening.masking);
+    writeln!(out, "  enabled: {}", sharpening.is_enabled()).ok();
+    writeln!(out, "  amount: {:.2}", sharpening.amount).ok();
+    writeln!(out, "  radius: {:.2}", sharpening.radius).ok();
+    writeln!(out, "  detail: {:.2}", sharpening.detail).ok();
+    writeln!(out, "  masking: {:.2}", sharpening.masking).ok();
 }
 
-fn print_grain(grain: GrainSettings) {
-    println!("Grain");
+#[allow(dead_code)]
+fn print_sharpening(sharpening: SharpeningSettings) {
+    let mut out = String::new();
+    write_sharpening(&mut out, sharpening);
+    print!("{}", out);
+}
+
+fn write_grain(out: &mut String, grain: GrainSettings) {
+    writeln!(out, "Grain").ok();
     if !grain.is_enabled() {
-        println!("  none");
+        writeln!(out, "  none").ok();
         return;
     }
-    println!("  amount: {}", grain.amount);
-    println!("  size: {}", grain.size);
-    println!("  frequency: {}", grain.frequency);
+    writeln!(out, "  amount: {}", grain.amount).ok();
+    writeln!(out, "  size: {}", grain.size).ok();
+    writeln!(out, "  frequency: {}", grain.frequency).ok();
 }
 
+#[allow(dead_code)]
+fn print_grain(grain: GrainSettings) {
+    let mut out = String::new();
+    write_grain(&mut out, grain);
+    print!("{}", out);
+}
+
+fn write_optional(out: &mut String, label: &str, value: Option<&str>) {
+    if let Some(value) = value.filter(|value| !value.is_empty()) {
+        writeln!(out, "{label}: {value}").ok();
+    }
+}
+
+fn write_nonzero_f32(out: &mut String, label: &str, value: f32) {
+    if value != 0.0 {
+        writeln!(out, "{label}: {value:.2}").ok();
+    }
+}
+
+#[allow(dead_code)]
 fn print_optional(label: &str, value: Option<&str>) {
     if let Some(value) = value.filter(|value| !value.is_empty()) {
         println!("{label}: {value}");
     }
 }
 
+#[allow(dead_code)]
 fn print_nonzero_f32(label: &str, value: f32) {
     if value != 0.0 {
         println!("{label}: {value:.2}");
@@ -441,5 +554,21 @@ mod tests {
         assert_eq!(default.hald_level, 16);
         assert!(!default.overwrite);
         assert!(!default.info_only);
+    }
+
+    #[test]
+    fn profile_info_text_for_selector_includes_title_lines() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+        let profile = root.join("profile.pp3");
+        std::fs::write(&profile, "Version=0\nProfile=foo\n").unwrap();
+        let text = profile_info_text_for_selector(
+            &profile.display().to_string(),
+            &root,
+            Path::new("/tmp"),
+            16,
+        )
+        .expect("info text for pp3");
+        assert!(text.contains("Kind: RawTherapee PP3") || text.contains("Kind:"));
     }
 }

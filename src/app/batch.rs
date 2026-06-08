@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     thread,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail};
@@ -16,11 +16,13 @@ use walkdir::WalkDir;
 
 use crate::app::apply::{ApplyArgs, ApplyJob, apply_resolved, resolve_grain_override};
 use crate::app::export::validate_export_options;
+use crate::app::info::profile_info_text_for_selector;
 use crate::app::profile::resolve_profile;
 use crate::app::progress::{
     ApplyProgress, StageEstimates, batch_progress_style, file_progress_style, format_duration,
     progress_length,
 };
+use crate::app::system_stats::sample_usage_block;
 use crate::app::util::{half_cpu_thread_count, is_supported_raw_file, time_of_day_seed};
 use crate::cli::{BatchOutputFormat, ExportOptions};
 
@@ -40,6 +42,13 @@ pub(crate) struct BatchArgs {
     pub(crate) jobs: Option<usize>,
     pub(crate) output_format: BatchOutputFormat,
     pub(crate) export: ExportOptions,
+}
+
+struct BatchFileRecord {
+    raw: PathBuf,
+    output: PathBuf,
+    duration: Duration,
+    error: Option<String>,
 }
 
 /// Run the batch command over every supported RAW file under an input tree.
@@ -91,6 +100,12 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
     {
         resolved.grain = grain;
     }
+    let profile_report = profile_info_text_for_selector(
+        &args.profile,
+        &args.profiles_root,
+        &args.hald_dir,
+        args.hald_level,
+    )?;
     let base_seed = args.grain_seed.unwrap_or_else(time_of_day_seed);
 
     let multi = MultiProgress::new();
@@ -135,12 +150,28 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
         file.finish_and_clear();
     }
 
-    let failures: Vec<_> = results.into_iter().filter_map(Result::err).collect();
+    let (successes, failures): (Vec<_>, Vec<_>) = results
+        .into_iter()
+        .partition(|result| result.error.is_none());
+    let end = batch_start.elapsed();
+    let resource_usage = sample_usage_block();
+    write_batch_report(&BatchReportContext {
+        output_dir: &args.output,
+        args: &args,
+        resolved_profile_stem: &resolved.resolved_stem,
+        profile_report: &profile_report,
+        raw_count: raws.len(),
+        elapsed: end,
+        resource_usage: resource_usage.as_ref(),
+        successes: &successes,
+        failures: &failures,
+    });
+
     if failures.is_empty() {
         batch.finish_with_message(format!(
             "done {} files in {}",
             raws.len(),
-            format_duration(batch_start.elapsed())
+            format_duration(end)
         ));
         Ok(())
     } else {
@@ -148,10 +179,14 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
             "failed {}/{} files in {}",
             failures.len(),
             raws.len(),
-            format_duration(batch_start.elapsed())
+            format_duration(end)
         ));
-        for (path, err) in failures {
-            batch.println(format!("failed {}: {err:#}", path.display()));
+        for result in failures {
+            batch.println(format!(
+                "failed {}: {:#}",
+                result.raw.display(),
+                result.error.as_deref().unwrap_or("")
+            ));
         }
         bail!("batch finished with failures")
     }
@@ -188,14 +223,27 @@ struct ProcessBatchFileContext<'a> {
     index: usize,
 }
 
-fn process_batch_file(
-    context: &ProcessBatchFileContext<'_>,
-    raw: &Path,
-) -> Result<(), (PathBuf, anyhow::Error)> {
-    process_batch_file_inner(context, raw).map_err(|err| (raw.to_path_buf(), err))
+fn process_batch_file(context: &ProcessBatchFileContext<'_>, raw: &Path) -> BatchFileRecord {
+    match process_batch_file_inner(context, raw) {
+        Ok((output, duration)) => BatchFileRecord {
+            raw: raw.to_path_buf(),
+            output,
+            duration,
+            error: None,
+        },
+        Err(error) => BatchFileRecord {
+            raw: raw.to_path_buf(),
+            output: PathBuf::new(),
+            duration: Duration::ZERO,
+            error: Some(format!("{error:#}")),
+        },
+    }
 }
 
-fn process_batch_file_inner(context: &ProcessBatchFileContext<'_>, raw: &Path) -> Result<()> {
+fn process_batch_file_inner(
+    context: &ProcessBatchFileContext<'_>,
+    raw: &Path,
+) -> Result<(PathBuf, Duration)> {
     let output = batch_output_path(
         &context.args.input,
         &context.args.output,
@@ -254,7 +302,7 @@ fn process_batch_file_inner(context: &ProcessBatchFileContext<'_>, raw: &Path) -
                 display_name,
                 format_duration(file_start.elapsed())
             ));
-            Ok(())
+            Ok((output, file_start.elapsed()))
         }
         Err(err) => {
             context.file.set_message(format!(
@@ -312,6 +360,76 @@ fn per_file_seed(base_seed: u64, index: u64, path: &Path) -> u64 {
     let mut hasher = DefaultHasher::new();
     path.hash(&mut hasher);
     base_seed ^ index.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ hasher.finish()
+}
+
+fn write_batch_report(context: &BatchReportContext<'_>) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    let started = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    writeln!(out, "mini-film batch report").ok();
+    writeln!(out, "Generated: {started}").ok();
+    writeln!(out, "Mini-film version: {}", env!("CARGO_PKG_VERSION")).ok();
+    writeln!(out, "Input directory: {}", context.args.input.display()).ok();
+    writeln!(out, "Output directory: {}", context.args.output.display()).ok();
+    writeln!(out, "Profile selector: {}", context.args.profile).ok();
+    writeln!(out, "Resolved profile: {}", context.resolved_profile_stem).ok();
+    writeln!(out, "Output format: {:?}", context.args.output_format).ok();
+    writeln!(out, "Detected files: {}", context.raw_count).ok();
+    writeln!(out, "Completed: {}", context.successes.len()).ok();
+    writeln!(out, "Failed: {}", context.failures.len()).ok();
+    writeln!(out, "Elapsed: {}", format_duration(context.elapsed)).ok();
+    writeln!(out, "Profile info command output:").ok();
+    out.push_str(context.profile_report);
+    writeln!(out).ok();
+    if let Some(usage) = context.resource_usage {
+        out.push_str(&usage.report_block());
+        writeln!(out).ok();
+    } else {
+        writeln!(out, "Resource usage: unavailable").ok();
+        writeln!(out).ok();
+    }
+
+    writeln!(out, "File statistics:").ok();
+    for file in context.successes.iter().chain(context.failures.iter()) {
+        if let Some(error) = &file.error {
+            writeln!(
+                out,
+                "FAILURE | {} -> {} | {} | {}",
+                file.raw.display(),
+                file.output.display(),
+                format_duration(file.duration),
+                error
+            )
+            .ok();
+        } else {
+            writeln!(
+                out,
+                "OK     | {} -> {} | {}",
+                file.raw.display(),
+                file.output.display(),
+                format_duration(file.duration)
+            )
+            .ok();
+        }
+    }
+
+    let report_path = context.output_dir.join("info.txt");
+    if let Err(error) = std::fs::write(&report_path, out.clone()) {
+        eprintln!("failed writing {}: {error:#}", report_path.display());
+    }
+    out
+}
+
+struct BatchReportContext<'a> {
+    output_dir: &'a Path,
+    args: &'a BatchArgs,
+    resolved_profile_stem: &'a str,
+    profile_report: &'a str,
+    raw_count: usize,
+    elapsed: Duration,
+    resource_usage: Option<&'a crate::app::system_stats::ResourceUsage>,
+    successes: &'a [BatchFileRecord],
+    failures: &'a [BatchFileRecord],
 }
 
 #[cfg(test)]
