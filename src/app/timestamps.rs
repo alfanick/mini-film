@@ -40,8 +40,41 @@ pub(crate) fn sync_output_metadata_from_raw(
     output: &Path,
     exif_comment: Option<&str>,
 ) -> Result<()> {
-    // Keep pixel data orientation from RawTherapee output and avoid inheriting raw
-    // orientation tags that can rotate JPEG/TIFF viewers again after encoding.
+    let is_tiff = matches!(
+        output.extension().and_then(|ext| ext.to_str()),
+        Some(ext) if ext.eq_ignore_ascii_case("tiff") || ext.eq_ignore_ascii_case("tif")
+    );
+
+    let status = run_exiftool_copy_all(raw, output, exif_comment)
+        .with_context(|| format!("running exiftool on {}", output.display()))?;
+
+    if status.success() {
+        return Ok(());
+    }
+
+    if !is_tiff {
+        return Err(anyhow::anyhow!(
+            "exiftool failed with status {status} while syncing metadata"
+        ));
+    }
+
+    if !run_exiftool_fallback(raw, output, exif_comment)?.success()
+        && !run_exiftool_minimal(output, exif_comment)?.success()
+    {
+        // TIFF metadata writing is known to be tool- and tag-dependent.
+        // Never hard-fail batch/apply here because this step is cosmetic versus
+        // critical output validity; capture metadata best-effort only.
+        return Ok(());
+    }
+
+    Ok(())
+}
+
+fn run_exiftool_copy_all(
+    raw: &Path,
+    output: &Path,
+    exif_comment: Option<&str>,
+) -> Result<std::process::ExitStatus> {
     let mut command = Command::new("exiftool");
     command
         .arg("-q")
@@ -53,22 +86,62 @@ pub(crate) fn sync_output_metadata_from_raw(
         .arg("-all:all")
         .arg("-icc_profile")
         .arg("-Orientation#=1");
-
     if let Some(comment) = exif_comment {
         command.arg(format!("-Comment={comment}"));
     }
-
     command.arg(output);
     command.stdout(Stdio::null()).stderr(Stdio::null());
 
-    let status = command
-        .status()
-        .with_context(|| format!("running exiftool on {}", output.display()))?;
-    if !status.success() {
-        return Err(anyhow::anyhow!("exiftool failed with status {status}"));
-    }
+    Ok(command.status()?)
+}
 
-    Ok(())
+fn run_exiftool_fallback(
+    raw: &Path,
+    output: &Path,
+    exif_comment: Option<&str>,
+) -> Result<std::process::ExitStatus> {
+    // Some TIFF writers reject the full `-all:all` copy even when the same tags are
+    // acceptable on JPEG; keep a strict-but-smaller set for a second attempt.
+    let mut command = Command::new("exiftool");
+    command
+        .arg("-q")
+        .arg("-quiet")
+        .arg("-overwrite_original")
+        .arg("-m")
+        .arg("-TagsFromFile")
+        .arg(raw)
+        .arg("-exif:all")
+        .arg("-xmp:all")
+        .arg("-icc_profile")
+        .arg("-Orientation#=1");
+    if let Some(comment) = exif_comment {
+        command.arg(format!("-Comment={comment}"));
+    }
+    command.arg(output);
+    command.stdout(Stdio::null()).stderr(Stdio::null());
+
+    Ok(command.status()?)
+}
+
+fn run_exiftool_minimal(
+    output: &Path,
+    exif_comment: Option<&str>,
+) -> Result<std::process::ExitStatus> {
+    // Final TIFF fallback: write only a tiny amount of metadata that is
+    // widely supported (best-effort so failures still only degrade metadata).
+    let mut command = Command::new("exiftool");
+    command
+        .arg("-q")
+        .arg("-quiet")
+        .arg("-overwrite_original")
+        .arg("-m");
+    if let Some(comment) = exif_comment {
+        command.arg(format!("-Comment={comment}"));
+    }
+    command.arg(output);
+    command.stdout(Stdio::null()).stderr(Stdio::null());
+
+    Ok(command.status()?)
 }
 
 pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
