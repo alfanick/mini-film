@@ -455,12 +455,16 @@ fn write_daemon_info_txt(
     use std::fmt::Write;
 
     let mut out = String::new();
-    let started = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let started = chrono::Local::now();
+    let started_str = started.format("%Y-%m-%d %H:%M:%S").to_string();
+    let time_of_day = started.format("%H:%M:%S").to_string();
     let runtime = format_duration(elapsed);
     let uptime = format_duration(state.started_at.elapsed());
 
     writeln!(out, "mini-film daemon report").ok();
-    writeln!(out, "Generated: {started}").ok();
+    writeln!(out, "Generated: {started_str}").ok();
+    writeln!(out, "Time of day: {time_of_day}").ok();
+    writeln!(out, "Timezone: {}", started.format("%:z")).ok();
     writeln!(out, "Mini-film version: {}", env!("CARGO_PKG_VERSION")).ok();
     writeln!(out, "Input directory: {}", args.input.display()).ok();
     writeln!(out, "Output directory: {}", args.output.display()).ok();
@@ -583,7 +587,9 @@ fn profile_daemon_info(
     use std::fmt::Write;
 
     let mut out = String::new();
-    let started = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let started = chrono::Local::now();
+    let started_str = started.format("%Y-%m-%d %H:%M:%S").to_string();
+    let time_of_day = started.format("%H:%M:%S").to_string();
     let runtime = format_duration(elapsed);
     let uptime = format_duration(state.started_at.elapsed());
     let stats = state
@@ -593,7 +599,9 @@ fn profile_daemon_info(
         .unwrap_or_default();
 
     writeln!(out, "mini-film daemon profile report").ok();
-    writeln!(out, "Generated: {started}").ok();
+    writeln!(out, "Generated: {started_str}").ok();
+    writeln!(out, "Time of day: {time_of_day}").ok();
+    writeln!(out, "Timezone: {}", started.format("%:z")).ok();
     writeln!(out, "Mini-film version: {}", env!("CARGO_PKG_VERSION")).ok();
     writeln!(out, "Input directory: {}", args.input.display()).ok();
     writeln!(out, "Output directory: {}", args.output.display()).ok();
@@ -1164,6 +1172,8 @@ mod tests {
         let txt = fs::read_to_string(tree_profile_info).unwrap();
         assert!(txt.contains("Portra 400 grainy"));
         assert!(txt.contains("Resource usage: unavailable"));
+        assert!(txt.contains("Mini-film version:"));
+        assert!(txt.contains("Time of day:"));
     }
 
     #[test]
@@ -1265,7 +1275,11 @@ mod tests {
         let root_txt = fs::read_to_string(root_info).unwrap();
         let profile_txt = fs::read_to_string(tree_profile_info).unwrap();
         assert!(root_txt.contains("CPU usage:"));
+        assert!(root_txt.contains("Mini-film version:"));
+        assert!(root_txt.contains("Time of day:"));
         assert!(profile_txt.contains("CPU usage:"));
+        assert!(profile_txt.contains("Mini-film version:"));
+        assert!(profile_txt.contains("Time of day:"));
         assert!(profile_txt.contains("Profile files: processed=1, succeeded=1, failed=0"));
         assert!(profile_txt.contains("Files for this profile:"));
         assert!(profile_txt.contains("DSC_0001.NEF"));
