@@ -12,6 +12,7 @@ use anyhow::{Context, Result, bail};
 use handlebars::Handlebars;
 use indicatif::{MultiProgress, ProgressBar};
 use rayon::prelude::*;
+use sanitize_filename::sanitize;
 use serde_json::json;
 use tempfile::Builder;
 use walkdir::WalkDir;
@@ -235,13 +236,23 @@ fn run_batch_gallery(
     } else {
         output_root.join("thumbnails")
     };
+    let profile_cache = if profile_stem.trim().is_empty() {
+        "default".to_string()
+    } else {
+        sanitize(profile_stem).to_string()
+    };
     fs::create_dir_all(&shared_thumb_root)
         .with_context(|| format!("creating {}", shared_thumb_root.display()))?;
 
     let entries: Vec<GalleryEntry> = successes
         .iter()
         .filter_map(|result| {
-            let thumb = gallery_thumbnail_output(&shared_thumb_root, output_root, &result.output)?;
+            let thumb = gallery_thumbnail_output(
+                &shared_thumb_root,
+                output_root,
+                &result.output,
+                &profile_cache,
+            )?;
             let exif = extract_gallery_exif(&result.output)
                 .or_else(|_| extract_gallery_exif(&result.raw))
                 .unwrap_or_default();
@@ -306,10 +317,11 @@ fn gallery_thumbnail_output(
     thumbs_root: &Path,
     output_root: &Path,
     output: &Path,
+    profile_stem: &str,
 ) -> Option<PathBuf> {
     let rel = output.strip_prefix(output_root).ok()?;
     let stem = rel.with_extension("jpg");
-    Some(thumbs_root.join(stem))
+    Some(thumbs_root.join(profile_stem).join(stem))
 }
 
 fn create_batch_gallery_thumbnail(
@@ -790,6 +802,18 @@ mod tests {
         assert_eq!(
             batch_relative_path(gallery_root, output_root, target),
             "../2026/day1/image.jpg"
+        );
+    }
+
+    #[test]
+    fn gallery_thumbnail_output_includes_profile_cache_dir() {
+        let output_root = Path::new("/out");
+        let thumbs_root = Path::new("/out/thumbnails");
+        let output = Path::new("/out/2026/day1/file.NEF");
+
+        assert_eq!(
+            gallery_thumbnail_output(thumbs_root, output_root, output, "Kodak Portra 400").unwrap(),
+            Path::new("/out/thumbnails/Kodak Portra 400/2026/day1/file.jpg")
         );
     }
 }
