@@ -34,7 +34,8 @@ use crate::app::sampler_assets::{
     html_section_template, html_styles, html_tile_template,
 };
 use crate::app::util::{
-    half_cpu_thread_count, remove_temp_file, sync_output_metadata_from_raw, time_of_day_seed,
+    half_cpu_thread_count, remove_temp_file, sync_output_metadata_from_raw,
+    sync_output_timestamps_from_exif, time_of_day_seed,
 };
 use crate::cli::{ExportOptions, JpegSubsampling};
 
@@ -550,15 +551,38 @@ fn render_profile_thumbnail(
     finalize_output(&context.args.convert, &source, &thumb, context.export)?;
     thumbnail_stage.finish();
     remove_temp_file(&source)?;
-    sync_output_metadata_from_raw(
-        &context.args.raw,
-        &thumb,
-        Some(&format!(
-            "mini-film {} usage=sampler profile={}",
-            env!("CARGO_PKG_VERSION"),
-            resolved.resolved_stem
-        )),
-    )?;
+    if context.args.strip_metadata {
+        let metadata_stage = progress_stage_adaptive(
+            Some(&apply_progress),
+            5,
+            6,
+            "sampler-timestamps",
+            "timestamps",
+            estimate_sampler_metadata_duration(),
+        );
+        sync_output_timestamps_from_exif(&context.args.raw, &thumb)?;
+        metadata_stage.finish();
+    } else {
+        let metadata_stage = progress_stage_adaptive(
+            Some(&apply_progress),
+            5,
+            6,
+            "sampler-exif",
+            "exif",
+            estimate_sampler_exif_duration(),
+        );
+        sync_output_metadata_from_raw(
+            &context.args.raw,
+            &thumb,
+            Some(&format!(
+                "mini-film {} usage=sampler profile={}",
+                env!("CARGO_PKG_VERSION"),
+                resolved.resolved_stem
+            )),
+        )?;
+        sync_output_timestamps_from_exif(&context.args.raw, &thumb)?;
+        metadata_stage.finish();
+    }
     let image = if let Some(cache) = context.cache {
         let cached = cache.path_for(profile, context.args)?;
         copy_thumbnail_to_cache(&thumb, &cached)?;
@@ -566,7 +590,7 @@ fn render_profile_thumbnail(
     } else {
         thumb
     };
-    sampler_step(context.progress, 5, "done");
+    sampler_step(context.progress, 6, "done");
     sample_thumb_from_image(image, profile, context.emulation_root)
 }
 
@@ -1133,6 +1157,14 @@ fn estimate_sampler_grain_duration(thumbnail_long_edge: u32) -> Duration {
 fn estimate_sampler_thumbnail_duration(thumbnail_long_edge: u32) -> Duration {
     let pixels = thumbnail_long_edge.max(128) as f64;
     Duration::from_secs_f64((0.15 + pixels / 4000.0).clamp(0.2, 1.0))
+}
+
+fn estimate_sampler_exif_duration() -> Duration {
+    Duration::from_millis(700)
+}
+
+fn estimate_sampler_metadata_duration() -> Duration {
+    Duration::from_millis(180)
 }
 
 fn estimate_sheet_duration(thumbs: usize) -> Duration {

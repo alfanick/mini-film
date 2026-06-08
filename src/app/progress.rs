@@ -16,7 +16,7 @@ pub(crate) struct ApplyProgress<'a> {
     pub(crate) estimates: Option<Arc<StageEstimates>>,
 }
 
-pub(crate) const FILE_PROGRESS_STEPS: u64 = 5;
+pub(crate) const FILE_PROGRESS_STEPS: u64 = 6;
 const STEP_UNITS: u64 = 100;
 const TICK_INTERVAL: Duration = Duration::from_millis(150);
 const ESTIMATE_ALPHA: f64 = 0.35;
@@ -256,7 +256,7 @@ mod tests {
     fn progress_positions_scale_logical_steps_to_fixed_units() {
         assert_eq!(progress_position(0), 0);
         assert_eq!(progress_position(3), 300);
-        assert_eq!(progress_length(), 500);
+        assert_eq!(progress_length(), 600);
     }
 
     #[test]

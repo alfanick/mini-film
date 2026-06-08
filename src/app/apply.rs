@@ -274,10 +274,30 @@ pub(crate) fn apply_resolved(
     }
 
     if !job.export.strip_metadata {
+        let exif_stage = progress_stage_adaptive(
+            progress,
+            5,
+            6,
+            "exif-metadata",
+            "exif",
+            estimate_exif_duration(job.raw),
+        );
         sync_output_metadata_from_raw(job.raw, job.output, job.exif_comment.as_deref())?;
+        sync_output_timestamps_from_exif(job.raw, job.output)?;
+        exif_stage.finish();
+    } else {
+        let timestamp_stage = progress_stage_adaptive(
+            progress,
+            5,
+            6,
+            "timestamps",
+            "timestamps",
+            estimate_timestamp_sync_duration(),
+        );
+        sync_output_timestamps_from_exif(job.raw, job.output)?;
+        timestamp_stage.finish();
     }
-    sync_output_timestamps_from_exif(job.raw, job.output)?;
-    progress_step(progress, 5, "done");
+    progress_step(progress, 6, "done");
     Ok(())
 }
 
@@ -307,6 +327,16 @@ fn estimate_export_duration(jpeg_output: bool) -> Duration {
     } else {
         Duration::from_secs(2)
     }
+}
+
+fn estimate_exif_duration(raw: &Path) -> Duration {
+    let mib = file_size_mib(raw).unwrap_or(2.0);
+    let seconds = 0.15 + mib * 0.015;
+    Duration::from_secs_f64(seconds.clamp(0.2, 2.0))
+}
+
+fn estimate_timestamp_sync_duration() -> Duration {
+    Duration::from_millis(150)
 }
 
 fn file_size_mib(path: &Path) -> Option<f64> {
