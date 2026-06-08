@@ -22,18 +22,13 @@ It can:
 
 ## Example
 
-Example interactive HTML sampler output:
-<https://sam.nakarmamana.ch/mini-film/sampler.html>
+mini-film works with XMP or HALD profiles provided by the user. Emulations are
+not bundled with the project; point `--profiles-root` at your local profile
+collection.
 
-Example JPEG sampler output:
-<https://sam.nakarmamana.ch/mini-film/sampler.jpg>
-
-This sampler was generated from my pictures using RNI All Films 5 Pro profiles:
-<https://reallyniceimages.com/products/rni-all-films-5-pro-for-adobe-lightroom.html>
-
-The RNI profiles are not part of this project. To use `mini-film` with those
-emulations, obtain the profiles yourself and point `--profiles-root` at your
-local profile library.
+Commercial profile products are often excellent sources of look presets. mini-film
+supports them the same way as any XMP/HALD workflow as long as the data is
+available on disk.
 
 ## Build
 
@@ -81,7 +76,7 @@ Convert one profile XMP:
 
 ```sh
 cargo run --release -- hald \
-  '/home/alfanick/Pictures/RNI/profiles/Kodak Portra 400 normalised profile.xmp' \
+  '/path/to/profile-library/profiles/Kodak Portra 400 normalised profile.xmp' \
   -o '../hald/Kodak Portra 400 normalised.hald.png' \
   --overwrite
 ```
@@ -89,10 +84,17 @@ cargo run --release -- hald \
 Convert all profile XMPs under the parent directory:
 
 ```sh
-cargo run --release -- hald /home/alfanick/Pictures/RNI/profiles --overwrite
+cargo run --release -- hald /path/to/profile-library/profiles --overwrite
 ```
 
-The ordinary RNI preset XMPs usually only reference a profile UUID and do not contain the table payload; `hald` skips those in directory mode. When `-o/--output` is omitted, `hald` writes generated Hald PNGs under `$HOME/.cache/mini-film/hald`. Hald PNGs contain only the decoded RGBTable lookup. Profile XMPs that include extra Camera Raw settings print `adjustments=pp3` or `sharpening=pp3`; those settings are handled through generated RawTherapee profiles during `apply`, `batch`, and `sampler`.
+Ordinary emulation preset XMPs usually only reference a profile UUID and do not
+contain the table payload; `hald` skips those in directory mode.
+
+When `-o/--output` is omitted, `hald` writes generated Hald PNGs under
+`$HOME/.cache/mini-film/hald`. Hald PNGs contain only the decoded RGBTable
+lookup. Profile XMPs that include extra Camera Raw settings print
+`adjustments=pp3` or `sharpening=pp3`; those settings are handled through
+generated RawTherapee profiles during `apply`, `batch`, and `sampler`.
 
 ## Apply A Complete Film Recipe
 
@@ -100,18 +102,19 @@ Use a Lightroom emulation XMP that references an internal profile and defines gr
 
 ```sh
 cargo run --release -- apply input.RAW \
-  --profile '/home/alfanick/Pictures/RNI/emulations/Kodak Portra 400 warm grainy.xmp' \
-  --profiles-root /home/alfanick/Pictures/RNI \
+  --profile '/path/to/profile-library/emulations/Kodak Portra 400 warm grainy.xmp' \
+  --profiles-root /path/to/profile-library \
   -o output.tif
 ```
 
-If `--profile` is an emulation name, set `--profiles-root` to the RNI library directory that contains `emulations/` and `profiles/`:
+If `--profile` is an emulation name, set `--profiles-root` to a folder that
+contains `emulations/` and `profiles/`:
 
 ```sh
 cargo run -- apply \
   --output /home/alfanick/test.jpg \
   --profile 'Agfa Scala 200 + grainy' \
-  --profiles-root /home/alfanick/Pictures/RNI \
+  --profiles-root /path/to/profile-library \
   /home/alfanick/Pictures/Lightroom/2026/05/03/DSC_1812-10.dng
 ```
 
@@ -119,8 +122,8 @@ cargo run -- apply \
 
 ```sh
 cargo run --release -- apply input.RAW \
-  --profile '/home/alfanick/Pictures/RNI/emulations/Kodak Portra 400 warm grainy.xmp' \
-  --profiles-root /home/alfanick/Pictures/RNI \
+  --profile '/path/to/profile-library/emulations/Kodak Portra 400 warm grainy.xmp' \
+  --profiles-root /path/to/profile-library \
   -o output.jpg
 ```
 
@@ -152,7 +155,7 @@ cargo run --release -- batch \
   /home/alfanick/Pictures/Lightroom/2026/05/03 \
   /home/alfanick/batch-output \
   --profile 'Agfa Scala 200 + grainy' \
-  --profiles-root /home/alfanick/Pictures/RNI \
+  --profiles-root /path/to/profile-library \
   --output-format jpg \
   --jobs 8
 ```
@@ -219,7 +222,7 @@ mini-film daemon \
   /home/alfanick/Pictures/mini-film-output \
   --profile 'Agfa Scala 200 + grainy' \
   --profile 'Portra 400' \
-  --profiles-root /home/alfanick/Pictures/RNI \
+  --profiles-root /path/to/profile-library \
   --debounce-seconds 1 \
   --jobs 8 \
   --output-format jpg
@@ -247,24 +250,6 @@ If profile resolution fails for any selector, startup stops with a clear error.
 CPU threads unless `--jobs` is set.
 
 ## Profile Sampler Contact Sheet
-
-Render one RAW through every resolvable emulation XMP and write a labeled contact sheet as JPEG or interactive HTML.
-
-```sh
-cargo run --release -- sampler \
-  /home/alfanick/Pictures/Lightroom/2026/05/03/DSC_1812-10.dng \
-  --profiles-root /home/alfanick/Pictures/RNI \
-  --output /home/alfanick/profile-sampler.jpg
-```
-
-Use `--output` with `.html` to generate the interactive HTML sampler instead:
-
-```sh
-cargo run --release -- sampler \
-  /home/alfanick/Pictures/Lightroom/2026/05/03/DSC_1812-10.dng \
-  --profiles-root /home/alfanick/Pictures/RNI \
-  --output /home/alfanick/profile-sampler.html
-```
 
 `sampler` renders one thumbnail per XMP file from `emulations/` and builds a structured contact sheet grouped by shared profile-name prefixes. For example, Kodak profiles are shown under progressively deeper headings like `Kodak`, `Kodak Portra`, `Kodak Portra 400`, and `Kodak Portra 400 Grainy`; indentation makes the level visible. Each thumbnail is developed with its profile-specific generated RawTherapee `.pp3` files, including Film Simulation for the Hald, which applies the LUT during RAW development, before the grain stage. Like `batch`, sampler renders half of the detected CPU threads in parallel by default; override with `--jobs N`. Thumbnail longest edge defaults to 512 px:
 
@@ -333,7 +318,7 @@ Print parsed details for a user-facing emulation or an internal RGBTable profile
 ```sh
 cargo run --release -- info \
   'Polaroid 600 v3 grainy' \
-  --profiles-root /home/alfanick/Pictures/RNI
+  --profiles-root /path/to/profile-library
 ```
 
 `info` resolves emulation names under `emulations/`, direct emulation XMP paths, direct internal profile XMP paths, internal profile names under `profiles/`, and cached Hald PNGs under `--hald-dir`. For emulations, it prints the preset identity, linked Look, linked internal RGBTable profile, cached Hald path, profile-side tone/color/sharpening adjustments, and emulation-side grain/adjustments.
@@ -345,7 +330,7 @@ Print the generated RawTherapee PP3 for a profile:
 ```sh
 cargo run --release -- pp3 \
   'Polaroid 600 v3 grainy' \
-  --profiles-root /home/alfanick/Pictures/RNI \
+  --profiles-root /path/to/profile-library \
   --output polaroid-600-v3.pp3
 ```
 
@@ -358,7 +343,7 @@ Fit an emulation XMP, internal RGBTable XMP, or Hald PNG into a Nikon classic `.
 ```sh
 cargo run --release -- nikon \
   'Polaroid 600 v3 grainy' \
-  --profiles-root /home/alfanick/Pictures/RNI \
+  --profiles-root /path/to/profile-library \
   --output polaroid-600-v3.ncp \
   --report polaroid-600-v3.ncp.txt
 ```

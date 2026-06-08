@@ -1948,7 +1948,7 @@ mod tests {
             "Kodak Portra 400 Grainy"
         );
         assert_eq!(
-            profile_display_name_from_relative("RNI/Kodak Portra 400.xmp"),
+            profile_display_name_from_relative("Provider/Kodak Portra 400.xmp"),
             "Kodak Portra 400"
         );
         assert_eq!(
@@ -2249,9 +2249,6 @@ mod tests {
         let version = env!("CARGO_PKG_VERSION");
         assert!(html.contains(&format!("mini-film</a> {version}")));
         assert!(html.contains("Picture by Amadeus Juskowiak"));
-        assert!(html.contains(
-            "https://reallyniceimages.com/products/rni-all-films-5-pro-for-adobe-lightroom.html"
-        ));
         assert!(html.contains("loading=\"lazy\""));
     }
 
@@ -2281,24 +2278,24 @@ mod tests {
     #[test]
     fn profile_filenames_strip_only_xmp_extension_for_display() {
         assert_eq!(
-            profile_filename_without_xmp("RNI/Kodak Portra 400.xmp"),
-            "RNI/Kodak Portra 400"
+            profile_filename_without_xmp("Provider/Kodak Portra 400.xmp"),
+            "Provider/Kodak Portra 400"
         );
         assert_eq!(
-            profile_filename_without_xmp("RNI/Kodak Portra 400.XMP"),
-            "RNI/Kodak Portra 400"
+            profile_filename_without_xmp("Provider/Kodak Portra 400.XMP"),
+            "Provider/Kodak Portra 400"
         );
         assert_eq!(
-            profile_filename_without_xmp("RNI/Kodak Portra 400"),
-            "RNI/Kodak Portra 400"
+            profile_filename_without_xmp("Provider/Kodak Portra 400"),
+            "Provider/Kodak Portra 400"
         );
     }
 
     #[test]
     fn html_links_escape_spaces_for_file_and_relative_urls() {
         assert_eq!(
-            file_url(Path::new("/tmp/RNI Films/Ilford FP4.xmp")),
-            "file:///tmp/RNI%20Films/Ilford%20FP4.xmp"
+            file_url(Path::new("/tmp/Film Profiles/Ilford FP4.xmp")),
+            "file:///tmp/Film%20Profiles/Ilford%20FP4.xmp"
         );
         assert_eq!(
             relative_url(&PathBuf::from("pp3/Ilford FP4.pp3")),

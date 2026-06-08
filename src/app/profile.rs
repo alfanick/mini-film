@@ -985,16 +985,16 @@ mod tests {
     #[test]
     fn file_url_profile_paths_accept_localhost_and_decode_escapes() {
         assert_eq!(
-            local_file_url_to_path("file:///tmp/RNI%20Films/look.pp3")
+            local_file_url_to_path("file:///tmp/Film%20Profiles/look.pp3")
                 .unwrap()
                 .unwrap(),
-            PathBuf::from("/tmp/RNI Films/look.pp3")
+            PathBuf::from("/tmp/Film Profiles/look.pp3")
         );
         assert_eq!(
-            local_file_url_to_path("file://localhost/tmp/RNI%20Films/look.pp3")
+            local_file_url_to_path("file://localhost/tmp/Film%20Profiles/look.pp3")
                 .unwrap()
                 .unwrap(),
-            PathBuf::from("/tmp/RNI Films/look.pp3")
+            PathBuf::from("/tmp/Film Profiles/look.pp3")
         );
         assert!(local_file_url_to_path("file://example.com/tmp/look.pp3").is_err());
         assert!(local_file_url_to_path("file:///tmp/look.pp3?download=1").is_err());
