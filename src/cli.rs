@@ -452,6 +452,22 @@ pub(crate) enum CommandKind {
         #[arg(long, default_value_t = 0)]
         debounce_seconds: u64,
 
+        /// Also ingest RAW files from a paired Nikon Connect-to-PC / Wireless Transmitter Utility camera at this host/IP.
+        #[arg(long)]
+        nikon_wtu: Option<String>,
+
+        /// Nikon PTP/IP port for --nikon-wtu.
+        #[arg(long, default_value_t = 15740)]
+        nikon_wtu_port: u16,
+
+        /// Computer name sent to the Nikon camera during PTP/IP init.
+        #[arg(long)]
+        nikon_wtu_name: Option<String>,
+
+        /// Stable 16-byte initiator GUID for Nikon pairing, as hex or colon-separated hex.
+        #[arg(long)]
+        nikon_wtu_guid: Option<String>,
+
         /// Output format for generated files.
         #[arg(long, value_enum, default_value_t = BatchOutputFormat::Jpg)]
         output_format: BatchOutputFormat,
@@ -753,6 +769,32 @@ mod tests {
                 output_format: crate::cli::BatchOutputFormat::Tiff,
                 ..
             } if profile == vec!["portra 400 grainy", "portra 400"]
+        ));
+
+        let cli = Cli::parse_from([
+            "mini-film",
+            "daemon",
+            "input-dir",
+            "output-dir",
+            "--profile",
+            "scala",
+            "--nikon-wtu",
+            "192.168.1.50",
+            "--nikon-wtu-name",
+            "mini-film",
+            "--nikon-wtu-guid",
+            "000102030405060708090a0b0c0d0e0f",
+        ]);
+        assert!(matches!(
+            cli.command,
+            CommandKind::BatchDaemon {
+                nikon_wtu: Some(camera),
+                nikon_wtu_name: Some(name),
+                nikon_wtu_guid: Some(guid),
+                ..
+            } if camera == "192.168.1.50"
+                && name == "mini-film"
+                && guid == "000102030405060708090a0b0c0d0e0f"
         ));
     }
 

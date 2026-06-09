@@ -21,6 +21,7 @@ use walkdir::WalkDir;
 use crate::app::apply::{ApplyArgs, ApplyJob, apply_resolved, resolve_grain_override};
 use crate::app::export::validate_export_options;
 use crate::app::info::profile_info_text_for_selector;
+use crate::app::nikon_wtu::{NikonWtuConfig, NikonWtuReceiver, start_nikon_wtu_receiver};
 use crate::app::profile::{ResolvedProfile, resolve_profile};
 use crate::app::progress::{
     ApplyProgress, StageEstimates, batch_progress_style, file_progress_style, format_duration,
@@ -50,6 +51,10 @@ pub(crate) struct BatchDaemonArgs {
     pub(crate) color_noise_iso_threshold: u32,
     pub(crate) jobs: Option<usize>,
     pub(crate) debounce_seconds: u64,
+    pub(crate) nikon_wtu: Option<String>,
+    pub(crate) nikon_wtu_port: u16,
+    pub(crate) nikon_wtu_name: Option<String>,
+    pub(crate) nikon_wtu_guid: Option<String>,
     pub(crate) output_format: BatchOutputFormat,
     pub(crate) export: ExportOptions,
 }
@@ -208,6 +213,21 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
     let debounce = Duration::from_secs(args.debounce_seconds);
     let temp_dir = Builder::new().prefix("mini-film-daemon-").tempdir()?;
     let start = Instant::now();
+    let nikon_wtu_config = if let Some(camera) = args
+        .nikon_wtu
+        .clone()
+        .filter(|camera| !camera.trim().is_empty())
+    {
+        Some(NikonWtuConfig {
+            camera,
+            port: args.nikon_wtu_port,
+            output_dir: args.input.clone(),
+            computer_name: args.nikon_wtu_name.clone(),
+            guid: args.nikon_wtu_guid.clone(),
+        })
+    } else {
+        None
+    };
 
     let profiles = resolve_daemon_profiles(&args, temp_dir.path())?;
     let profiles = profiles.into_iter().map(Arc::new).collect::<Vec<_>>();
@@ -262,6 +282,19 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
     watcher
         .watch(&args.input, RecursiveMode::Recursive)
         .with_context(|| format!("watching {}", args.input.display()))?;
+
+    let nikon_wtu_receiver = if let Some(config) = nikon_wtu_config {
+        batch.println(format!(
+            "[{}] nikon-wtu: enabled, camera {}:{}, inbox {}",
+            elapsed_human(start.elapsed()),
+            config.camera,
+            config.port,
+            config.output_dir.display()
+        ));
+        Some(start_nikon_wtu_receiver(config)?)
+    } else {
+        None
+    };
 
     batch.println(format!(
         "[{}] daemon started, watching {}",
@@ -353,6 +386,7 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
     )?;
 
     loop {
+        drain_nikon_wtu_logs(nikon_wtu_receiver.as_ref(), &batch, start);
         drain_watch_events(&watch_rx, &mut pending, debounce);
         schedule_pending_due_paths(
             &mut pending,
@@ -449,6 +483,7 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
         }
 
         state.resource_usage_if_needed(Instant::now());
+        drain_nikon_wtu_logs(nikon_wtu_receiver.as_ref(), &batch, start);
         if queue.is_empty() && in_flight.is_empty() {
             batch.reset_eta();
             batch.set_length(0);
@@ -464,6 +499,15 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
         }
 
         std::thread::sleep(DEFAULT_POLL_INTERVAL);
+    }
+}
+
+fn drain_nikon_wtu_logs(receiver: Option<&NikonWtuReceiver>, batch: &ProgressBar, start: Instant) {
+    let Some(receiver) = receiver else {
+        return;
+    };
+    for log in receiver.drain_logs() {
+        batch.println(format!("[{}] {log}", elapsed_human(start.elapsed())));
     }
 }
 
@@ -1126,6 +1170,10 @@ mod tests {
             color_noise_iso_threshold: 1600,
             jobs: Some(2),
             debounce_seconds: 0,
+            nikon_wtu: None,
+            nikon_wtu_port: 15740,
+            nikon_wtu_name: None,
+            nikon_wtu_guid: None,
             output_format: BatchOutputFormat::Jpg,
             export: ExportOptions {
                 jpg_quality: 80,
@@ -1228,6 +1276,10 @@ mod tests {
             color_noise_iso_threshold: 1600,
             jobs: Some(2),
             debounce_seconds: 0,
+            nikon_wtu: None,
+            nikon_wtu_port: 15740,
+            nikon_wtu_name: None,
+            nikon_wtu_guid: None,
             output_format: BatchOutputFormat::Jpg,
             export: ExportOptions {
                 jpg_quality: 80,

@@ -5,6 +5,7 @@ pub(crate) mod batch_daemon;
 pub(crate) mod export;
 pub(crate) mod info;
 pub(crate) mod nikon;
+pub(crate) mod nikon_wtu;
 pub(crate) mod pp3;
 pub(crate) mod profile;
 pub(crate) mod progress;

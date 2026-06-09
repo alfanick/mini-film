@@ -249,6 +249,34 @@ If profile resolution fails for any selector, startup stops with a clear error.
 `daemon` processes raw files in parallel and defaults to half the available
 CPU threads unless `--jobs` is set.
 
+Daemon can also ingest files from a Nikon camera configured for
+Connect-to-PC / Wireless Transmitter Utility style transfer. Start the camera's
+connection wizard, make sure the computer can reach the camera address, then
+point mini-film at that address. mini-film drives the Nikon pairing/auth step,
+downloads RAWs into the watched inbox, and processes them with the normal daemon
+queue:
+
+```sh
+mini-film daemon \
+  /home/alfanick/Pictures/Lightroom/inbox \
+  /home/alfanick/Pictures/mini-film-output \
+  --profile 'Classic Film' \
+  --profiles-root /path/to/profile-library \
+  --nikon-wtu 192.168.1.50
+```
+
+The Nikon WTU receiver is native PTP/IP over TCP port `15740`; it does not use
+external camera-control tools. During first-time setup it requests the camera's
+pairing code, accepts the wizard, completes pairing, reconnects, and then waits
+for transferred RAW objects. mini-film persists a stable initiator GUID in
+`$HOME/.cache/mini-film/nikon-wtu-guid` unless `--nikon-wtu-guid` is provided,
+and records successful camera pairings in
+`$HOME/.cache/mini-film/nikon-wtu-pairings.json`. Later daemon runs reuse the
+cached camera/name/GUID identity and go straight to transfer mode. If a camera
+was previously paired to a different identity, remove that pairing on the camera
+or reuse the same computer name/GUID with `--nikon-wtu-name` and
+`--nikon-wtu-guid`.
+
 ## Profile Sampler Contact Sheet
 
 `sampler` renders one thumbnail per XMP file from `emulations/` and builds a structured contact sheet grouped by shared profile-name prefixes. For example, Kodak profiles are shown under progressively deeper headings like `Kodak`, `Kodak Portra`, `Kodak Portra 400`, and `Kodak Portra 400 Grainy`; indentation makes the level visible. Each thumbnail is developed with its profile-specific generated RawTherapee `.pp3` files, including Film Simulation for the Hald, which applies the LUT during RAW development, before the grain stage. Like `batch`, sampler renders half of the detected CPU threads in parallel by default; override with `--jobs N`. Thumbnail longest edge defaults to 512 px:
