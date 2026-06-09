@@ -108,7 +108,7 @@ pub(crate) enum CommandKind {
         hald_level: u32,
     },
 
-    /// Run RawTherapee, then apply a Hald CLUT with GraphicsMagick/ImageMagick convert.
+    /// Develop a RAW file with RawTherapee, profile Film Simulation, grain, and final export.
     Apply {
         /// RAW file to develop (supports common camera RAW formats such as `.dng`,
         /// `.nef`, `.cr2`, `.cr3`, `.arw`, `.raf`, `.orf`, `.rw2`).

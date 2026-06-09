@@ -9,7 +9,7 @@ It can:
 - develop a RAW file with `rawtherapee-cli`
 - apply Hald CLUTs through RawTherapee Film Simulation
 - read Lightroom preset XMPs that reference a profile and define grain
-- batch-process DNG/NEF folders into JPEGs
+- batch-process common RAW folders into JPEGs or 16-bit TIFFs
 - run a raw folder watcher (`daemon`) that keeps applying new files
 - render a profile sampler contact sheet for one RAW file
 - inspect emulation/profile XMP adjustments
@@ -268,9 +268,10 @@ mini-film daemon \
 The Nikon WTU receiver is native PTP/IP over TCP port `15740`; it does not use
 external camera-control tools. During first-time setup it requests the camera's
 pairing code, accepts the wizard, completes pairing, reconnects, and then waits
-for transferred RAW objects. mini-film persists a stable initiator GUID in
-`$HOME/.cache/mini-film/nikon-wtu-guid` unless `--nikon-wtu-guid` is provided,
-and records successful camera pairings in
+for transferred RAW objects. Non-RAW transfer objects are consumed silently so
+they do not block the camera's transfer queue. mini-film persists a stable
+initiator GUID in `$HOME/.cache/mini-film/nikon-wtu-guid` unless
+`--nikon-wtu-guid` is provided, and records successful camera pairings in
 `$HOME/.cache/mini-film/nikon-wtu-pairings.json`. Later daemon runs reuse the
 cached camera/name/GUID identity and go straight to transfer mode. If a camera
 was previously paired to a different identity, remove that pairing on the camera
