@@ -68,12 +68,23 @@ const NIKON_TRANSFER_OK: u32 = PTP_RC_OK as u32;
 const NIKON_TRANSFER_BLOCK_SIZE: u32 = 0x80_0000;
 const NIKON_TRANSFER_DRAIN_LIMIT: usize = 32;
 
+/// Result of probing the Nikon connection wizard.
+///
+/// Nikon splits pairing into an auth-code acceptance step and a final pairing
+/// step. The first step usually closes the socket, so callers need to reconnect
+/// and send the completion command on a fresh command channel.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PairingWizardState {
     NotActive,
     NeedsFinalReconnect,
 }
 
+/// Configuration for the background Nikon WTU receiver.
+///
+/// The receiver downloads camera-transfer objects into `output_dir`, which is
+/// normally daemon mode's watched inbox. `camera` is the reachable camera host
+/// or IP, while `computer_name` and `guid` define the stable PTP/IP initiator
+/// identity Nikon stores during pairing.
 #[derive(Clone, Debug)]
 pub(crate) struct NikonWtuConfig {
     pub(crate) camera: String,
@@ -83,6 +94,11 @@ pub(crate) struct NikonWtuConfig {
     pub(crate) guid: Option<String>,
 }
 
+/// Long-lived Nikon WTU worker owned by daemon mode.
+///
+/// The worker reconnects in the background and sends status lines through a
+/// channel so the daemon progress bar can print them without the receiver
+/// writing directly to stdout.
 pub(crate) struct NikonWtuReceiver {
     stop: Arc<AtomicBool>,
     logs: Receiver<String>,
@@ -90,6 +106,7 @@ pub(crate) struct NikonWtuReceiver {
 }
 
 impl NikonWtuReceiver {
+    /// Drain currently pending receiver log lines without blocking daemon work.
     pub(crate) fn drain_logs(&self) -> Vec<String> {
         let mut logs = Vec::new();
         while let Ok(log) = self.logs.try_recv() {
@@ -108,6 +125,11 @@ impl Drop for NikonWtuReceiver {
     }
 }
 
+/// Start the native Nikon PTP/IP receiver thread.
+///
+/// The thread keeps trying to connect until dropped. Expected camera-offline
+/// socket failures are silent because daemon mode may be left running while the
+/// camera is powered off.
 pub(crate) fn start_nikon_wtu_receiver(config: NikonWtuConfig) -> Result<NikonWtuReceiver> {
     fs::create_dir_all(&config.output_dir)
         .with_context(|| format!("creating Nikon WTU inbox {}", config.output_dir.display()))?;
@@ -135,6 +157,8 @@ pub(crate) fn start_nikon_wtu_receiver(config: NikonWtuConfig) -> Result<NikonWt
             if let Err(error) = result
                 && !is_expected_camera_offline_error(&error)
             {
+                // Pairing and protocol errors are useful; routine "camera off"
+                // reconnect failures are filtered above to keep daemon quiet.
                 let _ = tx.send(format!("nikon-wtu: {error:#}"));
             }
             sleep_until_stopped(&thread_stop, RECONNECT_DELAY);
@@ -148,6 +172,11 @@ pub(crate) fn start_nikon_wtu_receiver(config: NikonWtuConfig) -> Result<NikonWt
     })
 }
 
+/// Run one complete connection lifecycle: connect, pair if needed, then transfer.
+///
+/// A cached pairing goes straight to transfer setup. If the camera rejects that
+/// setup, we fall back to the pairing wizard because Nikon can invalidate a
+/// remembered identity when the body is reset or paired from another machine.
 fn run_receiver_once(
     config: &NikonWtuConfig,
     computer_name: &str,
@@ -225,6 +254,9 @@ fn run_receiver_once(
         PairingWizardState::NotActive => false,
         PairingWizardState::NeedsFinalReconnect => {
             drop(session);
+            // Nikon closes or destabilizes the auth session after the code is
+            // accepted. Completing pairing on a fresh socket matches the camera
+            // wizard behavior and avoids partial-buffer reads on the old one.
             finalize_pairing_after_auth(config, computer_name, guid, logs)?;
             session = PtpIpSession::connect(
                 &config.camera,
@@ -283,6 +315,11 @@ fn run_receiver_once(
     transfer_loop(&mut session, &config.output_dir, stop, logs)
 }
 
+/// Open a standard PTP session and log the camera's capability table.
+///
+/// The optional Nikon GetDevicePTPIPInfo command is useful when present, but
+/// some Z bodies do not advertise it even though transfer still works, so this
+/// treats it as diagnostic rather than mandatory.
 fn prepare_transfer_session(session: &mut PtpIpSession, logs: &mpsc::Sender<String>) -> Result<()> {
     logs.send("nikon-wtu: reading PTP device info".to_string())
         .ok();
@@ -325,6 +362,11 @@ fn prepare_transfer_session(session: &mut PtpIpSession, logs: &mpsc::Sender<Stri
     Ok(())
 }
 
+/// Wait for camera events and opportunistically drain Nikon's transfer queue.
+///
+/// The event payloads are not reliable object handles for WTU transfer mode.
+/// Instead, events are treated as wakeups and the actual object is requested
+/// with Nikon opcode `0x9010`.
 fn transfer_loop(
     session: &mut PtpIpSession,
     output_dir: &Path,
@@ -340,6 +382,9 @@ fn transfer_loop(
                     PTP_EC_OBJECT_ADDED | PTP_EC_DEVICE_PROP_CHANGED | PTP_EC_CAPTURE_COMPLETE
                 ) =>
             {
+                // DevicePropChanged can arrive in bursts while the camera is
+                // busy. Throttle those wakeups, but force a queue poll for
+                // object/capture events where a transfer may be ready now.
                 let force = event.code != PTP_EC_DEVICE_PROP_CHANGED;
                 poll_transfer_queue(session, &mut state, output_dir, logs, force)?;
             }
@@ -358,6 +403,11 @@ fn transfer_loop(
     Ok(())
 }
 
+/// Mutable state for Nikon's "next transfer object" command.
+///
+/// The camera expects the previous transfer job status as the parameter to
+/// opcode `0x9010`; after a successful or deliberately consumed object we send
+/// OK again.
 #[derive(Debug)]
 struct TransferState {
     last_job_status: u32,
@@ -375,6 +425,7 @@ impl TransferState {
     }
 }
 
+/// Poll the transfer queue if enough time has passed or an event forced it.
 fn poll_transfer_queue(
     session: &mut PtpIpSession,
     state: &mut TransferState,
@@ -389,6 +440,11 @@ fn poll_transfer_queue(
     drain_transfer_queue(session, state, output_dir, logs)
 }
 
+/// Drain all currently available camera transfer objects.
+///
+/// Nikon's WTU mode does not expose new files by directly using event params as
+/// object handles. We repeatedly ask the body for the next transfer job, then
+/// download or consume it before reporting OK back to the queue.
 fn drain_transfer_queue(
     session: &mut PtpIpSession,
     state: &mut TransferState,
@@ -424,11 +480,19 @@ fn drain_transfer_queue(
                 .ok();
             }
         }
+        // The next `0x9010` call uses this status to tell the body that the
+        // previous transfer slot was handled, including unsupported JPEGs that
+        // were read and discarded.
         state.last_job_status = NIKON_TRANSFER_OK;
     }
     Ok(())
 }
 
+/// Ask Nikon firmware for the next queued transfer object.
+///
+/// Empty data means no object is ready. A non-active job status is also treated
+/// as an empty queue because it represents camera-side state, not a file to
+/// download.
 fn query_next_transfer_object(
     session: &mut PtpIpSession,
     last_job_status: u32,
@@ -447,6 +511,10 @@ fn query_next_transfer_object(
     }
 }
 
+/// Probe and accept an active Nikon pairing wizard.
+///
+/// This command sequence is only attempted when no cached pairing is known, or
+/// when a cached pairing failed to open transfer mode.
 fn try_complete_pairing_wizard(
     session: &mut PtpIpSession,
     logs: &mpsc::Sender<String>,
@@ -500,6 +568,10 @@ fn try_complete_pairing_wizard(
     Ok(PairingWizardState::NeedsFinalReconnect)
 }
 
+/// Complete Nikon pairing after the wizard auth code was accepted.
+///
+/// Bodies can close the command socket as part of successful pairing, so socket
+/// closure is accepted here if it happens after sending the final command.
 fn finalize_pairing_after_auth(
     config: &NikonWtuConfig,
     computer_name: &str,
@@ -558,6 +630,7 @@ fn finalize_pairing_after_auth(
     bail!("Nikon final pairing did not complete after {PAIRING_FINALIZE_RETRIES} attempts")
 }
 
+/// Decode Nikon's pairing-code payload into the digits shown by the camera.
 fn parse_pairing_code(data: &[u8]) -> Result<String> {
     let len = read_u32(data, 0)? as usize;
     if len == 0 || len > 16 {
@@ -577,12 +650,17 @@ fn parse_pairing_code(data: &[u8]) -> Result<String> {
     Ok(code)
 }
 
+/// On-disk pairing identity cache.
+///
+/// Nikon pairing is tied to the initiator GUID, the computer name, the PTP/IP
+/// port, and either the current host/IP or the camera name reported by the body.
 struct PairingCache {
     path: PathBuf,
     records: Vec<Value>,
 }
 
 impl PairingCache {
+    /// Load the JSON pairing cache, treating missing or malformed files as empty.
     fn load() -> Result<Self> {
         let path = default_pairing_cache_path()?;
         let records = match fs::read_to_string(&path) {
@@ -596,6 +674,7 @@ impl PairingCache {
         Ok(Self { path, records })
     }
 
+    /// Return true when the cached initiator identity matches this camera.
     fn is_paired(
         &self,
         camera: &str,
@@ -614,6 +693,7 @@ impl PairingCache {
         })
     }
 
+    /// Store a successful camera pairing, replacing an older matching record.
     fn upsert(
         &mut self,
         camera: &str,
@@ -659,12 +739,20 @@ fn value_u64(record: &Value, key: &str) -> Option<u64> {
     record.get(key).and_then(Value::as_u64)
 }
 
+/// Result of handling one Nikon transfer object.
+///
+/// Existing and unsupported objects are still read from the camera so they are
+/// removed from the Nikon transfer queue.
 enum TransferDownload {
     Downloaded { filename: String, bytes: u64 },
     SkippedExisting(String),
     SkippedUnsupported,
 }
 
+/// Nikon WTU transfer-queue entry returned by opcode `0x9010`.
+///
+/// The payload is not a standard PTP object-info block. It contains a transfer
+/// job marker, object handle, UTF-16 path, size, and optional date strings.
 #[derive(Debug)]
 struct TransferObject {
     transfer_job: u8,
@@ -674,6 +762,10 @@ struct TransferObject {
 }
 
 impl TransferObject {
+    /// Parse Nikon's compact transfer-object payload.
+    ///
+    /// Inactive records can be as short as a single status byte. Active records
+    /// are expected to carry at least a handle and path length.
     fn parse(data: &[u8]) -> Result<Self> {
         let transfer_job = *data
             .first()
@@ -702,6 +794,9 @@ impl TransferObject {
         };
 
         for _ in 0..2 {
+            // Official Nikon transfer records include capture and modification
+            // date strings after the object size. We do not need them for file
+            // ingest, but walking past them validates the record shape.
             let Some(units) = data.get(offset).copied().map(usize::from) else {
                 break;
             };
@@ -719,6 +814,11 @@ impl TransferObject {
     }
 }
 
+/// Fetch metadata for one queued object and either download or consume it.
+///
+/// Non-RAW objects are silently consumed because the camera may offer JPEG/RAW
+/// pairs; leaving JPEGs unread can cause the body to keep advertising the same
+/// unsupported queue item.
 fn download_transfer_object(
     session: &mut PtpIpSession,
     object: &TransferObject,
@@ -739,6 +839,8 @@ fn download_transfer_object(
         info.filename.clone()
     };
     if !is_supported_raw_file(Path::new(&filename)) {
+        // Read-and-discard tells the body the transfer slot is done while
+        // preserving mini-film's RAW-only inbox behavior.
         consume_transfer_object(session, object, &info)
             .with_context(|| format!("discarding unsupported transfer object {filename}"))?;
         return Ok(TransferDownload::SkippedUnsupported);
@@ -747,6 +849,8 @@ fn download_transfer_object(
     let safe_filename = sanitize_filename::sanitize(&filename);
     let output = output_dir.join(safe_filename.as_ref());
     if output.exists() {
+        // Existing files can happen after reconnects; consume the object anyway
+        // so it does not block later RAWs in the camera queue.
         consume_transfer_object(session, object, &info)
             .with_context(|| format!("discarding already-downloaded transfer object {filename}"))?;
         return Ok(TransferDownload::SkippedExisting(filename));
@@ -767,6 +871,7 @@ fn download_transfer_object(
     }
 }
 
+/// Download a supported RAW transfer object into a temporary file.
 fn download_transfer_object_to_file(
     session: &mut PtpIpSession,
     object: &TransferObject,
@@ -797,6 +902,7 @@ fn download_transfer_object_to_file(
     Ok(bytes)
 }
 
+/// Read and discard an object so Nikon advances its transfer queue.
 fn consume_transfer_object(
     session: &mut PtpIpSession,
     object: &TransferObject,
@@ -805,6 +911,11 @@ fn consume_transfer_object(
     read_transfer_object_chunks(session, object, info, |_| Ok(()))
 }
 
+/// Read a Nikon object through repeated `GetPartialObject` requests.
+///
+/// PTP/IP packet sizes are bounded and Nikon WTU uses partial reads for large
+/// objects. The callback lets callers either write chunks to disk or discard
+/// them while sharing the same queue-consuming behavior.
 fn read_transfer_object_chunks(
     session: &mut PtpIpSession,
     object: &TransferObject,
@@ -828,6 +939,8 @@ fn read_transfer_object_chunks(
             PTP_OC_GET_PARTIAL_OBJECT,
             &[
                 object.object_handle,
+                // Nikon's GetPartialObject variant takes a 32-bit byte offset.
+                // Bail above 4 GiB rather than wrapping and corrupting output.
                 u32::try_from(offset).context("Nikon transfer object exceeds 4 GiB")?,
                 request_size,
             ],
@@ -854,6 +967,7 @@ fn read_transfer_object_chunks(
     Ok(offset)
 }
 
+/// Extract a filename from Nikon's slash- or backslash-separated object path.
 fn filename_from_transfer_path(path: &str) -> Option<String> {
     let normalized = path.replace('\\', "/");
     Path::new(&normalized)
@@ -863,6 +977,7 @@ fn filename_from_transfer_path(path: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Sleep in short increments so receiver shutdown does not wait the full delay.
 fn sleep_until_stopped(stop: &AtomicBool, duration: Duration) {
     let mut remaining = duration;
     while !stop.load(Ordering::Relaxed) && !remaining.is_zero() {
@@ -872,6 +987,10 @@ fn sleep_until_stopped(stop: &AtomicBool, duration: Duration) {
     }
 }
 
+/// PTP/IP command and event channel pair.
+///
+/// PTP/IP opens two TCP connections: the command channel carries requests and
+/// data, while the event channel carries camera-side notifications and pings.
 struct PtpIpSession {
     command: TcpStream,
     event: TcpStream,
@@ -880,6 +999,7 @@ struct PtpIpSession {
 }
 
 impl PtpIpSession {
+    /// Establish command and event channels using Nikon's PTP/IP init handshake.
     fn connect(
         host: &str,
         port: u16,
@@ -907,6 +1027,8 @@ impl PtpIpSession {
         let connection_id = read_u32(&packet.payload, 0)?;
         let camera_name = utf16z_to_string(packet.payload.get(20..).unwrap_or_default());
 
+        // The event connection is explicitly linked to the command connection
+        // ID returned by InitCommandAck.
         let mut event = connect_tcp(host, port, timeout)?;
         event.set_read_timeout(Some(EVENT_READ_TIMEOUT))?;
         event.set_write_timeout(Some(DEFAULT_IO_TIMEOUT))?;
@@ -930,6 +1052,7 @@ impl PtpIpSession {
         })
     }
 
+    /// Send a PTP command that should return only a response packet.
     fn command_no_data(&mut self, opcode: u16, params: &[u32]) -> Result<PtpResponse> {
         self.send_command(opcode, params)?;
         let response = self.read_response()?;
@@ -937,10 +1060,16 @@ impl PtpIpSession {
         Ok(response)
     }
 
+    /// Send a PTP command and return only its data payload.
     fn command_with_data(&mut self, opcode: u16, params: &[u32]) -> Result<Vec<u8>> {
         Ok(self.command_with_data_response(opcode, params)?.0)
     }
 
+    /// Send a PTP command and return both data and final response.
+    ///
+    /// Some Nikon commands return an immediate response when no data is
+    /// available, so this method handles both `StartDataPacket` and
+    /// `CmdResponse` as valid first packets.
     fn command_with_data_response(
         &mut self,
         opcode: u16,
@@ -960,6 +1089,7 @@ impl PtpIpSession {
         }
     }
 
+    /// Serialize and send a PTP command request packet.
     fn send_command(&mut self, opcode: u16, params: &[u32]) -> Result<u32> {
         if params.len() > 5 {
             bail!("PTP/IP supports at most 5 command parameters");
@@ -977,6 +1107,7 @@ impl PtpIpSession {
         Ok(transaction_id)
     }
 
+    /// Read either a complete data phase or an immediate response.
     fn read_data_or_response(&mut self) -> Result<DataRead> {
         let first = read_packet(&mut self.command)?;
         if first.kind == PTPIP_CMD_RESPONSE {
@@ -997,6 +1128,9 @@ impl PtpIpSession {
                     }
                     data.extend_from_slice(&packet.payload[4..]);
                     if packet.kind == PTPIP_END_DATA_PACKET {
+                        // Nikon can end the data phase before the advertised
+                        // byte count has been reached on zero/unknown length
+                        // responses; truncate/checking happens at the caller.
                         break;
                     }
                 }
@@ -1007,6 +1141,7 @@ impl PtpIpSession {
         Ok(DataRead::Data(data))
     }
 
+    /// Read the final command response packet, skipping redundant EndData packets.
     fn read_response(&mut self) -> Result<PtpResponse> {
         loop {
             let packet = read_packet(&mut self.command)?;
@@ -1018,6 +1153,7 @@ impl PtpIpSession {
         }
     }
 
+    /// Read one event-channel packet, answering PTP/IP pings automatically.
     fn read_event(&mut self, timeout: Duration) -> Result<Option<PtpEvent>> {
         self.event.set_read_timeout(Some(timeout))?;
         match read_packet(&mut self.event) {
@@ -1033,11 +1169,16 @@ impl PtpIpSession {
     }
 }
 
+/// Result of the first command-channel packet after a command request.
+///
+/// Standard data commands start with `StartDataPacket`; Nikon queue probes can
+/// instead answer immediately with `CmdResponse` when there is nothing to send.
 enum DataRead {
     Data(Vec<u8>),
     Response(PtpResponse),
 }
 
+/// Parsed PTP command response.
 struct PtpResponse {
     code: u16,
     transaction_id: u32,
@@ -1045,6 +1186,7 @@ struct PtpResponse {
 }
 
 impl PtpResponse {
+    /// Parse a PTP response payload from a PTP/IP `CmdResponse` packet.
     fn parse(payload: &[u8]) -> Result<Self> {
         let code = read_u16(payload, 0)?;
         let transaction_id = read_u32(payload, 2)?;
@@ -1061,6 +1203,7 @@ impl PtpResponse {
         })
     }
 
+    /// Fail unless the response is OK, preserving opcode and transaction data.
     fn ensure_ok(&self, opcode: u16) -> Result<()> {
         if self.code == PTP_RC_OK {
             return Ok(());
@@ -1074,12 +1217,14 @@ impl PtpResponse {
     }
 }
 
+/// Parsed PTP event-channel notification.
 struct PtpEvent {
     code: u16,
     params: Vec<u32>,
 }
 
 impl PtpEvent {
+    /// Parse a PTP event payload from a PTP/IP `Event` packet.
     fn parse(payload: &[u8]) -> Result<Self> {
         let code = read_u16(payload, 0)?;
         let mut params = Vec::new();
@@ -1092,12 +1237,14 @@ impl PtpEvent {
     }
 }
 
+/// Minimal standard PTP object-info fields needed for inbox writes.
 struct ObjectInfo {
     filename: String,
     size: u32,
 }
 
 impl ObjectInfo {
+    /// Parse standard PTP ObjectInfo, using only filename and compressed size.
     fn parse(data: &[u8]) -> Result<Self> {
         let size = read_u32(data, 8).unwrap_or(0);
         let filename = read_ptp_string(data, 52)
@@ -1106,6 +1253,7 @@ impl ObjectInfo {
     }
 }
 
+/// Minimal standard PTP device-info fields used for logging and feature checks.
 struct DeviceInfo {
     vendor_extension_id: u32,
     vendor_extension_version: u16,
@@ -1115,6 +1263,7 @@ struct DeviceInfo {
 }
 
 impl DeviceInfo {
+    /// Parse standard PTP DeviceInfo including supported operation codes.
     fn parse(data: &[u8]) -> Result<Self> {
         let vendor_extension_id = read_u32(data, 2)?;
         let vendor_extension_version = read_u16(data, 6)?;
@@ -1142,11 +1291,13 @@ impl DeviceInfo {
     }
 }
 
+/// Raw PTP/IP packet after the length/type header is removed.
 struct Packet {
     kind: u32,
     payload: Vec<u8>,
 }
 
+/// Connect to the first resolved TCP address within the configured timeout.
 fn connect_tcp(host: &str, port: u16, timeout: Duration) -> Result<TcpStream> {
     let mut last_error = None;
     for address in (host, port).to_socket_addrs()? {
@@ -1160,6 +1311,7 @@ fn connect_tcp(host: &str, port: u16, timeout: Duration) -> Result<TcpStream> {
         .unwrap_or_else(|| anyhow!("no socket addresses resolved for {host}:{port}")))
 }
 
+/// Build a complete little-endian PTP/IP packet.
 fn build_packet(kind: u32, payload: &[u8]) -> Result<Vec<u8>> {
     let len = 8usize
         .checked_add(payload.len())
@@ -1172,12 +1324,14 @@ fn build_packet(kind: u32, payload: &[u8]) -> Result<Vec<u8>> {
     Ok(buffer)
 }
 
+/// Write one PTP/IP packet to a TCP stream.
 fn send_packet(stream: &mut TcpStream, kind: u32, payload: &[u8]) -> Result<()> {
     let buffer = build_packet(kind, payload)?;
     stream.write_all(&buffer)?;
     Ok(())
 }
 
+/// Read one complete PTP/IP packet from a TCP stream.
 fn read_packet(stream: &mut TcpStream) -> Result<Packet> {
     let mut header = [0u8; 8];
     stream.read_exact(&mut header)?;
@@ -1191,6 +1345,7 @@ fn read_packet(stream: &mut TcpStream) -> Result<Packet> {
     Ok(Packet { kind, payload })
 }
 
+/// Build the initiator payload used by `InitCommandRequest`.
 fn init_command_payload(guid: [u8; 16], computer_name: &str) -> Vec<u8> {
     let mut payload = Vec::new();
     payload.extend_from_slice(&guid);
@@ -1299,6 +1454,7 @@ fn read_u16_array_at(data: &[u8], offset: usize) -> Result<(Vec<u16>, usize)> {
     Ok((values, next))
 }
 
+/// Return true for event-channel read timeouts.
 fn is_timeout_error(error: Option<&io::Error>) -> bool {
     matches!(
         error.map(io::Error::kind),
@@ -1306,6 +1462,7 @@ fn is_timeout_error(error: Option<&io::Error>) -> bool {
     )
 }
 
+/// Return true when Nikon intentionally closed the socket mid-pairing/transfer.
 fn is_connection_closed_error(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         cause.downcast_ref::<io::Error>().is_some_and(|io_error| {
@@ -1320,6 +1477,10 @@ fn is_connection_closed_error(error: &anyhow::Error) -> bool {
     })
 }
 
+/// Return true for expected offline-camera connect errors.
+///
+/// Daemon mode can run for hours with the camera powered off. These errors only
+/// mean "try again later", not a condition worth printing every reconnect.
 fn is_expected_camera_offline_error(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         cause.downcast_ref::<io::Error>().is_some_and(|io_error| {
@@ -1338,6 +1499,10 @@ fn is_expected_camera_offline_error(error: &anyhow::Error) -> bool {
     })
 }
 
+/// Resolve the configured or cached Nikon initiator GUID.
+///
+/// A stable GUID matters because Nikon pairings are tied to this identity; a
+/// new random GUID would force the user through the camera wizard again.
 fn resolve_guid(explicit: Option<&str>) -> Result<[u8; 16]> {
     if let Some(value) = explicit {
         return parse_guid(value);
@@ -1356,19 +1521,23 @@ fn resolve_guid(explicit: Option<&str>) -> Result<[u8; 16]> {
     Ok(guid)
 }
 
+/// Path where mini-film persists the default WTU initiator GUID.
 fn default_guid_path() -> Result<PathBuf> {
     Ok(default_cache_dir()?.join("nikon-wtu-guid"))
 }
 
+/// Path where mini-film remembers successful Nikon WTU pairings.
 fn default_pairing_cache_path() -> Result<PathBuf> {
     Ok(default_cache_dir()?.join("nikon-wtu-pairings.json"))
 }
 
+/// mini-film cache directory under the user's home directory.
 fn default_cache_dir() -> Result<PathBuf> {
     let home = env::var_os("HOME").ok_or_else(|| anyhow!("HOME is not set"))?;
     Ok(PathBuf::from(home).join(".cache").join("mini-film"))
 }
 
+/// Generate a stable-ish first-run GUID seed from local identity and time.
 fn generated_guid() -> [u8; 16] {
     let mut hasher = Sha1::new();
     hasher.update(default_computer_name().as_bytes());
@@ -1386,6 +1555,7 @@ fn generated_guid() -> [u8; 16] {
     guid
 }
 
+/// Parse plain or colon-separated 16-byte GUID text.
 fn parse_guid(value: &str) -> Result<[u8; 16]> {
     let hex = value
         .chars()
@@ -1401,6 +1571,7 @@ fn parse_guid(value: &str) -> Result<[u8; 16]> {
     Ok(guid)
 }
 
+/// Format a GUID as colon-separated lowercase hex for logs and cache files.
 fn format_guid(guid: &[u8; 16]) -> String {
     guid.iter()
         .map(|byte| format!("{byte:02x}"))
@@ -1408,6 +1579,7 @@ fn format_guid(guid: &[u8; 16]) -> String {
         .join(":")
 }
 
+/// Default PTP/IP initiator display name.
 fn default_computer_name() -> String {
     env::var("HOSTNAME")
         .ok()
@@ -1415,6 +1587,7 @@ fn default_computer_name() -> String {
         .unwrap_or_else(|| "mini-film".to_string())
 }
 
+/// Format supported PTP operation codes for diagnostic logs.
 fn format_opcodes(opcodes: &[u16]) -> String {
     opcodes
         .iter()
@@ -1423,6 +1596,7 @@ fn format_opcodes(opcodes: &[u16]) -> String {
         .join(",")
 }
 
+/// Return a bounded hex preview for diagnostic binary payload logging.
 fn hex_preview(bytes: &[u8], max_len: usize) -> String {
     let mut out = bytes
         .iter()
