@@ -132,7 +132,9 @@ pub(crate) fn start_nikon_wtu_receiver(config: NikonWtuConfig) -> Result<NikonWt
                 announced_guid = true;
             }
             let result = run_receiver_once(&config, &computer_name, guid, &thread_stop, &tx);
-            if let Err(error) = result {
+            if let Err(error) = result
+                && !is_expected_camera_offline_error(&error)
+            {
                 let _ = tx.send(format!("nikon-wtu: {error:#}"));
             }
             sleep_until_stopped(&thread_stop, RECONNECT_DELAY);
@@ -1318,6 +1320,24 @@ fn is_connection_closed_error(error: &anyhow::Error) -> bool {
     })
 }
 
+fn is_expected_camera_offline_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause.downcast_ref::<io::Error>().is_some_and(|io_error| {
+            matches!(
+                io_error.kind(),
+                io::ErrorKind::ConnectionRefused
+                    | io::ErrorKind::TimedOut
+                    | io::ErrorKind::AddrNotAvailable
+                    | io::ErrorKind::NotConnected
+            ) || matches!(
+                io_error.raw_os_error(),
+                // Linux, macOS/BSD, and Windows route/refuse/timeout errors.
+                Some(101 | 110 | 111 | 113 | 51 | 60 | 61 | 65 | 10051 | 10060 | 10061 | 10065)
+            )
+        })
+    })
+}
+
 fn resolve_guid(explicit: Option<&str>) -> Result<[u8; 16]> {
     if let Some(value) = explicit {
         return parse_guid(value);
@@ -1571,6 +1591,23 @@ mod tests {
         assert!(is_connection_closed_error(&error));
         let error = anyhow::Error::from(io::Error::new(io::ErrorKind::InvalidData, "bad packet"));
         assert!(!is_connection_closed_error(&error));
+    }
+
+    #[test]
+    fn camera_offline_errors_are_silent_reconnect_cases() {
+        let no_route = anyhow::Error::from(io::Error::from_raw_os_error(113));
+        assert!(is_expected_camera_offline_error(&no_route));
+
+        let refused =
+            anyhow::Error::from(io::Error::new(io::ErrorKind::ConnectionRefused, "refused"));
+        assert!(is_expected_camera_offline_error(&refused));
+
+        let timeout = anyhow::Error::from(io::Error::new(io::ErrorKind::TimedOut, "timeout"));
+        assert!(is_expected_camera_offline_error(&timeout));
+
+        let bad_packet =
+            anyhow::Error::from(io::Error::new(io::ErrorKind::InvalidData, "bad packet"));
+        assert!(!is_expected_camera_offline_error(&bad_packet));
     }
 
     #[test]
