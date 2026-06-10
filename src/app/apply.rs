@@ -134,6 +134,20 @@ pub(crate) fn run_apply(args: ApplyArgs) -> Result<()> {
     Ok(())
 }
 
+/// Compute whether sharpening and color-noise denoising are expected to be active for
+/// a specific input before invoking expensive processing.
+///
+/// Sharpening is derived from resolved emulation metadata. Denoise reflects the
+/// same threshold/ISO logic used by `with_optional_color_noise_profile`.
+pub(crate) fn resolve_apply_effects(
+    raw: &Path,
+    resolved: &ResolvedProfile,
+    color_noise_iso_threshold: u32,
+) -> (bool, bool) {
+    let denoise_applied = denoise_profile_applied(raw, color_noise_iso_threshold);
+    (resolved.sharpening_applied, denoise_applied)
+}
+
 /// Apply an already resolved profile to one RAW input.
 ///
 /// The function owns the processing graph. It develops RAW with RawTherapee
@@ -356,6 +370,17 @@ fn with_optional_color_noise_profile(
         profiles.push(path);
     }
     Ok(profiles)
+}
+
+fn denoise_profile_applied(raw: &Path, threshold: u32) -> bool {
+    if threshold == 0 {
+        return false;
+    }
+
+    let Ok(Some(iso)) = extract_capture_iso(raw) else {
+        return false;
+    };
+    iso >= threshold
 }
 
 fn with_optional_lens_corrections_profile(
@@ -600,6 +625,7 @@ mod tests {
             hald_path: hald,
             rawtherapee_profiles: Vec::new(),
             grain,
+            sharpening_applied: false,
             resolved_stem: "profile".to_string(),
         }
     }

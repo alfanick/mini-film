@@ -17,7 +17,9 @@ use serde_json::json;
 use tempfile::Builder;
 use walkdir::WalkDir;
 
-use crate::app::apply::{ApplyArgs, ApplyJob, apply_resolved, resolve_grain_override};
+use crate::app::apply::{
+    ApplyArgs, ApplyJob, apply_resolved, resolve_apply_effects, resolve_grain_override,
+};
 use crate::app::batch_assets::{
     gallery_html_item_template, gallery_html_page_template, gallery_html_script,
     gallery_html_styles,
@@ -62,6 +64,40 @@ struct BatchFileRecord {
     output: PathBuf,
     duration: Duration,
     error: Option<String>,
+    lens_profile_status: String,
+    sharpening_status: String,
+    denoise_status: String,
+}
+
+fn lens_profile_status(corrections: LensCorrections, applied: bool) -> String {
+    if !corrections.is_enabled() {
+        return "lens-profile: disabled".to_string();
+    }
+
+    let mut parts = Vec::new();
+    if corrections.distortion {
+        parts.push("distortion");
+    }
+    if corrections.ca {
+        parts.push("chromatic-aberration");
+    }
+    if corrections.vignetting {
+        parts.push("vignetting");
+    }
+
+    format!(
+        "lens-profile: requested[{}], found=true, applied={}",
+        parts.join("+"),
+        if applied { "yes" } else { "no" }
+    )
+}
+
+fn sharpening_status(enabled: bool) -> String {
+    format!("sharpening: {}", if enabled { "yes" } else { "no" })
+}
+
+fn denoise_status(enabled: bool) -> String {
+    format!("denoise: {}", if enabled { "yes" } else { "no" })
 }
 
 #[derive(Clone)]
@@ -467,17 +503,28 @@ struct ProcessBatchFileContext<'a> {
 }
 
 fn process_batch_file(context: &ProcessBatchFileContext<'_>, raw: &Path) -> BatchFileRecord {
+    let (sharpening_applied, denoise_applied) = resolve_apply_effects(
+        raw,
+        context.resolved,
+        context.args.color_noise_iso_threshold,
+    );
     match process_batch_file_inner(context, raw) {
         Ok((output, duration)) => BatchFileRecord {
             raw: raw.to_path_buf(),
             output,
             duration,
+            lens_profile_status: lens_profile_status(context.args.lens_corrections, true),
+            sharpening_status: sharpening_status(sharpening_applied),
+            denoise_status: denoise_status(denoise_applied),
             error: None,
         },
         Err(error) => BatchFileRecord {
             raw: raw.to_path_buf(),
             output: PathBuf::new(),
             duration: Duration::ZERO,
+            lens_profile_status: lens_profile_status(context.args.lens_corrections, false),
+            sharpening_status: sharpening_status(sharpening_applied),
+            denoise_status: denoise_status(denoise_applied),
             error: Some(format!("{error:#}")),
         },
     }
@@ -640,20 +687,26 @@ fn write_batch_report(context: &BatchReportContext<'_>) -> String {
         if let Some(error) = &file.error {
             writeln!(
                 out,
-                "FAILURE | {} -> {} | {} | {}",
+                "FAILURE | {} -> {} | {} | {} | {} | {} | {}",
                 file.raw.display(),
                 file.output.display(),
                 format_duration(file.duration),
-                error
+                error,
+                file.lens_profile_status,
+                file.sharpening_status,
+                file.denoise_status
             )
             .ok();
         } else {
             writeln!(
                 out,
-                "OK     | {} -> {} | {}",
+                "OK     | {} -> {} | {} | {} | {} | {}",
                 file.raw.display(),
                 file.output.display(),
-                format_duration(file.duration)
+                format_duration(file.duration),
+                file.lens_profile_status,
+                file.sharpening_status,
+                file.denoise_status
             )
             .ok();
         }

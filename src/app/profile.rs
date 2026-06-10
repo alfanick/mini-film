@@ -20,6 +20,7 @@ pub(crate) struct ResolvedProfile {
     pub(crate) hald_path: Option<PathBuf>,
     pub(crate) rawtherapee_profiles: Vec<PathBuf>,
     pub(crate) grain: GrainSettings,
+    pub(crate) sharpening_applied: bool,
     pub(crate) resolved_stem: String,
 }
 
@@ -138,6 +139,7 @@ pub(crate) fn resolve_profile(args: &ApplyArgs, temp_dir: &Path) -> Result<Resol
             hald_path: Some(path),
             rawtherapee_profiles: Vec::new(),
             grain: GrainSettings::default(),
+            sharpening_applied: false,
             resolved_stem,
         });
     }
@@ -234,6 +236,7 @@ fn profile_from_path(
             hald_path: Some(path.to_path_buf()),
             rawtherapee_profiles: Vec::new(),
             grain: GrainSettings::default(),
+            sharpening_applied: false,
             resolved_stem,
         }),
         Some(ext) if ext.eq_ignore_ascii_case("xmp") => {
@@ -243,6 +246,7 @@ fn profile_from_path(
             hald_path: None,
             rawtherapee_profiles: vec![path.to_path_buf()],
             grain: GrainSettings::default(),
+            sharpening_applied: false,
             resolved_stem,
         }),
         Some(ext) => {
@@ -410,6 +414,7 @@ fn profile_from_xmp_inner(
         hald_path: Some(output),
         rawtherapee_profiles,
         grain: recipe.grain,
+        sharpening_applied: converted.sharpening.is_enabled() || recipe.sharpening.is_enabled(),
         resolved_stem: profile_stem_for_output(path),
     })
 }

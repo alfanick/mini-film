@@ -18,7 +18,9 @@ use notify::{
 use tempfile::Builder;
 use walkdir::WalkDir;
 
-use crate::app::apply::{ApplyArgs, ApplyJob, apply_resolved, resolve_grain_override};
+use crate::app::apply::{
+    ApplyArgs, ApplyJob, apply_resolved, resolve_apply_effects, resolve_grain_override,
+};
 use crate::app::export::validate_export_options;
 use crate::app::info::profile_info_text_for_selector;
 use crate::app::nikon_wtu::{NikonWtuConfig, NikonWtuReceiver, start_nikon_wtu_receiver};
@@ -121,6 +123,32 @@ struct DaemonFileResult {
     duration: Duration,
     profile_index: usize,
     error: Option<String>,
+    lens_profile_status: String,
+    sharpening_status: String,
+    denoise_status: String,
+}
+
+fn lens_profile_status(corrections: LensCorrections, applied: bool) -> String {
+    if !corrections.is_enabled() {
+        return "lens-profile: disabled".to_string();
+    }
+
+    let mut parts = Vec::new();
+    if corrections.distortion {
+        parts.push("distortion");
+    }
+    if corrections.ca {
+        parts.push("chromatic-aberration");
+    }
+    if corrections.vignetting {
+        parts.push("vignetting");
+    }
+
+    format!(
+        "lens-profile: requested[{}], found=true, applied={}",
+        parts.join("+"),
+        if applied { "yes" } else { "no" }
+    )
 }
 
 impl Clone for DaemonFileResult {
@@ -131,6 +159,9 @@ impl Clone for DaemonFileResult {
             duration: self.duration,
             profile_index: self.profile_index,
             error: self.error.clone(),
+            lens_profile_status: self.lens_profile_status.clone(),
+            sharpening_status: self.sharpening_status.clone(),
+            denoise_status: self.denoise_status.clone(),
         }
     }
 }
@@ -465,6 +496,9 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
                     duration: Duration::ZERO,
                     profile_index: task.profile_index,
                     error: Some("worker thread panicked".to_string()),
+                    lens_profile_status: lens_profile_status(LensCorrections::default(), false),
+                    sharpening_status: sharpening_status(false),
+                    denoise_status: denoise_status(false),
                 },
             };
             if let Some(error) = &result.error {
@@ -586,19 +620,25 @@ fn write_daemon_info_txt(
         if let Some(error) = &file.error {
             writeln!(
                 out,
-                "  FAILURE | {} | {} | {}",
+                "  FAILURE | {} | {} | {} | {} | {} | {}",
                 file.raw.display(),
                 file.output.display(),
-                error
+                error,
+                file.lens_profile_status,
+                file.sharpening_status,
+                file.denoise_status
             )
             .ok();
         } else {
             writeln!(
                 out,
-                "  OK | {} | {} | {}",
+                "  OK | {} | {} | {} | {} | {} | {}",
                 file.raw.display(),
                 file.output.display(),
-                format_duration(file.duration)
+                format_duration(file.duration),
+                file.lens_profile_status,
+                file.sharpening_status,
+                file.denoise_status
             )
             .ok();
         }
@@ -707,19 +747,25 @@ fn profile_daemon_info(
         if let Some(error) = &file.error {
             writeln!(
                 out,
-                "  FAILURE | {} | {} | {}",
+                "  FAILURE | {} | {} | {} | {} | {} | {}",
                 file.raw.display(),
                 file.output.display(),
-                error
+                error,
+                file.lens_profile_status,
+                file.sharpening_status,
+                file.denoise_status
             )
             .ok();
         } else {
             writeln!(
                 out,
-                "  OK | {} | {} | {}",
+                "  OK | {} | {} | {} | {} | {} | {}",
                 file.raw.display(),
                 file.output.display(),
-                format_duration(file.duration)
+                format_duration(file.duration),
+                file.lens_profile_status,
+                file.sharpening_status,
+                file.denoise_status
             )
             .ok();
         }
@@ -929,6 +975,9 @@ fn process_single_profile(
                 duration: Duration::ZERO,
                 profile_index: profile_index as usize,
                 error: Some(error.to_string()),
+                lens_profile_status: lens_profile_status(args.lens_corrections, false),
+                sharpening_status: sharpening_status(false),
+                denoise_status: denoise_status(false),
             };
         }
     };
@@ -942,6 +991,9 @@ fn process_single_profile(
             duration: Duration::ZERO,
             profile_index: profile_index as usize,
             error: Some(error.to_string()),
+            lens_profile_status: lens_profile_status(args.lens_corrections, false),
+            sharpening_status: sharpening_status(false),
+            denoise_status: denoise_status(false),
         };
     }
 
@@ -954,6 +1006,9 @@ fn process_single_profile(
                 duration: Duration::ZERO,
                 profile_index: profile_index as usize,
                 error: Some(error.to_string()),
+                lens_profile_status: lens_profile_status(args.lens_corrections, false),
+                sharpening_status: sharpening_status(false),
+                denoise_status: denoise_status(false),
             };
         }
     };
@@ -997,8 +1052,14 @@ fn process_single_profile(
             duration: file_start.elapsed(),
             profile_index: profile_index as usize,
             error: Some(error.to_string()),
+            lens_profile_status: lens_profile_status(args.lens_corrections, false),
+            sharpening_status: sharpening_status(false),
+            denoise_status: denoise_status(false),
         };
     }
+
+    let (sharpening_applied, denoise_applied) =
+        resolve_apply_effects(raw, &profile.resolved, args.color_noise_iso_threshold);
 
     file.set_message(format!(
         "{} -> {}: done in {}",
@@ -1013,7 +1074,18 @@ fn process_single_profile(
         duration: file_start.elapsed(),
         profile_index: profile_index as usize,
         error: None,
+        lens_profile_status: lens_profile_status(args.lens_corrections, true),
+        sharpening_status: sharpening_status(sharpening_applied),
+        denoise_status: denoise_status(denoise_applied),
     }
+}
+
+fn sharpening_status(applied: bool) -> String {
+    format!("sharpening: {}", if applied { "yes" } else { "no" })
+}
+
+fn denoise_status(applied: bool) -> String {
+    format!("denoise: {}", if applied { "yes" } else { "no" })
 }
 
 fn acquire_worker_bar(bar_pool: &Arc<Mutex<Vec<ProgressBar>>>) -> ProgressBar {
@@ -1209,6 +1281,7 @@ mod tests {
                 hald_path: None,
                 rawtherapee_profiles: Vec::new(),
                 grain: mini_film::GrainSettings::default(),
+                sharpening_applied: false,
                 resolved_stem: "Portra 400 grainy".to_string(),
             },
             profile_report: "profile report".to_string(),
@@ -1226,6 +1299,9 @@ mod tests {
                 duration: Duration::from_millis(100),
                 profile_index: 0,
                 error: None,
+                lens_profile_status: lens_profile_status(LensCorrections::default(), false),
+                sharpening_status: sharpening_status(false),
+                denoise_status: denoise_status(false),
             }],
             profile_stats: vec![DaemonProfileStats {
                 processed: 1,
@@ -1304,6 +1380,7 @@ mod tests {
                 hald_path: None,
                 rawtherapee_profiles: Vec::new(),
                 grain: mini_film::GrainSettings::default(),
+                sharpening_applied: false,
                 resolved_stem: "Portra 400 grainy".to_string(),
             },
             profile_report: "profile report".to_string(),
@@ -1320,6 +1397,9 @@ mod tests {
                 duration: Duration::from_millis(120),
                 profile_index: 0,
                 error: None,
+                lens_profile_status: lens_profile_status(LensCorrections::default(), true),
+                sharpening_status: sharpening_status(false),
+                denoise_status: denoise_status(false),
             }],
             profile_stats: vec![DaemonProfileStats {
                 processed: 1,
