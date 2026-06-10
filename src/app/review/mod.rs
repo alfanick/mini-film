@@ -86,6 +86,8 @@ struct ReviewImage {
     tags: Vec<String>,
     #[serde(default)]
     notes: String,
+    #[serde(default)]
+    publish_profile_indexes: Option<Vec<usize>>,
     profiles: Vec<ReviewProfileRender>,
     updated_at: String,
 }
@@ -151,6 +153,8 @@ struct ReviewUpdateRequest {
     #[serde(default)]
     notes: String,
     selected_profile_index: usize,
+    #[serde(default)]
+    publish_profile_indexes: Option<Vec<usize>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -220,6 +224,7 @@ impl ReviewStore {
             label: ReviewLabel::None,
             tags: Vec::new(),
             notes: String::new(),
+            publish_profile_indexes: None,
             profiles: Vec::new(),
             updated_at: now_string(),
         };
@@ -480,6 +485,11 @@ impl ReviewHandle {
         image.tags = normalize_tags(update.tags);
         image.notes = update.notes.trim().to_string();
         image.selected_profile_index = update.selected_profile_index;
+        if let Some(indexes) = update.publish_profile_indexes {
+            validate_publish_profile_indexes(&indexes, &image.profiles)?;
+            image.publish_profile_indexes =
+                Some(normalize_publish_profile_indexes(&indexes, &image.profiles));
+        }
         image.updated_at = now_string();
         save_store(&self.state_path, &store)?;
         drop(store);
@@ -529,6 +539,7 @@ impl ReviewHandle {
                     "label": image.label,
                     "tags": image.tags,
                     "notes": image.notes,
+                    "publish_profile_indexes": effective_publish_profile_indexes(image),
                     "profiles": profiles,
                     "updated_at": image.updated_at,
                 })
@@ -684,6 +695,49 @@ fn sync_image_profile_renders(image: &mut ReviewImage, profiles: &[ReviewProfile
     {
         image.selected_profile_index = profiles.first().map(|profile| profile.index).unwrap_or(0);
     }
+    image.publish_profile_indexes = Some(effective_publish_profile_indexes(image));
+}
+
+fn effective_publish_profile_indexes(image: &ReviewImage) -> Vec<usize> {
+    match &image.publish_profile_indexes {
+        Some(indexes) => normalize_publish_profile_indexes(indexes, &image.profiles),
+        None => image
+            .profiles
+            .iter()
+            .map(|profile| profile.profile_index)
+            .collect(),
+    }
+}
+
+fn normalize_publish_profile_indexes(
+    indexes: &[usize],
+    profiles: &[ReviewProfileRender],
+) -> Vec<usize> {
+    let selected = indexes.iter().copied().collect::<HashSet<_>>();
+    profiles
+        .iter()
+        .filter_map(|profile| {
+            selected
+                .contains(&profile.profile_index)
+                .then_some(profile.profile_index)
+        })
+        .collect()
+}
+
+fn validate_publish_profile_indexes(
+    indexes: &[usize],
+    profiles: &[ReviewProfileRender],
+) -> Result<()> {
+    let valid = profiles
+        .iter()
+        .map(|profile| profile.profile_index)
+        .collect::<HashSet<_>>();
+    for index in indexes {
+        if !valid.contains(index) {
+            bail!("publish profile index {index} is not available");
+        }
+    }
+    Ok(())
 }
 
 fn load_store(path: &Path) -> Result<Option<ReviewStore>> {
@@ -1001,84 +1055,97 @@ fn publish_store_inner(
     };
     let publish_root = output_root.join("reviewed");
     for image in &store.images {
-        let Some(render) = image
-            .profiles
-            .iter()
-            .find(|render| render.profile_index == image.selected_profile_index)
-        else {
+        let publish_indexes = effective_publish_profile_indexes(image);
+        if publish_indexes.is_empty() {
             report.skipped += 1;
             continue;
-        };
-        if render.status != ReviewRenderStatus::Done {
-            report.skipped += 1;
-            continue;
-        }
-        let Some(source) = &render.output_path else {
-            report.skipped += 1;
-            continue;
-        };
-        if !source.is_file() {
-            report.skipped += 1;
-            continue;
-        }
-        if write_metadata {
-            write_review_metadata(source, image, render)?;
         }
 
         let relative = Path::new(&image.relative_path);
         let parent = relative.parent().unwrap_or_else(|| Path::new(""));
-        let file_name = review_output_file_name(source, output_format)?;
-
-        let rating_root = publish_root.join("ratings").join(image.rating.to_string());
-        report.gallery_roots.push(rating_root.clone());
-        link_review_output(
-            source,
-            &rating_root.join(parent).join(&file_name),
-            &mut report,
-        )?;
-
-        let selected_root = publish_root.join("selected");
-        report.gallery_roots.push(selected_root.clone());
-        link_review_output(
-            source,
-            &selected_root.join(parent).join(&file_name),
-            &mut report,
-        )?;
-
-        if image.rating >= min_rating {
-            let final_root = publish_root.join("final");
-            report.gallery_roots.push(final_root.clone());
-            link_review_output(
-                source,
-                &final_root.join(parent).join(&file_name),
-                &mut report,
-            )?;
-        }
-
-        if image.label != ReviewLabel::None {
-            let label_root = publish_root
-                .join("labels")
-                .join(review_label_name(image.label))
-                .join(format!("rating-{}", image.rating));
-            report.gallery_roots.push(label_root.clone());
-            link_review_output(
-                source,
-                &label_root.join(parent).join(&file_name),
-                &mut report,
-            )?;
-        }
-
-        for tag in &image.tags {
-            let tag = sanitize_filename::sanitize(tag).into_owned();
-            if tag.is_empty() {
+        for profile_index in publish_indexes {
+            let Some(render) = image
+                .profiles
+                .iter()
+                .find(|render| render.profile_index == profile_index)
+            else {
+                report.skipped += 1;
+                continue;
+            };
+            if render.status != ReviewRenderStatus::Done {
+                report.skipped += 1;
                 continue;
             }
-            let tag_root = publish_root
-                .join("tags")
-                .join(tag)
-                .join(format!("rating-{}", image.rating));
-            report.gallery_roots.push(tag_root.clone());
-            link_review_output(source, &tag_root.join(parent).join(&file_name), &mut report)?;
+            let Some(source) = &render.output_path else {
+                report.skipped += 1;
+                continue;
+            };
+            if !source.is_file() {
+                report.skipped += 1;
+                continue;
+            }
+            if write_metadata {
+                write_review_metadata(source, image, render)?;
+            }
+            let profile_folder = review_profile_folder_name(&render.profile_stem);
+            let profile_parent = Path::new(&profile_folder).join(parent);
+            let file_name = review_output_file_name(source, output_format)?;
+
+            let rating_root = publish_root.join("ratings").join(image.rating.to_string());
+            report.gallery_roots.push(rating_root.clone());
+            link_review_output(
+                source,
+                &rating_root.join(&profile_parent).join(&file_name),
+                &mut report,
+            )?;
+
+            let selected_root = publish_root.join("selected");
+            report.gallery_roots.push(selected_root.clone());
+            link_review_output(
+                source,
+                &selected_root.join(&profile_parent).join(&file_name),
+                &mut report,
+            )?;
+
+            if image.rating >= min_rating {
+                let final_root = publish_root.join("final");
+                report.gallery_roots.push(final_root.clone());
+                link_review_output(
+                    source,
+                    &final_root.join(&profile_parent).join(&file_name),
+                    &mut report,
+                )?;
+            }
+
+            if image.label != ReviewLabel::None {
+                let label_root = publish_root
+                    .join("labels")
+                    .join(review_label_name(image.label))
+                    .join(format!("rating-{}", image.rating));
+                report.gallery_roots.push(label_root.clone());
+                link_review_output(
+                    source,
+                    &label_root.join(&profile_parent).join(&file_name),
+                    &mut report,
+                )?;
+            }
+
+            for tag in &image.tags {
+                let tag = sanitize_filename::sanitize(tag).into_owned();
+                if tag.is_empty() {
+                    continue;
+                }
+                let tag_root = publish_root
+                    .join("tags")
+                    .join(tag)
+                    .join(format!("rating-{}", image.rating));
+                report.gallery_roots.push(tag_root.clone());
+                link_review_output(
+                    source,
+                    &tag_root.join(&profile_parent).join(&file_name),
+                    &mut report,
+                )?;
+            }
         }
     }
     dedupe_paths(&mut report.gallery_roots);
@@ -1096,6 +1163,15 @@ fn review_output_file_name(source: &Path, output_format: BatchOutputFormat) -> R
         .and_then(|stem| stem.to_str())
         .ok_or_else(|| anyhow!("output has no valid file stem: {}", source.display()))?;
     Ok(format!("{stem}.{}", output_format.extension()))
+}
+
+fn review_profile_folder_name(profile_stem: &str) -> String {
+    let folder = sanitize_filename::sanitize(profile_stem).into_owned();
+    if folder.trim().is_empty() {
+        "profile".to_string()
+    } else {
+        folder
+    }
 }
 
 fn review_label_name(label: ReviewLabel) -> &'static str {
@@ -1260,6 +1336,7 @@ mod tests {
             .unwrap();
         let text = handle.api_state_json().unwrap();
         assert!(text.contains("\"selected_profile_index\":0"));
+        assert!(text.contains("\"publish_profile_indexes\":[0,1]"));
         assert!(text.contains("\"status\":\"done\""));
         assert!(text.contains("/media/1/0"));
     }
@@ -1283,6 +1360,7 @@ mod tests {
             label: ReviewLabel::Red,
             tags: vec!["42".to_string()],
             notes: "keeper".to_string(),
+            publish_profile_indexes: Some(vec![0]),
             preview: ReviewPreview::default(),
             profiles: vec![ReviewProfileRender {
                 profile_index: 0,
@@ -1299,17 +1377,89 @@ mod tests {
         let report =
             publish_store_inner(&store, &output, BatchOutputFormat::Jpg, 2, false).unwrap();
         assert_eq!(report.linked, 5);
-        assert!(output.join("reviewed/selected/day/frame.jpg").exists());
-        assert!(output.join("reviewed/final/day/frame.jpg").exists());
-        assert!(output.join("reviewed/ratings/3/day/frame.jpg").exists());
         assert!(
             output
-                .join("reviewed/labels/red/rating-3/day/frame.jpg")
+                .join("reviewed/selected/Classic/day/frame.jpg")
+                .exists()
+        );
+        assert!(output.join("reviewed/final/Classic/day/frame.jpg").exists());
+        assert!(
+            output
+                .join("reviewed/ratings/3/Classic/day/frame.jpg")
                 .exists()
         );
         assert!(
             output
-                .join("reviewed/tags/42/rating-3/day/frame.jpg")
+                .join("reviewed/labels/red/rating-3/Classic/day/frame.jpg")
+                .exists()
+        );
+        assert!(
+            output
+                .join("reviewed/tags/42/rating-3/Classic/day/frame.jpg")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn publish_uses_selected_publish_profiles_not_preview_profile() {
+        let temp = tempfile::tempdir().unwrap();
+        let output = temp.path().join("out");
+        let classic = output.join("day").join("Classic").join("frame.jpg");
+        let fade = output.join("day").join("Fade").join("frame.jpg");
+        fs::create_dir_all(classic.parent().unwrap()).unwrap();
+        fs::create_dir_all(fade.parent().unwrap()).unwrap();
+        fs::write(&classic, b"classic").unwrap();
+        fs::write(&fade, b"fade").unwrap();
+
+        let mut store = ReviewStore::new(vec![profile(0, "Classic"), profile(1, "Fade")]);
+        store.images.push(ReviewImage {
+            id: 1,
+            raw_path: PathBuf::from("/in/day/frame.NEF"),
+            relative_path: "day/frame.NEF".to_string(),
+            file_name: "frame.NEF".to_string(),
+            selected_profile_index: 0,
+            rating: 2,
+            label: ReviewLabel::None,
+            tags: Vec::new(),
+            notes: String::new(),
+            publish_profile_indexes: Some(vec![1]),
+            preview: ReviewPreview::default(),
+            profiles: vec![
+                ReviewProfileRender {
+                    profile_index: 0,
+                    profile_stem: "Classic".to_string(),
+                    status: ReviewRenderStatus::Done,
+                    output_path: Some(classic.clone()),
+                    error: None,
+                    duration_ms: Some(1),
+                    updated_at: now_string(),
+                },
+                ReviewProfileRender {
+                    profile_index: 1,
+                    profile_stem: "Fade".to_string(),
+                    status: ReviewRenderStatus::Done,
+                    output_path: Some(fade.clone()),
+                    error: None,
+                    duration_ms: Some(1),
+                    updated_at: now_string(),
+                },
+            ],
+            updated_at: now_string(),
+        });
+
+        let report =
+            publish_store_inner(&store, &output, BatchOutputFormat::Jpg, 2, false).unwrap();
+        assert_eq!(report.linked, 3);
+        assert!(
+            !output
+                .join("reviewed/selected/Classic/day/frame.jpg")
+                .exists()
+        );
+        assert!(output.join("reviewed/selected/Fade/day/frame.jpg").exists());
+        assert!(output.join("reviewed/final/Fade/day/frame.jpg").exists());
+        assert!(
+            output
+                .join("reviewed/ratings/2/Fade/day/frame.jpg")
                 .exists()
         );
     }

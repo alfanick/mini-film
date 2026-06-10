@@ -279,7 +279,9 @@ does not need HTML/CSS/JS files next to it. The UI is live: the daemon records
 new RAW files immediately, extracts an embedded camera preview when available,
 then updates the browser over server-sent events as each profile render moves
 from queued to processing to done. The first `--profile` is the default selected
-look; other profiles are shown as variants and can be selected per picture.
+look. All configured profile variants are selected for publish by default; use
+the checkbox on each profile thumbnail to exclude or re-include a variant while
+reviewing.
 
 Review data is persisted in `<output>/mini-film-review.json`, and the browser
 remembers the current image and rating filter locally. That makes it possible to
@@ -287,15 +289,16 @@ restart the daemon, reopen the browser, and continue the multi-pass culling flow
 where it stopped. A typical pass is to rate everything `0` or `1`, filter to
 `>= 1`, rate the survivors higher, and repeat until the final subset is ready.
 
-The review UI stores rating, label, tags, notes, and selected profile. Publishing
-from the UI creates hardlinks, not duplicate image data, under:
+The review UI stores rating, label, tags, notes, active preview profile, and the
+set of profile variants selected for publish. Publishing from the UI creates
+hardlinks, not duplicate image data, under:
 
 ```text
-<output>/reviewed/ratings/<rating>/<tree>/<file>
-<output>/reviewed/selected/<tree>/<file>
-<output>/reviewed/final/<tree>/<file>
-<output>/reviewed/labels/<label>/rating-<rating>/<tree>/<file>
-<output>/reviewed/tags/<tag>/rating-<rating>/<tree>/<file>
+<output>/reviewed/ratings/<rating>/<profile stem>/<tree>/<file>
+<output>/reviewed/selected/<profile stem>/<tree>/<file>
+<output>/reviewed/final/<profile stem>/<tree>/<file>
+<output>/reviewed/labels/<label>/rating-<rating>/<profile stem>/<tree>/<file>
+<output>/reviewed/tags/<tag>/rating-<rating>/<profile stem>/<tree>/<file>
 ```
 
 `final` uses the currently selected minimum-rating filter in the browser. If
@@ -304,7 +307,7 @@ from the UI creates hardlinks, not duplicate image data, under:
 Supported templates are `modern`, `soft`, `compact`, `hero`, `phone`, and `all`.
 
 Published JPGs are annotated with review metadata through `exiftool`: rating,
-label, tags, selected profile, notes, and a mini-film version/comment marker.
+label, tags, published profile, notes, and a mini-film version/comment marker.
 The source RAW metadata copied during normal output generation is preserved
 unless `--strip-metadata` is used.
 
