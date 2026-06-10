@@ -454,7 +454,11 @@ fn collect_gallery_outputs(output_root: &Path) -> Result<Vec<PathBuf>> {
         let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
             continue;
         };
-        if ext.eq_ignore_ascii_case("jpg") || ext.eq_ignore_ascii_case("jpeg") {
+        if ext.eq_ignore_ascii_case("jpg")
+            || ext.eq_ignore_ascii_case("jpeg")
+            || ext.eq_ignore_ascii_case("tif")
+            || ext.eq_ignore_ascii_case("tiff")
+        {
             outputs.push(path.to_path_buf());
         }
     }

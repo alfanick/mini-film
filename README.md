@@ -11,7 +11,7 @@ It can:
 - read Lightroom preset XMPs that reference a profile and define grain
 - batch-process common RAW folders into JPEGs or 16-bit TIFFs
 - run a raw folder watcher (`daemon`) that keeps applying new files
-- expose a live daemon review UI for multi-pass rating, labels, tags, notes, and final selection
+- expose a live daemon review UI for multi-pass rating, labels, tags, notes, and configurable publish jobs
 - render a profile sampler contact sheet for one RAW file
 - inspect emulation/profile XMP adjustments
 - print generated RawTherapee PP3 profiles
@@ -304,26 +304,52 @@ the selected profile for publish. `6`, `7`, `8`, `9`, and `0` toggle red,
 yellow, green, blue, and purple labels without advancing.
 
 The review UI stores rating, label, tags, notes, active preview profile, and the
-set of profile variants selected for publish. Publishing from the UI creates
-hardlinks, not duplicate image data, under:
+set of profile variants selected for publish. Publishing opens a wizard that
+acts as a browser frontend for a spawned `mini-film review-publish` job. The
+wizard can filter by rating, color label, and tags; choose a relative album
+folder inside the daemon output directory; select JPG/TIFF output, original
+size or resize options, JPEG quality/subsampling/progressive mode, and an
+optional gallery template.
+Publish jobs run in parallel with the daemon job count, which defaults to half
+the available CPU threads, and stream live progress back to every open review
+browser.
+
+The default publish settings match the daemon render settings, so publishing
+uses hardlinks to the already-reviewed outputs when possible and falls back to
+symlinks if hardlinks are not available. If output settings differ, mini-film
+rerenders the selected pictures from the original RAW files through the normal
+`apply` pipeline before building the gallery.
+
+Published outputs are flat under the chosen album folder:
 
 ```text
-<output>/reviewed/ratings/<rating>/<profile stem>/<tree>/<file>
-<output>/reviewed/selected/<profile stem>/<tree>/<file>
-<output>/reviewed/final/<profile stem>/<tree>/<file>
-<output>/reviewed/labels/<label>/rating-<rating>/<profile stem>/<tree>/<file>
-<output>/reviewed/tags/<tag>/rating-<rating>/<profile stem>/<tree>/<file>
+<output>/<album>/<raw stem>.<ext>
+<output>/<album>/<raw stem>-<profile stem>.<ext>
 ```
 
-`final` uses the currently selected minimum-rating filter in the browser. If
-`--gallery <template>` is passed to `daemon`, publish also renders an
-`index.html` gallery in each hardlink folder using the same templates as batch.
-Supported templates are `modern`, `soft`, `compact`, `hero`, `phone`, and `all`.
+The first daemon `--profile` is treated as the default profile and does not add a
+profile suffix. Additional selected profiles add `-<profile stem>`. If a gallery
+template is chosen in the wizard, publish renders an `index.html` gallery in the
+album folder using the same templates as batch. Supported templates are
+`modern`, `soft`, `compact`, `hero`, `phone`, and `all`.
 
 Published JPGs are annotated with review metadata through `exiftool`: rating,
 label, tags, published profile, notes, and a mini-film version/comment marker.
 The source RAW metadata copied during normal output generation is preserved
 unless `--strip-metadata` is used.
+
+The same publish operation can be run directly from the CLI:
+
+```sh
+mini-film review-publish \
+  --state /home/alfanick/Pictures/mini-film-output/mini-film-review.json \
+  --input-root /home/alfanick/Pictures/Lightroom/inbox \
+  --output-root /home/alfanick/Pictures/mini-film-output \
+  --album published/final \
+  --min-rating 3 \
+  --label green \
+  --gallery modern
+```
 
 Daemon can also ingest files from a Nikon camera configured for
 Connect-to-PC / Wireless Transmitter Utility style transfer. Start the camera's

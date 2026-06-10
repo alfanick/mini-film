@@ -28,6 +28,29 @@ const els = {
   shortcutsHelp: document.getElementById("shortcuts-help"),
   shortcutsOverlay: document.getElementById("shortcuts-overlay"),
   shortcutsClose: document.getElementById("shortcuts-close"),
+  appVersion: document.getElementById("app-version"),
+  publishOverlay: document.getElementById("publish-overlay"),
+  publishForm: document.getElementById("publish-form"),
+  publishCancel: document.getElementById("publish-cancel"),
+  publishSubmit: document.getElementById("publish-submit"),
+  publishStatus: document.getElementById("publish-status"),
+  publishMode: document.getElementById("publish-mode"),
+  publishAlbum: document.getElementById("publish-album"),
+  publishMinRating: document.getElementById("publish-min-rating"),
+  publishTags: document.getElementById("publish-tags"),
+  publishOutputFormat: document.getElementById("publish-output-format"),
+  publishSizeMode: document.getElementById("publish-size-mode"),
+  publishLongEdge: document.getElementById("publish-long-edge"),
+  publishMaxWidth: document.getElementById("publish-max-width"),
+  publishMaxHeight: document.getElementById("publish-max-height"),
+  publishResize: document.getElementById("publish-resize"),
+  publishJpgQuality: document.getElementById("publish-jpg-quality"),
+  publishJpegSubsampling: document.getElementById("publish-jpeg-subsampling"),
+  publishProgressive: document.getElementById("publish-progressive"),
+  publishStripMetadata: document.getElementById("publish-strip-metadata"),
+  publishGallery: document.getElementById("publish-gallery"),
+  publishGalleryColumns: document.getElementById("publish-gallery-columns"),
+  publishGalleryThumbnailLongEdge: document.getElementById("publish-gallery-thumbnail-long-edge"),
 };
 
 const wideProfilesQuery = window.matchMedia("(min-width: 1280px) and (min-height: 620px)");
@@ -76,7 +99,10 @@ function render() {
   const total = state.data?.images?.length || 0;
   const profileCount = state.data?.profiles?.length || 0;
   const clientCount = state.data?.client_count || 0;
-  els.status.textContent = `${images.length}/${total} pictures | ${profileCount} ${plural(profileCount, "profile")} | ${clientCount} ${plural(clientCount, "client")}`;
+  const publishSummary = latestPublishJobSummary();
+  els.appVersion.textContent = `mini-film ${state.data?.version || ""}`.trim();
+  els.status.textContent = `${images.length}/${total} pictures | ${profileCount} ${plural(profileCount, "profile")} | ${clientCount} ${plural(clientCount, "client")}${publishSummary ? ` | ${publishSummary}` : ""}`;
+  updatePublishStatus();
   renderList(images);
   let current = findImage(state.currentId);
   if (current && !passesFilter(current)) current = null;
@@ -90,6 +116,63 @@ function render() {
 
 function plural(count, singular) {
   return Number(count) === 1 ? singular : `${singular}s`;
+}
+
+function latestPublishJob() {
+  const jobs = state.data?.publish_jobs || [];
+  return jobs.length > 0 ? jobs[jobs.length - 1] : null;
+}
+
+function latestPublishJobSummary() {
+  const job = latestPublishJob();
+  if (!job) return "";
+  if (job.status === "running") {
+    const percent = publishProgressPercent(job);
+    const current = job.current ? ` | ${job.current}` : "";
+    return `publishing ${job.album} ${percent}% ${job.step || "publish"}${current}`;
+  }
+  if (job.status === "done") return `published ${job.linked} files`;
+  return `publish failed`;
+}
+
+function publishProgressPercent(job) {
+  const total = Number(job?.total || 0);
+  const processed = Number(job?.processed || 0);
+  if (total <= 0) return job?.status === "done" ? 100 : 0;
+  return Math.max(0, Math.min(100, Math.round((processed / total) * 100)));
+}
+
+function updatePublishStatus() {
+  const job = latestPublishJob();
+  if (!job) {
+    els.publishStatus.textContent = publishWouldRerender()
+      ? "Changed output settings will rerender from original RAWs."
+      : "Default settings will link existing reviewed outputs.";
+    els.publishSubmit.disabled = false;
+    return;
+  }
+  els.publishStatus.replaceChildren();
+  if (job.status === "running") {
+    els.publishSubmit.disabled = true;
+    const percent = publishProgressPercent(job);
+    const text = document.createElement("div");
+    text.textContent = `Publishing ${job.album}: ${percent}% ${job.step || "publish"}${job.current ? ` | ${job.current}` : ""}`;
+    const bar = document.createElement("div");
+    bar.className = "publish-progress";
+    const fill = document.createElement("span");
+    fill.style.width = `${percent}%`;
+    bar.append(fill);
+    const counts = document.createElement("div");
+    counts.className = "publish-progress-counts";
+    counts.textContent = `${job.processed || 0}/${job.total || 0} outputs | linked ${job.linked || 0} | skipped ${job.skipped || 0} | galleries ${job.galleries || 0}`;
+    els.publishStatus.append(text, bar, counts);
+  } else if (job.status === "done") {
+    els.publishSubmit.disabled = false;
+    els.publishStatus.textContent = `Published ${job.linked} files to ${job.album}; skipped ${job.skipped}; galleries ${job.galleries}.`;
+  } else {
+    els.publishSubmit.disabled = false;
+    els.publishStatus.textContent = `Publish failed: ${job.error || "unknown error"}`;
+  }
 }
 
 function syncProfilesPlacement() {
@@ -422,6 +505,131 @@ function toggleShortcuts(force) {
   els.shortcutsOverlay.hidden = !show;
 }
 
+function togglePublishWizard(force) {
+  const show = force ?? els.publishOverlay.hidden;
+  if (show) {
+    populatePublishWizard();
+  }
+  els.publishOverlay.hidden = !show;
+}
+
+function publishDefaults() {
+  return state.data?.publish_defaults || {};
+}
+
+function populatePublishWizard() {
+  const defaults = publishDefaults();
+  els.publishAlbum.value = defaults.album || "published";
+  els.publishMinRating.value = String(minRating());
+  els.publishTags.value = "";
+  document.querySelectorAll("[name='publish-label']").forEach((input) => {
+    input.checked = false;
+  });
+  els.publishOutputFormat.value = defaults.output_format || "jpg";
+  els.publishJpgQuality.value = String(defaults.jpg_quality || 95);
+  els.publishJpegSubsampling.value = defaults.jpeg_subsampling || "s444";
+  els.publishProgressive.checked = Boolean(defaults.progressive_jpeg);
+  els.publishStripMetadata.checked = Boolean(defaults.strip_metadata);
+  els.publishGallery.value = defaults.gallery || "none";
+  els.publishGalleryColumns.value = String(defaults.gallery_columns || 4);
+  els.publishGalleryThumbnailLongEdge.value = String(defaults.gallery_thumbnail_long_edge || 1024);
+
+  els.publishResize.value = defaults.resize || "";
+  els.publishLongEdge.value = defaults.long_edge ? String(defaults.long_edge) : "";
+  els.publishMaxWidth.value = defaults.max_width ? String(defaults.max_width) : "";
+  els.publishMaxHeight.value = defaults.max_height ? String(defaults.max_height) : "";
+  if (defaults.resize) {
+    els.publishSizeMode.value = "geometry";
+  } else if (defaults.long_edge) {
+    els.publishSizeMode.value = "long-edge";
+  } else if (defaults.max_width || defaults.max_height) {
+    els.publishSizeMode.value = "bounds";
+  } else {
+    els.publishSizeMode.value = "original";
+  }
+  syncPublishSizeFields();
+  updatePublishModeText();
+}
+
+function syncPublishSizeFields() {
+  const mode = els.publishSizeMode.value;
+  els.publishLongEdge.hidden = mode !== "long-edge";
+  els.publishMaxWidth.hidden = mode !== "bounds";
+  els.publishMaxHeight.hidden = mode !== "bounds";
+  els.publishResize.hidden = mode !== "geometry";
+}
+
+function publishFormBody() {
+  const sizeMode = els.publishSizeMode.value;
+  const body = {
+    album: els.publishAlbum.value.trim() || "published",
+    min_rating: Number(els.publishMinRating.value || 0),
+    labels: Array.from(document.querySelectorAll("[name='publish-label']:checked")).map((input) => input.value),
+    tags: splitPublishTags(els.publishTags.value),
+    output_format: els.publishOutputFormat.value,
+    gallery: els.publishGallery.value,
+    size_mode: sizeMode,
+    jpg_quality: Number(els.publishJpgQuality.value || 95),
+    jpeg_subsampling: els.publishJpegSubsampling.value,
+    strip_metadata: els.publishStripMetadata.checked,
+    progressive_jpeg: els.publishProgressive.checked,
+    gallery_columns: Number(els.publishGalleryColumns.value || 4),
+    gallery_thumbnail_long_edge: Number(els.publishGalleryThumbnailLongEdge.value || 1024),
+  };
+  if (sizeMode === "long-edge") body.long_edge = numberOrNull(els.publishLongEdge.value);
+  if (sizeMode === "bounds") {
+    body.max_width = numberOrNull(els.publishMaxWidth.value);
+    body.max_height = numberOrNull(els.publishMaxHeight.value);
+  }
+  if (sizeMode === "geometry") body.resize = els.publishResize.value.trim();
+  return body;
+}
+
+function splitPublishTags(raw) {
+  return raw
+    .split(/[,\s]+/)
+    .map((tag) => tag.trim())
+    .filter(Boolean);
+}
+
+function numberOrNull(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function publishWouldRerender() {
+  const defaults = publishDefaults();
+  if (!defaults || !els.publishOutputFormat) return false;
+  const body = publishFormBody();
+  const defaultsSizeMode = defaults.resize
+    ? "geometry"
+    : defaults.long_edge
+      ? "long-edge"
+      : defaults.max_width || defaults.max_height
+        ? "bounds"
+        : "original";
+  return (
+    body.output_format !== (defaults.output_format || "jpg") ||
+    body.size_mode !== defaultsSizeMode ||
+    body.jpg_quality !== Number(defaults.jpg_quality || 95) ||
+    body.jpeg_subsampling !== (defaults.jpeg_subsampling || "s444") ||
+    Boolean(body.strip_metadata) !== Boolean(defaults.strip_metadata) ||
+    Boolean(body.progressive_jpeg) !== Boolean(defaults.progressive_jpeg) ||
+    (body.resize || "") !== (defaults.resize || "") ||
+    (body.long_edge || null) !== (defaults.long_edge || null) ||
+    (body.max_width || null) !== (defaults.max_width || null) ||
+    (body.max_height || null) !== (defaults.max_height || null)
+  );
+}
+
+function updatePublishModeText() {
+  const rerender = publishWouldRerender();
+  els.publishMode.textContent = rerender
+    ? "Changed output settings will rerender selected pictures from the original RAW files."
+    : "Settings match daemon defaults, so publish will hardlink reviewed outputs when possible.";
+  updatePublishStatus();
+}
+
 function setActiveReviewButtons(image) {
   document.querySelectorAll("[data-rating]").forEach((button) => {
     button.classList.toggle("active", Number(image?.rating || 0) === Number(button.dataset.rating));
@@ -586,20 +794,51 @@ function scheduleAutosave() {
   autosaveTimer = setTimeout(() => saveCurrentIfNeeded(), 500);
 }
 
-els.publish.addEventListener("click", async () => {
-  els.publish.disabled = true;
-  els.publish.textContent = "Publishing";
+els.publish.addEventListener("click", () => togglePublishWizard(true));
+els.publishCancel.addEventListener("click", () => togglePublishWizard(false));
+els.publishOverlay.addEventListener("click", (event) => {
+  if (event.target === els.publishOverlay) togglePublishWizard(false);
+});
+els.publishSizeMode.addEventListener("change", () => {
+  syncPublishSizeFields();
+  updatePublishModeText();
+});
+[
+  els.publishOutputFormat,
+  els.publishLongEdge,
+  els.publishMaxWidth,
+  els.publishMaxHeight,
+  els.publishResize,
+  els.publishJpgQuality,
+  els.publishJpegSubsampling,
+  els.publishProgressive,
+  els.publishStripMetadata,
+].forEach((element) => {
+  element.addEventListener("input", updatePublishModeText);
+  element.addEventListener("change", updatePublishModeText);
+});
+els.publishForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  els.publishSubmit.disabled = true;
+  let started = false;
   try {
     const response = await fetch(reviewUrl("api/publish"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ min_rating: minRating() }),
+      body: JSON.stringify(publishFormBody()),
     });
-    const report = await response.json();
-    els.status.textContent = `Published ${report.linked} links, ${report.skipped} skipped, rating >= ${report.min_rating}`;
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || `publish ${response.status}`);
+    started = true;
+    applyState(data);
+  } catch (error) {
+    els.publishStatus.textContent = `Publish failed: ${error.message}`;
   } finally {
-    els.publish.disabled = false;
-    els.publish.textContent = "Publish";
+    if (started) {
+      updatePublishStatus();
+    } else {
+      els.publishSubmit.disabled = false;
+    }
   }
 });
 
@@ -610,6 +849,13 @@ els.shortcutsOverlay.addEventListener("click", (event) => {
 });
 
 window.addEventListener("keydown", (event) => {
+  if (!els.publishOverlay.hidden) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      togglePublishWizard(false);
+    }
+    if (event.target.closest(".publish-card")) return;
+  }
   if (event.target === els.tags) return;
   if (event.target === els.notes) return;
   if (event.target === els.minRating) return;

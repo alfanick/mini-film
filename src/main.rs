@@ -19,10 +19,11 @@ use crate::app::batch_daemon::{BatchDaemonArgs, run_batch_daemon};
 use crate::app::info::{InfoArgs, run_info};
 use crate::app::nikon::{NikonArgs, run_nikon};
 use crate::app::pp3::{Pp3Args, run_pp3};
+use crate::app::review::{ReviewPublishCommandArgs, run_review_publish};
 use crate::app::run_hald;
 use crate::app::run_update;
 use crate::app::sampler::{SamplerArgs, run_sampler};
-use crate::app::util::{configure_threads, default_hald_dir};
+use crate::app::util::{configure_threads, default_hald_dir, half_cpu_thread_count};
 use crate::cli::{Cli, CommandKind, ExportOptions};
 
 /// Parse CLI arguments and dispatch to the selected mini-film workflow.
@@ -229,6 +230,7 @@ fn main() -> Result<()> {
             gallery,
             gallery_thumbnail_long_edge,
             gallery_columns,
+            publish_album,
             output_format,
             jpg_quality,
             resize,
@@ -263,6 +265,7 @@ fn main() -> Result<()> {
             gallery,
             gallery_thumbnail_long_edge,
             gallery_columns,
+            publish_album,
             output_format,
             export: ExportOptions {
                 jpg_quality,
@@ -317,6 +320,77 @@ fn main() -> Result<()> {
             strip_metadata,
             progressive_jpeg,
         }),
+        CommandKind::ReviewPublish {
+            state,
+            input_root,
+            output_root,
+            album,
+            min_rating,
+            label,
+            tag,
+            output_format,
+            hald_dir,
+            profiles_root,
+            hald_level,
+            rawtherapee,
+            convert,
+            jobs,
+            gallery,
+            gallery_thumbnail_long_edge,
+            gallery_columns,
+            jpg_quality,
+            resize,
+            long_edge,
+            max_width,
+            max_height,
+            jpeg_subsampling,
+            strip_metadata,
+            progressive_jpeg,
+            rerender_raw,
+            no_grain,
+            color_noise_iso_threshold,
+            lens_corrections,
+            grain,
+            grain_preset,
+            grain_seed,
+            progress_events,
+        } => run_review_publish(ReviewPublishCommandArgs {
+            state,
+            input_root,
+            output_root,
+            album,
+            min_rating,
+            labels: label,
+            tags: tag,
+            output_format,
+            hald_dir: hald_dir.unwrap_or_else(default_hald_dir),
+            profiles_root: resolve_profiles_root(profiles_root),
+            hald_level,
+            rawtherapee,
+            convert,
+            jobs: jobs.unwrap_or_else(half_cpu_thread_count),
+            gallery,
+            gallery_thumbnail_long_edge,
+            gallery_columns,
+            export: ExportOptions {
+                jpg_quality,
+                resize,
+                long_edge,
+                max_width,
+                max_height,
+                jpeg_subsampling,
+                strip_metadata,
+                progressive_jpeg,
+            },
+            rerender_raw,
+            no_grain,
+            color_noise_iso_threshold,
+            lens_corrections: lens_corrections.unwrap_or_default(),
+            grain,
+            grain_preset,
+            grain_seed,
+            progress_events,
+        }),
         CommandKind::Update => run_update(),
     }
 }
@@ -329,7 +403,11 @@ fn startup_dependency_check(args: &[String]) -> Result<()> {
     let command = active_command_for_dependency_check(args);
     let help_mode = is_help_mode(args);
     let needs_externals = match command {
-        Some("apply") | Some("batch") | Some("daemon") | Some("sampler") => true,
+        Some("apply")
+        | Some("batch")
+        | Some("daemon")
+        | Some("sampler")
+        | Some("review-publish") => true,
         Some(_) => false,
         None => help_mode,
     };

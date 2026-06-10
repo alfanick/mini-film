@@ -10,7 +10,10 @@
     <div class="app">
       <aside class="sidebar">
         <header class="sidebar-header">
-          <h1>Review</h1>
+          <div>
+            <h1>Review</h1>
+            <div id="app-version" class="app-version">mini-film</div>
+          </div>
           <div class="header-actions">
             <button id="shortcuts-help" class="help-button" type="button" aria-label="Keyboard shortcuts">?</button>
             <button id="publish" type="button">Publish</button>
@@ -166,6 +169,129 @@
           </section>
         </div>
       </section>
+    </div>
+
+    <div
+      id="publish-overlay"
+      class="publish-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="publish-title"
+      hidden
+    >
+      <form id="publish-form" class="publish-card">
+        <header class="publish-header">
+          <div>
+            <h2 id="publish-title">Publish</h2>
+            <p id="publish-mode">Link existing reviewed outputs when settings match daemon defaults.</p>
+          </div>
+          <button id="publish-cancel" type="button">Cancel</button>
+        </header>
+
+        <div class="publish-grid">
+          <section class="publish-section">
+            <h3>Selection</h3>
+            <label>
+              <span>Output folder</span>
+              <input id="publish-album" type="text" autocomplete="off" />
+            </label>
+            <label>
+              <span>Rating &gt;=</span>
+              <select id="publish-min-rating">
+                <option value="0">0</option>
+                <option value="1">1</option>
+                <option value="2">2</option>
+                <option value="3">3</option>
+                <option value="4">4</option>
+                <option value="5">5</option>
+              </select>
+            </label>
+            <div class="publish-labels">
+              <span>Colour labels</span>
+              <label><input type="checkbox" name="publish-label" value="red" /> Red</label>
+              <label><input type="checkbox" name="publish-label" value="yellow" /> Yellow</label>
+              <label><input type="checkbox" name="publish-label" value="green" /> Green</label>
+              <label><input type="checkbox" name="publish-label" value="blue" /> Blue</label>
+              <label><input type="checkbox" name="publish-label" value="purple" /> Purple</label>
+            </div>
+            <label>
+              <span>Tags</span>
+              <input id="publish-tags" type="text" autocomplete="off" placeholder="optional comma-separated tags" />
+            </label>
+          </section>
+
+          <section class="publish-section">
+            <h3>Output</h3>
+            <label>
+              <span>Format</span>
+              <select id="publish-output-format">
+                <option value="jpg">JPG</option>
+                <option value="tiff">TIFF</option>
+              </select>
+            </label>
+            <label>
+              <span>Size</span>
+              <select id="publish-size-mode">
+                <option value="original">Original size</option>
+                <option value="long-edge">Long edge</option>
+                <option value="bounds">Max width/height</option>
+                <option value="geometry">Convert geometry</option>
+              </select>
+            </label>
+            <div class="publish-sizes">
+              <input id="publish-long-edge" type="number" min="1" placeholder="long edge px" />
+              <input id="publish-max-width" type="number" min="1" placeholder="max width" />
+              <input id="publish-max-height" type="number" min="1" placeholder="max height" />
+              <input id="publish-resize" type="text" placeholder="e.g. 3840x3840&gt;" />
+            </div>
+            <label>
+              <span>JPG quality</span>
+              <input id="publish-jpg-quality" type="number" min="1" max="100" />
+            </label>
+            <label>
+              <span>Subsampling</span>
+              <select id="publish-jpeg-subsampling">
+                <option value="s444">4:4:4</option>
+                <option value="s422">4:2:2</option>
+                <option value="s420">4:2:0</option>
+              </select>
+            </label>
+            <div class="publish-checks">
+              <label><input id="publish-progressive" type="checkbox" /> Progressive JPG</label>
+              <label><input id="publish-strip-metadata" type="checkbox" /> Strip metadata</label>
+            </div>
+          </section>
+
+          <section class="publish-section publish-section-wide">
+            <h3>Gallery</h3>
+            <label>
+              <span>Template</span>
+              <select id="publish-gallery">
+                <option value="none">No gallery</option>
+                <option value="modern">Modern</option>
+                <option value="soft">Soft</option>
+                <option value="compact">Compact</option>
+                <option value="hero">Hero</option>
+                <option value="phone">Phone</option>
+                <option value="all">All templates</option>
+              </select>
+            </label>
+            <label>
+              <span>Columns</span>
+              <input id="publish-gallery-columns" type="number" min="1" max="12" />
+            </label>
+            <label>
+              <span>Thumbnail edge</span>
+              <input id="publish-gallery-thumbnail-long-edge" type="number" min="1" />
+            </label>
+          </section>
+        </div>
+
+        <footer class="publish-footer">
+          <div id="publish-status" class="publish-status"></div>
+          <button id="publish-submit" type="submit">Start publish job</button>
+        </footer>
+      </form>
     </div>
 
     <script src="assets/app.js"></script>

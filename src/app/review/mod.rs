@@ -1,12 +1,13 @@
 use std::{
     collections::{HashMap, HashSet},
-    fs,
+    env, fs,
     io::{BufRead, BufReader, Read, Write},
     net::{TcpListener, TcpStream},
-    path::{Path, PathBuf},
-    process::Command,
+    path::{Component, Path, PathBuf},
+    process::{Command, Stdio},
     sync::{
         Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
         mpsc::{self, Receiver, Sender},
     },
     thread,
@@ -14,14 +15,17 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha1::{Digest, Sha1};
 
 use crate::app::review_assets::{review_index_html, review_script, review_styles};
 use crate::{
+    app::apply::{ApplyArgs, run_apply},
     app::batch::{FolderGalleryOptions, render_gallery_for_folder},
-    cli::{BatchOutputFormat, ExportOptions, GalleryTemplate},
+    app::export::validate_export_options,
+    cli::{BatchOutputFormat, ExportOptions, GalleryTemplate, LensCorrections},
 };
 
 #[derive(Clone, Debug)]
@@ -29,19 +33,30 @@ pub(crate) struct ReviewConfig {
     pub(crate) address: String,
     pub(crate) input_root: PathBuf,
     pub(crate) output_root: PathBuf,
+    pub(crate) hald_dir: PathBuf,
+    pub(crate) profiles_root: PathBuf,
+    pub(crate) hald_level: u32,
+    pub(crate) rawtherapee: PathBuf,
     pub(crate) output_format: BatchOutputFormat,
     pub(crate) profiles: Vec<ReviewProfile>,
     pub(crate) gallery: Option<ReviewGalleryConfig>,
+    pub(crate) convert: PathBuf,
+    pub(crate) export: ExportOptions,
+    pub(crate) jobs: usize,
+    pub(crate) publish_album: String,
+    pub(crate) no_grain: bool,
+    pub(crate) color_noise_iso_threshold: u32,
+    pub(crate) lens_corrections: LensCorrections,
+    pub(crate) grain: Option<String>,
+    pub(crate) grain_preset: Option<String>,
+    pub(crate) grain_seed: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct ReviewGalleryConfig {
-    pub(crate) convert: PathBuf,
     pub(crate) template: GalleryTemplate,
     pub(crate) columns: u32,
     pub(crate) thumbnail_long_edge: u32,
-    pub(crate) jobs: usize,
-    pub(crate) export: ExportOptions,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -58,8 +73,24 @@ pub(crate) struct ReviewHandle {
     state_path: PathBuf,
     input_root: PathBuf,
     output_root: PathBuf,
+    hald_dir: PathBuf,
+    profiles_root: PathBuf,
+    hald_level: u32,
+    rawtherapee: PathBuf,
     output_format: BatchOutputFormat,
     gallery: Option<ReviewGalleryConfig>,
+    convert: PathBuf,
+    export: ExportOptions,
+    jobs: usize,
+    no_grain: bool,
+    color_noise_iso_threshold: u32,
+    lens_corrections: LensCorrections,
+    grain: Option<String>,
+    grain_preset: Option<String>,
+    grain_seed: Option<u64>,
+    publish_defaults: ReviewPublishDefaults,
+    publish_jobs: Arc<Mutex<Vec<ReviewPublishJob>>>,
+    next_publish_job_id: Arc<Mutex<u64>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -100,7 +131,7 @@ struct ReviewImage {
     updated_at: String,
 }
 
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
 enum ReviewLabel {
     #[default]
@@ -179,15 +210,215 @@ struct ReviewUiUpdateRequest {
 struct PublishRequest {
     #[serde(default)]
     min_rating: u8,
+    #[serde(default)]
+    album: Option<String>,
+    #[serde(default)]
+    labels: Vec<ReviewLabel>,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    output_format: Option<String>,
+    #[serde(default)]
+    gallery: Option<String>,
+    #[serde(default)]
+    jpg_quality: Option<u8>,
+    #[serde(default)]
+    size_mode: Option<String>,
+    #[serde(default)]
+    resize: Option<String>,
+    #[serde(default)]
+    long_edge: Option<u32>,
+    #[serde(default)]
+    max_width: Option<u32>,
+    #[serde(default)]
+    max_height: Option<u32>,
+    #[serde(default)]
+    jpeg_subsampling: Option<String>,
+    #[serde(default)]
+    strip_metadata: Option<bool>,
+    #[serde(default)]
+    progressive_jpeg: Option<bool>,
+    #[serde(default)]
+    gallery_thumbnail_long_edge: Option<u32>,
+    #[serde(default)]
+    gallery_columns: Option<u32>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct PublishReport {
     pub(crate) linked: u64,
     pub(crate) skipped: u64,
     pub(crate) min_rating: u8,
     pub(crate) galleries: u64,
     gallery_roots: Vec<PathBuf>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ReviewPublishCommandArgs {
+    pub(crate) state: PathBuf,
+    pub(crate) input_root: PathBuf,
+    pub(crate) output_root: PathBuf,
+    pub(crate) album: String,
+    pub(crate) min_rating: u8,
+    pub(crate) labels: Vec<String>,
+    pub(crate) tags: Vec<String>,
+    pub(crate) output_format: BatchOutputFormat,
+    pub(crate) hald_dir: PathBuf,
+    pub(crate) profiles_root: PathBuf,
+    pub(crate) hald_level: u32,
+    pub(crate) rawtherapee: PathBuf,
+    pub(crate) convert: PathBuf,
+    pub(crate) jobs: usize,
+    pub(crate) gallery: Option<GalleryTemplate>,
+    pub(crate) gallery_thumbnail_long_edge: u32,
+    pub(crate) gallery_columns: u32,
+    pub(crate) export: ExportOptions,
+    pub(crate) rerender_raw: bool,
+    pub(crate) no_grain: bool,
+    pub(crate) color_noise_iso_threshold: u32,
+    pub(crate) lens_corrections: LensCorrections,
+    pub(crate) grain: Option<String>,
+    pub(crate) grain_preset: Option<String>,
+    pub(crate) grain_seed: Option<u64>,
+    pub(crate) progress_events: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ReviewPublishDefaults {
+    album: String,
+    output_format: String,
+    jpg_quality: u8,
+    resize: Option<String>,
+    long_edge: Option<u32>,
+    max_width: Option<u32>,
+    max_height: Option<u32>,
+    jpeg_subsampling: String,
+    strip_metadata: bool,
+    progressive_jpeg: bool,
+    gallery: Option<String>,
+    gallery_thumbnail_long_edge: u32,
+    gallery_columns: u32,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ReviewPublishJob {
+    id: u64,
+    album: String,
+    status: ReviewPublishJobStatus,
+    started_at: String,
+    finished_at: Option<String>,
+    processed: u64,
+    total: u64,
+    step: String,
+    current: Option<String>,
+    linked: u64,
+    skipped: u64,
+    galleries: u64,
+    error: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum ReviewPublishJobStatus {
+    Running,
+    Done,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ReviewGalleryDefaults {
+    template: Option<GalleryTemplate>,
+    thumbnail_long_edge: u32,
+    columns: u32,
+}
+
+#[derive(Clone, Debug)]
+struct ReviewPublishOptions {
+    album: PathBuf,
+    min_rating: u8,
+    labels: HashSet<ReviewLabel>,
+    tags: HashSet<String>,
+    output_format: BatchOutputFormat,
+    hald_dir: PathBuf,
+    profiles_root: PathBuf,
+    hald_level: u32,
+    rawtherapee: PathBuf,
+    convert: PathBuf,
+    jobs: usize,
+    export: ExportOptions,
+    rerender_raw: bool,
+    no_grain: bool,
+    color_noise_iso_threshold: u32,
+    lens_corrections: LensCorrections,
+    grain: Option<String>,
+    grain_preset: Option<String>,
+    grain_seed: Option<u64>,
+    write_metadata: bool,
+}
+
+struct ReviewPublishOutput<'a> {
+    input_root: &'a Path,
+    source: &'a Path,
+    destination: &'a Path,
+    image: &'a ReviewImage,
+    render: &'a ReviewProfileRender,
+    profile: &'a ReviewProfile,
+    options: &'a ReviewPublishOptions,
+}
+
+#[derive(Clone, Debug)]
+struct ReviewPublishTask {
+    source: PathBuf,
+    destination: PathBuf,
+    image: ReviewImage,
+    render: ReviewProfileRender,
+    profile: ReviewProfile,
+    current: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct ReviewPublishProgress {
+    processed: u64,
+    total: u64,
+    linked: u64,
+    skipped: u64,
+    galleries: u64,
+    step: String,
+    current: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+enum ReviewPublishEvent {
+    Progress { progress: ReviewPublishProgress },
+    Report { report: PublishReport },
+}
+
+type ReviewPublishProgressSink<'a> = &'a (dyn Fn(ReviewPublishProgress) + Sync);
+
+impl ReviewPublishDefaults {
+    fn new(
+        album: String,
+        output_format: BatchOutputFormat,
+        export: &ExportOptions,
+        gallery: ReviewGalleryDefaults,
+    ) -> Self {
+        Self {
+            album,
+            output_format: output_format.to_string(),
+            jpg_quality: export.jpg_quality,
+            resize: export.resize.clone(),
+            long_edge: export.long_edge,
+            max_width: export.max_width,
+            max_height: export.max_height,
+            jpeg_subsampling: export.jpeg_subsampling.to_string(),
+            strip_metadata: export.strip_metadata,
+            progressive_jpeg: export.progressive_jpeg,
+            gallery: gallery.template.map(|template| template.to_string()),
+            gallery_thumbnail_long_edge: gallery.thumbnail_long_edge,
+            gallery_columns: gallery.columns,
+        }
+    }
 }
 
 impl ReviewStore {
@@ -349,14 +580,37 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
     store.sync_profiles(config.profiles);
     save_store(&state_path, &store)?;
 
+    let gallery_defaults = handle_gallery_defaults(&config.gallery);
+    let publish_defaults = ReviewPublishDefaults::new(
+        config.publish_album,
+        config.output_format,
+        &config.export,
+        gallery_defaults,
+    );
     let handle = ReviewHandle {
         state: Arc::new(Mutex::new(store)),
         subscribers: Arc::new(Mutex::new(Vec::new())),
         state_path,
         input_root: config.input_root,
         output_root: config.output_root,
+        hald_dir: config.hald_dir,
+        profiles_root: config.profiles_root,
+        hald_level: config.hald_level,
+        rawtherapee: config.rawtherapee,
         output_format: config.output_format,
         gallery: config.gallery,
+        convert: config.convert,
+        export: config.export.clone(),
+        jobs: config.jobs,
+        no_grain: config.no_grain,
+        color_noise_iso_threshold: config.color_noise_iso_threshold,
+        lens_corrections: config.lens_corrections,
+        grain: config.grain,
+        grain_preset: config.grain_preset,
+        grain_seed: config.grain_seed,
+        publish_defaults,
+        publish_jobs: Arc::new(Mutex::new(Vec::new())),
+        next_publish_job_id: Arc::new(Mutex::new(1)),
     };
 
     let listener = TcpListener::bind(&config.address)
@@ -662,6 +916,8 @@ impl ReviewHandle {
             "version": env!("CARGO_PKG_VERSION"),
             "profiles": store.profiles,
             "client_count": client_count,
+            "publish_defaults": self.publish_defaults,
+            "publish_jobs": self.publish_jobs_snapshot()?,
             "ui": {
                 "current_image_id": store.ui.current_image_id,
                 "min_rating": store.ui.min_rating,
@@ -718,37 +974,239 @@ impl ReviewHandle {
         Ok(path.clone())
     }
 
-    pub(crate) fn publish(&self, min_rating: u8) -> Result<PublishReport> {
-        let store = self.lock_store()?.clone();
-        let mut report = publish_store(
-            &store,
-            &self.output_root,
-            self.output_format,
-            min_rating.min(5),
-        )?;
-        if let Some(gallery) = &self.gallery {
-            let mut rendered = 0u64;
-            for root in &report.gallery_roots {
-                render_gallery_for_folder(
-                    root,
-                    &FolderGalleryOptions {
-                        convert: &gallery.convert,
-                        template: gallery.template,
-                        columns: gallery.columns,
-                        thumbnail_long_edge: gallery.thumbnail_long_edge,
-                        jobs: gallery.jobs,
-                        export: &gallery.export,
-                        profile_stem: root
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .unwrap_or("review"),
-                    },
-                )?;
-                rendered += 1;
-            }
-            report.galleries = rendered;
+    fn start_publish_job(&self, request: PublishRequest) -> Result<ReviewPublishJob> {
+        let args = self.publish_args_from_request(&request)?;
+        let mut id = self
+            .next_publish_job_id
+            .lock()
+            .map_err(|_| anyhow!("review publish job id lock poisoned"))?;
+        let job = ReviewPublishJob {
+            id: *id,
+            album: args.album.clone(),
+            status: ReviewPublishJobStatus::Running,
+            started_at: now_string(),
+            finished_at: None,
+            processed: 0,
+            total: 0,
+            step: "starting".to_string(),
+            current: None,
+            linked: 0,
+            skipped: 0,
+            galleries: 0,
+            error: None,
+        };
+        *id += 1;
+        drop(id);
+
+        self.publish_jobs
+            .lock()
+            .map_err(|_| anyhow!("review publish jobs lock poisoned"))?
+            .push(job.clone());
+        self.broadcast_state()?;
+
+        let handle = self.clone();
+        thread::Builder::new()
+            .name("mini-film-review-publish".to_string())
+            .spawn(move || {
+                let result = spawn_review_publish_command(&args, |progress| {
+                    handle.record_publish_job_progress(job.id, &progress)
+                })
+                .and_then(|report| {
+                    handle.record_publish_job_done(job.id, &report)?;
+                    Ok(())
+                });
+                if let Err(error) = result {
+                    let _ = handle.record_publish_job_failed(job.id, &format!("{error:#}"));
+                }
+            })
+            .context("starting review publish job thread")?;
+
+        Ok(job)
+    }
+
+    fn publish_args_from_request(
+        &self,
+        request: &PublishRequest,
+    ) -> Result<ReviewPublishCommandArgs> {
+        let album = request
+            .album
+            .clone()
+            .unwrap_or_else(|| self.publish_defaults.album.clone());
+        let output_format = request
+            .output_format
+            .as_deref()
+            .map(parse_batch_output_format)
+            .transpose()?
+            .unwrap_or(self.output_format);
+        let gallery = if let Some(gallery) = request.gallery.as_deref() {
+            parse_gallery_template(gallery)?
+        } else {
+            self.gallery.as_ref().map(|gallery| gallery.template)
+        };
+        let mut export = self.export.clone();
+        if let Some(jpg_quality) = request.jpg_quality {
+            export.jpg_quality = jpg_quality;
         }
-        Ok(report)
+        if let Some(size_mode) = request.size_mode.as_deref() {
+            export.resize = None;
+            export.long_edge = None;
+            export.max_width = None;
+            export.max_height = None;
+            match size_mode {
+                "original" => {}
+                "long-edge" => export.long_edge = request.long_edge,
+                "bounds" => {
+                    export.max_width = request.max_width;
+                    export.max_height = request.max_height;
+                }
+                "geometry" => {
+                    export.resize = request
+                        .resize
+                        .clone()
+                        .filter(|resize| !resize.trim().is_empty());
+                }
+                other => bail!("unsupported publish size mode {other:?}"),
+            }
+        } else {
+            if request.resize.is_some() {
+                export.resize = request
+                    .resize
+                    .clone()
+                    .filter(|resize| !resize.trim().is_empty());
+            }
+            if request.long_edge.is_some() {
+                export.long_edge = request.long_edge;
+            }
+            if request.max_width.is_some() {
+                export.max_width = request.max_width;
+            }
+            if request.max_height.is_some() {
+                export.max_height = request.max_height;
+            }
+        }
+        if let Some(subsampling) = &request.jpeg_subsampling {
+            export.jpeg_subsampling = parse_jpeg_subsampling(subsampling)?;
+        }
+        if let Some(strip_metadata) = request.strip_metadata {
+            export.strip_metadata = strip_metadata;
+        }
+        if let Some(progressive_jpeg) = request.progressive_jpeg {
+            export.progressive_jpeg = progressive_jpeg;
+        }
+        validate_export_options(&export)?;
+
+        Ok(ReviewPublishCommandArgs {
+            state: self.state_path.clone(),
+            input_root: self.input_root.clone(),
+            output_root: self.output_root.clone(),
+            album,
+            min_rating: request.min_rating.min(5),
+            labels: request
+                .labels
+                .iter()
+                .filter(|label| **label != ReviewLabel::None)
+                .map(|label| review_label_name(*label).to_string())
+                .collect(),
+            tags: normalize_tags(request.tags.clone()),
+            output_format,
+            hald_dir: self.hald_dir.clone(),
+            profiles_root: self.profiles_root.clone(),
+            hald_level: self.hald_level,
+            rawtherapee: self.rawtherapee.clone(),
+            convert: self.convert.clone(),
+            jobs: self.jobs,
+            gallery,
+            gallery_thumbnail_long_edge: request
+                .gallery_thumbnail_long_edge
+                .or_else(|| {
+                    self.gallery
+                        .as_ref()
+                        .map(|gallery| gallery.thumbnail_long_edge)
+                })
+                .unwrap_or(1024),
+            gallery_columns: request
+                .gallery_columns
+                .or_else(|| self.gallery.as_ref().map(|gallery| gallery.columns))
+                .unwrap_or(4),
+            rerender_raw: output_format != self.output_format || export != self.export,
+            export,
+            no_grain: self.no_grain,
+            color_noise_iso_threshold: self.color_noise_iso_threshold,
+            lens_corrections: self.lens_corrections,
+            grain: self.grain.clone(),
+            grain_preset: self.grain_preset.clone(),
+            grain_seed: self.grain_seed,
+            progress_events: true,
+        })
+    }
+
+    fn record_publish_job_progress(
+        &self,
+        job_id: u64,
+        progress: &ReviewPublishProgress,
+    ) -> Result<()> {
+        self.update_publish_job(job_id, |job| {
+            job.processed = progress.processed;
+            job.total = progress.total;
+            job.step.clone_from(&progress.step);
+            job.current.clone_from(&progress.current);
+            job.linked = progress.linked;
+            job.skipped = progress.skipped;
+            job.galleries = progress.galleries;
+        })
+    }
+
+    fn record_publish_job_done(&self, job_id: u64, report: &PublishReport) -> Result<()> {
+        self.update_publish_job(job_id, |job| {
+            job.status = ReviewPublishJobStatus::Done;
+            job.finished_at = Some(now_string());
+            job.processed = report.linked;
+            job.total = report.linked;
+            job.step = "done".to_string();
+            job.current = None;
+            job.linked = report.linked;
+            job.skipped = report.skipped;
+            job.galleries = report.galleries;
+            job.error = None;
+        })
+    }
+
+    fn record_publish_job_failed(&self, job_id: u64, message: &str) -> Result<()> {
+        self.update_publish_job(job_id, |job| {
+            job.status = ReviewPublishJobStatus::Failed;
+            job.finished_at = Some(now_string());
+            job.step = "failed".to_string();
+            job.current = None;
+            job.error = Some(message.to_string());
+        })
+    }
+
+    fn update_publish_job<F>(&self, job_id: u64, update: F) -> Result<()>
+    where
+        F: FnOnce(&mut ReviewPublishJob),
+    {
+        let mut jobs = self
+            .publish_jobs
+            .lock()
+            .map_err(|_| anyhow!("review publish jobs lock poisoned"))?;
+        let Some(job) = jobs.iter_mut().find(|job| job.id == job_id) else {
+            bail!("review publish job {job_id} does not exist");
+        };
+        update(job);
+        if jobs.len() > 20 {
+            let remove = jobs.len() - 20;
+            jobs.drain(0..remove);
+        }
+        drop(jobs);
+        self.broadcast_state()
+    }
+
+    fn publish_jobs_snapshot(&self) -> Result<Vec<ReviewPublishJob>> {
+        Ok(self
+            .publish_jobs
+            .lock()
+            .map_err(|_| anyhow!("review publish jobs lock poisoned"))?
+            .clone())
     }
 
     fn subscribe(&self) -> Result<Receiver<String>> {
@@ -913,6 +1371,113 @@ fn normalize_tags(tags: Vec<String>) -> Vec<String> {
     normalized
 }
 
+fn handle_gallery_defaults(gallery: &Option<ReviewGalleryConfig>) -> ReviewGalleryDefaults {
+    if let Some(gallery) = gallery {
+        return ReviewGalleryDefaults {
+            template: Some(gallery.template),
+            thumbnail_long_edge: gallery.thumbnail_long_edge,
+            columns: gallery.columns,
+        };
+    }
+    ReviewGalleryDefaults {
+        template: None,
+        thumbnail_long_edge: 1024,
+        columns: 4,
+    }
+}
+
+fn parse_batch_output_format(raw: &str) -> Result<BatchOutputFormat> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "jpg" | "jpeg" => Ok(BatchOutputFormat::Jpg),
+        "tif" | "tiff" => Ok(BatchOutputFormat::Tiff),
+        other => bail!("unsupported output format {other:?}; expected jpg or tiff"),
+    }
+}
+
+fn parse_gallery_template(raw: &str) -> Result<Option<GalleryTemplate>> {
+    let raw = raw.trim().to_ascii_lowercase();
+    if raw.is_empty() || raw == "none" {
+        return Ok(None);
+    }
+    let template = match raw.as_str() {
+        "modern" => GalleryTemplate::Modern,
+        "soft" => GalleryTemplate::Soft,
+        "compact" => GalleryTemplate::Compact,
+        "hero" => GalleryTemplate::Hero,
+        "phone" => GalleryTemplate::Phone,
+        "all" => GalleryTemplate::All,
+        other => bail!("unsupported gallery template {other:?}"),
+    };
+    Ok(Some(template))
+}
+
+fn parse_jpeg_subsampling(raw: &str) -> Result<crate::cli::JpegSubsampling> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "s444" | "444" | "4:4:4" => Ok(crate::cli::JpegSubsampling::S444),
+        "s422" | "422" | "4:2:2" => Ok(crate::cli::JpegSubsampling::S422),
+        "s420" | "420" | "4:2:0" => Ok(crate::cli::JpegSubsampling::S420),
+        other => bail!("unsupported JPEG subsampling {other:?}"),
+    }
+}
+
+fn lens_corrections_arg(corrections: LensCorrections) -> String {
+    let mut parts = Vec::new();
+    if corrections.distortion {
+        parts.push("distortion");
+    }
+    if corrections.ca {
+        parts.push("ca");
+    }
+    if corrections.vignetting {
+        parts.push("vignetting");
+    }
+    parts.join(",")
+}
+
+fn parse_review_label(raw: &str) -> Result<ReviewLabel> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "" | "none" => Ok(ReviewLabel::None),
+        "red" => Ok(ReviewLabel::Red),
+        "yellow" => Ok(ReviewLabel::Yellow),
+        "green" => Ok(ReviewLabel::Green),
+        "blue" => Ok(ReviewLabel::Blue),
+        "purple" => Ok(ReviewLabel::Purple),
+        other => bail!("unsupported review label {other:?}"),
+    }
+}
+
+fn normalize_tag_filter(tags: &[String]) -> HashSet<String> {
+    tags.iter()
+        .map(|tag| tag.trim().to_ascii_lowercase())
+        .filter(|tag| !tag.is_empty())
+        .collect()
+}
+
+fn validate_relative_publish_album(raw: &str) -> Result<PathBuf> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        bail!("publish output directory must not be empty");
+    }
+    let path = Path::new(trimmed);
+    if path.is_absolute() {
+        bail!("publish output directory must be relative to the daemon output directory");
+    }
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => normalized.push(part),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                bail!("publish output directory cannot leave the daemon output directory");
+            }
+        }
+    }
+    if normalized.as_os_str().is_empty() {
+        bail!("publish output directory must contain a folder name");
+    }
+    Ok(normalized)
+}
+
 fn run_review_listener(listener: TcpListener, handle: ReviewHandle) {
     for stream in listener.incoming() {
         match stream {
@@ -1025,14 +1590,16 @@ fn route_request(request: HttpRequest, handle: &ReviewHandle) -> HttpResponse {
             Ok(body) => text_response("200 OK", "application/json; charset=utf-8", &body),
             Err(error) => json_error("500 Internal Server Error", error),
         },
-        ("POST", "/api/review") => match serde_json::from_slice::<ReviewUpdateRequest>(&request.body)
-            .context("parsing review update")
-            .and_then(|update| handle.apply_review_update(update))
-            .and_then(|()| handle.api_state_json())
-        {
-            Ok(body) => text_response("200 OK", "application/json; charset=utf-8", &body),
-            Err(error) => json_error("400 Bad Request", error),
-        },
+        ("POST", "/api/review") => {
+            match serde_json::from_slice::<ReviewUpdateRequest>(&request.body)
+                .context("parsing review update")
+                .and_then(|update| handle.apply_review_update(update))
+                .and_then(|()| handle.api_state_json())
+            {
+                Ok(body) => text_response("200 OK", "application/json; charset=utf-8", &body),
+                Err(error) => json_error("400 Bad Request", error),
+            }
+        }
         ("POST", "/api/ui") => match serde_json::from_slice::<ReviewUiUpdateRequest>(&request.body)
             .context("parsing review UI update")
             .and_then(|update| handle.apply_ui_update(update))
@@ -1042,13 +1609,10 @@ fn route_request(request: HttpRequest, handle: &ReviewHandle) -> HttpResponse {
             Err(error) => json_error("400 Bad Request", error),
         },
         ("POST", "/api/publish") => match parse_publish_request(&request.body)
-            .and_then(|request| handle.publish(request.min_rating))
+            .and_then(|request| handle.start_publish_job(request))
+            .and_then(|_| handle.api_state_json())
         {
-            Ok(report) => text_response(
-                "200 OK",
-                "application/json; charset=utf-8",
-                &json!({"linked": report.linked, "skipped": report.skipped, "min_rating": report.min_rating, "galleries": report.galleries}).to_string(),
-            ),
+            Ok(body) => text_response("200 OK", "application/json; charset=utf-8", &body),
             Err(error) => json_error("500 Internal Server Error", error),
         },
         _ if request.method == "GET" && path.starts_with("/media/") => {
@@ -1171,6 +1735,285 @@ fn parse_publish_request(body: &[u8]) -> Result<PublishRequest> {
     serde_json::from_slice(body).context("parsing publish request")
 }
 
+pub(crate) fn run_review_publish(args: ReviewPublishCommandArgs) -> Result<()> {
+    let report = if args.progress_events {
+        let emit = |progress: ReviewPublishProgress| {
+            if let Ok(line) = serde_json::to_string(&ReviewPublishEvent::Progress { progress }) {
+                println!("{line}");
+            }
+        };
+        let report = publish_review_state(&args, Some(&emit))?;
+        println!(
+            "{}",
+            serde_json::to_string(&ReviewPublishEvent::Report {
+                report: report.clone()
+            })
+            .context("serializing review publish report event")?
+        );
+        report
+    } else {
+        publish_review_state(&args, None)?
+    };
+    if !args.progress_events {
+        println!(
+            "{}",
+            serde_json::to_string(&report).context("serializing review publish report")?
+        );
+    }
+    Ok(())
+}
+
+fn spawn_review_publish_command<F>(
+    args: &ReviewPublishCommandArgs,
+    mut on_progress: F,
+) -> Result<PublishReport>
+where
+    F: FnMut(ReviewPublishProgress) -> Result<()>,
+{
+    let exe = env::current_exe().context("resolving current mini-film executable")?;
+    let mut command = Command::new(exe);
+    command
+        .arg("review-publish")
+        .arg("--progress-events")
+        .arg("--state")
+        .arg(&args.state)
+        .arg("--input-root")
+        .arg(&args.input_root)
+        .arg("--output-root")
+        .arg(&args.output_root)
+        .arg("--album")
+        .arg(&args.album)
+        .arg("--min-rating")
+        .arg(args.min_rating.to_string())
+        .arg("--output-format")
+        .arg(args.output_format.to_string())
+        .arg("--hald-dir")
+        .arg(&args.hald_dir)
+        .arg("--profiles-root")
+        .arg(&args.profiles_root)
+        .arg("--hald-level")
+        .arg(args.hald_level.to_string())
+        .arg("--rawtherapee")
+        .arg(&args.rawtherapee)
+        .arg("--convert")
+        .arg(&args.convert)
+        .arg("--jobs")
+        .arg(args.jobs.to_string())
+        .arg("--gallery-thumbnail-long-edge")
+        .arg(args.gallery_thumbnail_long_edge.to_string())
+        .arg("--gallery-columns")
+        .arg(args.gallery_columns.to_string())
+        .arg("--jpg-quality")
+        .arg(args.export.jpg_quality.to_string())
+        .arg("--jpeg-subsampling")
+        .arg(args.export.jpeg_subsampling.to_string())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(gallery) = args.gallery {
+        command.arg("--gallery").arg(gallery.to_string());
+    }
+    for label in &args.labels {
+        command.arg("--label").arg(label);
+    }
+    for tag in &args.tags {
+        command.arg("--tag").arg(tag);
+    }
+    if let Some(resize) = &args.export.resize {
+        command.arg("--resize").arg(resize);
+    }
+    if let Some(long_edge) = args.export.long_edge {
+        command.arg("--long-edge").arg(long_edge.to_string());
+    }
+    if let Some(max_width) = args.export.max_width {
+        command.arg("--max-width").arg(max_width.to_string());
+    }
+    if let Some(max_height) = args.export.max_height {
+        command.arg("--max-height").arg(max_height.to_string());
+    }
+    if args.export.strip_metadata {
+        command.arg("--strip-metadata");
+    }
+    if args.export.progressive_jpeg {
+        command.arg("--progressive");
+    }
+    if args.rerender_raw {
+        command.arg("--rerender-raw");
+    }
+    if args.no_grain {
+        command.arg("--no-grain");
+    }
+    if args.lens_corrections.is_enabled() {
+        command
+            .arg("--lens-corrections")
+            .arg(lens_corrections_arg(args.lens_corrections));
+    }
+    command
+        .arg("--color-noise-iso-threshold")
+        .arg(args.color_noise_iso_threshold.to_string());
+    if let Some(grain) = &args.grain {
+        command.arg("--grain").arg(grain);
+    }
+    if let Some(grain_preset) = &args.grain_preset {
+        command.arg("--grain-preset").arg(grain_preset);
+    }
+    if let Some(grain_seed) = args.grain_seed {
+        command.arg("--grain-seed").arg(grain_seed.to_string());
+    }
+
+    let mut child = command
+        .spawn()
+        .context("starting mini-film review-publish")?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("review-publish stdout pipe was not available"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow!("review-publish stderr pipe was not available"))?;
+    let stderr_reader = thread::Builder::new()
+        .name("mini-film-review-publish-stderr".to_string())
+        .spawn(move || {
+            let mut stderr_text = String::new();
+            let _ = BufReader::new(stderr).read_to_string(&mut stderr_text);
+            stderr_text
+        })
+        .context("starting review-publish stderr reader")?;
+
+    let mut report = None;
+    for line in BufReader::new(stdout).lines() {
+        let line = line.context("reading review-publish progress")?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<ReviewPublishEvent>(&line) {
+            Ok(ReviewPublishEvent::Progress { progress }) => on_progress(progress)?,
+            Ok(ReviewPublishEvent::Report {
+                report: final_report,
+            }) => report = Some(final_report),
+            Err(error) => {
+                bail!("parsing review-publish event {line:?}: {error}");
+            }
+        }
+    }
+
+    let status = child.wait().context("waiting for review-publish")?;
+    let stderr = stderr_reader
+        .join()
+        .unwrap_or_else(|_| "stderr reader thread panicked".to_string());
+    if !status.success() {
+        bail!(
+            "review-publish failed with status {}\nstderr:\n{}",
+            status,
+            stderr.trim()
+        );
+    }
+    report.ok_or_else(|| anyhow!("review-publish completed without a report event"))
+}
+
+fn publish_review_state(
+    args: &ReviewPublishCommandArgs,
+    progress: Option<ReviewPublishProgressSink<'_>>,
+) -> Result<PublishReport> {
+    validate_export_options(&args.export)?;
+    if args.jobs == 0 {
+        bail!("--jobs must be at least 1");
+    }
+    let input_root = canonical_existing_dir(&args.input_root)?;
+    let output_root = canonical_existing_dir(&args.output_root)?;
+    let state = fs::canonicalize(&args.state)
+        .with_context(|| format!("canonicalizing review state {}", args.state.display()))?;
+    ensure_path_within(&state, &output_root)?;
+    let store = load_store(&state)?.ok_or_else(|| anyhow!("review state is empty"))?;
+    let album = validate_relative_publish_album(&args.album)?;
+    ensure_safe_dir_all(&output_root, &album)?;
+
+    let labels = args
+        .labels
+        .iter()
+        .map(|label| parse_review_label(label))
+        .collect::<Result<HashSet<_>>>()?
+        .into_iter()
+        .filter(|label| *label != ReviewLabel::None)
+        .collect::<HashSet<_>>();
+    let tags = normalize_tag_filter(&args.tags);
+    let options = ReviewPublishOptions {
+        album,
+        min_rating: args.min_rating.min(5),
+        labels,
+        tags,
+        output_format: args.output_format,
+        hald_dir: args.hald_dir.clone(),
+        profiles_root: args.profiles_root.clone(),
+        hald_level: args.hald_level,
+        rawtherapee: args.rawtherapee.clone(),
+        convert: args.convert.clone(),
+        jobs: args.jobs,
+        export: args.export.clone(),
+        rerender_raw: args.rerender_raw,
+        no_grain: args.no_grain,
+        color_noise_iso_threshold: args.color_noise_iso_threshold,
+        lens_corrections: args.lens_corrections,
+        grain: args.grain.clone(),
+        grain_preset: args.grain_preset.clone(),
+        grain_seed: args.grain_seed,
+        write_metadata: true,
+    };
+    let mut report = publish_store_inner(&store, &input_root, &output_root, &options, progress)?;
+
+    if let Some(template) = args.gallery {
+        let mut rendered = 0u64;
+        for root in &report.gallery_roots {
+            emit_publish_progress(
+                progress,
+                ReviewPublishProgress {
+                    processed: report.linked,
+                    total: report.linked,
+                    linked: report.linked,
+                    skipped: report.skipped,
+                    galleries: rendered,
+                    step: "gallery".to_string(),
+                    current: root
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .map(ToString::to_string),
+                },
+            );
+            render_gallery_for_folder(
+                root,
+                &FolderGalleryOptions {
+                    convert: &args.convert,
+                    template,
+                    columns: args.gallery_columns,
+                    thumbnail_long_edge: args.gallery_thumbnail_long_edge,
+                    jobs: args.jobs,
+                    export: &args.export,
+                    profile_stem: root
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("review"),
+                },
+            )?;
+            rendered += 1;
+            emit_publish_progress(
+                progress,
+                ReviewPublishProgress {
+                    processed: report.linked,
+                    total: report.linked,
+                    linked: report.linked,
+                    skipped: report.skipped,
+                    galleries: rendered,
+                    step: "gallery".to_string(),
+                    current: None,
+                },
+            );
+        }
+        report.galleries = rendered;
+    }
+
+    Ok(report)
+}
+
 fn text_response(status: &'static str, content_type: &'static str, body: &str) -> HttpResponse {
     HttpResponse {
         status,
@@ -1201,36 +2044,36 @@ fn write_http_response(stream: &mut TcpStream, response: HttpResponse) -> Result
         .context("writing HTTP response body")
 }
 
-fn publish_store(
-    store: &ReviewStore,
-    output_root: &Path,
-    output_format: BatchOutputFormat,
-    min_rating: u8,
-) -> Result<PublishReport> {
-    publish_store_inner(store, output_root, output_format, min_rating, true)
-}
-
 fn publish_store_inner(
     store: &ReviewStore,
+    input_root: &Path,
     output_root: &Path,
-    output_format: BatchOutputFormat,
-    min_rating: u8,
-    write_metadata: bool,
+    options: &ReviewPublishOptions,
+    progress: Option<ReviewPublishProgressSink<'_>>,
 ) -> Result<PublishReport> {
     let mut report = PublishReport {
-        min_rating,
+        min_rating: options.min_rating,
         ..PublishReport::default()
     };
-    let publish_root = output_root.join("reviewed");
+    let publish_root = ensure_safe_dir_all(output_root, &options.album)?;
+    let mut tasks = Vec::new();
     for image in &store.images {
+        if !image_passes_publish_filters(image, options) {
+            report.skipped += 1;
+            continue;
+        }
+
         let publish_indexes = effective_publish_profile_indexes(image);
         if publish_indexes.is_empty() {
             report.skipped += 1;
             continue;
         }
 
-        let relative = Path::new(&image.relative_path);
-        let parent = relative.parent().unwrap_or_else(|| Path::new(""));
+        let raw_stem = Path::new(&image.relative_path)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .ok_or_else(|| anyhow!("review image has no valid stem: {}", image.relative_path))?;
+        let default_profile_index = store.profiles.first().map(|profile| profile.index);
         for profile_index in publish_indexes {
             let Some(render) = image
                 .profiles
@@ -1248,89 +2091,327 @@ fn publish_store_inner(
                 report.skipped += 1;
                 continue;
             };
-            if !source.is_file() {
-                report.skipped += 1;
-                continue;
-            }
-            if write_metadata {
-                write_review_metadata(source, image, render)?;
-            }
-            let profile_folder = review_profile_folder_name(&render.profile_stem);
-            let profile_parent = Path::new(&profile_folder).join(parent);
-            let file_name = review_output_file_name(source, output_format)?;
-
-            let rating_root = publish_root.join("ratings").join(image.rating.to_string());
-            report.gallery_roots.push(rating_root.clone());
-            link_review_output(
-                source,
-                &rating_root.join(&profile_parent).join(&file_name),
-                &mut report,
+            let source = safe_existing_output_source(source, output_root)?;
+            let file_name = review_publish_file_name(
+                raw_stem,
+                render,
+                default_profile_index,
+                options.output_format,
             )?;
-
-            let selected_root = publish_root.join("selected");
-            report.gallery_roots.push(selected_root.clone());
-            link_review_output(
+            let destination_relative = options.album.join(file_name);
+            let destination = safe_child_path(output_root, &destination_relative)?;
+            let profile = store
+                .profiles
+                .iter()
+                .find(|profile| profile.index == profile_index)
+                .ok_or_else(|| anyhow!("review profile index {profile_index} is not configured"))?;
+            tasks.push(ReviewPublishTask {
                 source,
-                &selected_root.join(&profile_parent).join(&file_name),
-                &mut report,
-            )?;
-
-            if image.rating >= min_rating {
-                let final_root = publish_root.join("final");
-                report.gallery_roots.push(final_root.clone());
-                link_review_output(
-                    source,
-                    &final_root.join(&profile_parent).join(&file_name),
-                    &mut report,
-                )?;
-            }
-
-            if image.label != ReviewLabel::None {
-                let label_root = publish_root
-                    .join("labels")
-                    .join(review_label_name(image.label))
-                    .join(format!("rating-{}", image.rating));
-                report.gallery_roots.push(label_root.clone());
-                link_review_output(
-                    source,
-                    &label_root.join(&profile_parent).join(&file_name),
-                    &mut report,
-                )?;
-            }
-
-            for tag in &image.tags {
-                let tag = sanitize_filename::sanitize(tag).into_owned();
-                if tag.is_empty() {
-                    continue;
-                }
-                let tag_root = publish_root
-                    .join("tags")
-                    .join(tag)
-                    .join(format!("rating-{}", image.rating));
-                report.gallery_roots.push(tag_root.clone());
-                link_review_output(
-                    source,
-                    &tag_root.join(&profile_parent).join(&file_name),
-                    &mut report,
-                )?;
-            }
+                destination,
+                image: image.clone(),
+                render: render.clone(),
+                profile: profile.clone(),
+                current: format!("{} / {}", image.file_name, render.profile_stem),
+            });
         }
     }
-    dedupe_paths(&mut report.gallery_roots);
+
+    let total = tasks.len() as u64;
+    emit_publish_progress(
+        progress,
+        ReviewPublishProgress {
+            processed: 0,
+            total,
+            linked: 0,
+            skipped: report.skipped,
+            galleries: 0,
+            step: "publish".to_string(),
+            current: None,
+        },
+    );
+
+    if total > 0 {
+        let skipped = report.skipped;
+        let processed = AtomicU64::new(0);
+        let linked = AtomicU64::new(0);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(options.jobs)
+            .build()
+            .context("building review publish thread pool")?;
+        pool.install(|| {
+            tasks.par_iter().try_for_each(|task| {
+                let step = if options.rerender_raw {
+                    "rerender"
+                } else {
+                    "link"
+                };
+                publish_review_output(ReviewPublishOutput {
+                    input_root,
+                    source: &task.source,
+                    destination: &task.destination,
+                    image: &task.image,
+                    render: &task.render,
+                    profile: &task.profile,
+                    options,
+                })?;
+                let linked_now = linked.fetch_add(1, Ordering::Relaxed) + 1;
+                let processed_now = processed.fetch_add(1, Ordering::Relaxed) + 1;
+                emit_publish_progress(
+                    progress,
+                    ReviewPublishProgress {
+                        processed: processed_now,
+                        total,
+                        linked: linked_now,
+                        skipped,
+                        galleries: 0,
+                        step: step.to_string(),
+                        current: Some(task.current.clone()),
+                    },
+                );
+                Ok::<_, anyhow::Error>(())
+            })
+        })?;
+        report.linked = linked.load(Ordering::Relaxed);
+        if report.linked > 0 {
+            report.gallery_roots.push(publish_root);
+        }
+    }
+    emit_publish_progress(
+        progress,
+        ReviewPublishProgress {
+            processed: report.linked,
+            total,
+            linked: report.linked,
+            skipped: report.skipped,
+            galleries: report.galleries,
+            step: "publish".to_string(),
+            current: None,
+        },
+    );
     Ok(report)
 }
 
-fn dedupe_paths(paths: &mut Vec<PathBuf>) {
-    let mut seen = HashSet::new();
-    paths.retain(|path| seen.insert(path.clone()));
+fn emit_publish_progress(
+    progress: Option<ReviewPublishProgressSink<'_>>,
+    event: ReviewPublishProgress,
+) {
+    if let Some(progress) = progress {
+        progress(event);
+    }
 }
 
-fn review_output_file_name(source: &Path, output_format: BatchOutputFormat) -> Result<String> {
-    let stem = source
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .ok_or_else(|| anyhow!("output has no valid file stem: {}", source.display()))?;
-    Ok(format!("{stem}.{}", output_format.extension()))
+fn image_passes_publish_filters(image: &ReviewImage, options: &ReviewPublishOptions) -> bool {
+    if image.rating < options.min_rating {
+        return false;
+    }
+    if !options.labels.is_empty() && !options.labels.contains(&image.label) {
+        return false;
+    }
+    if !options.tags.is_empty()
+        && !image
+            .tags
+            .iter()
+            .map(|tag| tag.to_ascii_lowercase())
+            .any(|tag| options.tags.contains(&tag))
+    {
+        return false;
+    }
+    true
+}
+
+fn publish_review_output(item: ReviewPublishOutput<'_>) -> Result<()> {
+    if item.destination.exists() {
+        fs::remove_file(item.destination)
+            .with_context(|| format!("removing {}", item.destination.display()))?;
+    }
+    if item.options.rerender_raw {
+        rerender_review_output(
+            item.input_root,
+            item.destination,
+            item.image,
+            item.profile,
+            item.options,
+        )?;
+    } else if fs::hard_link(item.source, item.destination).is_err() {
+        symlink_file(item.source, item.destination).with_context(|| {
+            format!(
+                "symlinking {} to {} after hardlink failed",
+                item.source.display(),
+                item.destination.display()
+            )
+        })?;
+    }
+    if item.options.write_metadata {
+        write_review_metadata(item.destination, item.image, item.render)?;
+    }
+    Ok(())
+}
+
+fn rerender_review_output(
+    input_root: &Path,
+    destination: &Path,
+    image: &ReviewImage,
+    profile: &ReviewProfile,
+    options: &ReviewPublishOptions,
+) -> Result<()> {
+    let raw = safe_existing_raw_source(&image.raw_path, input_root)?;
+    run_apply(ApplyArgs {
+        raw,
+        output: destination.to_path_buf(),
+        profile: profile.selector.clone(),
+        hald_dir: options.hald_dir.clone(),
+        profiles_root: options.profiles_root.clone(),
+        hald_level: options.hald_level,
+        rawtherapee: options.rawtherapee.clone(),
+        convert: options.convert.clone(),
+        keep_intermediate: None,
+        no_grain: options.no_grain,
+        color_noise_iso_threshold: options.color_noise_iso_threshold,
+        lens_corrections: options.lens_corrections,
+        grain: options.grain.clone(),
+        grain_preset: options.grain_preset.clone(),
+        grain_seed: options
+            .grain_seed
+            .map(|seed| review_publish_seed(seed, &image.raw_path, profile.index)),
+        export: options.export.clone(),
+    })
+}
+
+fn canonical_existing_dir(path: &Path) -> Result<PathBuf> {
+    let canonical = fs::canonicalize(path)
+        .with_context(|| format!("canonicalizing directory {}", path.display()))?;
+    if !canonical.is_dir() {
+        bail!("not a directory: {}", canonical.display());
+    }
+    Ok(canonical)
+}
+
+fn ensure_path_within(path: &Path, root: &Path) -> Result<()> {
+    if path.starts_with(root) {
+        return Ok(());
+    }
+    bail!(
+        "path {} is outside of configured root {}",
+        path.display(),
+        root.display()
+    )
+}
+
+fn safe_relative_path(path: &Path) -> Result<PathBuf> {
+    if path.is_absolute() {
+        bail!("expected relative path, got {}", path.display());
+    }
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => normalized.push(part),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                bail!("unsafe relative path component in {}", path.display());
+            }
+        }
+    }
+    Ok(normalized)
+}
+
+fn safe_child_path(root: &Path, relative: &Path) -> Result<PathBuf> {
+    Ok(root.join(safe_relative_path(relative)?))
+}
+
+fn ensure_safe_dir_all(root: &Path, relative: &Path) -> Result<PathBuf> {
+    let relative = safe_relative_path(relative)?;
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(part) = component else {
+            continue;
+        };
+        current.push(part);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() {
+                    bail!(
+                        "refusing to write through symlink directory {}",
+                        current.display()
+                    );
+                }
+                if !metadata.is_dir() {
+                    bail!(
+                        "publish path component is not a directory: {}",
+                        current.display()
+                    );
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir(&current)
+                    .with_context(|| format!("creating {}", current.display()))?;
+            }
+            Err(error) => {
+                return Err(error).with_context(|| format!("checking {}", current.display()));
+            }
+        }
+    }
+    Ok(current)
+}
+
+fn safe_existing_output_source(source: &Path, output_root: &Path) -> Result<PathBuf> {
+    let source = fs::canonicalize(source)
+        .with_context(|| format!("canonicalizing review output {}", source.display()))?;
+    ensure_path_within(&source, output_root)?;
+    if !source.is_file() {
+        bail!("review output is not a file: {}", source.display());
+    }
+    Ok(source)
+}
+
+fn safe_existing_raw_source(raw: &Path, input_root: &Path) -> Result<PathBuf> {
+    let raw = fs::canonicalize(raw)
+        .with_context(|| format!("canonicalizing RAW source {}", raw.display()))?;
+    ensure_path_within(&raw, input_root)?;
+    if !raw.is_file() {
+        bail!("review RAW source is not a file: {}", raw.display());
+    }
+    Ok(raw)
+}
+
+fn review_publish_seed(base_seed: u64, raw: &Path, profile_index: usize) -> u64 {
+    let mut hasher = Sha1::new();
+    hasher.update(base_seed.to_le_bytes());
+    hasher.update(raw.to_string_lossy().as_bytes());
+    hasher.update((profile_index as u64).to_le_bytes());
+    let digest = hasher.finalize();
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&digest[..8]);
+    u64::from_le_bytes(bytes)
+}
+
+#[cfg(unix)]
+fn symlink_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(source, destination)
+}
+
+#[cfg(windows)]
+fn symlink_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(source, destination)
+}
+
+fn review_publish_file_name(
+    raw_stem: &str,
+    render: &ReviewProfileRender,
+    default_profile_index: Option<usize>,
+    output_format: BatchOutputFormat,
+) -> Result<String> {
+    let stem = sanitize_filename::sanitize(raw_stem).into_owned();
+    let stem = if stem.trim().is_empty() {
+        "image".to_string()
+    } else {
+        stem
+    };
+    let suffix = if Some(render.profile_index) == default_profile_index {
+        String::new()
+    } else {
+        format!("-{}", review_profile_folder_name(&render.profile_stem))
+    };
+    Ok(format!("{stem}{suffix}.{}", output_format.extension()))
 }
 
 fn review_profile_folder_name(profile_stem: &str) -> String {
@@ -1351,25 +2432,6 @@ fn review_label_name(label: ReviewLabel) -> &'static str {
         ReviewLabel::Blue => "blue",
         ReviewLabel::Purple => "purple",
     }
-}
-
-fn link_review_output(source: &Path, destination: &Path, report: &mut PublishReport) -> Result<()> {
-    if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-    }
-    if destination.exists() {
-        fs::remove_file(destination)
-            .with_context(|| format!("removing {}", destination.display()))?;
-    }
-    fs::hard_link(source, destination).with_context(|| {
-        format!(
-            "hardlinking {} to {}",
-            source.display(),
-            destination.display()
-        )
-    })?;
-    report.linked += 1;
-    Ok(())
 }
 
 fn write_review_metadata(
@@ -1472,6 +2534,82 @@ mod tests {
         }
     }
 
+    fn test_export_options() -> ExportOptions {
+        ExportOptions {
+            jpg_quality: 90,
+            resize: None,
+            long_edge: None,
+            max_width: None,
+            max_height: None,
+            jpeg_subsampling: crate::cli::JpegSubsampling::S444,
+            strip_metadata: false,
+            progressive_jpeg: false,
+        }
+    }
+
+    fn test_handle(input: PathBuf, output: PathBuf, profiles: Vec<ReviewProfile>) -> ReviewHandle {
+        let export = test_export_options();
+        ReviewHandle {
+            state: Arc::new(Mutex::new(ReviewStore::new(profiles))),
+            subscribers: Arc::new(Mutex::new(Vec::new())),
+            state_path: output.join("mini-film-review.json"),
+            input_root: input.clone(),
+            output_root: output.clone(),
+            hald_dir: output.join("hald"),
+            profiles_root: input.clone(),
+            hald_level: 16,
+            rawtherapee: PathBuf::from("rawtherapee-cli"),
+            output_format: BatchOutputFormat::Jpg,
+            gallery: None,
+            convert: PathBuf::from("convert"),
+            export: export.clone(),
+            jobs: 1,
+            no_grain: false,
+            color_noise_iso_threshold: 1600,
+            lens_corrections: LensCorrections::default(),
+            grain: None,
+            grain_preset: None,
+            grain_seed: Some(1),
+            publish_defaults: ReviewPublishDefaults::new(
+                "published".to_string(),
+                BatchOutputFormat::Jpg,
+                &export,
+                ReviewGalleryDefaults {
+                    template: None,
+                    thumbnail_long_edge: 1024,
+                    columns: 4,
+                },
+            ),
+            publish_jobs: Arc::new(Mutex::new(Vec::new())),
+            next_publish_job_id: Arc::new(Mutex::new(1)),
+        }
+    }
+
+    fn test_publish_options(album: &str) -> ReviewPublishOptions {
+        ReviewPublishOptions {
+            album: PathBuf::from(album),
+            min_rating: 2,
+            labels: HashSet::new(),
+            tags: HashSet::new(),
+            output_format: BatchOutputFormat::Jpg,
+            hald_dir: PathBuf::from("hald"),
+            profiles_root: PathBuf::from("profiles"),
+            hald_level: 16,
+            rawtherapee: PathBuf::from("rawtherapee-cli"),
+            convert: PathBuf::from("convert"),
+            jobs: 2,
+            export: test_export_options(),
+            rerender_raw: false,
+            no_grain: false,
+            color_noise_iso_threshold: 1600,
+            lens_corrections: LensCorrections::default(),
+            grain: None,
+            grain_preset: None,
+            grain_seed: Some(1),
+            write_metadata: false,
+        }
+    }
+
     #[test]
     fn review_state_defaults_to_first_profile_and_records_outputs() {
         let temp = tempfile::tempdir().unwrap();
@@ -1485,18 +2623,11 @@ mod tests {
         fs::create_dir_all(rendered.parent().unwrap()).unwrap();
         fs::write(&rendered, b"jpg").unwrap();
 
-        let handle = ReviewHandle {
-            state: Arc::new(Mutex::new(ReviewStore::new(vec![
-                profile(0, "Classic"),
-                profile(1, "Fade"),
-            ]))),
-            subscribers: Arc::new(Mutex::new(Vec::new())),
-            state_path: output.join("mini-film-review.json"),
-            input_root: input,
-            output_root: output,
-            output_format: BatchOutputFormat::Jpg,
-            gallery: None,
-        };
+        let handle = test_handle(
+            input,
+            output,
+            vec![profile(0, "Classic"), profile(1, "Fade")],
+        );
 
         handle.record_discovered_raw(&raw).unwrap();
         handle
@@ -1521,18 +2652,11 @@ mod tests {
         fs::write(&first, b"raw").unwrap();
         fs::write(&second, b"raw").unwrap();
 
-        let handle = ReviewHandle {
-            state: Arc::new(Mutex::new(ReviewStore::new(vec![
-                profile(0, "Classic"),
-                profile(1, "Fade"),
-            ]))),
-            subscribers: Arc::new(Mutex::new(Vec::new())),
-            state_path: output.join("mini-film-review.json"),
-            input_root: input,
-            output_root: output,
-            output_format: BatchOutputFormat::Jpg,
-            gallery: None,
-        };
+        let handle = test_handle(
+            input,
+            output,
+            vec![profile(0, "Classic"), profile(1, "Fade")],
+        );
 
         handle.record_discovered_raw(&first).unwrap();
         handle.record_discovered_raw(&second).unwrap();
@@ -1581,15 +2705,7 @@ mod tests {
         fs::create_dir_all(&input).unwrap();
         fs::create_dir_all(&output).unwrap();
 
-        let handle = ReviewHandle {
-            state: Arc::new(Mutex::new(ReviewStore::new(vec![profile(0, "Classic")]))),
-            subscribers: Arc::new(Mutex::new(Vec::new())),
-            state_path: output.join("mini-film-review.json"),
-            input_root: input,
-            output_root: output,
-            output_format: BatchOutputFormat::Jpg,
-            gallery: None,
-        };
+        let handle = test_handle(input, output, vec![profile(0, "Classic")]);
 
         let state =
             serde_json::from_str::<serde_json::Value>(&handle.api_state_json().unwrap()).unwrap();
@@ -1622,7 +2738,7 @@ mod tests {
     }
 
     #[test]
-    fn publish_hardlinks_selected_label_and_tags() {
+    fn publish_flat_album_filters_rating_label_and_tag() {
         let temp = tempfile::tempdir().unwrap();
         let output = temp.path().join("out");
         let source = output.join("day").join("Classic").join("frame.jpg");
@@ -1654,34 +2770,18 @@ mod tests {
             updated_at: now_string(),
         });
 
+        let mut options = test_publish_options("published/final");
+        options.labels = HashSet::from([ReviewLabel::Red]);
+        options.tags = HashSet::from(["42".to_string()]);
         let report =
-            publish_store_inner(&store, &output, BatchOutputFormat::Jpg, 2, false).unwrap();
-        assert_eq!(report.linked, 5);
-        assert!(
-            output
-                .join("reviewed/selected/Classic/day/frame.jpg")
-                .exists()
-        );
-        assert!(output.join("reviewed/final/Classic/day/frame.jpg").exists());
-        assert!(
-            output
-                .join("reviewed/ratings/3/Classic/day/frame.jpg")
-                .exists()
-        );
-        assert!(
-            output
-                .join("reviewed/labels/red/rating-3/Classic/day/frame.jpg")
-                .exists()
-        );
-        assert!(
-            output
-                .join("reviewed/tags/42/rating-3/Classic/day/frame.jpg")
-                .exists()
-        );
+            publish_store_inner(&store, Path::new("/in"), &output, &options, None).unwrap();
+        assert_eq!(report.linked, 1);
+        assert_eq!(report.skipped, 0);
+        assert!(output.join("published/final/frame.jpg").exists());
     }
 
     #[test]
-    fn publish_uses_selected_publish_profiles_not_preview_profile() {
+    fn publish_flat_album_suffixes_non_default_profiles() {
         let temp = tempfile::tempdir().unwrap();
         let output = temp.path().join("out");
         let classic = output.join("day").join("Classic").join("frame.jpg");
@@ -1727,21 +2827,74 @@ mod tests {
             updated_at: now_string(),
         });
 
+        let options = test_publish_options("published");
         let report =
-            publish_store_inner(&store, &output, BatchOutputFormat::Jpg, 2, false).unwrap();
-        assert_eq!(report.linked, 3);
-        assert!(
-            !output
-                .join("reviewed/selected/Classic/day/frame.jpg")
-                .exists()
-        );
-        assert!(output.join("reviewed/selected/Fade/day/frame.jpg").exists());
-        assert!(output.join("reviewed/final/Fade/day/frame.jpg").exists());
-        assert!(
-            output
-                .join("reviewed/ratings/2/Fade/day/frame.jpg")
-                .exists()
-        );
+            publish_store_inner(&store, Path::new("/in"), &output, &options, None).unwrap();
+        assert_eq!(report.linked, 1);
+        assert!(!output.join("published/frame.jpg").exists());
+        assert!(output.join("published/frame-Fade.jpg").exists());
+    }
+
+    #[test]
+    fn publish_store_reports_realtime_progress() {
+        let temp = tempfile::tempdir().unwrap();
+        let output = temp.path().join("out");
+        let classic = output.join("day").join("Classic").join("frame.jpg");
+        let fade = output.join("day").join("Fade").join("frame.jpg");
+        fs::create_dir_all(classic.parent().unwrap()).unwrap();
+        fs::create_dir_all(fade.parent().unwrap()).unwrap();
+        fs::write(&classic, b"classic").unwrap();
+        fs::write(&fade, b"fade").unwrap();
+
+        let mut store = ReviewStore::new(vec![profile(0, "Classic"), profile(1, "Fade")]);
+        store.images.push(ReviewImage {
+            id: 1,
+            raw_path: PathBuf::from("/in/day/frame.NEF"),
+            relative_path: "day/frame.NEF".to_string(),
+            file_name: "frame.NEF".to_string(),
+            selected_profile_index: 0,
+            rating: 5,
+            label: ReviewLabel::None,
+            tags: Vec::new(),
+            notes: String::new(),
+            publish_profile_indexes: Some(vec![0, 1]),
+            preview: ReviewPreview::default(),
+            profiles: vec![
+                ReviewProfileRender {
+                    profile_index: 0,
+                    profile_stem: "Classic".to_string(),
+                    status: ReviewRenderStatus::Done,
+                    output_path: Some(classic.clone()),
+                    error: None,
+                    duration_ms: Some(1),
+                    updated_at: now_string(),
+                },
+                ReviewProfileRender {
+                    profile_index: 1,
+                    profile_stem: "Fade".to_string(),
+                    status: ReviewRenderStatus::Done,
+                    output_path: Some(fade.clone()),
+                    error: None,
+                    duration_ms: Some(1),
+                    updated_at: now_string(),
+                },
+            ],
+            updated_at: now_string(),
+        });
+
+        let events = Mutex::new(Vec::new());
+        let progress = |event: ReviewPublishProgress| {
+            events.lock().unwrap().push(event);
+        };
+        let options = test_publish_options("published");
+        let report =
+            publish_store_inner(&store, Path::new("/in"), &output, &options, Some(&progress))
+                .unwrap();
+        let events = events.lock().unwrap();
+        assert_eq!(report.linked, 2);
+        assert!(events.iter().any(|event| event.total == 2));
+        assert!(events.iter().any(|event| event.processed == 2));
+        assert!(events.iter().any(|event| event.step == "link"));
     }
 
     #[test]

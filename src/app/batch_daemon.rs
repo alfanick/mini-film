@@ -65,6 +65,7 @@ pub(crate) struct BatchDaemonArgs {
     pub(crate) gallery: Option<GalleryTemplate>,
     pub(crate) gallery_thumbnail_long_edge: u32,
     pub(crate) gallery_columns: u32,
+    pub(crate) publish_album: String,
     pub(crate) output_format: BatchOutputFormat,
     pub(crate) export: ExportOptions,
 }
@@ -291,16 +292,27 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
             address,
             input_root: args.input.clone(),
             output_root: args.output.clone(),
+            hald_dir: args.hald_dir.clone(),
+            profiles_root: args.profiles_root.clone(),
+            hald_level: args.hald_level,
+            rawtherapee: args.rawtherapee.clone(),
             output_format: args.output_format,
             profiles: review_profiles,
             gallery: args.gallery.map(|template| ReviewGalleryConfig {
-                convert: args.convert.clone(),
                 template,
                 columns: args.gallery_columns,
                 thumbnail_long_edge: args.gallery_thumbnail_long_edge,
-                jobs,
-                export: args.export.clone(),
             }),
+            convert: args.convert.clone(),
+            export: args.export.clone(),
+            jobs,
+            publish_album: args.publish_album.clone(),
+            no_grain: args.no_grain,
+            color_noise_iso_threshold: args.color_noise_iso_threshold,
+            lens_corrections: args.lens_corrections,
+            grain: args.grain.clone(),
+            grain_preset: args.grain_preset.clone(),
+            grain_seed: Some(base_seed),
         })?)
     } else {
         None
@@ -671,7 +683,7 @@ fn write_daemon_info_txt(
         writeln!(
             out,
             "Review publish root: {}",
-            args.output.join("reviewed").display()
+            args.output.join(&args.publish_album).display()
         )
         .ok();
         if let Some(gallery) = args.gallery {
@@ -824,7 +836,7 @@ fn profile_daemon_info(
         writeln!(
             out,
             "Review publish root: {}",
-            args.output.join("reviewed").display()
+            args.output.join(&args.publish_album).display()
         )
         .ok();
         if let Some(gallery) = args.gallery {
@@ -1377,6 +1389,7 @@ mod tests {
             gallery: None,
             gallery_thumbnail_long_edge: 1024,
             gallery_columns: 4,
+            publish_album: "published".to_string(),
             output_format: BatchOutputFormat::Jpg,
             export: ExportOptions {
                 jpg_quality: 80,
@@ -1492,6 +1505,7 @@ mod tests {
             gallery: None,
             gallery_thumbnail_long_edge: 1024,
             gallery_columns: 4,
+            publish_album: "published".to_string(),
             output_format: BatchOutputFormat::Jpg,
             export: ExportOptions {
                 jpg_quality: 80,
