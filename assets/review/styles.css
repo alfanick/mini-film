@@ -329,14 +329,15 @@ button:disabled {
 
 .profile-publish {
   position: absolute;
-  top: 5px;
-  right: 5px;
+  top: 7px;
+  right: 7px;
   z-index: 2;
-  width: 15px;
-  height: 15px;
+  width: 24px;
+  height: 24px;
   margin: 0;
   accent-color: #198754;
   cursor: pointer;
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.42));
 }
 
 .profile-card img {
@@ -345,6 +346,11 @@ button:disabled {
   object-fit: cover;
   background: #222;
   border-radius: 3px;
+}
+
+.profile-card.portrait img {
+  object-fit: contain;
+  background: #20201f;
 }
 
 .profile-name {
@@ -446,6 +452,10 @@ button:disabled {
 
   .profile-card img {
     aspect-ratio: 4 / 3;
+  }
+
+  .profile-card.portrait img {
+    aspect-ratio: 2 / 3;
   }
 
   .profile-name {

@@ -8,6 +8,8 @@ const state = {
 };
 
 const reviewStorageKey = `mini-film-review:${location.host}${location.pathname}`;
+const reviewClientIdKey = `${reviewStorageKey}:client-id`;
+const reviewClientId = persistedClientId();
 
 const els = {
   status: document.getElementById("status"),
@@ -31,19 +33,69 @@ const els = {
 
 const wideProfilesQuery = window.matchMedia("(min-width: 1280px) and (min-height: 620px)");
 
+function reviewUrl(path) {
+  return path.replace(/^\/+/, "");
+}
+
+function persistedClientId() {
+  try {
+    const existing = localStorage.getItem(reviewClientIdKey);
+    if (existing) return existing;
+    const generated = globalThis.crypto?.randomUUID
+      ? globalThis.crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    localStorage.setItem(reviewClientIdKey, generated);
+    return generated;
+  } catch {
+    return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }
+}
+
 async function loadState(keepCurrent = true) {
-  const response = await fetch("/api/state", { cache: "no-store" });
+  const response = await fetch(reviewUrl("api/state"), { cache: "no-store" });
   if (!response.ok) throw new Error(`state ${response.status}`);
   applyState(await response.json(), keepCurrent);
 }
 
 function applyState(data, keepCurrent = true) {
+  const collaborativeAdvance = keepCurrent ? collaborativeAdvanceForIncomingState(data) : null;
   state.data = data;
   restorePersistedUiOnce();
   if (!keepCurrent || state.currentId === null || !findImage(state.currentId)) {
     state.currentId = persistedCurrentImageId() || firstReviewableImageId();
   }
+  if (collaborativeAdvance && state.currentId === collaborativeAdvance.imageId) {
+    applyCollaborativeAdvance(collaborativeAdvance);
+    return;
+  }
   render();
+}
+
+function collaborativeAdvanceForIncomingState(data) {
+  if (!state.data || state.currentId === null) return null;
+  const before = findImageInData(state.data, state.currentId);
+  const after = findImageInData(data, state.currentId);
+  if (!before || !after) return null;
+  if (!after.advance_token || after.advance_token === before.advance_token) return null;
+  if (after.advance_client_id === reviewClientId) return null;
+  const advance = nextReviewAdvanceForData(state.data, state.currentId);
+  return {
+    ...advance,
+    imageId: state.currentId,
+    carryProfileIndex: selectedProfileForImage(before)?.profile_index,
+  };
+}
+
+function applyCollaborativeAdvance(advance) {
+  if (advance.kind === "next") {
+    advanceToImage(advance.id, advance.carryProfileIndex).catch((error) => console.error(error));
+    return;
+  }
+  if (advance.kind === "next-pass") {
+    els.minRating.value = String(Math.min(5, minRating() + 1));
+    const nextId = firstReviewableImageId();
+    advanceToImage(nextId, advance.carryProfileIndex).catch((error) => console.error(error));
+  }
 }
 
 function restorePersistedUiOnce() {
@@ -95,7 +147,11 @@ function firstReviewableImageId() {
 }
 
 function findImage(id) {
-  return (state.data?.images || []).find((image) => image.id === id) || null;
+  return findImageInData(state.data, id);
+}
+
+function findImageInData(data, id) {
+  return (data?.images || []).find((image) => image.id === id) || null;
 }
 
 function render() {
@@ -135,7 +191,11 @@ function passesFilter(image) {
 }
 
 function filteredImages() {
-  return (state.data?.images || []).filter(passesFilter);
+  return filteredImagesFromData(state.data);
+}
+
+function filteredImagesFromData(data) {
+  return (data?.images || []).filter(passesFilter);
 }
 
 function renderList(images) {
@@ -275,7 +335,11 @@ function renderCurrent(image) {
 }
 
 function selectedProfile(image) {
-  return (image.profiles || []).find((profile) => profile.profile_index === image.selected_profile_index) || image.profiles?.[0] || null;
+  return selectedProfileForImage(image);
+}
+
+function selectedProfileForImage(image) {
+  return (image?.profiles || []).find((profile) => profile.profile_index === image.selected_profile_index) || image?.profiles?.[0] || null;
 }
 
 function publishProfileIndexes(image) {
@@ -333,6 +397,9 @@ function renderProfiles(image) {
       const stamp = profile.url ? profile.updated_at : image.preview_updated_at;
       img.src = versionedUrl(cardUrl, stamp);
       img.alt = profile.profile_stem;
+      img.addEventListener("load", () => {
+        card.classList.toggle("portrait", img.naturalHeight > img.naturalWidth);
+      });
       card.append(img);
     }
 
@@ -427,7 +494,7 @@ async function saveImageReview(image, patch = {}, options = {}) {
   state.saveQueue = state.saveQueue
     .catch(() => {})
     .then(async () => {
-      const response = await fetch("/api/review", {
+      const response = await fetch(reviewUrl("api/review"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -447,6 +514,8 @@ function reviewRequestBody(image, patch = {}, options = {}) {
     notes: patch.notes ?? (options.useInputs ? els.notes.value : image.notes || ""),
     selected_profile_index: patch.selected_profile_index ?? image.selected_profile_index,
     publish_profile_indexes: patch.publish_profile_indexes ?? publishProfileIndexes(image),
+    client_id: reviewClientId,
+    advance_after_update: Boolean(patch.advance_after_update),
   };
 }
 
@@ -473,7 +542,7 @@ async function rateCurrentAndAdvance(rating) {
   const current = findImage(state.currentId);
   const carryProfileIndex = selectedProfile(current)?.profile_index;
   const advance = nextReviewAdvance();
-  await saveReview({ rating });
+  await saveReview({ rating, advance_after_update: true });
   if (advance.kind === "next" && findImage(advance.id) && passesFilter(findImage(advance.id))) {
     await advanceToImage(advance.id, carryProfileIndex);
     return;
@@ -487,9 +556,9 @@ async function rateCurrentAndAdvance(rating) {
 
 async function advanceToImage(imageId, carryProfileIndex) {
   state.currentId = imageId;
-  await carrySelectedProfileToImage(imageId, carryProfileIndex);
   persistUi();
   render();
+  await carrySelectedProfileToImage(imageId, carryProfileIndex);
 }
 
 async function carrySelectedProfileToImage(imageId, profileIndex) {
@@ -501,8 +570,12 @@ async function carrySelectedProfileToImage(imageId, profileIndex) {
 }
 
 function nextReviewAdvance() {
-  const images = filteredImages();
-  const index = images.findIndex((image) => image.id === state.currentId);
+  return nextReviewAdvanceForData(state.data, state.currentId);
+}
+
+function nextReviewAdvanceForData(data, imageId) {
+  const images = filteredImagesFromData(data);
+  const index = images.findIndex((image) => image.id === imageId);
   if (index < 0) return { kind: "next", id: firstReviewableImageId() };
   if (index + 1 < images.length) return { kind: "next", id: images[index + 1].id };
   return { kind: "next-pass" };
@@ -515,7 +588,7 @@ function adjustedCurrentRating(delta) {
 }
 
 document.querySelectorAll("[data-rating]").forEach((button) => {
-  button.addEventListener("click", () => saveReview({ rating: Number(button.dataset.rating) }));
+  button.addEventListener("click", () => rateCurrentAndAdvance(Number(button.dataset.rating)));
 });
 
 document.querySelectorAll("[data-label]").forEach((button) => {
@@ -543,7 +616,7 @@ els.publish.addEventListener("click", async () => {
   els.publish.disabled = true;
   els.publish.textContent = "Publishing";
   try {
-    const response = await fetch("/api/publish", {
+    const response = await fetch(reviewUrl("api/publish"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ min_rating: minRating() }),
@@ -589,13 +662,13 @@ window.addEventListener("beforeunload", () => {
   const image = findImage(state.currentId);
   if (!image || !navigator.sendBeacon) return;
   const body = JSON.stringify(reviewRequestBody(image, {}, { useInputs: true }));
-  navigator.sendBeacon("/api/review", new Blob([body], { type: "application/json" }));
+  navigator.sendBeacon(reviewUrl("api/review"), new Blob([body], { type: "application/json" }));
 });
 
 wideProfilesQuery.addEventListener("change", syncProfilesPlacement);
 
 function connectEvents() {
-  const events = new EventSource("/api/events");
+  const events = new EventSource(reviewUrl("api/events"));
   events.onopen = () => {
     els.liveDot.classList.add("connected");
   };

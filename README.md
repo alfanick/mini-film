@@ -283,6 +283,12 @@ look. All configured profile variants are selected for publish by default; use
 the checkbox on each profile thumbnail to exclude or re-include a variant while
 reviewing.
 
+Multiple browsers can use the review page at the same time. Each browser gets
+live updates through the same server-sent event stream; when one browser rates a
+picture with the keyboard or rating buttons, other browsers currently showing
+that picture auto-advance to the next visible picture. At the end of a pass,
+they also move to the next rating filter level.
+
 Review data is persisted in `<output>/mini-film-review.json`, and the browser
 remembers the current image and rating filter locally. That makes it possible to
 restart the daemon, reopen the browser, and continue the multi-pass culling flow

@@ -88,6 +88,10 @@ struct ReviewImage {
     notes: String,
     #[serde(default)]
     publish_profile_indexes: Option<Vec<usize>>,
+    #[serde(default)]
+    advance_token: Option<String>,
+    #[serde(default)]
+    advance_client_id: Option<String>,
     profiles: Vec<ReviewProfileRender>,
     updated_at: String,
 }
@@ -155,6 +159,10 @@ struct ReviewUpdateRequest {
     selected_profile_index: usize,
     #[serde(default)]
     publish_profile_indexes: Option<Vec<usize>>,
+    #[serde(default)]
+    client_id: Option<String>,
+    #[serde(default)]
+    advance_after_update: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -225,6 +233,8 @@ impl ReviewStore {
             tags: Vec::new(),
             notes: String::new(),
             publish_profile_indexes: None,
+            advance_token: None,
+            advance_client_id: None,
             profiles: Vec::new(),
             updated_at: now_string(),
         };
@@ -490,7 +500,19 @@ impl ReviewHandle {
             image.publish_profile_indexes =
                 Some(normalize_publish_profile_indexes(&indexes, &image.profiles));
         }
-        image.updated_at = now_string();
+        let updated_at = now_string();
+        if update.advance_after_update {
+            let client_id = update
+                .client_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .unwrap_or("anonymous")
+                .to_string();
+            image.advance_client_id = Some(client_id.clone());
+            image.advance_token = Some(format!("{}:{}:{updated_at}", image.id, client_id));
+        }
+        image.updated_at = updated_at;
         save_store(&self.state_path, &store)?;
         drop(store);
         self.broadcast_state()
@@ -512,7 +534,7 @@ impl ReviewHandle {
                             "profile_stem": render.profile_stem,
                             "status": render.status,
                             "url": if render.status == ReviewRenderStatus::Done {
-                                Some(format!("/media/{}/{}", image.id, render.profile_index))
+                                Some(format!("media/{}/{}", image.id, render.profile_index))
                             } else {
                                 None
                             },
@@ -528,7 +550,7 @@ impl ReviewHandle {
                     "file_name": image.file_name,
                     "preview_status": image.preview.status,
                     "preview_url": if image.preview.status == ReviewRenderStatus::Done {
-                        Some(format!("/preview/{}", image.id))
+                        Some(format!("preview/{}", image.id))
                     } else {
                         None
                     },
@@ -540,6 +562,8 @@ impl ReviewHandle {
                     "tags": image.tags,
                     "notes": image.notes,
                     "publish_profile_indexes": effective_publish_profile_indexes(image),
+                    "advance_token": image.advance_token,
+                    "advance_client_id": image.advance_client_id,
                     "profiles": profiles,
                     "updated_at": image.updated_at,
                 })
@@ -801,7 +825,7 @@ fn handle_review_connection(stream: TcpStream, handle: &ReviewHandle) -> Result<
         .context("setting review read timeout")?;
     let mut reader = BufReader::new(stream);
     let request = read_http_request(&mut reader)?;
-    if request.method == "GET" && request.path == "/api/events" {
+    if request.method == "GET" && review_route_path(&request.path) == "/api/events" {
         return write_event_stream(reader.into_inner(), handle);
     }
     let response = route_request(request, handle);
@@ -872,7 +896,8 @@ fn read_http_request(reader: &mut BufReader<TcpStream>) -> Result<HttpRequest> {
 }
 
 fn route_request(request: HttpRequest, handle: &ReviewHandle) -> HttpResponse {
-    match (request.method.as_str(), request.path.as_str()) {
+    let path = review_route_path(&request.path);
+    match (request.method.as_str(), path.as_str()) {
         ("GET", "/") | ("GET", "/review") => {
             text_response("200 OK", "text/html; charset=utf-8", review_index_html())
         }
@@ -906,14 +931,37 @@ fn route_request(request: HttpRequest, handle: &ReviewHandle) -> HttpResponse {
             ),
             Err(error) => json_error("500 Internal Server Error", error),
         },
-        _ if request.method == "GET" && request.path.starts_with("/media/") => {
-            media_response(&request.path, handle)
+        _ if request.method == "GET" && path.starts_with("/media/") => {
+            media_response(&path, handle)
         }
-        _ if request.method == "GET" && request.path.starts_with("/preview/") => {
-            preview_response(&request.path, handle)
+        _ if request.method == "GET" && path.starts_with("/preview/") => {
+            preview_response(&path, handle)
         }
         _ => text_response("404 Not Found", "text/plain; charset=utf-8", "not found"),
     }
+}
+
+fn review_route_path(path: &str) -> String {
+    for marker in ["/api/", "/assets/", "/media/", "/preview/"] {
+        if let Some(index) = path.find(marker) {
+            return path[index..].to_string();
+        }
+    }
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return "/".to_string();
+    }
+    if trimmed.ends_with("/review") {
+        return "/review".to_string();
+    }
+    if !trimmed
+        .rsplit('/')
+        .next()
+        .is_some_and(|segment| segment.contains('.'))
+    {
+        return "/".to_string();
+    }
+    path.to_string()
 }
 
 fn write_event_stream(mut stream: TcpStream, handle: &ReviewHandle) -> Result<()> {
@@ -1338,7 +1386,71 @@ mod tests {
         assert!(text.contains("\"selected_profile_index\":0"));
         assert!(text.contains("\"publish_profile_indexes\":[0,1]"));
         assert!(text.contains("\"status\":\"done\""));
-        assert!(text.contains("/media/1/0"));
+        assert!(text.contains("media/1/0"));
+    }
+
+    #[test]
+    fn review_update_can_mark_collaborative_auto_advance() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = temp.path().join("in");
+        let output = temp.path().join("out");
+        fs::create_dir_all(input.join("day")).unwrap();
+        fs::create_dir_all(&output).unwrap();
+        let raw = input.join("day").join("frame.NEF");
+        fs::write(&raw, b"raw").unwrap();
+
+        let handle = ReviewHandle {
+            state: Arc::new(Mutex::new(ReviewStore::new(vec![
+                profile(0, "Classic"),
+                profile(1, "Fade"),
+            ]))),
+            subscribers: Arc::new(Mutex::new(Vec::new())),
+            state_path: output.join("mini-film-review.json"),
+            input_root: input,
+            output_root: output,
+            output_format: BatchOutputFormat::Jpg,
+            gallery: None,
+        };
+
+        handle.record_discovered_raw(&raw).unwrap();
+        handle
+            .apply_review_update(ReviewUpdateRequest {
+                image_id: 1,
+                rating: 1,
+                label: ReviewLabel::Green,
+                tags: vec!["keep".to_string()],
+                notes: String::new(),
+                selected_profile_index: 0,
+                publish_profile_indexes: Some(vec![0, 1]),
+                client_id: Some("client-a".to_string()),
+                advance_after_update: true,
+            })
+            .unwrap();
+
+        let state =
+            serde_json::from_str::<serde_json::Value>(&handle.api_state_json().unwrap()).unwrap();
+        let image = &state["images"][0];
+        assert_eq!(image["advance_client_id"], "client-a");
+        assert!(
+            image["advance_token"]
+                .as_str()
+                .unwrap()
+                .starts_with("1:client-a:")
+        );
+    }
+
+    #[test]
+    fn review_route_path_accepts_reverse_proxy_prefixes() {
+        assert_eq!(review_route_path("/api/state"), "/api/state");
+        assert_eq!(review_route_path("/mini-film/api/state"), "/api/state");
+        assert_eq!(
+            review_route_path("/nested/mini-film/assets/app.js"),
+            "/assets/app.js"
+        );
+        assert_eq!(review_route_path("/mini-film/media/1/0"), "/media/1/0");
+        assert_eq!(review_route_path("/mini-film/preview/1"), "/preview/1");
+        assert_eq!(review_route_path("/mini-film/review"), "/review");
+        assert_eq!(review_route_path("/mini-film/"), "/");
     }
 
     #[test]
@@ -1361,6 +1473,8 @@ mod tests {
             tags: vec!["42".to_string()],
             notes: "keeper".to_string(),
             publish_profile_indexes: Some(vec![0]),
+            advance_token: None,
+            advance_client_id: None,
             preview: ReviewPreview::default(),
             profiles: vec![ReviewProfileRender {
                 profile_index: 0,
@@ -1423,6 +1537,8 @@ mod tests {
             tags: Vec::new(),
             notes: String::new(),
             publish_profile_indexes: Some(vec![1]),
+            advance_token: None,
+            advance_client_id: None,
             preview: ReviewPreview::default(),
             profiles: vec![
                 ReviewProfileRender {
