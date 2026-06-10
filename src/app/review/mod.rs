@@ -67,6 +67,14 @@ struct ReviewStore {
     next_id: u64,
     profiles: Vec<ReviewProfile>,
     images: Vec<ReviewImage>,
+    #[serde(default)]
+    ui: ReviewUiState,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct ReviewUiState {
+    current_image_id: Option<u64>,
+    min_rating: u8,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -88,10 +96,6 @@ struct ReviewImage {
     notes: String,
     #[serde(default)]
     publish_profile_indexes: Option<Vec<usize>>,
-    #[serde(default)]
-    advance_token: Option<String>,
-    #[serde(default)]
-    advance_client_id: Option<String>,
     profiles: Vec<ReviewProfileRender>,
     updated_at: String,
 }
@@ -160,9 +164,15 @@ struct ReviewUpdateRequest {
     #[serde(default)]
     publish_profile_indexes: Option<Vec<usize>>,
     #[serde(default)]
-    client_id: Option<String>,
-    #[serde(default)]
     advance_after_update: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReviewUiUpdateRequest {
+    #[serde(default)]
+    current_image_id: Option<u64>,
+    #[serde(default)]
+    min_rating: u8,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -186,6 +196,7 @@ impl ReviewStore {
             next_id: 1,
             profiles,
             images: Vec::new(),
+            ui: ReviewUiState::default(),
         }
     }
 
@@ -202,6 +213,7 @@ impl ReviewStore {
             }
             sync_image_profile_renders(image, &profiles);
         }
+        self.normalize_ui();
     }
 
     fn ensure_image(&mut self, input_root: &Path, raw: &Path) -> Result<&mut ReviewImage> {
@@ -233,16 +245,87 @@ impl ReviewStore {
             tags: Vec::new(),
             notes: String::new(),
             publish_profile_indexes: None,
-            advance_token: None,
-            advance_client_id: None,
             profiles: Vec::new(),
             updated_at: now_string(),
         };
         sync_image_profile_renders(&mut image, &self.profiles);
         self.images.push(image);
+        self.normalize_ui();
         let index = self.images.len() - 1;
         Ok(&mut self.images[index])
     }
+
+    fn normalize_ui(&mut self) {
+        self.ui.min_rating = self.ui.min_rating.min(5);
+        let visible = self.visible_image_ids_at(self.ui.min_rating);
+        if !self
+            .ui
+            .current_image_id
+            .is_some_and(|id| visible.contains(&id))
+        {
+            self.ui.current_image_id = visible.first().copied();
+        }
+    }
+
+    fn set_ui(&mut self, update: ReviewUiUpdateRequest) -> Result<()> {
+        self.ui.min_rating = update.min_rating.min(5);
+        if let Some(id) = update.current_image_id {
+            if !self.images.iter().any(|image| image.id == id) {
+                bail!("review image {id} does not exist");
+            }
+            self.ui.current_image_id = Some(id);
+        }
+        self.normalize_ui();
+        Ok(())
+    }
+
+    fn planned_advance_after(&self, image_id: u64) -> ReviewAdvance {
+        let visible = self.visible_image_ids_at(self.ui.min_rating);
+        let Some(index) = visible.iter().position(|id| *id == image_id) else {
+            return ReviewAdvance::FirstVisible;
+        };
+        if let Some(next) = visible.get(index + 1) {
+            ReviewAdvance::Image(*next)
+        } else {
+            ReviewAdvance::NextPass
+        }
+    }
+
+    fn apply_advance(&mut self, advance: ReviewAdvance) {
+        match advance {
+            ReviewAdvance::Image(id) => {
+                self.ui.current_image_id = Some(id);
+                self.normalize_ui();
+            }
+            ReviewAdvance::FirstVisible => self.normalize_ui(),
+            ReviewAdvance::NextPass => {
+                self.ui.min_rating = self.ui.min_rating.saturating_add(1).min(5);
+                self.ui.current_image_id = self
+                    .visible_image_ids_at(self.ui.min_rating)
+                    .first()
+                    .copied();
+                self.normalize_ui();
+            }
+        }
+    }
+
+    fn visible_image_ids_at(&self, min_rating: u8) -> Vec<u64> {
+        let mut images = self
+            .images
+            .iter()
+            .filter(|image| image.rating >= min_rating.min(5))
+            .map(|image| (image.relative_path.as_str(), image.id))
+            .collect::<Vec<_>>();
+        images.sort_by(|left, right| left.0.cmp(right.0));
+        images.into_iter().map(|(_, id)| id).collect()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReviewAdvance {
+    Image(u64),
+    FirstVisible,
+    NextPass,
 }
 
 /// Start the embedded review server and return a handle daemon workers can update.
@@ -472,53 +555,60 @@ impl ReviewHandle {
 
     fn apply_review_update(&self, update: ReviewUpdateRequest) -> Result<()> {
         let mut store = self.lock_store()?;
-        let Some(image) = store
-            .images
-            .iter_mut()
-            .find(|image| image.id == update.image_id)
-        else {
-            bail!("review image {} does not exist", update.image_id);
-        };
-        if !image
-            .profiles
-            .iter()
-            .any(|profile| profile.profile_index == update.selected_profile_index)
+        let advance = update
+            .advance_after_update
+            .then(|| store.planned_advance_after(update.image_id));
         {
-            bail!(
-                "selected profile index {} is not available for image {}",
-                update.selected_profile_index,
-                update.image_id
-            );
+            let Some(image) = store
+                .images
+                .iter_mut()
+                .find(|image| image.id == update.image_id)
+            else {
+                bail!("review image {} does not exist", update.image_id);
+            };
+            if !image
+                .profiles
+                .iter()
+                .any(|profile| profile.profile_index == update.selected_profile_index)
+            {
+                bail!(
+                    "selected profile index {} is not available for image {}",
+                    update.selected_profile_index,
+                    update.image_id
+                );
+            }
+            image.rating = update.rating.min(5);
+            image.label = update.label;
+            image.tags = normalize_tags(update.tags);
+            image.notes = update.notes.trim().to_string();
+            image.selected_profile_index = update.selected_profile_index;
+            if let Some(indexes) = update.publish_profile_indexes {
+                validate_publish_profile_indexes(&indexes, &image.profiles)?;
+                image.publish_profile_indexes =
+                    Some(normalize_publish_profile_indexes(&indexes, &image.profiles));
+            }
+            image.updated_at = now_string();
         }
-        image.rating = update.rating.min(5);
-        image.label = update.label;
-        image.tags = normalize_tags(update.tags);
-        image.notes = update.notes.trim().to_string();
-        image.selected_profile_index = update.selected_profile_index;
-        if let Some(indexes) = update.publish_profile_indexes {
-            validate_publish_profile_indexes(&indexes, &image.profiles)?;
-            image.publish_profile_indexes =
-                Some(normalize_publish_profile_indexes(&indexes, &image.profiles));
+        if let Some(advance) = advance {
+            store.apply_advance(advance);
+        } else {
+            store.normalize_ui();
         }
-        let updated_at = now_string();
-        if update.advance_after_update {
-            let client_id = update
-                .client_id
-                .as_deref()
-                .map(str::trim)
-                .filter(|id| !id.is_empty())
-                .unwrap_or("anonymous")
-                .to_string();
-            image.advance_client_id = Some(client_id.clone());
-            image.advance_token = Some(format!("{}:{}:{updated_at}", image.id, client_id));
-        }
-        image.updated_at = updated_at;
+        save_store(&self.state_path, &store)?;
+        drop(store);
+        self.broadcast_state()
+    }
+
+    fn apply_ui_update(&self, update: ReviewUiUpdateRequest) -> Result<()> {
+        let mut store = self.lock_store()?;
+        store.set_ui(update)?;
         save_store(&self.state_path, &store)?;
         drop(store);
         self.broadcast_state()
     }
 
     fn api_state_json(&self) -> Result<String> {
+        let client_count = self.client_count()?;
         let store = self.lock_store()?;
         let mut images = store.images.clone();
         images.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
@@ -562,8 +652,6 @@ impl ReviewHandle {
                     "tags": image.tags,
                     "notes": image.notes,
                     "publish_profile_indexes": effective_publish_profile_indexes(image),
-                    "advance_token": image.advance_token,
-                    "advance_client_id": image.advance_client_id,
                     "profiles": profiles,
                     "updated_at": image.updated_at,
                 })
@@ -573,6 +661,11 @@ impl ReviewHandle {
         serde_json::to_string(&json!({
             "version": env!("CARGO_PKG_VERSION"),
             "profiles": store.profiles,
+            "client_count": client_count,
+            "ui": {
+                "current_image_id": store.ui.current_image_id,
+                "min_rating": store.ui.min_rating,
+            },
             "images": images,
             "publish_root": self.publish_root().to_string_lossy(),
         }))
@@ -660,14 +753,14 @@ impl ReviewHandle {
 
     fn subscribe(&self) -> Result<Receiver<String>> {
         let (sender, receiver) = mpsc::channel();
-        let state = self.api_state_json()?;
-        sender
-            .send(state)
-            .map_err(|_| anyhow!("review event subscriber disconnected"))?;
-        self.subscribers
-            .lock()
-            .map_err(|_| anyhow!("review subscribers lock poisoned"))?
-            .push(sender);
+        {
+            let mut subscribers = self
+                .subscribers
+                .lock()
+                .map_err(|_| anyhow!("review subscribers lock poisoned"))?;
+            subscribers.push(sender);
+        }
+        self.broadcast_state()?;
         Ok(receiver)
     }
 
@@ -677,8 +770,27 @@ impl ReviewHandle {
             .subscribers
             .lock()
             .map_err(|_| anyhow!("review subscribers lock poisoned"))?;
+        let before = subscribers.len();
         subscribers.retain(|subscriber| subscriber.send(state.clone()).is_ok());
+        let after = subscribers.len();
+        drop(subscribers);
+        if after < before {
+            let state = self.api_state_json()?;
+            let mut subscribers = self
+                .subscribers
+                .lock()
+                .map_err(|_| anyhow!("review subscribers lock poisoned"))?;
+            subscribers.retain(|subscriber| subscriber.send(state.clone()).is_ok());
+        }
         Ok(())
+    }
+
+    fn client_count(&self) -> Result<usize> {
+        Ok(self
+            .subscribers
+            .lock()
+            .map_err(|_| anyhow!("review subscribers lock poisoned"))?
+            .len())
     }
 
     fn lock_store(&self) -> Result<std::sync::MutexGuard<'_, ReviewStore>> {
@@ -916,6 +1028,14 @@ fn route_request(request: HttpRequest, handle: &ReviewHandle) -> HttpResponse {
         ("POST", "/api/review") => match serde_json::from_slice::<ReviewUpdateRequest>(&request.body)
             .context("parsing review update")
             .and_then(|update| handle.apply_review_update(update))
+            .and_then(|()| handle.api_state_json())
+        {
+            Ok(body) => text_response("200 OK", "application/json; charset=utf-8", &body),
+            Err(error) => json_error("400 Bad Request", error),
+        },
+        ("POST", "/api/ui") => match serde_json::from_slice::<ReviewUiUpdateRequest>(&request.body)
+            .context("parsing review UI update")
+            .and_then(|update| handle.apply_ui_update(update))
             .and_then(|()| handle.api_state_json())
         {
             Ok(body) => text_response("200 OK", "application/json; charset=utf-8", &body),
@@ -1390,14 +1510,16 @@ mod tests {
     }
 
     #[test]
-    fn review_update_can_mark_collaborative_auto_advance() {
+    fn review_update_advances_shared_server_ui_state() {
         let temp = tempfile::tempdir().unwrap();
         let input = temp.path().join("in");
         let output = temp.path().join("out");
         fs::create_dir_all(input.join("day")).unwrap();
         fs::create_dir_all(&output).unwrap();
-        let raw = input.join("day").join("frame.NEF");
-        fs::write(&raw, b"raw").unwrap();
+        let first = input.join("day").join("frame-1.NEF");
+        let second = input.join("day").join("frame-2.NEF");
+        fs::write(&first, b"raw").unwrap();
+        fs::write(&second, b"raw").unwrap();
 
         let handle = ReviewHandle {
             state: Arc::new(Mutex::new(ReviewStore::new(vec![
@@ -1412,7 +1534,8 @@ mod tests {
             gallery: None,
         };
 
-        handle.record_discovered_raw(&raw).unwrap();
+        handle.record_discovered_raw(&first).unwrap();
+        handle.record_discovered_raw(&second).unwrap();
         handle
             .apply_review_update(ReviewUpdateRequest {
                 image_id: 1,
@@ -1422,21 +1545,66 @@ mod tests {
                 notes: String::new(),
                 selected_profile_index: 0,
                 publish_profile_indexes: Some(vec![0, 1]),
-                client_id: Some("client-a".to_string()),
                 advance_after_update: true,
             })
             .unwrap();
 
         let state =
             serde_json::from_str::<serde_json::Value>(&handle.api_state_json().unwrap()).unwrap();
-        let image = &state["images"][0];
-        assert_eq!(image["advance_client_id"], "client-a");
-        assert!(
-            image["advance_token"]
-                .as_str()
-                .unwrap()
-                .starts_with("1:client-a:")
-        );
+        assert_eq!(state["ui"]["current_image_id"], 2);
+        assert_eq!(state["ui"]["min_rating"], 0);
+
+        handle
+            .apply_review_update(ReviewUpdateRequest {
+                image_id: 2,
+                rating: 0,
+                label: ReviewLabel::None,
+                tags: Vec::new(),
+                notes: String::new(),
+                selected_profile_index: 0,
+                publish_profile_indexes: Some(vec![0, 1]),
+                advance_after_update: true,
+            })
+            .unwrap();
+
+        let state =
+            serde_json::from_str::<serde_json::Value>(&handle.api_state_json().unwrap()).unwrap();
+        assert_eq!(state["ui"]["current_image_id"], 1);
+        assert_eq!(state["ui"]["min_rating"], 1);
+    }
+
+    #[test]
+    fn review_state_reports_connected_client_count() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = temp.path().join("in");
+        let output = temp.path().join("out");
+        fs::create_dir_all(&input).unwrap();
+        fs::create_dir_all(&output).unwrap();
+
+        let handle = ReviewHandle {
+            state: Arc::new(Mutex::new(ReviewStore::new(vec![profile(0, "Classic")]))),
+            subscribers: Arc::new(Mutex::new(Vec::new())),
+            state_path: output.join("mini-film-review.json"),
+            input_root: input,
+            output_root: output,
+            output_format: BatchOutputFormat::Jpg,
+            gallery: None,
+        };
+
+        let state =
+            serde_json::from_str::<serde_json::Value>(&handle.api_state_json().unwrap()).unwrap();
+        assert_eq!(state["client_count"], 0);
+
+        let client = handle.subscribe().unwrap();
+        let state =
+            serde_json::from_str::<serde_json::Value>(&handle.api_state_json().unwrap()).unwrap();
+        assert_eq!(state["client_count"], 1);
+
+        drop(client);
+        handle.broadcast_state().unwrap();
+        let state =
+            serde_json::from_str::<serde_json::Value>(&handle.api_state_json().unwrap()).unwrap();
+        assert_eq!(state["client_count"], 0);
     }
 
     #[test]
@@ -1473,8 +1641,6 @@ mod tests {
             tags: vec!["42".to_string()],
             notes: "keeper".to_string(),
             publish_profile_indexes: Some(vec![0]),
-            advance_token: None,
-            advance_client_id: None,
             preview: ReviewPreview::default(),
             profiles: vec![ReviewProfileRender {
                 profile_index: 0,
@@ -1537,8 +1703,6 @@ mod tests {
             tags: Vec::new(),
             notes: String::new(),
             publish_profile_indexes: Some(vec![1]),
-            advance_token: None,
-            advance_client_id: None,
             preview: ReviewPreview::default(),
             profiles: vec![
                 ReviewProfileRender {

@@ -8,13 +8,16 @@
   --shadow: rgba(0, 0, 0, 0.4);
 }
 
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+}
 
 html,
 body {
   margin: 0;
   min-height: 100%;
-  background: radial-gradient(circle at 16% -10%, rgba(67, 112, 255, 0.18), transparent 32%),
+  background:
+    radial-gradient(circle at 16% -10%, rgba(67, 112, 255, 0.18), transparent 32%),
     linear-gradient(130deg, #070b18 0%, #0b1324 55%, #0d172e 100%);
   color: var(--text);
   font-family: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
@@ -55,7 +58,9 @@ h1 {
   font-size: 0.9rem;
 }
 
-.mf-subtitle strong { color: #e9efff; }
+.mf-subtitle strong {
+  color: #e9efff;
+}
 
 .mf-note {
   margin: 9px 0 0;
@@ -78,7 +83,9 @@ h1 {
   padding: 10px;
   background: var(--surface);
   display: inline-block;
-  transition: transform 0.16s ease, box-shadow 0.16s ease;
+  transition:
+    transform 0.16s ease,
+    box-shadow 0.16s ease;
   box-shadow: 0 10px 20px rgba(0, 0, 0, 0.25);
 }
 
@@ -95,15 +102,15 @@ h1 {
   object-fit: cover;
 }
 
-.mf-thumb:nth-child(6n+1) img {
+.mf-thumb:nth-child(6n + 1) img {
   aspect-ratio: 4 / 5;
 }
 
-.mf-thumb:nth-child(5n+2) img {
+.mf-thumb:nth-child(5n + 2) img {
   aspect-ratio: 3 / 2;
 }
 
-.mf-thumb:nth-child(5n+3) img {
+.mf-thumb:nth-child(5n + 3) img {
   aspect-ratio: 16 / 10;
 }
 
@@ -123,7 +130,9 @@ h1 {
   font-size: 0.9rem;
 }
 
-.mf-footer a { color: inherit; }
+.mf-footer a {
+  color: inherit;
+}
 
 .mf-overlay {
   position: fixed;
@@ -207,8 +216,12 @@ h1 {
   line-height: 1;
 }
 
-.mf-prev { left: 14px; }
-.mf-next { right: 14px; }
+.mf-prev {
+  left: 14px;
+}
+.mf-next {
+  right: 14px;
+}
 
 @media (max-width: 900px) {
   .mf-shell {

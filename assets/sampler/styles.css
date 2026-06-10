@@ -8,12 +8,16 @@
   --muted: #777777;
   --overlay: rgba(0, 0, 0, 0.88);
 }
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+}
 body {
   margin: 0;
   background: #ffffff;
   color: var(--text);
-  font-family: "PragmataPro Mono Liga", "PragmataProMonoLiga", "Pragmata Pro", ui-monospace, "DejaVu Sans Mono", "Noto Sans Mono", "Cascadia Code", "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  font-family:
+    "PragmataPro Mono Liga", "PragmataProMonoLiga", "Pragmata Pro", ui-monospace, "DejaVu Sans Mono", "Noto Sans Mono",
+    "Cascadia Code", "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
 }
 body,
 img,
@@ -46,9 +50,15 @@ h1 {
 .branch {
   margin-top: 62px;
 }
-.branch.depth-1 { margin-top: 50px; }
-.branch.depth-2 { margin-top: 38px; }
-.branch.depth-deep { margin-top: 26px; }
+.branch.depth-1 {
+  margin-top: 50px;
+}
+.branch.depth-2 {
+  margin-top: 38px;
+}
+.branch.depth-deep {
+  margin-top: 26px;
+}
 .branch-title {
   margin: 0 0 22px;
 }
@@ -77,10 +87,21 @@ h1 {
 .branch.collapsed > .branch-body {
   display: none;
 }
-.depth-0 > .branch-title { font-size: 32px; }
-.depth-1 > .branch-title { font-size: 25px; color: #333333; }
-.depth-2 > .branch-title { font-size: 19px; color: #4b4b4b; }
-.depth-deep > .branch-title { font-size: 15px; color: #666666; }
+.depth-0 > .branch-title {
+  font-size: 32px;
+}
+.depth-1 > .branch-title {
+  font-size: 25px;
+  color: #333333;
+}
+.depth-2 > .branch-title {
+  font-size: 19px;
+  color: #4b4b4b;
+}
+.depth-deep > .branch-title {
+  font-size: 15px;
+  color: #666666;
+}
 .children,
 .grid {
   margin-left: var(--indent);
@@ -170,7 +191,9 @@ h1 {
   background: var(--overlay);
   z-index: 10;
 }
-.overlay.open { display: flex; }
+.overlay.open {
+  display: flex;
+}
 .overlay img {
   width: auto;
   height: auto;
@@ -212,10 +235,20 @@ h1 {
   color: var(--text);
 }
 @media (max-width: 760px) {
-  main { padding: 48px 18px 32px; }
-  .grid { grid-template-columns: 1fr; max-width: none; }
-  .children, .grid { margin-left: 18px; }
+  main {
+    padding: 48px 18px 32px;
+  }
+  .grid {
+    grid-template-columns: 1fr;
+    max-width: none;
+  }
+  .children,
+  .grid {
+    margin-left: 18px;
+  }
 }
 @media (min-width: 761px) and (max-width: 1400px) {
-  .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }

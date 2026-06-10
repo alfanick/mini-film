@@ -27,6 +27,17 @@ jobs:
       - name: Check cargo versions
         run: ./.githooks/check-cargo-versions.sh
 
+      - name: Cache npm
+        uses: actions/cache@v5
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-npm-
+
+      - name: Check HTML/CSS/JS assets
+        run: ./.githooks/check-frontend-assets.sh
+
       - name: Cache cargo registry and git deps
         uses: actions/cache@v5
         with:

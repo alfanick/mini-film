@@ -7,7 +7,9 @@
   --border: #d2d8e8;
 }
 
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+}
 
 html,
 body {
@@ -176,8 +178,12 @@ h1 {
   line-height: 1;
 }
 
-.mf-prev { left: 12px; }
-.mf-next { right: 12px; }
+.mf-prev {
+  left: 12px;
+}
+.mf-next {
+  right: 12px;
+}
 
 @media (max-width: 900px) {
   .mf-grid .mf-thumb:nth-child(2),

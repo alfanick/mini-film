@@ -7,7 +7,9 @@
   --line: rgba(255, 255, 255, 0.15);
 }
 
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+}
 
 html,
 body {
@@ -156,8 +158,12 @@ body {
   line-height: 1;
 }
 
-.mf-prev { left: 8px; }
-.mf-next { right: 8px; }
+.mf-prev {
+  left: 8px;
+}
+.mf-next {
+  right: 8px;
+}
 
 @media (max-width: 800px) {
   .mf-grid {

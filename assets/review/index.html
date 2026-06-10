@@ -1,21 +1,24 @@
 <!doctype html>
 <html lang="en">
   <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>mini-film review</title>
-    <link rel="stylesheet" href="assets/styles.css">
+    <link rel="stylesheet" href="assets/styles.css" />
   </head>
   <body>
     <div class="app">
       <aside class="sidebar">
         <header class="sidebar-header">
           <h1>Review</h1>
-          <button id="publish" type="button">Publish</button>
+          <div class="header-actions">
+            <button id="shortcuts-help" class="help-button" type="button" aria-label="Keyboard shortcuts">?</button>
+            <button id="publish" type="button">Publish</button>
+          </div>
         </header>
         <div class="filter">
           <label>
-            <span>Show rating >=</span>
+            <span>Show rating &gt;=</span>
             <select id="min-rating">
               <option value="0">0</option>
               <option value="1">1</option>
@@ -36,7 +39,7 @@
       <main class="workspace">
         <section class="viewer">
           <div id="empty" class="empty">Waiting for pictures</div>
-          <img id="main-image" alt="">
+          <img id="main-image" alt="" />
         </section>
 
         <section class="panel">
@@ -71,16 +74,98 @@
 
             <label class="tags">
               <span>Tags</span>
-              <input id="tags" type="text" inputmode="numeric" autocomplete="off" placeholder="12, 42, 108">
+              <input id="tags" type="text" inputmode="numeric" autocomplete="off" placeholder="12, 42, 108" />
             </label>
 
             <label class="notes">
               <span>Notes</span>
-              <input id="notes" type="text" autocomplete="off" placeholder="optional note">
+              <input id="notes" type="text" autocomplete="off" placeholder="optional note" />
             </label>
           </div>
         </section>
       </main>
+    </div>
+
+    <div
+      id="shortcuts-overlay"
+      class="shortcuts-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="shortcuts-title"
+      hidden
+    >
+      <section class="shortcuts-card">
+        <header class="shortcuts-header">
+          <h2 id="shortcuts-title">Shortcuts</h2>
+          <button id="shortcuts-close" type="button">Close</button>
+        </header>
+
+        <div class="shortcut-sections">
+          <section class="shortcut-section">
+            <h3>Pictures</h3>
+            <div class="shortcut-row">
+              <span class="shortcut-keys"><kbd>←</kbd><kbd>→</kbd></span>
+              <span>Previous or next picture without changing the rating.</span>
+            </div>
+            <div class="shortcut-row">
+              <span class="shortcut-keys"><kbd>h</kbd><kbd>l</kbd><kbd>Enter</kbd></span>
+              <span>Alternative navigation keys for the same previous or next action.</span>
+            </div>
+          </section>
+
+          <section class="shortcut-section">
+            <h3>Rating</h3>
+            <div class="shortcut-row">
+              <span class="shortcut-keys"><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd><kbd>4</kbd><kbd>5</kbd></span>
+              <span>Set rating and advance to the next visible picture.</span>
+            </div>
+            <div class="shortcut-row">
+              <span class="shortcut-keys"><kbd>↑</kbd><kbd>↓</kbd></span>
+              <span>Increase or decrease the rating, then advance.</span>
+            </div>
+          </section>
+
+          <section class="shortcut-section">
+            <h3>Labels</h3>
+            <div class="shortcut-row">
+              <span class="shortcut-keys"><kbd>6</kbd><kbd>7</kbd><kbd>8</kbd><kbd>9</kbd><kbd>0</kbd></span>
+              <span>Toggle red, yellow, green, blue, or purple labels without advancing.</span>
+            </div>
+            <div class="shortcut-row">
+              <span class="shortcut-keys"><kbd>r</kbd><kbd>y</kbd><kbd>g</kbd><kbd>b</kbd><kbd>v</kbd></span>
+              <span>Same label toggles using mnemonic keys.</span>
+            </div>
+            <div class="shortcut-row">
+              <span class="shortcut-keys"><kbd>n</kbd></span>
+              <span>Clear the color label.</span>
+            </div>
+          </section>
+
+          <section class="shortcut-section">
+            <h3>Profiles</h3>
+            <div class="shortcut-row">
+              <span class="shortcut-keys"><kbd>PgUp</kbd><kbd>PgDn</kbd></span>
+              <span>Preview the previous or next profile for the current picture.</span>
+            </div>
+            <div class="shortcut-row">
+              <span class="shortcut-keys"><kbd>Space</kbd></span>
+              <span>Include or skip the selected profile when publishing.</span>
+            </div>
+          </section>
+
+          <section class="shortcut-section">
+            <h3>View</h3>
+            <div class="shortcut-row">
+              <span class="shortcut-keys"><kbd>f</kbd></span>
+              <span>Toggle fullscreen.</span>
+            </div>
+            <div class="shortcut-row">
+              <span class="shortcut-keys"><kbd>?</kbd><kbd>Esc</kbd></span>
+              <span>Show or hide this shortcuts overlay.</span>
+            </div>
+          </section>
+        </div>
+      </section>
     </div>
 
     <script src="assets/app.js"></script>

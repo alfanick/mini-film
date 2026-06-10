@@ -91,6 +91,18 @@ button:disabled {
   cursor: default;
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.help-button {
+  width: 30px;
+  padding-inline: 0;
+  font-weight: 700;
+}
+
 .status {
   display: flex;
   align-items: center;
@@ -207,6 +219,10 @@ button:disabled {
 }
 
 .workspace {
+  --review-panel-safe: 0px;
+  --review-profile-safe: 0px;
+  --review-viewer-edge: 12px;
+
   min-width: 0;
   min-height: 0;
   height: 100dvh;
@@ -216,11 +232,14 @@ button:disabled {
 }
 
 .viewer {
+  box-sizing: border-box;
   width: 100%;
   height: 100%;
   position: relative;
   display: grid;
   place-items: center;
+  padding: var(--review-viewer-edge) calc(var(--review-profile-safe) + var(--review-viewer-edge))
+    calc(var(--review-panel-safe) + var(--review-viewer-edge)) var(--review-viewer-edge);
   background: #20201f;
   overflow: hidden;
 }
@@ -406,6 +425,101 @@ button:disabled {
   background: #fff;
 }
 
+.shortcuts-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(18, 18, 17, 0.52);
+  backdrop-filter: blur(6px);
+}
+
+.shortcuts-overlay[hidden] {
+  display: none;
+}
+
+.shortcuts-card {
+  width: min(760px, 100%);
+  max-height: min(720px, calc(100dvh - 48px));
+  overflow: auto;
+  border: 1px solid #d8d8d2;
+  border-radius: 8px;
+  background: #fbfbf8;
+  box-shadow: 0 24px 72px rgba(0, 0, 0, 0.34);
+  padding: 16px;
+}
+
+.shortcuts-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.shortcuts-header h2 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.shortcut-sections {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.shortcut-section {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #e1e1dc;
+  border-radius: 7px;
+  background: #fff;
+}
+
+.shortcut-section h3 {
+  margin: 0 0 2px;
+  color: #161616;
+  font-size: 13px;
+  text-transform: uppercase;
+}
+
+.shortcut-row {
+  display: grid;
+  grid-template-columns: minmax(92px, auto) minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  min-height: 32px;
+  color: #4f4f49;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.shortcut-keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+kbd {
+  display: inline-grid;
+  place-items: center;
+  min-width: 26px;
+  min-height: 24px;
+  padding: 2px 6px;
+  border: 1px solid #bdbdb5;
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: #fff;
+  color: #161616;
+  font: inherit;
+  font-weight: 700;
+}
+
 @media (max-height: 760px) {
   .panel {
     max-height: calc(100dvh - 16px);
@@ -509,5 +623,9 @@ button:disabled {
   .tags,
   .notes {
     grid-column: span 1;
+  }
+
+  .shortcut-sections {
+    grid-template-columns: 1fr;
   }
 }

@@ -2,14 +2,10 @@ const state = {
   data: null,
   currentId: null,
   lastInputImageId: null,
-  loadedPersistedUi: false,
   saveQueue: Promise.resolve(),
   preloaded: new Set(),
+  viewerSafeAreaObserver: null,
 };
-
-const reviewStorageKey = `mini-film-review:${location.host}${location.pathname}`;
-const reviewClientIdKey = `${reviewStorageKey}:client-id`;
-const reviewClientId = persistedClientId();
 
 const els = {
   status: document.getElementById("status"),
@@ -29,6 +25,9 @@ const els = {
   publish: document.getElementById("publish"),
   minRating: document.getElementById("min-rating"),
   app: document.querySelector(".app"),
+  shortcutsHelp: document.getElementById("shortcuts-help"),
+  shortcutsOverlay: document.getElementById("shortcuts-overlay"),
+  shortcutsClose: document.getElementById("shortcuts-close"),
 };
 
 const wideProfilesQuery = window.matchMedia("(min-width: 1280px) and (min-height: 620px)");
@@ -37,112 +36,29 @@ function reviewUrl(path) {
   return path.replace(/^\/+/, "");
 }
 
-function persistedClientId() {
-  try {
-    const existing = localStorage.getItem(reviewClientIdKey);
-    if (existing) return existing;
-    const generated = globalThis.crypto?.randomUUID
-      ? globalThis.crypto.randomUUID()
-      : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    localStorage.setItem(reviewClientIdKey, generated);
-    return generated;
-  } catch {
-    return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  }
-}
-
-async function loadState(keepCurrent = true) {
+async function loadState() {
   const response = await fetch(reviewUrl("api/state"), { cache: "no-store" });
   if (!response.ok) throw new Error(`state ${response.status}`);
-  applyState(await response.json(), keepCurrent);
+  applyState(await response.json());
 }
 
-function applyState(data, keepCurrent = true) {
-  const collaborativeAdvance = keepCurrent ? collaborativeAdvanceForIncomingState(data) : null;
+function applyState(data) {
   state.data = data;
-  restorePersistedUiOnce();
-  if (!keepCurrent || state.currentId === null || !findImage(state.currentId)) {
-    state.currentId = persistedCurrentImageId() || firstReviewableImageId();
-  }
-  if (collaborativeAdvance && state.currentId === collaborativeAdvance.imageId) {
-    applyCollaborativeAdvance(collaborativeAdvance);
-    return;
-  }
+  applyServerUi(data);
   render();
 }
 
-function collaborativeAdvanceForIncomingState(data) {
-  if (!state.data || state.currentId === null) return null;
-  const before = findImageInData(state.data, state.currentId);
-  const after = findImageInData(data, state.currentId);
-  if (!before || !after) return null;
-  if (!after.advance_token || after.advance_token === before.advance_token) return null;
-  if (after.advance_client_id === reviewClientId) return null;
-  const advance = nextReviewAdvanceForData(state.data, state.currentId);
-  return {
-    ...advance,
-    imageId: state.currentId,
-    carryProfileIndex: selectedProfileForImage(before)?.profile_index,
-  };
-}
-
-function applyCollaborativeAdvance(advance) {
-  if (advance.kind === "next") {
-    advanceToImage(advance.id, advance.carryProfileIndex).catch((error) => console.error(error));
-    return;
-  }
-  if (advance.kind === "next-pass") {
-    els.minRating.value = String(Math.min(5, minRating() + 1));
-    const nextId = firstReviewableImageId();
-    advanceToImage(nextId, advance.carryProfileIndex).catch((error) => console.error(error));
-  }
-}
-
-function restorePersistedUiOnce() {
-  if (state.loadedPersistedUi) return;
-  state.loadedPersistedUi = true;
-  const saved = readPersistedUi();
-  if (!saved) return;
-  if (saved.minRating !== undefined) {
-    els.minRating.value = String(Math.max(0, Math.min(5, Number(saved.minRating) || 0)));
-  }
-  if (saved.currentId !== undefined) {
-    state.currentId = Number(saved.currentId) || null;
-  }
-}
-
-function readPersistedUi() {
-  try {
-    const raw = localStorage.getItem(reviewStorageKey);
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
-}
-
-function persistUi() {
-  try {
-    localStorage.setItem(
-      reviewStorageKey,
-      JSON.stringify({
-        currentId: state.currentId,
-        minRating: minRating(),
-        updatedAt: new Date().toISOString(),
-      }),
-    );
-  } catch {
-    // Local storage can be unavailable in private browsing modes.
-  }
-}
-
-function persistedCurrentImageId() {
-  const saved = readPersistedUi();
-  const id = Number(saved?.currentId);
-  return id && findImage(id) && passesFilter(findImage(id)) ? id : null;
+function applyServerUi(data) {
+  els.minRating.value = String(Math.max(0, Math.min(5, Number(data?.ui?.min_rating) || 0)));
+  state.currentId = data?.ui?.current_image_id ?? firstReviewableImageIdFromData(data);
 }
 
 function firstReviewableImageId() {
-  const images = filteredImages();
+  return firstReviewableImageIdFromData(state.data);
+}
+
+function firstReviewableImageIdFromData(data) {
+  const images = filteredImagesFromData(data);
   return images.length > 0 ? images[0].id : null;
 }
 
@@ -158,7 +74,9 @@ function render() {
   syncProfilesPlacement();
   const images = filteredImages();
   const total = state.data?.images?.length || 0;
-  els.status.textContent = `${images.length}/${total} pictures | ${state.data?.profiles?.length || 0} profiles`;
+  const profileCount = state.data?.profiles?.length || 0;
+  const clientCount = state.data?.client_count || 0;
+  els.status.textContent = `${images.length}/${total} pictures | ${profileCount} ${plural(profileCount, "profile")} | ${clientCount} ${plural(clientCount, "client")}`;
   renderList(images);
   let current = findImage(state.currentId);
   if (current && !passesFilter(current)) current = null;
@@ -167,7 +85,11 @@ function render() {
     current = findImage(state.currentId);
   }
   renderCurrent(current);
-  persistUi();
+  scheduleViewerSafeAreaUpdate();
+}
+
+function plural(count, singular) {
+  return Number(count) === 1 ? singular : `${singular}s`;
 }
 
 function syncProfilesPlacement() {
@@ -175,11 +97,35 @@ function syncProfilesPlacement() {
   const parent = els.profiles.parentElement;
   if (shouldUseRail && parent !== els.workspace) {
     els.workspace.append(els.profiles);
+    scheduleViewerSafeAreaUpdate();
     return;
   }
   if (!shouldUseRail && parent !== els.panel) {
     els.panel.insertBefore(els.profiles, els.controls);
+    scheduleViewerSafeAreaUpdate();
   }
+}
+
+function updateViewerSafeArea() {
+  const workspaceRect = els.workspace.getBoundingClientRect();
+  const panelRect = els.panel.getBoundingClientRect();
+  const panelSafe = Math.max(0, Math.ceil(workspaceRect.bottom - panelRect.top));
+  const profileSafe =
+    els.profiles.parentElement === els.workspace
+      ? Math.max(0, Math.ceil(workspaceRect.right - els.profiles.getBoundingClientRect().left))
+      : 0;
+
+  els.workspace.style.setProperty("--review-panel-safe", `${panelSafe}px`);
+  els.workspace.style.setProperty("--review-profile-safe", `${profileSafe}px`);
+}
+
+let viewerSafeAreaFrame = 0;
+function scheduleViewerSafeAreaUpdate() {
+  if (viewerSafeAreaFrame) return;
+  viewerSafeAreaFrame = requestAnimationFrame(() => {
+    viewerSafeAreaFrame = 0;
+    updateViewerSafeArea();
+  });
 }
 
 function minRating() {
@@ -204,11 +150,11 @@ function renderList(images) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = `image-row${image.id === state.currentId ? " active" : ""}`;
-    button.addEventListener("click", () => {
-      saveCurrentIfNeeded();
-      state.currentId = image.id;
-      persistUi();
-      render();
+    button.addEventListener("click", async () => {
+      const carryProfileIndex = selectedProfile(findImage(state.currentId))?.profile_index;
+      await saveCurrentIfNeeded();
+      await updateSharedUi({ current_image_id: image.id, min_rating: minRating() });
+      await carrySelectedProfileToImage(image.id, carryProfileIndex);
     });
 
     const title = document.createElement("div");
@@ -339,7 +285,11 @@ function selectedProfile(image) {
 }
 
 function selectedProfileForImage(image) {
-  return (image?.profiles || []).find((profile) => profile.profile_index === image.selected_profile_index) || image?.profiles?.[0] || null;
+  return (
+    (image?.profiles || []).find((profile) => profile.profile_index === image.selected_profile_index) ||
+    image?.profiles?.[0] ||
+    null
+  );
 }
 
 function publishProfileIndexes(image) {
@@ -467,6 +417,11 @@ async function toggleFullscreen() {
   await els.app.requestFullscreen();
 }
 
+function toggleShortcuts(force) {
+  const show = force ?? els.shortcutsOverlay.hidden;
+  els.shortcutsOverlay.hidden = !show;
+}
+
 function setActiveReviewButtons(image) {
   document.querySelectorAll("[data-rating]").forEach((button) => {
     button.classList.toggle("active", Number(image?.rating || 0) === Number(button.dataset.rating));
@@ -500,7 +455,7 @@ async function saveImageReview(image, patch = {}, options = {}) {
         body: JSON.stringify(body),
       });
       if (!response.ok) throw new Error(`review ${response.status}`);
-      applyState(await response.json(), true);
+      applyState(await response.json());
     });
   return state.saveQueue;
 }
@@ -514,9 +469,27 @@ function reviewRequestBody(image, patch = {}, options = {}) {
     notes: patch.notes ?? (options.useInputs ? els.notes.value : image.notes || ""),
     selected_profile_index: patch.selected_profile_index ?? image.selected_profile_index,
     publish_profile_indexes: patch.publish_profile_indexes ?? publishProfileIndexes(image),
-    client_id: reviewClientId,
     advance_after_update: Boolean(patch.advance_after_update),
   };
+}
+
+async function updateSharedUi(patch = {}) {
+  const body = {
+    current_image_id: patch.current_image_id ?? state.currentId,
+    min_rating: patch.min_rating ?? minRating(),
+  };
+  state.saveQueue = state.saveQueue
+    .catch(() => {})
+    .then(async () => {
+      const response = await fetch(reviewUrl("api/ui"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) throw new Error(`review UI ${response.status}`);
+      applyState(await response.json());
+    });
+  return state.saveQueue;
 }
 
 function saveCurrentIfNeeded() {
@@ -534,31 +507,16 @@ async function move(delta) {
   if (next !== index) {
     const carryProfileIndex = selectedProfile(images[index])?.profile_index;
     await saveCurrentIfNeeded();
-    await advanceToImage(images[next].id, carryProfileIndex);
+    await updateSharedUi({ current_image_id: images[next].id, min_rating: minRating() });
+    await carrySelectedProfileToImage(images[next].id, carryProfileIndex);
   }
 }
 
 async function rateCurrentAndAdvance(rating) {
   const current = findImage(state.currentId);
   const carryProfileIndex = selectedProfile(current)?.profile_index;
-  const advance = nextReviewAdvance();
   await saveReview({ rating, advance_after_update: true });
-  if (advance.kind === "next" && findImage(advance.id) && passesFilter(findImage(advance.id))) {
-    await advanceToImage(advance.id, carryProfileIndex);
-    return;
-  }
-  if (advance.kind === "next-pass") {
-    els.minRating.value = String(Math.min(5, minRating() + 1));
-    const nextId = firstReviewableImageId();
-    await advanceToImage(nextId, carryProfileIndex);
-  }
-}
-
-async function advanceToImage(imageId, carryProfileIndex) {
-  state.currentId = imageId;
-  persistUi();
-  render();
-  await carrySelectedProfileToImage(imageId, carryProfileIndex);
+  await carrySelectedProfileToImage(state.currentId, carryProfileIndex);
 }
 
 async function carrySelectedProfileToImage(imageId, profileIndex) {
@@ -569,16 +527,26 @@ async function carrySelectedProfileToImage(imageId, profileIndex) {
   await saveImageReview(image, { selected_profile_index: profileIndex });
 }
 
-function nextReviewAdvance() {
-  return nextReviewAdvanceForData(state.data, state.currentId);
+async function selectProfileRelative(delta) {
+  const image = findImage(state.currentId);
+  const profiles = image?.profiles || [];
+  if (profiles.length === 0) return;
+  const index = profiles.findIndex((profile) => profile.profile_index === image.selected_profile_index);
+  const next = (Math.max(0, index) + delta + profiles.length) % profiles.length;
+  await saveReview({ selected_profile_index: profiles[next].profile_index });
 }
 
-function nextReviewAdvanceForData(data, imageId) {
-  const images = filteredImagesFromData(data);
-  const index = images.findIndex((image) => image.id === imageId);
-  if (index < 0) return { kind: "next", id: firstReviewableImageId() };
-  if (index + 1 < images.length) return { kind: "next", id: images[index + 1].id };
-  return { kind: "next-pass" };
+async function toggleSelectedProfilePublish() {
+  const image = findImage(state.currentId);
+  const profile = selectedProfile(image);
+  if (!image || !profile) return;
+  await saveReview({ publish_profile_indexes: togglePublishProfile(image, profile.profile_index) });
+}
+
+function toggleCurrentLabel(label) {
+  const image = findImage(state.currentId);
+  if (!image) return;
+  saveReview({ label: image.label === label ? "none" : label });
 }
 
 function adjustedCurrentRating(delta) {
@@ -592,7 +560,14 @@ document.querySelectorAll("[data-rating]").forEach((button) => {
 });
 
 document.querySelectorAll("[data-label]").forEach((button) => {
-  button.addEventListener("click", () => saveReview({ label: button.dataset.label }));
+  button.addEventListener("click", () => {
+    const label = button.dataset.label;
+    if (label === "none") {
+      saveReview({ label });
+    } else {
+      toggleCurrentLabel(label);
+    }
+  });
 });
 
 els.tags.addEventListener("change", () => saveReview());
@@ -602,8 +577,7 @@ els.notes.addEventListener("change", () => saveReview());
 els.notes.addEventListener("blur", () => saveReview());
 els.notes.addEventListener("input", scheduleAutosave);
 els.minRating.addEventListener("change", () => {
-  persistUi();
-  render();
+  updateSharedUi({ current_image_id: state.currentId, min_rating: minRating() }).catch((error) => console.error(error));
 });
 
 let autosaveTimer = null;
@@ -629,12 +603,42 @@ els.publish.addEventListener("click", async () => {
   }
 });
 
+els.shortcutsHelp.addEventListener("click", () => toggleShortcuts(true));
+els.shortcutsClose.addEventListener("click", () => toggleShortcuts(false));
+els.shortcutsOverlay.addEventListener("click", (event) => {
+  if (event.target === els.shortcutsOverlay) toggleShortcuts(false);
+});
+
 window.addEventListener("keydown", (event) => {
   if (event.target === els.tags) return;
   if (event.target === els.notes) return;
   if (event.target === els.minRating) return;
+  if (!els.shortcutsOverlay.hidden) {
+    if (event.key === "Escape" || event.key === "?" || (event.key === "/" && event.shiftKey)) {
+      event.preventDefault();
+      toggleShortcuts(false);
+    }
+    return;
+  }
+  if (event.key === "?" || (event.key === "/" && event.shiftKey)) {
+    event.preventDefault();
+    toggleShortcuts(true);
+    return;
+  }
   if (event.key === "ArrowRight" || event.key.toLowerCase() === "l" || event.key === "Enter") move(1);
   if (event.key === "ArrowLeft" || event.key.toLowerCase() === "h") move(-1);
+  if (event.key === "PageDown") {
+    event.preventDefault();
+    selectProfileRelative(1);
+  }
+  if (event.key === "PageUp") {
+    event.preventDefault();
+    selectProfileRelative(-1);
+  }
+  if (event.key === " ") {
+    event.preventDefault();
+    toggleSelectedProfilePublish();
+  }
   if (event.key === "ArrowUp") {
     event.preventDefault();
     rateCurrentAndAdvance(adjustedCurrentRating(1));
@@ -647,25 +651,45 @@ window.addEventListener("keydown", (event) => {
     event.preventDefault();
     toggleFullscreen().catch((error) => console.error(error));
   }
-  if (["0", "1", "2", "3", "4", "5"].includes(event.key)) {
+  if (["1", "2", "3", "4", "5"].includes(event.key)) {
     event.preventDefault();
     rateCurrentAndAdvance(Number(event.key));
   }
+  if (["6", "7", "8", "9", "0"].includes(event.key)) {
+    event.preventDefault();
+    const label = { 6: "red", 7: "yellow", 8: "green", 9: "blue", 0: "purple" }[event.key];
+    toggleCurrentLabel(label);
+  }
   if (["r", "y", "g", "b", "v", "n"].includes(event.key.toLowerCase())) {
     const label = { r: "red", y: "yellow", g: "green", b: "blue", v: "purple", n: "none" }[event.key.toLowerCase()];
-    saveReview({ label });
+    if (label === "none") {
+      saveReview({ label });
+    } else {
+      toggleCurrentLabel(label);
+    }
   }
 });
 
 window.addEventListener("beforeunload", () => {
-  persistUi();
   const image = findImage(state.currentId);
   if (!image || !navigator.sendBeacon) return;
   const body = JSON.stringify(reviewRequestBody(image, {}, { useInputs: true }));
   navigator.sendBeacon(reviewUrl("api/review"), new Blob([body], { type: "application/json" }));
 });
 
-wideProfilesQuery.addEventListener("change", syncProfilesPlacement);
+wideProfilesQuery.addEventListener("change", () => {
+  syncProfilesPlacement();
+  scheduleViewerSafeAreaUpdate();
+});
+window.addEventListener("resize", scheduleViewerSafeAreaUpdate);
+document.addEventListener("fullscreenchange", scheduleViewerSafeAreaUpdate);
+
+if ("ResizeObserver" in window) {
+  state.viewerSafeAreaObserver = new ResizeObserver(scheduleViewerSafeAreaUpdate);
+  state.viewerSafeAreaObserver.observe(els.workspace);
+  state.viewerSafeAreaObserver.observe(els.panel);
+  state.viewerSafeAreaObserver.observe(els.profiles);
+}
 
 function connectEvents() {
   const events = new EventSource(reviewUrl("api/events"));
@@ -674,7 +698,7 @@ function connectEvents() {
   };
   events.onmessage = (event) => {
     els.liveDot.classList.add("connected");
-    applyState(JSON.parse(event.data), true);
+    applyState(JSON.parse(event.data));
   };
   events.onerror = () => {
     els.liveDot.classList.remove("connected");
@@ -682,7 +706,7 @@ function connectEvents() {
   };
 }
 
-loadState(false)
+loadState()
   .then(connectEvents)
   .catch((error) => {
     els.status.textContent = `Disconnected: ${error.message}`;

@@ -42,7 +42,11 @@ function openProcessedOverlay(button) {
 }
 
 function openOriginalOverlay(button) {
-  openOverlayImage(button.dataset.original || button.dataset.full, button.dataset.original || button.dataset.full, button.dataset.title);
+  openOverlayImage(
+    button.dataset.original || button.dataset.full,
+    button.dataset.original || button.dataset.full,
+    button.dataset.title,
+  );
 }
 
 document.querySelectorAll(".branch").forEach((branch) => {

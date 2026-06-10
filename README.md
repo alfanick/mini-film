@@ -283,17 +283,25 @@ look. All configured profile variants are selected for publish by default; use
 the checkbox on each profile thumbnail to exclude or re-include a variant while
 reviewing.
 
-Multiple browsers can use the review page at the same time. Each browser gets
-live updates through the same server-sent event stream; when one browser rates a
-picture with the keyboard or rating buttons, other browsers currently showing
-that picture auto-advance to the next visible picture. At the end of a pass,
-they also move to the next rating filter level.
+Multiple browsers can use the review page at the same time. The current picture
+and minimum rating filter are server-owned shared state, so every browser shows
+the same review position. Navigation, filter changes, keyboard ratings, and
+rating-button clicks update that shared state and are replicated to every
+connected browser through the server-sent event stream. At the end of a pass,
+the shared filter moves to the next rating level.
 
-Review data is persisted in `<output>/mini-film-review.json`, and the browser
-remembers the current image and rating filter locally. That makes it possible to
-restart the daemon, reopen the browser, and continue the multi-pass culling flow
-where it stopped. A typical pass is to rate everything `0` or `1`, filter to
-`>= 1`, rate the survivors higher, and repeat until the final subset is ready.
+Review data and the shared browser position are persisted in
+`<output>/mini-film-review.json`. That makes it possible to restart the daemon,
+reopen the browser, and continue the multi-pass culling flow where it stopped. A
+typical pass is to rate everything `0` or `1`, filter to `>= 1`, rate the
+survivors higher, and repeat until the final subset is ready.
+
+Keyboard shortcuts are available in the browser UI; press `?` to show the
+shortcuts overlay. `1`-`5` rates and advances, arrow up/down changes the rating
+and advances, left/right or `h`/`l` navigates without rating, PageUp/PageDown
+cycles the profile preview for the current picture, and Space includes or skips
+the selected profile for publish. `6`, `7`, `8`, `9`, and `0` toggle red,
+yellow, green, blue, and purple labels without advancing.
 
 The review UI stores rating, label, tags, notes, active preview profile, and the
 set of profile variants selected for publish. Publishing from the UI creates

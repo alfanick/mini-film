@@ -2276,8 +2276,9 @@ mod tests {
 
         assert!(html.contains("<!doctype html>"));
         assert!(html.contains("--columns: 4"));
+        let normalized_html = html.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(
-            html.contains(
+            normalized_html.contains(
                 "font-family: \"PragmataPro Mono Liga\", \"PragmataProMonoLiga\", \"Pragmata Pro\", ui-monospace,"
             )
         );
