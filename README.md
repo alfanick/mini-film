@@ -11,6 +11,7 @@ It can:
 - read Lightroom preset XMPs that reference a profile and define grain
 - batch-process common RAW folders into JPEGs or 16-bit TIFFs
 - run a raw folder watcher (`daemon`) that keeps applying new files
+- expose a live daemon review UI for multi-pass rating, labels, tags, notes, and final selection
 - render a profile sampler contact sheet for one RAW file
 - inspect emulation/profile XMP adjustments
 - print generated RawTherapee PP3 profiles
@@ -256,6 +257,56 @@ If profile resolution fails for any selector, startup stops with a clear error.
 
 `daemon` processes raw files in parallel and defaults to half the available
 CPU threads unless `--jobs` is set.
+
+### Live Review
+
+Add `--review-address` to expose a browser-based review UI while the daemon is
+running:
+
+```sh
+mini-film daemon \
+  /home/alfanick/Pictures/Lightroom/inbox \
+  /home/alfanick/Pictures/mini-film-output \
+  --profile 'Classic Film' \
+  --profile 'Soft Fade' \
+  --profiles-root /path/to/profile-library \
+  --review-address 0.0.0.0:8090 \
+  --gallery modern
+```
+
+The review server assets are compiled into the binary, so a release executable
+does not need HTML/CSS/JS files next to it. The UI is live: the daemon records
+new RAW files immediately, extracts an embedded camera preview when available,
+then updates the browser over server-sent events as each profile render moves
+from queued to processing to done. The first `--profile` is the default selected
+look; other profiles are shown as variants and can be selected per picture.
+
+Review data is persisted in `<output>/mini-film-review.json`, and the browser
+remembers the current image and rating filter locally. That makes it possible to
+restart the daemon, reopen the browser, and continue the multi-pass culling flow
+where it stopped. A typical pass is to rate everything `0` or `1`, filter to
+`>= 1`, rate the survivors higher, and repeat until the final subset is ready.
+
+The review UI stores rating, label, tags, notes, and selected profile. Publishing
+from the UI creates hardlinks, not duplicate image data, under:
+
+```text
+<output>/reviewed/ratings/<rating>/<tree>/<file>
+<output>/reviewed/selected/<tree>/<file>
+<output>/reviewed/final/<tree>/<file>
+<output>/reviewed/labels/<label>/rating-<rating>/<tree>/<file>
+<output>/reviewed/tags/<tag>/rating-<rating>/<tree>/<file>
+```
+
+`final` uses the currently selected minimum-rating filter in the browser. If
+`--gallery <template>` is passed to `daemon`, publish also renders an
+`index.html` gallery in each hardlink folder using the same templates as batch.
+Supported templates are `modern`, `soft`, `compact`, `hero`, `phone`, and `all`.
+
+Published JPGs are annotated with review metadata through `exiftool`: rating,
+label, tags, selected profile, notes, and a mini-film version/comment marker.
+The source RAW metadata copied during normal output generation is preserved
+unless `--strip-metadata` is used.
 
 Daemon can also ingest files from a Nikon camera configured for
 Connect-to-PC / Wireless Transmitter Utility style transfer. Start the camera's

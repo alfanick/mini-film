@@ -505,6 +505,22 @@ pub(crate) enum CommandKind {
         #[arg(long)]
         nikon_wtu_guid: Option<String>,
 
+        /// Serve the live review web UI at this host:port, for example 0.0.0.0:8090.
+        #[arg(long)]
+        review_address: Option<String>,
+
+        /// Generate galleries when review publish creates hardlink folders.
+        #[arg(long = "gallery", value_enum)]
+        gallery: Option<GalleryTemplate>,
+
+        /// Review publish gallery thumbnail longest edge in pixels.
+        #[arg(long = "gallery-thumbnail-long-edge", default_value_t = 1024)]
+        gallery_thumbnail_long_edge: u32,
+
+        /// Maximum thumbnails per review publish gallery row.
+        #[arg(long = "gallery-columns", default_value_t = 4)]
+        gallery_columns: u32,
+
         /// Output format for generated files.
         #[arg(long, value_enum, default_value_t = BatchOutputFormat::Jpg)]
         output_format: BatchOutputFormat,
@@ -923,6 +939,33 @@ mod tests {
             } if camera == "192.168.1.50"
                 && name == "mini-film"
                 && guid == "000102030405060708090a0b0c0d0e0f"
+        ));
+
+        let cli = Cli::parse_from([
+            "mini-film",
+            "daemon",
+            "input-dir",
+            "output-dir",
+            "--profile",
+            "scala",
+            "--review-address",
+            "0.0.0.0:8090",
+            "--gallery",
+            "phone",
+            "--gallery-thumbnail-long-edge",
+            "768",
+            "--gallery-columns",
+            "6",
+        ]);
+        assert!(matches!(
+            cli.command,
+            CommandKind::BatchDaemon {
+                review_address: Some(address),
+                gallery: Some(crate::cli::GalleryTemplate::Phone),
+                gallery_thumbnail_long_edge: 768,
+                gallery_columns: 6,
+                ..
+            } if address == "0.0.0.0:8090"
         ));
 
         let cli = Cli::parse_from(["mini-film", "update"]);

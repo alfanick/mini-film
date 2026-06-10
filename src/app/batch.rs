@@ -108,6 +108,16 @@ struct GalleryEntry {
     exif: GalleryExifData,
 }
 
+pub(crate) struct FolderGalleryOptions<'a> {
+    pub(crate) convert: &'a Path,
+    pub(crate) template: GalleryTemplate,
+    pub(crate) columns: u32,
+    pub(crate) thumbnail_long_edge: u32,
+    pub(crate) jobs: usize,
+    pub(crate) export: &'a ExportOptions,
+    pub(crate) profile_stem: &'a str,
+}
+
 /// Run the batch command over every supported RAW file under an input tree.
 ///
 /// The batch pipeline validates shared export options once, creates the output
@@ -349,6 +359,120 @@ fn run_batch_gallery(
             .with_context(|| format!("writing {}", gallery_output.display()))?;
     }
     Ok(())
+}
+
+pub(crate) fn render_gallery_for_folder(
+    output_root: &Path,
+    options: &FolderGalleryOptions<'_>,
+) -> Result<()> {
+    let outputs = collect_gallery_outputs(output_root)?;
+    if outputs.is_empty() {
+        return Ok(());
+    }
+    let shared_thumb_root = if options.template.is_all() {
+        output_root.join(".mini-film-gallery-thumbnails")
+    } else {
+        output_root.join("thumbnails")
+    };
+    let profile_cache = if options.profile_stem.trim().is_empty() {
+        "default".to_string()
+    } else {
+        sanitize(options.profile_stem).to_string()
+    };
+    fs::create_dir_all(&shared_thumb_root)
+        .with_context(|| format!("creating {}", shared_thumb_root.display()))?;
+
+    let entries = outputs
+        .iter()
+        .filter_map(|output| {
+            let thumb =
+                gallery_thumbnail_output(&shared_thumb_root, output_root, output, &profile_cache)?;
+            let exif = extract_gallery_exif(output).unwrap_or_default();
+            Some(GalleryEntry {
+                raw: output.clone(),
+                output: output.clone(),
+                thumb,
+                exif,
+            })
+        })
+        .collect::<Vec<_>>();
+    let thumb_export = ExportOptions {
+        jpg_quality: options.export.jpg_quality,
+        resize: None,
+        long_edge: Some(options.thumbnail_long_edge),
+        max_width: None,
+        max_height: None,
+        jpeg_subsampling: options.export.jpeg_subsampling,
+        strip_metadata: options.export.strip_metadata,
+        progressive_jpeg: options.export.progressive_jpeg,
+    };
+    let thread_pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(options.jobs.max(1))
+        .build()?;
+    thread_pool.install(|| {
+        entries.par_iter().for_each(|entry| {
+            if entry.thumb.exists() {
+                return;
+            }
+            let _ = create_batch_gallery_thumbnail(
+                options.convert,
+                &entry.output,
+                &entry.thumb,
+                &thumb_export,
+            );
+        });
+    });
+
+    for (template, gallery_root) in gallery_template_targets(output_root, options.template) {
+        fs::create_dir_all(&gallery_root)
+            .with_context(|| format!("creating {}", gallery_root.display()))?;
+        let html = render_batch_gallery_html(
+            options.columns,
+            template,
+            options.profile_stem,
+            &entries,
+            &gallery_root,
+            output_root,
+        )?;
+        let gallery_output = gallery_root.join("index.html");
+        fs::write(&gallery_output, html)
+            .with_context(|| format!("writing {}", gallery_output.display()))?;
+    }
+    Ok(())
+}
+
+fn collect_gallery_outputs(output_root: &Path) -> Result<Vec<PathBuf>> {
+    let mut outputs = Vec::new();
+    for entry in WalkDir::new(output_root).into_iter().filter_map(Result::ok) {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if gallery_internal_path(output_root, path) {
+            continue;
+        }
+        let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
+            continue;
+        };
+        if ext.eq_ignore_ascii_case("jpg") || ext.eq_ignore_ascii_case("jpeg") {
+            outputs.push(path.to_path_buf());
+        }
+    }
+    outputs.sort();
+    Ok(outputs)
+}
+
+fn gallery_internal_path(output_root: &Path, path: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(output_root) else {
+        return false;
+    };
+    relative.components().any(|component| {
+        let name = component.as_os_str().to_string_lossy();
+        name == "thumbnails" || name == ".mini-film-gallery-thumbnails"
+    }) || relative
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("index.html"))
 }
 
 fn gallery_thumbnail_output(

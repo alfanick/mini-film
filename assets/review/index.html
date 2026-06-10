@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>mini-film review</title>
+    <link rel="stylesheet" href="/assets/styles.css">
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar">
+        <header class="sidebar-header">
+          <h1>Review</h1>
+          <button id="publish" type="button">Publish</button>
+        </header>
+        <div class="filter">
+          <label>
+            <span>Show rating >=</span>
+            <select id="min-rating">
+              <option value="0">0</option>
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="3">3</option>
+              <option value="4">4</option>
+              <option value="5">5</option>
+            </select>
+          </label>
+        </div>
+        <div class="status">
+          <span id="live-dot" class="live-dot"></span>
+          <span id="status">Connecting...</span>
+        </div>
+        <div id="image-list" class="image-list"></div>
+      </aside>
+
+      <main class="workspace">
+        <section class="viewer">
+          <div id="empty" class="empty">Waiting for pictures</div>
+          <img id="main-image" alt="">
+        </section>
+
+        <section class="panel">
+          <div class="meta">
+            <div>
+              <div id="image-title" class="image-title"></div>
+              <div id="image-subtitle" class="image-subtitle"></div>
+            </div>
+            <div id="profile-state" class="profile-state"></div>
+          </div>
+
+          <div id="profiles" class="profiles"></div>
+
+          <div class="controls">
+            <div class="rating" role="group" aria-label="Rating">
+              <button data-rating="0" type="button">0</button>
+              <button data-rating="1" type="button">1</button>
+              <button data-rating="2" type="button">2</button>
+              <button data-rating="3" type="button">3</button>
+              <button data-rating="4" type="button">4</button>
+              <button data-rating="5" type="button">5</button>
+            </div>
+
+            <div class="labels" role="group" aria-label="Label">
+              <button data-label="none" type="button">None</button>
+              <button data-label="red" type="button">Red</button>
+              <button data-label="yellow" type="button">Yellow</button>
+              <button data-label="green" type="button">Green</button>
+              <button data-label="blue" type="button">Blue</button>
+              <button data-label="purple" type="button">Purple</button>
+            </div>
+
+            <label class="tags">
+              <span>Tags</span>
+              <input id="tags" type="text" inputmode="numeric" autocomplete="off" placeholder="12, 42, 108">
+            </label>
+
+            <label class="notes">
+              <span>Notes</span>
+              <input id="notes" type="text" autocomplete="off" placeholder="optional note">
+            </label>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/assets/app.js"></script>
+  </body>
+</html>

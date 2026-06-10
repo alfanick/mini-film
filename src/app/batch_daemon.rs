@@ -29,9 +29,12 @@ use crate::app::progress::{
     ApplyProgress, StageEstimates, batch_progress_style, file_progress_style, format_duration,
     progress_length,
 };
+use crate::app::review::{
+    ReviewConfig, ReviewGalleryConfig, ReviewHandle, ReviewProfile, start_review_server,
+};
 use crate::app::system_stats::{ResourceUsageSummary, sample_usage_block};
 use crate::app::util::{half_cpu_thread_count, is_supported_raw_file, time_of_day_seed};
-use crate::cli::{BatchOutputFormat, ExportOptions, LensCorrections};
+use crate::cli::{BatchOutputFormat, ExportOptions, GalleryTemplate, LensCorrections};
 use indicatif::{MultiProgress, ProgressBar};
 
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(75);
@@ -58,6 +61,10 @@ pub(crate) struct BatchDaemonArgs {
     pub(crate) nikon_wtu_port: u16,
     pub(crate) nikon_wtu_name: Option<String>,
     pub(crate) nikon_wtu_guid: Option<String>,
+    pub(crate) review_address: Option<String>,
+    pub(crate) gallery: Option<GalleryTemplate>,
+    pub(crate) gallery_thumbnail_long_edge: u32,
+    pub(crate) gallery_columns: u32,
     pub(crate) output_format: BatchOutputFormat,
     pub(crate) export: ExportOptions,
 }
@@ -226,6 +233,7 @@ struct ProfileScheduleContext<'a> {
     output_root: &'a Path,
     output_format: BatchOutputFormat,
     skip_existing: bool,
+    review: Option<&'a ReviewHandle>,
 }
 
 /// Run a watcher that applies one or more profiles whenever RAW files appear.
@@ -265,6 +273,38 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
     let profiles = profiles.into_iter().map(Arc::new).collect::<Vec<_>>();
     let profiles = Arc::new(profiles);
     let base_seed = args.grain_seed.unwrap_or_else(time_of_day_seed);
+    let review = if let Some(address) = args
+        .review_address
+        .clone()
+        .filter(|address| !address.trim().is_empty())
+    {
+        let review_profiles = profiles
+            .iter()
+            .enumerate()
+            .map(|(index, profile)| ReviewProfile {
+                index,
+                selector: profile.selector.clone(),
+                stem: profile.stem.clone(),
+            })
+            .collect();
+        Some(start_review_server(ReviewConfig {
+            address,
+            input_root: args.input.clone(),
+            output_root: args.output.clone(),
+            output_format: args.output_format,
+            profiles: review_profiles,
+            gallery: args.gallery.map(|template| ReviewGalleryConfig {
+                convert: args.convert.clone(),
+                template,
+                columns: args.gallery_columns,
+                thumbnail_long_edge: args.gallery_thumbnail_long_edge,
+                jobs,
+                export: args.export.clone(),
+            }),
+        })?)
+    } else {
+        None
+    };
     let args = Arc::new(args);
 
     let multi = MultiProgress::new();
@@ -333,6 +373,16 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
         elapsed_human(start.elapsed()),
         args.input.display()
     ));
+    if let Some(review) = &review
+        && let Some(address) = &args.review_address
+    {
+        batch.println(format!(
+            "[{}] review: http://{} (state {})",
+            elapsed_human(start.elapsed()),
+            address,
+            review.state_path().display()
+        ));
+    }
     batch.println(format!(
         "[{}] output: {}, profiles: {}, jobs: {}, debounce: {}",
         elapsed_human(start.elapsed()),
@@ -395,6 +445,7 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
             output_root: &args.output,
             output_format: args.output_format,
             skip_existing: true,
+            review: review.as_ref(),
         },
     )?;
     if !startup_raws.is_empty() {
@@ -431,6 +482,7 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
                 output_root: &args.output,
                 output_format: args.output_format,
                 skip_existing: false,
+                review: review.as_ref(),
             },
         )?;
 
@@ -452,6 +504,7 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
             let bar_pool = Arc::clone(&worker_bars);
             let thread_args = Arc::clone(&args);
             let thread_estimates = Arc::clone(&estimates);
+            let thread_review = review.clone();
 
             let handle = thread::spawn(move || {
                 let profile_index = task.profile_index;
@@ -459,7 +512,11 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
                     args: thread_args,
                     base_seed,
                     estimates: thread_estimates,
+                    review: thread_review,
                 };
+                if let Some(review) = &context.review {
+                    let _ = review.record_profile_processing(&worker_raw, profile_index);
+                }
                 let result = process_single_profile(
                     &worker_raw,
                     &profile,
@@ -469,6 +526,29 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
                     &bar,
                     &raw_name,
                 );
+                if let Some(review) = &context.review {
+                    if let Some(error) = &result.error {
+                        let output = if result.output.as_os_str().is_empty() {
+                            None
+                        } else {
+                            Some(result.output.as_path())
+                        };
+                        let _ = review.record_profile_failed(
+                            &result.raw,
+                            result.profile_index,
+                            output,
+                            result.duration,
+                            error,
+                        );
+                    } else {
+                        let _ = review.record_profile_done(
+                            &result.raw,
+                            result.profile_index,
+                            &result.output,
+                            result.duration,
+                        );
+                    }
+                }
                 release_worker_bar(&bar_pool, bar);
                 result
             });
@@ -580,6 +660,24 @@ fn write_daemon_info_txt(
     writeln!(out, "Output directory: {}", args.output.display()).ok();
     writeln!(out, "Profiles: {}", profiles.len()).ok();
     writeln!(out, "Output format: {:?}", args.output_format).ok();
+    if let Some(address) = &args.review_address {
+        writeln!(out, "Review server: http://{address}").ok();
+        writeln!(
+            out,
+            "Review state: {}",
+            args.output.join("mini-film-review.json").display()
+        )
+        .ok();
+        writeln!(
+            out,
+            "Review publish root: {}",
+            args.output.join("reviewed").display()
+        )
+        .ok();
+        if let Some(gallery) = args.gallery {
+            writeln!(out, "Review publish gallery: {gallery}").ok();
+        }
+    }
     writeln!(
         out,
         "Jobs: {}",
@@ -721,6 +819,18 @@ fn profile_daemon_info(
     writeln!(out, "Profile: {}", profile.selector).ok();
     writeln!(out, "Resolved profile: {}", profile.stem).ok();
     writeln!(out, "Output format: {:?}", args.output_format).ok();
+    if let Some(address) = &args.review_address {
+        writeln!(out, "Review server: http://{address}").ok();
+        writeln!(
+            out,
+            "Review publish root: {}",
+            args.output.join("reviewed").display()
+        )
+        .ok();
+        if let Some(gallery) = args.gallery {
+            writeln!(out, "Review publish gallery: {gallery}").ok();
+        }
+    }
     writeln!(out, "Elapsed: {runtime} (up since report start: {uptime})").ok();
     writeln!(
         out,
@@ -910,20 +1020,32 @@ fn enqueue_profile_jobs(
     context: &ProfileScheduleContext<'_>,
 ) -> Result<usize> {
     let mut queued = 0usize;
+    if let Some(review) = context.review {
+        review.record_discovered_raw(&raw)?;
+    }
     for (profile_index, profile) in profiles.iter().enumerate() {
-        if context.skip_existing {
-            let expected_output = daemon_output_path(
-                context.input_root,
-                context.output_root,
-                context.output_format,
-                &raw,
-                &profile.stem,
-            )?;
-            if expected_output.exists() {
-                continue;
+        let expected_output = daemon_output_path(
+            context.input_root,
+            context.output_root,
+            context.output_format,
+            &raw,
+            &profile.stem,
+        )?;
+        if context.skip_existing && expected_output.exists() {
+            if let Some(review) = context.review {
+                review.record_profile_done(
+                    &raw,
+                    profile_index,
+                    &expected_output,
+                    Duration::ZERO,
+                )?;
             }
+            continue;
         }
 
+        if let Some(review) = context.review {
+            review.record_profile_queued(&raw, profile_index, &expected_output)?;
+        }
         queue.push_back(PendingTask {
             raw: raw.clone(),
             profile_index,
@@ -948,6 +1070,7 @@ struct DaemonTaskContext {
     args: Arc<BatchDaemonArgs>,
     base_seed: u64,
     estimates: Arc<StageEstimates>,
+    review: Option<ReviewHandle>,
 }
 
 fn process_single_profile(
@@ -1250,6 +1373,10 @@ mod tests {
             nikon_wtu_port: 15740,
             nikon_wtu_name: None,
             nikon_wtu_guid: None,
+            review_address: None,
+            gallery: None,
+            gallery_thumbnail_long_edge: 1024,
+            gallery_columns: 4,
             output_format: BatchOutputFormat::Jpg,
             export: ExportOptions {
                 jpg_quality: 80,
@@ -1361,6 +1488,10 @@ mod tests {
             nikon_wtu_port: 15740,
             nikon_wtu_name: None,
             nikon_wtu_guid: None,
+            review_address: None,
+            gallery: None,
+            gallery_thumbnail_long_edge: 1024,
+            gallery_columns: 4,
             output_format: BatchOutputFormat::Jpg,
             export: ExportOptions {
                 jpg_quality: 80,

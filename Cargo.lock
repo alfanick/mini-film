@@ -1377,7 +1377,7 @@ checksum = "6b947ae49db0d222b1dbc6b113ce7248a3fc3a6ca21b696717bfc000ba4484d8"
 
 [[package]]
 name = "mini-film"
-version = "5.1.0"
+version = "6.0.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1396,6 +1396,7 @@ dependencies = [
  "rayon",
  "sanitize-filename",
  "self_update",
+ "serde",
  "serde_json",
  "sha1",
  "sysinfo",
@@ -2173,6 +2174,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e"
 dependencies = [
  "serde_core",
+ "serde_derive",
 ]
 
 [[package]]
