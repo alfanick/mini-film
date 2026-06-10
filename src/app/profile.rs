@@ -45,6 +45,20 @@ pub(crate) enum ProfileInfo {
     },
 }
 
+const DEFAULT_MINIMAL_SHARPENING: mini_film::SharpeningSettings = mini_film::SharpeningSettings {
+    present: true,
+    amount: 5.0,
+    radius: 0.6,
+    detail: 10.0,
+    masking: 0.0,
+};
+
+fn ensure_default_minimal_sharpening(sharpening: &mut mini_film::SharpeningSettings) {
+    if !sharpening.present {
+        *sharpening = DEFAULT_MINIMAL_SHARPENING;
+    }
+}
+
 pub(crate) fn inspect_profile(
     selector: &str,
     profiles_root: &Path,
@@ -285,10 +299,11 @@ fn inspect_xmp_profile_path(
     hald_dir: &Path,
     hald_level: u32,
 ) -> Result<ProfileInfo> {
-    let recipe = extract_film_recipe(path)?;
+    let mut recipe = extract_film_recipe(path)?;
+    ensure_default_minimal_sharpening(&mut recipe.sharpening);
     if recipe.rgb_table.is_some() {
         let hald_path = cached_hald_path(path, hald_level, hald_dir)?;
-        let converted = convert_xmp_to_hald(
+        let mut converted = convert_xmp_to_hald(
             path,
             &hald_path,
             HaldOptions {
@@ -297,6 +312,7 @@ fn inspect_xmp_profile_path(
                 info_only: true,
             },
         )?;
+        ensure_default_minimal_sharpening(&mut converted.sharpening);
         return Ok(ProfileInfo::RgbTableProfile {
             path: path.to_path_buf(),
             converted: Box::new(converted),
@@ -307,7 +323,7 @@ fn inspect_xmp_profile_path(
     let source = resolve_recipe_profile(&recipe, profiles_root, path)
         .with_context(|| format!("resolving linked profile for preset {}", path.display()))?;
     let hald_path = cached_hald_path(&source, hald_level, hald_dir)?;
-    let converted = convert_xmp_to_hald(
+    let mut converted = convert_xmp_to_hald(
         &source,
         &hald_path,
         HaldOptions {
@@ -316,6 +332,7 @@ fn inspect_xmp_profile_path(
             info_only: true,
         },
     )?;
+    ensure_default_minimal_sharpening(&mut converted.sharpening);
     Ok(ProfileInfo::Emulation {
         path: path.to_path_buf(),
         recipe: Box::new(recipe),
@@ -371,7 +388,7 @@ fn profile_from_xmp_inner(
         .with_context(|| format!("resolving linked profile for preset {}", path.display()))?;
 
     let output = cached_hald_path(&source, hald_level, hald_dir)?;
-    let converted = if output.exists() {
+    let mut converted = if output.exists() {
         convert_xmp_to_hald(
             &source,
             &output,
@@ -392,6 +409,9 @@ fn profile_from_xmp_inner(
             },
         )?
     };
+    let mut recipe = recipe;
+    ensure_default_minimal_sharpening(&mut recipe.sharpening);
+    ensure_default_minimal_sharpening(&mut converted.sharpening);
     if print_info {
         eprintln!("{}", profile_info_line(&converted));
     }
@@ -1053,5 +1073,30 @@ mod tests {
             ProfileInfo::HaldPng { path } => assert_eq!(path, hald),
             _ => panic!("expected hald profile info"),
         }
+    }
+
+    #[test]
+    fn ensure_default_minimal_sharpening_only_applies_to_missing_settings() {
+        let mut missing = mini_film::SharpeningSettings::default();
+        ensure_default_minimal_sharpening(&mut missing);
+        assert!(missing.present);
+        assert!((missing.amount - DEFAULT_MINIMAL_SHARPENING.amount).abs() < f32::EPSILON);
+        assert!((missing.radius - DEFAULT_MINIMAL_SHARPENING.radius).abs() < f32::EPSILON);
+        assert!((missing.detail - DEFAULT_MINIMAL_SHARPENING.detail).abs() < f32::EPSILON);
+        assert!((missing.masking - DEFAULT_MINIMAL_SHARPENING.masking).abs() < f32::EPSILON);
+
+        let mut present = mini_film::SharpeningSettings {
+            present: true,
+            amount: 0.0,
+            radius: 1.0,
+            detail: 0.0,
+            masking: 0.0,
+        };
+        ensure_default_minimal_sharpening(&mut present);
+        assert!(present.present);
+        assert!((present.amount - 0.0).abs() < f32::EPSILON);
+        assert!((present.radius - 1.0).abs() < f32::EPSILON);
+        assert!((present.detail - 0.0).abs() < f32::EPSILON);
+        assert!((present.masking - 0.0).abs() < f32::EPSILON);
     }
 }
