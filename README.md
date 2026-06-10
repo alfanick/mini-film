@@ -1,37 +1,83 @@
 # mini-film
 
-`mini-film` applies Lightroom-style film profile XMPs from the command line.
+`mini-film` is a RAW film-emulation workflow tool. It combines RawTherapee RAW
+development, XMP/Hald film profiles, procedural grain, batch processing, camera
+ingest, and a live browser review/publish UI into one command-line application.
 
-It can:
+## Top Features
 
-- convert Adobe Camera Raw / Lightroom `crs:RGBTable` profile XMPs to 16-bit Hald CLUT PNGs
-- generate RawTherapee `.pp3` profiles for supported Camera Raw tone/color/sharpening adjustments
-- develop a RAW file with `rawtherapee-cli`
-- apply Hald CLUTs through RawTherapee Film Simulation
-- read Lightroom preset XMPs that reference a profile and define grain
-- batch-process common RAW folders into JPEGs or 16-bit TIFFs
-- run a raw folder watcher (`daemon`) that keeps applying new files
-- expose a live daemon review UI for multi-pass rating, labels, tags, notes, and configurable publish jobs
-- render a profile sampler contact sheet for one RAW file
-- inspect emulation/profile XMP adjustments
-- print generated RawTherapee PP3 profiles
-- fit XMP/Hald looks into experimental Nikon `.NCP` Picture Controls
-- add deterministic procedural film grain
-- apply optional RawTherapee directional pyramid color noise reduction at high ISO
-- apply optional RawTherapee lens corrections (distortion, chromatic aberration,
-  vignetting) at render time
-- export either 16-bit TIFF or 8-bit JPEG
-- recopy source RAW metadata into outputs using `exiftool` by default
+- **Live review and publish workflow**: run `daemon` on an inbox folder, open the
+  browser UI, review new pictures as they arrive, rate/tag/label them in
+  multiple passes, compare profile variants, and publish the final selection
+  with live job progress.
+- **Film emulation from user-supplied profiles**: apply XMP emulation presets,
+  Hald CLUT PNGs, or RawTherapee `.pp3` files; convert Adobe Camera Raw /
+  Lightroom `crs:RGBTable` profile XMPs into cached 16-bit Hald PNGs.
+- **Nikon WTU ingest**: pair with Nikon Connect-to-PC / Wireless Transmitter
+  Utility mode over built-in camera Wi-Fi and feed transferred RAWs directly into
+  the daemon inbox.
+- **Batch, sampler, and gallery output**: process whole folders, render profile
+  sampler sheets, and generate modern static HTML galleries.
+- **RAW pipeline extras**: deterministic film grain, optional high-ISO color
+  denoise, optional RawTherapee lens corrections, metadata copyback with
+  `exiftool`, 8-bit JPEG output, and 16-bit Zip-compressed TIFF output.
 
-## Example
+## Profile Library
 
-mini-film works with XMP or HALD profiles provided by the user. Emulations are
-not bundled with the project; point `--profiles-root` at your local profile
-collection.
+mini-film does not include film profiles or emulations. It works with XMP, Hald,
+and PP3 profiles already present on disk, including profiles created by the user
+or obtained from commercial film-emulation products.
 
-Commercial profile products are often excellent sources of look presets. mini-film
-supports them the same way as any XMP/HALD workflow as long as the data is
-available on disk.
+For XMP preset libraries, point `--profiles-root` at a directory with:
+
+```text
+profiles/     # internal RGBTable profile XMPs
+emulations/   # user-facing emulation preset XMPs
+```
+
+## Quick Start
+
+Apply one profile to one RAW:
+
+```sh
+mini-film apply input.RAW \
+  --profile 'Classic Film' \
+  --profiles-root /path/to/profile-library \
+  --output output.jpg
+```
+
+Batch-process a folder:
+
+```sh
+mini-film batch /path/to/raws /path/to/output \
+  --profile 'Classic Film' \
+  --profiles-root /path/to/profile-library \
+  --long-edge 3840 \
+  --progressive-jpeg
+```
+
+Run the live review workflow:
+
+```sh
+mini-film daemon /path/to/inbox /path/to/output \
+  --profile 'Classic Film' \
+  --profile 'Soft Fade' \
+  --profiles-root /path/to/profile-library \
+  --review-address 0.0.0.0:8090
+```
+
+Then open `http://localhost:8090`, review pictures as they are processed, and use
+the publish wizard to export the final album.
+
+Use Nikon WTU ingest with the same daemon:
+
+```sh
+mini-film daemon /path/to/inbox /path/to/output \
+  --profile 'Classic Film' \
+  --profiles-root /path/to/profile-library \
+  --review-address 0.0.0.0:8090 \
+  --nikon-wtu 192.168.1.50
+```
 
 ## Build
 
