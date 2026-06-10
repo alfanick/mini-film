@@ -168,12 +168,12 @@ jobs:
           fi
 
           if [ "${{ matrix.use_cross }}" = "true" ]; then
-            if ! cross build --release --locked --target "${{ matrix.target }}" "${feature_args[@]}"; then
+            if ! env PKG_CONFIG_ALLOW_CROSS=1 cross build --release --target "${{ matrix.target }}" "${feature_args[@]}"; then
               echo "::warning::cross build failed; retrying native cargo build for ${{ matrix.target }}."
-              cargo build --release --locked --target "${{ matrix.target }}" "${feature_args[@]}"
+              PKG_CONFIG_ALLOW_CROSS=1 cargo build --release --target "${{ matrix.target }}" "${feature_args[@]}"
             fi
           else
-            cargo build --release --locked --target "${{ matrix.target }}" "${feature_args[@]}"
+            PKG_CONFIG_ALLOW_CROSS=1 cargo build --release --target "${{ matrix.target }}" "${feature_args[@]}"
           fi
 
       - name: Publish to crates.io
