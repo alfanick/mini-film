@@ -17,6 +17,8 @@ It can:
 - fit XMP/Hald looks into experimental Nikon `.NCP` Picture Controls
 - add deterministic procedural film grain
 - apply optional RawTherapee directional pyramid color noise reduction at high ISO
+- apply optional RawTherapee lens corrections (distortion, chromatic aberration,
+  vignetting) at render time
 - export either 16-bit TIFF or 8-bit JPEG
 - recopy source RAW metadata into outputs using `exiftool` by default
 
@@ -490,6 +492,35 @@ Example:
 ```sh
 --color-noise-iso-threshold 1600   # default
 --color-noise-iso-threshold 0      # disable
+```
+
+## RawTherapee Lens Corrections
+
+Mini-film can optionally enable RawTherapee lens-correction controls. This is
+off by default and available on `apply`, `batch`, `sampler`, and `daemon` via:
+
+```sh
+--lens-corrections
+--lens-corrections all
+--lens-corrections distortion,ca,vignetting
+```
+
+When no value is provided, `--lens-corrections` enables all supported items.
+You can also pass any subset of:
+
+- `distortion`
+- `ca` or `chromatic-aberration`
+- `vignetting` / `vignette`
+- `all`
+
+The generated section is inserted into the temporary pp3 stack as:
+
+```ini
+[LensProfile]
+LcMode=lfauto
+UseDistortion=<true|false>
+UseVignette=<true|false>
+UseCA=<true|false>
 ```
 
 ## Caveat

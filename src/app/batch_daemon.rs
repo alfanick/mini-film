@@ -29,7 +29,7 @@ use crate::app::progress::{
 };
 use crate::app::system_stats::{ResourceUsageSummary, sample_usage_block};
 use crate::app::util::{half_cpu_thread_count, is_supported_raw_file, time_of_day_seed};
-use crate::cli::{BatchOutputFormat, ExportOptions};
+use crate::cli::{BatchOutputFormat, ExportOptions, LensCorrections};
 use indicatif::{MultiProgress, ProgressBar};
 
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(75);
@@ -45,6 +45,7 @@ pub(crate) struct BatchDaemonArgs {
     pub(crate) rawtherapee: PathBuf,
     pub(crate) convert: PathBuf,
     pub(crate) no_grain: bool,
+    pub(crate) lens_corrections: LensCorrections,
     pub(crate) grain: Option<String>,
     pub(crate) grain_preset: Option<String>,
     pub(crate) grain_seed: Option<u64>,
@@ -750,6 +751,7 @@ fn resolve_daemon_profiles(args: &BatchDaemonArgs, temp_dir: &Path) -> Result<Ve
                 convert: args.convert.clone(),
                 keep_intermediate: None,
                 no_grain: args.no_grain,
+                lens_corrections: args.lens_corrections,
                 color_noise_iso_threshold: args.color_noise_iso_threshold,
                 grain: args.grain.clone(),
                 grain_preset: args.grain_preset.clone(),
@@ -974,6 +976,7 @@ fn process_single_profile(
             convert: &args.convert,
             keep_intermediate: None,
             no_grain: args.no_grain,
+            lens_corrections: args.lens_corrections,
             color_noise_iso_threshold: args.color_noise_iso_threshold,
             export: &args.export,
             quiet: true,
@@ -1168,6 +1171,7 @@ mod tests {
             grain_preset: None,
             grain_seed: None,
             color_noise_iso_threshold: 1600,
+            lens_corrections: LensCorrections::default(),
             jobs: Some(2),
             debounce_seconds: 0,
             nikon_wtu: None,
@@ -1274,6 +1278,7 @@ mod tests {
             grain_preset: None,
             grain_seed: None,
             color_noise_iso_threshold: 1600,
+            lens_corrections: LensCorrections::default(),
             jobs: Some(2),
             debounce_seconds: 0,
             nikon_wtu: None,

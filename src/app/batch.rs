@@ -32,7 +32,7 @@ use crate::app::progress::{
 use crate::app::system_stats::{ResourceUsageSummary, sample_usage_block};
 use crate::app::timestamps::{GalleryExifData, extract_gallery_exif};
 use crate::app::util::{half_cpu_thread_count, is_supported_raw_file, time_of_day_seed};
-use crate::cli::{BatchOutputFormat, ExportOptions, GalleryTemplate};
+use crate::cli::{BatchOutputFormat, ExportOptions, GalleryTemplate, LensCorrections};
 
 pub(crate) struct BatchArgs {
     pub(crate) input: PathBuf,
@@ -44,6 +44,7 @@ pub(crate) struct BatchArgs {
     pub(crate) rawtherapee: PathBuf,
     pub(crate) convert: PathBuf,
     pub(crate) no_grain: bool,
+    pub(crate) lens_corrections: LensCorrections,
     pub(crate) grain: Option<String>,
     pub(crate) grain_preset: Option<String>,
     pub(crate) grain_seed: Option<u64>,
@@ -102,6 +103,7 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
         raw: PathBuf::new(),
         output: PathBuf::new(),
         profile: args.profile.clone(),
+        lens_corrections: args.lens_corrections,
         hald_dir: args.hald_dir.clone(),
         profiles_root: args.profiles_root.clone(),
         hald_level: args.hald_level,
@@ -522,6 +524,7 @@ fn process_batch_file_inner(
             keep_intermediate: None,
             no_grain: context.args.no_grain,
             color_noise_iso_threshold: context.args.color_noise_iso_threshold,
+            lens_corrections: context.args.lens_corrections,
             export: &context.args.export,
             quiet: true,
             exif_comment: Some(format!(

@@ -12,7 +12,9 @@ use tempfile::Builder;
 use crate::app::export::{
     finalize_output, output_ext, validate_export_options, validate_output_format,
 };
-use crate::app::pp3::write_rawtherapee_color_noise_profile;
+use crate::app::pp3::{
+    write_rawtherapee_color_noise_profile, write_rawtherapee_lens_corrections_profile,
+};
 use crate::app::profile::{
     ResolvedProfile, normalize_name, rawtherapee_profiles_with_hald, resolve_profile,
 };
@@ -24,7 +26,7 @@ use crate::app::util::{
     extract_capture_iso, remove_temp_file, sync_output_metadata_from_raw,
     sync_output_timestamps_from_exif, time_of_day_seed,
 };
-use crate::cli::ExportOptions;
+use crate::cli::{ExportOptions, LensCorrections};
 
 pub(crate) struct ApplyArgs {
     pub(crate) raw: PathBuf,
@@ -38,6 +40,7 @@ pub(crate) struct ApplyArgs {
     pub(crate) keep_intermediate: Option<PathBuf>,
     pub(crate) no_grain: bool,
     pub(crate) color_noise_iso_threshold: u32,
+    pub(crate) lens_corrections: LensCorrections,
     pub(crate) grain: Option<String>,
     pub(crate) grain_preset: Option<String>,
     pub(crate) grain_seed: Option<u64>,
@@ -52,6 +55,7 @@ pub(crate) struct ApplyJob<'a> {
     pub(crate) keep_intermediate: Option<&'a Path>,
     pub(crate) no_grain: bool,
     pub(crate) color_noise_iso_threshold: u32,
+    pub(crate) lens_corrections: LensCorrections,
     pub(crate) export: &'a ExportOptions,
     pub(crate) quiet: bool,
     pub(crate) exif_comment: Option<String>,
@@ -102,6 +106,7 @@ pub(crate) fn run_apply(args: ApplyArgs) -> Result<()> {
             keep_intermediate: args.keep_intermediate.as_deref(),
             no_grain: args.no_grain,
             color_noise_iso_threshold: args.color_noise_iso_threshold,
+            lens_corrections: args.lens_corrections,
             export: &args.export,
             quiet: true,
             exif_comment: Some(exif_comment_for_command("apply", &args.profile)),
@@ -169,6 +174,11 @@ pub(crate) fn apply_resolved(
         &rawtherapee_profiles,
         temp_dir,
         job.color_noise_iso_threshold,
+    )?;
+    let rawtherapee_profiles = with_optional_lens_corrections_profile(
+        &rawtherapee_profiles,
+        temp_dir,
+        job.lens_corrections,
     )?;
     let raw_stage = progress_stage_adaptive(
         progress,
@@ -343,6 +353,21 @@ fn with_optional_color_noise_profile(
     if let Some(path) =
         write_rawtherapee_color_noise_profile(&temp_dir.join("color-noise.pp3"), iso)?
     {
+        profiles.push(path);
+    }
+    Ok(profiles)
+}
+
+fn with_optional_lens_corrections_profile(
+    base_profiles: &[PathBuf],
+    temp_dir: &Path,
+    lens_corrections: LensCorrections,
+) -> Result<Vec<PathBuf>> {
+    let mut profiles = Vec::from(base_profiles);
+    if let Some(path) = write_rawtherapee_lens_corrections_profile(
+        &temp_dir.join("lens-corrections.pp3"),
+        lens_corrections,
+    )? {
         profiles.push(path);
     }
     Ok(profiles)
@@ -603,6 +628,7 @@ mod tests {
                 keep_intermediate: None,
                 no_grain: true,
                 color_noise_iso_threshold: 0,
+                lens_corrections: LensCorrections::default(),
                 export: &test_export_options(),
                 quiet: true,
                 exif_comment: Some("mini-film test".to_string()),
@@ -653,6 +679,7 @@ mod tests {
                 keep_intermediate: None,
                 no_grain: false,
                 color_noise_iso_threshold: 0,
+                lens_corrections: LensCorrections::default(),
                 export: &test_export_options(),
                 quiet: true,
                 exif_comment: Some("mini-film test".to_string()),
@@ -705,6 +732,7 @@ mod tests {
                 keep_intermediate: None,
                 no_grain: false,
                 color_noise_iso_threshold: 0,
+                lens_corrections: LensCorrections::default(),
                 export: &export,
                 quiet: true,
                 exif_comment: Some("mini-film test".to_string()),

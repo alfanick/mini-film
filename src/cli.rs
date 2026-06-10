@@ -155,6 +155,19 @@ pub(crate) enum CommandKind {
         #[arg(long, default_value_t = 1600)]
         color_noise_iso_threshold: u32,
 
+        /// Enable RawTherapee lens corrections.
+        ///
+        /// Without an explicit value, enables distortion, ca, and vignetting.
+        /// Optionally pass a comma-separated list of:
+        /// `distortion`, `ca`, `vignetting`.
+        ///
+        /// Examples:
+        /// - `--lens-corrections`
+        /// - `--lens-corrections distortion,ca`
+        /// - `--lens-corrections all`
+        #[arg(long, num_args = 0..=1, value_parser = parse_lens_corrections_arg, default_missing_value = "all")]
+        lens_corrections: Option<LensCorrections>,
+
         /// Override grain as amount,size,frequency, each 0..100. Example: --grain 30,45,45
         #[arg(long)]
         grain: Option<String>,
@@ -241,6 +254,14 @@ pub(crate) enum CommandKind {
         /// Use 0 to disable color-noise processing.
         #[arg(long, default_value_t = 1600)]
         color_noise_iso_threshold: u32,
+
+        /// Enable RawTherapee lens corrections.
+        ///
+        /// Without an explicit value, enables distortion, ca, and vignetting.
+        /// Optionally pass a comma-separated list of:
+        /// `distortion`, `ca`, `vignetting`.
+        #[arg(long, num_args = 0..=1, value_parser = parse_lens_corrections_arg, default_missing_value = "all")]
+        lens_corrections: Option<LensCorrections>,
 
         /// Override grain as amount,size,frequency, each 0..100. Example: --grain 30,45,45
         #[arg(long)]
@@ -351,6 +372,14 @@ pub(crate) enum CommandKind {
         #[arg(long, default_value_t = 1600)]
         color_noise_iso_threshold: u32,
 
+        /// Enable RawTherapee lens corrections.
+        ///
+        /// Without an explicit value, enables distortion, ca, and vignetting.
+        /// Optionally pass a comma-separated list of:
+        /// `distortion`, `ca`, `vignetting`.
+        #[arg(long, num_args = 0..=1, value_parser = parse_lens_corrections_arg, default_missing_value = "all")]
+        lens_corrections: Option<LensCorrections>,
+
         /// Base seed for deterministic generated grain. Defaults to current time of day.
         #[arg(long)]
         grain_seed: Option<u64>,
@@ -430,6 +459,14 @@ pub(crate) enum CommandKind {
         /// Use 0 to disable color-noise processing.
         #[arg(long, default_value_t = 1600)]
         color_noise_iso_threshold: u32,
+
+        /// Enable RawTherapee lens corrections.
+        ///
+        /// Without an explicit value, enables distortion, ca, and vignetting.
+        /// Optionally pass a comma-separated list of:
+        /// `distortion`, `ca`, `vignetting`.
+        #[arg(long, num_args = 0..=1, value_parser = parse_lens_corrections_arg, default_missing_value = "all")]
+        lens_corrections: Option<LensCorrections>,
 
         /// Override grain as amount,size,frequency, for example 30,45,45.
         #[arg(long)]
@@ -513,6 +550,35 @@ pub(crate) enum JpegSubsampling {
     S420,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct LensCorrections {
+    pub(crate) distortion: bool,
+    pub(crate) ca: bool,
+    pub(crate) vignetting: bool,
+}
+
+impl LensCorrections {
+    pub(crate) const fn all() -> Self {
+        Self {
+            distortion: true,
+            ca: true,
+            vignetting: true,
+        }
+    }
+
+    pub(crate) const fn none() -> Self {
+        Self {
+            distortion: false,
+            ca: false,
+            vignetting: false,
+        }
+    }
+
+    pub(crate) const fn is_enabled(self) -> bool {
+        self.distortion || self.ca || self.vignetting
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub(crate) enum BatchOutputFormat {
     Jpg,
@@ -562,6 +628,65 @@ impl GalleryTemplate {
     pub(crate) fn is_all(self) -> bool {
         matches!(self, GalleryTemplate::All)
     }
+}
+
+fn parse_lens_corrections_arg(raw: &str) -> Result<LensCorrections, String> {
+    parse_lens_corrections(raw)
+}
+
+fn parse_lens_corrections(raw: &str) -> Result<LensCorrections, String> {
+    let mut correction = LensCorrections::none();
+    if raw.trim().is_empty() {
+        return Err("--lens-corrections value cannot be empty".to_string());
+    }
+
+    let mut saw_token = false;
+    let mut seen_disabled = false;
+    let mut seen_enabled = false;
+    for token in raw.split(',') {
+        let token = token.trim().to_ascii_lowercase();
+        if token.is_empty() {
+            return Err("--lens-corrections contains an empty token".to_string());
+        }
+        saw_token = true;
+        match token.as_str() {
+            "all" => {
+                correction = LensCorrections::all();
+                seen_enabled = true;
+            }
+            "distortion" => {
+                correction.distortion = true;
+                seen_enabled = true;
+            }
+            "ca" | "chromatic-aberration" | "chromatic_aberration" => {
+                correction.ca = true;
+                seen_enabled = true;
+            }
+            "vignetting" | "vignette" | "lens-vignetting" => {
+                correction.vignetting = true;
+                seen_enabled = true;
+            }
+            "none" | "off" => {
+                seen_disabled = true;
+            }
+            _ => {
+                return Err(format!(
+                    "unsupported --lens-corrections token {token:?}; expected distortion,ca,vignetting,all"
+                ));
+            }
+        }
+    }
+
+    if saw_token && seen_disabled && seen_enabled {
+        return Err("--lens-corrections cannot mix disabled and enabled values".to_string());
+    }
+    if seen_disabled {
+        return Ok(LensCorrections::none());
+    }
+    if !saw_token {
+        return Err("--lens-corrections requires at least one token".to_string());
+    }
+    Ok(correction)
 }
 
 impl BatchOutputFormat {
@@ -796,6 +921,109 @@ mod tests {
                 && name == "mini-film"
                 && guid == "000102030405060708090a0b0c0d0e0f"
         ));
+    }
+
+    #[test]
+    fn cli_lens_corrections_disabled_by_default_and_can_be_enabled() {
+        let cli = Cli::parse_from([
+            "mini-film",
+            "apply",
+            "--output",
+            "out.jpg",
+            "--profile",
+            "profile",
+            "input.dng",
+        ]);
+        assert!(matches!(
+            cli.command,
+            CommandKind::Apply {
+                lens_corrections: None,
+                ..
+            }
+        ));
+
+        let cli = Cli::parse_from([
+            "mini-film",
+            "apply",
+            "input.dng",
+            "--output",
+            "out.jpg",
+            "--profile",
+            "profile",
+            "--lens-corrections",
+        ]);
+        match cli.command {
+            CommandKind::Apply {
+                lens_corrections: Some(corrections),
+                ..
+            } => {
+                assert!(corrections.distortion);
+                assert!(corrections.ca);
+                assert!(corrections.vignetting);
+            }
+            _ => panic!("wrong command"),
+        }
+
+        let cli = Cli::parse_from([
+            "mini-film",
+            "batch",
+            "input-dir",
+            "output-dir",
+            "--profile",
+            "profile",
+            "--lens-corrections=distortion,ca",
+        ]);
+        match cli.command {
+            CommandKind::Batch {
+                lens_corrections: Some(corrections),
+                ..
+            } => {
+                assert!(corrections.distortion);
+                assert!(corrections.ca);
+                assert!(!corrections.vignetting);
+            }
+            _ => panic!("wrong command"),
+        }
+
+        let cli = Cli::parse_from([
+            "mini-film",
+            "sampler",
+            "input.dng",
+            "--output",
+            "sheet.jpg",
+            "--lens-corrections",
+            "vignetting",
+        ]);
+        match cli.command {
+            CommandKind::Sampler {
+                lens_corrections: Some(corrections),
+                ..
+            } => {
+                assert!(!corrections.distortion);
+                assert!(!corrections.ca);
+                assert!(corrections.vignetting);
+            }
+            _ => panic!("wrong command"),
+        }
+    }
+
+    #[test]
+    fn cli_lens_corrections_rejects_unknown_tokens() {
+        let error = Cli::try_parse_from([
+            "mini-film",
+            "apply",
+            "--output",
+            "out.jpg",
+            "--profile",
+            "profile",
+            "--lens-corrections",
+            "radial",
+            "input.dng",
+        ])
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("unsupported --lens-corrections token \"radial\""));
     }
 
     #[test]

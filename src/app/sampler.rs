@@ -23,7 +23,9 @@ use tempfile::Builder;
 use walkdir::WalkDir;
 
 use crate::app::export::{add_convert_thread_limit, finalize_output, output_ext};
-use crate::app::pp3::write_rawtherapee_color_noise_profile;
+use crate::app::pp3::{
+    write_rawtherapee_color_noise_profile, write_rawtherapee_lens_corrections_profile,
+};
 use crate::app::profile::{profile_from_xmp_quiet, rawtherapee_profiles_with_hald};
 use crate::app::progress::{
     ApplyProgress, StageEstimates, format_duration, progress_length, progress_position,
@@ -38,7 +40,7 @@ use crate::app::util::{
     extract_capture_iso, half_cpu_thread_count, remove_temp_file, sync_output_metadata_from_raw,
     sync_output_timestamps_from_exif, time_of_day_seed,
 };
-use crate::cli::{ExportOptions, JpegSubsampling};
+use crate::cli::{ExportOptions, JpegSubsampling, LensCorrections};
 
 pub(crate) struct SamplerArgs {
     pub(crate) raw: PathBuf,
@@ -50,6 +52,7 @@ pub(crate) struct SamplerArgs {
     pub(crate) convert: PathBuf,
     pub(crate) no_grain: bool,
     pub(crate) color_noise_iso_threshold: u32,
+    pub(crate) lens_corrections: LensCorrections,
     pub(crate) grain_seed: Option<u64>,
     pub(crate) no_cache: bool,
     pub(crate) jobs: Option<usize>,
@@ -131,11 +134,21 @@ struct StructuredSheetContext<'a> {
     hald_dir: &'a Path,
     hald_level: u32,
     color_noise_iso_threshold: u32,
+    lens_corrections: LensCorrections,
     thumbnail_long_edge: u32,
     columns: u32,
     jpg_quality: u8,
     jpeg_subsampling: JpegSubsampling,
     progressive_jpeg: bool,
+}
+
+struct SamplerSidecarContext<'a> {
+    raw: &'a Path,
+    hald_level: u32,
+    profiles_root: &'a Path,
+    hald_dir: &'a Path,
+    color_noise_iso_threshold: u32,
+    lens_corrections: LensCorrections,
 }
 
 /// Render a structured contact sheet showing every resolvable XMP profile.
@@ -294,6 +307,7 @@ pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
         hald_dir: &args.hald_dir,
         hald_level: args.hald_level,
         color_noise_iso_threshold: args.color_noise_iso_threshold,
+        lens_corrections: args.lens_corrections,
         thumbnail_long_edge: args.thumbnail_long_edge,
         columns: args.columns,
         jpg_quality: args.jpg_quality,
@@ -345,12 +359,31 @@ impl ThumbnailCache {
             sha1_file(profile).with_context(|| format!("hashing XMP {}", profile.display()))?;
         let grain_mode = if args.no_grain { "nograin" } else { "grain" };
         let subsampling = format!("{:?}", args.jpeg_subsampling).to_ascii_lowercase();
+        let lens_corrections = if args.lens_corrections == LensCorrections::default() {
+            "none".to_string()
+        } else {
+            format!(
+                "{}{}{}",
+                if args.lens_corrections.distortion {
+                    "d"
+                } else {
+                    ""
+                },
+                if args.lens_corrections.ca { ".ca" } else { "" },
+                if args.lens_corrections.vignetting {
+                    ".v"
+                } else {
+                    ""
+                }
+            )
+        };
         Ok(self.dir.join(format!(
-            "{}-{}-l{}-{}px-q{}-{}-{}-sg2-strip{}-prog{}.jpg",
+            "{}-{}-l{}-{}px-lc{}-q{}-{}-{}-sg2-strip{}-prog{}.jpg",
             self.raw_sha1,
             xmp_sha1,
             args.hald_level,
             args.thumbnail_long_edge,
+            lens_corrections,
             args.jpg_quality,
             subsampling,
             grain_mode,
@@ -502,6 +535,11 @@ fn render_profile_thumbnail(
         &mut rawtherapee_profiles,
         &profile_temp,
     )?;
+    append_lens_corrections_if_requested(
+        context.args.lens_corrections,
+        &mut rawtherapee_profiles,
+        &profile_temp,
+    )?;
     rawtherapee_profiles.push(write_rawtherapee_resize_profile(
         &profile_temp.join("resize.pp3"),
         context.args.thumbnail_long_edge,
@@ -637,6 +675,20 @@ fn append_color_noise_if_qualified(
     Ok(())
 }
 
+fn append_lens_corrections_if_requested(
+    lens_corrections: LensCorrections,
+    rawtherapee_profiles: &mut Vec<PathBuf>,
+    temp_dir: &Path,
+) -> Result<()> {
+    if let Some(path) = write_rawtherapee_lens_corrections_profile(
+        &temp_dir.join("lens-corrections.pp3"),
+        lens_corrections,
+    )? {
+        rawtherapee_profiles.push(path);
+    }
+    Ok(())
+}
+
 fn append_color_noise_to_profiles(
     rawtherapee_profiles: Vec<PathBuf>,
     temp_dir: &Path,
@@ -645,6 +697,16 @@ fn append_color_noise_to_profiles(
 ) -> Result<Vec<PathBuf>> {
     let mut profiles = rawtherapee_profiles;
     append_color_noise_if_qualified(raw, color_noise_iso_threshold, &mut profiles, temp_dir)?;
+    Ok(profiles)
+}
+
+fn append_lens_corrections_to_profiles(
+    rawtherapee_profiles: Vec<PathBuf>,
+    temp_dir: &Path,
+    lens_corrections: LensCorrections,
+) -> Result<Vec<PathBuf>> {
+    let mut profiles = rawtherapee_profiles;
+    append_lens_corrections_if_requested(lens_corrections, &mut profiles, temp_dir)?;
     Ok(profiles)
 }
 
@@ -783,16 +845,18 @@ fn run_html_sheet(context: &StructuredSheetContext<'_>) -> Result<()> {
         sidecar_exports
             .par_iter()
             .map(|(html_index, profile, pp3_output)| {
-                let hald = write_html_sampler_sidecars(
-                    profile,
-                    context.raw,
-                    context.hald_level,
-                    context.profiles_root,
-                    context.hald_dir,
-                    context.color_noise_iso_threshold,
-                    pp3_output,
-                )
-                .with_context(|| format!("exporting sampler sidecars for {}", profile.display()))?;
+                let sidecar_context = SamplerSidecarContext {
+                    raw: context.raw,
+                    hald_level: context.hald_level,
+                    profiles_root: context.profiles_root,
+                    hald_dir: context.hald_dir,
+                    color_noise_iso_threshold: context.color_noise_iso_threshold,
+                    lens_corrections: context.lens_corrections,
+                };
+                let hald = write_html_sampler_sidecars(profile, &sidecar_context, pp3_output)
+                    .with_context(|| {
+                        format!("exporting sampler sidecars for {}", profile.display())
+                    })?;
                 Ok::<_, anyhow::Error>((*html_index, hald))
             })
             .collect::<Result<Vec<_>>>()
@@ -813,19 +877,15 @@ fn run_html_sheet(context: &StructuredSheetContext<'_>) -> Result<()> {
 
 fn write_html_sampler_sidecars(
     profile: &Path,
-    raw: &Path,
-    hald_level: u32,
-    profiles_root: &Path,
-    hald_dir: &Path,
-    color_noise_iso_threshold: u32,
+    context: &SamplerSidecarContext<'_>,
     pp3_output: &Path,
 ) -> Result<PathBuf> {
     let temp_dir = Builder::new().prefix("mini-film-sampler-pp3-").tempdir()?;
     let resolved = profile_from_xmp_quiet(
         profile,
-        hald_level,
-        profiles_root,
-        hald_dir,
+        context.hald_level,
+        context.profiles_root,
+        context.hald_dir,
         temp_dir.path(),
     )?;
     let hald_path = resolved
@@ -836,8 +896,13 @@ fn write_html_sampler_sidecars(
     let rawtherapee_profiles = append_color_noise_to_profiles(
         rawtherapee_profiles,
         temp_dir.path(),
-        raw,
-        color_noise_iso_threshold,
+        context.raw,
+        context.color_noise_iso_threshold,
+    )?;
+    let rawtherapee_profiles = append_lens_corrections_to_profiles(
+        rawtherapee_profiles,
+        temp_dir.path(),
+        context.lens_corrections,
     )?;
     let mut text = String::new();
     for profile in rawtherapee_profiles {
@@ -1929,6 +1994,7 @@ mod tests {
             convert: PathBuf::from("convert"),
             no_grain: false,
             grain_seed: Some(123),
+            lens_corrections: crate::cli::LensCorrections::default(),
             color_noise_iso_threshold: 1600,
             no_cache: false,
             jobs: Some(1),

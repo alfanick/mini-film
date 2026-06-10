@@ -14,6 +14,7 @@ const VERY_HIGH_COLOR_NOISE_LDETAIL: u16 = 64;
 const VERY_HIGH_COLOR_NOISE_CHROMA: u16 = 28;
 
 use crate::app::profile::{ProfileInfo, inspect_profile};
+use crate::cli::LensCorrections;
 
 pub(crate) struct NoiseRemovalSettings {
     luma: u16,
@@ -161,6 +162,35 @@ fn rawtherapee_color_noise_profile_text(settings: &NoiseRemovalSettings) -> Stri
     out
 }
 
+/// Write a partial RawTherapee profile section enabling requested lens corrections.
+pub(crate) fn write_rawtherapee_lens_corrections_profile(
+    path: &PathBuf,
+    lens: LensCorrections,
+) -> Result<Option<PathBuf>> {
+    if !lens.is_enabled() {
+        return Ok(None);
+    }
+
+    let parent = path
+        .parent()
+        .context("lens correction profile has no parent")?;
+    fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    fs::write(path, rawtherapee_lens_corrections_profile_text(&lens))
+        .with_context(|| format!("writing {}", path.display()))?;
+    Ok(Some(path.to_path_buf()))
+}
+
+fn rawtherapee_lens_corrections_profile_text(lens: &LensCorrections) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "[LensProfile]");
+    let _ = writeln!(out, "LcMode=lfauto");
+    let _ = writeln!(out, "UseDistortion={}", lens.distortion);
+    let _ = writeln!(out, "UseVignette={}", lens.vignetting);
+    let _ = writeln!(out, "UseCA={}", lens.ca);
+    let _ = writeln!(out);
+    out
+}
+
 fn push_adjustment_profile(
     out: &mut String,
     adjustments: &mini_film::ProfileAdjustments,
@@ -218,5 +248,19 @@ mod tests {
         assert!(high.luma > base.luma);
         assert!(very_high.luma > high.luma);
         assert!(very_high.chroma > high.chroma);
+    }
+
+    #[test]
+    fn lens_corrections_profile_turns_off_unused_corrections_off() {
+        let text = rawtherapee_lens_corrections_profile_text(&crate::cli::LensCorrections {
+            distortion: true,
+            ca: false,
+            vignetting: true,
+        });
+
+        assert!(text.contains("[LensProfile]"));
+        assert!(text.contains("UseDistortion=true"));
+        assert!(text.contains("UseCA=false"));
+        assert!(text.contains("UseVignette=true"));
     }
 }

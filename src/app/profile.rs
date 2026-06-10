@@ -866,6 +866,8 @@ mod tests {
     use crate::cli::{ExportOptions, JpegSubsampling};
 
     fn apply_args(profile: String, profiles_root: PathBuf, hald_dir: PathBuf) -> ApplyArgs {
+        use crate::cli::LensCorrections;
+
         ApplyArgs {
             raw: PathBuf::from("input.dng"),
             output: PathBuf::from("output.jpg"),
@@ -878,6 +880,7 @@ mod tests {
             keep_intermediate: None,
             no_grain: false,
             color_noise_iso_threshold: 1600,
+            lens_corrections: LensCorrections::default(),
             grain: None,
             grain_preset: None,
             grain_seed: None,
