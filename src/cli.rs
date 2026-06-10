@@ -541,6 +541,9 @@ pub(crate) enum CommandKind {
         #[arg(long = "progressive", alias = "progressive-jpeg")]
         progressive_jpeg: bool,
     },
+
+    /// Check for a newer mini-film release and refresh the Lensfun database.
+    Update,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -921,6 +924,9 @@ mod tests {
                 && name == "mini-film"
                 && guid == "000102030405060708090a0b0c0d0e0f"
         ));
+
+        let cli = Cli::parse_from(["mini-film", "update"]);
+        assert!(matches!(cli.command, CommandKind::Update));
     }
 
     #[test]

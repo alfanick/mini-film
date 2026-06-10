@@ -61,16 +61,23 @@ target/coverage/lcov.info
 
 CI runs the same coverage step on every push/PR and uploads `coverage-lcov` as an artifact.
 
-### Auto-update
+### Update
 
-Release binaries are built with `github-update` enabled in CI and check
-`https://github.com/alfanick/mini-film/releases` on startup. If a newer release
-for your current platform exists, mini-film updates the executable in place.
-The check is automatic and silent: no prompt is shown, and updates are skipped
-if the check cannot complete quickly (for example on offline or slow networks).
+Use `update` to manually refresh the `mini-film` executable from
+`https://github.com/alfanick/mini-film/releases` and rebuild/update the local
+Lensfun profile database in `~/.cache/mini-film/lensfun`.
 
-Local builds are not built with auto-update by default; add the feature explicitly
-with `--features github-update` when desired.
+The command also mirrors Lensfun DB files into the platform default location
+used by RawTherapee.
+
+```sh
+mini-film update
+```
+
+Update behavior is not automatic. Run it explicitly when a new release is
+expected or before long sessions. If this build was not compiled with
+`--features github-update`, update commands report that update features are not
+enabled.
 
 ## Convert XMP Profiles To Hald
 

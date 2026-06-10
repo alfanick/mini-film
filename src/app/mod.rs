@@ -14,12 +14,15 @@ pub(crate) mod sampler;
 pub(crate) mod sampler_assets;
 pub(crate) mod system_stats;
 pub(crate) mod timestamps;
+pub(crate) mod update;
 pub(crate) mod util;
 
 use std::path::Path;
 
 use anyhow::Result;
 use mini_film::{HaldOptions, convert_path, profile_info_line, try_convert_dir};
+
+pub(crate) use update::run_update;
 
 pub(crate) fn run_hald(
     input: &Path,
