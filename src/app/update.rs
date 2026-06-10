@@ -6,10 +6,12 @@ use crate::updater::{LensfunUpdateReport, run_binary_update, run_lensfun_update}
 
 pub(crate) fn run_update() -> Result<()> {
     let mut failures = Vec::new();
+    let mut succeeded = false;
 
     eprintln!("checking mini-film release...");
     let binary_result = run_binary_update(Duration::from_secs(1));
     if let Ok(message) = &binary_result {
+        succeeded = true;
         eprintln!("binary: {message}");
     } else if let Err(error) = binary_result {
         failures.push(format!("binary update failed: {error}"));
@@ -19,26 +21,22 @@ pub(crate) fn run_update() -> Result<()> {
     eprintln!("updating Lensfun database...");
     let lensfun_result = run_lensfun_update();
     match lensfun_result {
-        Ok(report) => print_lensfun_report(&report),
+        Ok(report) => {
+            succeeded = true;
+            print_lensfun_report(&report)
+        }
         Err(error) => {
             failures.push(format!("lensfun update failed: {error}"));
             eprintln!("lensfun: failed: {error}");
         }
     }
 
-    if failures.is_empty() {
+    if failures.is_empty() || (succeeded && !failures.is_empty()) {
         return Ok(());
     }
 
-    if failures.len() == 1 {
-        return Err(anyhow!(
-            "update completed with a partial failure: {}",
-            failures.join("; ")
-        ));
-    }
-
     Err(anyhow!(
-        "mini-film and lensfun updates failed: {}",
+        "both mini-film and lensfun updates failed: {}",
         failures.join("; ")
     ))
 }

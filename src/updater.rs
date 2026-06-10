@@ -1,30 +1,21 @@
+use self_update::Download;
 #[cfg(feature = "github-update")]
 use self_update::cargo_crate_version;
 
-#[cfg(feature = "github-update")]
 use flate2::read::GzDecoder;
-#[cfg(feature = "github-update")]
 use std::collections::HashSet;
-#[cfg(feature = "github-update")]
 use std::fs;
 #[cfg(feature = "github-update")]
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
-#[cfg(feature = "github-update")]
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 
-#[cfg(feature = "github-update")]
-use self_update::Download;
-#[cfg(feature = "github-update")]
 use tar::Archive;
-#[cfg(feature = "github-update")]
 use walkdir::WalkDir;
 
-#[cfg(feature = "github-update")]
 const LENSFUN_ARCHIVE_URL: &str = "https://codeload.github.com/lensfun/lensfun/tar.gz/master";
 
-#[cfg(feature = "github-update")]
 const LENSFUN_DB_SUBDIR: &str = "data/db";
 
 /// Run a timed GitHub release update check and install the latest compatible
@@ -99,7 +90,6 @@ fn asset_target() -> &'static str {
     }
 }
 
-#[cfg(feature = "github-update")]
 pub(crate) fn run_lensfun_update() -> anyhow::Result<LensfunUpdateReport> {
     let download_dir = tempfile::tempdir()?;
     let archive_path = download_dir.path().join("lensfun.tar.gz");
@@ -122,14 +112,6 @@ pub(crate) fn run_lensfun_update() -> anyhow::Result<LensfunUpdateReport> {
     })
 }
 
-#[cfg(not(feature = "github-update"))]
-pub(crate) fn run_lensfun_update() -> anyhow::Result<LensfunUpdateReport> {
-    Err(anyhow::anyhow!(
-        "lensfun update is disabled in this build (build with --features github-update)"
-    ))
-}
-
-#[cfg(feature = "github-update")]
 fn locate_source_db_dir(extracted_root: &Path) -> anyhow::Result<PathBuf> {
     let top = extracted_root
         .read_dir()?
@@ -145,7 +127,6 @@ fn locate_source_db_dir(extracted_root: &Path) -> anyhow::Result<PathBuf> {
     Ok(source)
 }
 
-#[cfg(feature = "github-update")]
 fn copy_directory_contents(source: &Path, destination: &Path) -> anyhow::Result<usize> {
     if destination.exists() {
         fs::remove_dir_all(destination)?;
@@ -172,19 +153,16 @@ fn copy_directory_contents(source: &Path, destination: &Path) -> anyhow::Result<
     Ok(copied)
 }
 
-#[cfg(feature = "github-update")]
 pub(crate) fn lensfun_cache_dir() -> PathBuf {
     home_dir().join(".cache").join("mini-film").join("lensfun")
 }
 
-#[cfg(feature = "github-update")]
 fn home_dir() -> PathBuf {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-#[cfg(feature = "github-update")]
 fn mirror_to_default_lensfun_data_root(cache: &Path) -> anyhow::Result<PathBuf> {
     let data_root = lensfun_default_data_root();
     let mut copied_dirs = HashSet::new();
@@ -209,12 +187,7 @@ fn mirror_to_default_lensfun_data_root(cache: &Path) -> anyhow::Result<PathBuf> 
         let target = data_root.join(rel);
 
         if entry.file_type().is_dir() {
-            copied_dirs.insert(
-                target
-                    .parent()
-                    .unwrap_or_else(|| data_root.as_path())
-                    .to_path_buf(),
-            );
+            copied_dirs.insert(target.parent().unwrap_or(data_root.as_path()).to_path_buf());
             fs::create_dir_all(&target)?;
             continue;
         }
@@ -232,7 +205,6 @@ fn mirror_to_default_lensfun_data_root(cache: &Path) -> anyhow::Result<PathBuf> 
     Ok(data_root)
 }
 
-#[cfg(feature = "github-update")]
 fn lensfun_default_data_root() -> PathBuf {
     #[cfg(target_os = "linux")]
     {
@@ -282,7 +254,6 @@ pub(crate) struct LensfunUpdateReport {
 mod tests {
     use super::*;
 
-    #[cfg(feature = "github-update")]
     #[test]
     fn lensfun_default_data_root_is_deterministic() {
         let _ = lensfun_default_data_root();

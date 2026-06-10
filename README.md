@@ -75,9 +75,8 @@ mini-film update
 ```
 
 Update behavior is not automatic. Run it explicitly when a new release is
-expected or before long sessions. If this build was not compiled with
-`--features github-update`, update commands report that update features are not
-enabled.
+expected or before long sessions. The binary refresh still requires this crate to
+be built with `--features github-update`; the Lensfun database refresh does not.
 
 ## Convert XMP Profiles To Hald
 
