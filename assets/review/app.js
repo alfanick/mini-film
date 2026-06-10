@@ -137,11 +137,68 @@ function renderList(images) {
 
     const meta = document.createElement("div");
     meta.className = "image-row-meta";
-    meta.textContent = `rating ${image.rating} ${image.label !== "none" ? image.label : ""}`;
+    const progress = renderProgressSummary(image);
+    meta.textContent = `rating ${image.rating} ${image.label !== "none" ? image.label : ""} | ${progress.text}`;
 
-    button.append(title, meta);
+    const indicator = document.createElement("span");
+    indicator.className = `image-row-indicator ${progress.state}`;
+    indicator.title = progress.title;
+    indicator.setAttribute("aria-label", progress.title);
+
+    button.append(title, meta, indicator);
     els.list.append(button);
   }
+}
+
+function renderProgressSummary(image) {
+  const profiles = image.profiles || [];
+  const total = profiles.length;
+  const done = profiles.filter((profile) => profile.status === "done").length;
+  const failed = profiles.filter((profile) => profile.status === "failed").length;
+  const processing = profiles.some((profile) => profile.status === "processing");
+  const queued = profiles.some((profile) => profile.status === "queued");
+  const previewReady = Boolean(image.preview_url);
+
+  if (failed > 0 && done + failed === total) {
+    return {
+      state: "failed",
+      text: `${done}/${total}`,
+      title: `${done} profiles ready, ${failed} failed`,
+    };
+  }
+  if (total > 0 && done === total) {
+    return {
+      state: "ready",
+      text: "ready",
+      title: "all profiles are ready",
+    };
+  }
+  if (processing) {
+    return {
+      state: "processing",
+      text: `${done}/${total}`,
+      title: `${done} of ${total} profiles ready, processing`,
+    };
+  }
+  if (queued) {
+    return {
+      state: "queued",
+      text: `${done}/${total}`,
+      title: `${done} of ${total} profiles ready, queued`,
+    };
+  }
+  if (previewReady) {
+    return {
+      state: "preview",
+      text: "preview",
+      title: "camera preview ready, profiles pending",
+    };
+  }
+  return {
+    state: "waiting",
+    text: "waiting",
+    title: "waiting for preview and profiles",
+  };
 }
 
 function renderCurrent(image) {
