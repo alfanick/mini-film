@@ -6,12 +6,12 @@ use std::{
     path::{Component, Path, PathBuf},
     process::{Command, Stdio},
     sync::{
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
         atomic::{AtomicU64, Ordering},
         mpsc::{self, Receiver, Sender},
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -98,6 +98,7 @@ pub(crate) struct ReviewHandle {
     publish_defaults: ReviewPublishDefaults,
     publish_jobs: Arc<Mutex<Vec<ReviewPublishJob>>>,
     next_publish_job_id: Arc<Mutex<u64>>,
+    retouch_scheduler: Arc<ReviewRetouchScheduler>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -128,6 +129,8 @@ struct ReviewImage {
     rating: u8,
     #[serde(default)]
     label: ReviewLabel,
+    #[serde(default)]
+    labels: Vec<ReviewLabel>,
     #[serde(default)]
     tags: Vec<String>,
     #[serde(default)]
@@ -184,6 +187,107 @@ struct ReviewProfileRender {
     updated_at: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct ReviewRetouchJobKey {
+    raw: PathBuf,
+    profile_index: usize,
+}
+
+#[derive(Clone, Debug)]
+struct ScheduledRetouchJob {
+    raw: PathBuf,
+    profile_index: usize,
+    output: PathBuf,
+    render_key: String,
+    due_at: Instant,
+}
+
+#[derive(Default)]
+struct ReviewRetouchScheduler {
+    state: Mutex<ReviewRetouchSchedulerState>,
+    changed: Condvar,
+}
+
+#[derive(Default)]
+struct ReviewRetouchSchedulerState {
+    pending: HashMap<ReviewRetouchJobKey, ScheduledRetouchJob>,
+}
+
+impl ReviewRetouchScheduler {
+    fn schedule(&self, raw: PathBuf, profile_index: usize, output: PathBuf, render_key: String) {
+        self.schedule_after(
+            raw,
+            profile_index,
+            output,
+            render_key,
+            REVIEW_RETOUCH_DEBOUNCE,
+        );
+    }
+
+    fn schedule_after(
+        &self,
+        raw: PathBuf,
+        profile_index: usize,
+        output: PathBuf,
+        render_key: String,
+        delay: Duration,
+    ) {
+        let key = ReviewRetouchJobKey {
+            raw: raw.clone(),
+            profile_index,
+        };
+        let job = ScheduledRetouchJob {
+            raw,
+            profile_index,
+            output,
+            render_key,
+            due_at: Instant::now() + delay,
+        };
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        state.pending.insert(key, job);
+        self.changed.notify_one();
+    }
+
+    fn next_job(&self) -> ScheduledRetouchJob {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        loop {
+            if state.pending.is_empty() {
+                state = self
+                    .changed
+                    .wait(state)
+                    .unwrap_or_else(|poison| poison.into_inner());
+                continue;
+            }
+
+            let (next_key, next_due) = state
+                .pending
+                .iter()
+                .min_by_key(|(_, job)| job.due_at)
+                .map(|(key, job)| (key.clone(), job.due_at))
+                .expect("pending retouch job exists");
+            let now = Instant::now();
+            if next_due <= now {
+                return state
+                    .pending
+                    .remove(&next_key)
+                    .expect("pending retouch job still exists");
+            }
+            let timeout = next_due.saturating_duration_since(now);
+            let (next_state, _) = self
+                .changed
+                .wait_timeout(state, timeout)
+                .unwrap_or_else(|poison| poison.into_inner());
+            state = next_state;
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 enum ReviewRenderStatus {
@@ -198,7 +302,10 @@ enum ReviewRenderStatus {
 struct ReviewUpdateRequest {
     image_id: u64,
     rating: u8,
+    #[serde(default)]
     label: ReviewLabel,
+    #[serde(default)]
+    labels: Vec<ReviewLabel>,
     tags: Vec<String>,
     #[serde(default)]
     notes: String,
@@ -486,6 +593,7 @@ impl ReviewStore {
             selected_profile_index: 0,
             rating: 0,
             label: ReviewLabel::None,
+            labels: Vec::new(),
             tags: Vec::new(),
             notes: String::new(),
             retouch: RetouchSettings::default(),
@@ -625,6 +733,7 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
         publish_defaults,
         publish_jobs: Arc::new(Mutex::new(Vec::new())),
         next_publish_job_id: Arc::new(Mutex::new(1)),
+        retouch_scheduler: Arc::new(ReviewRetouchScheduler::default()),
     };
 
     let listener = TcpListener::bind(&config.address)
@@ -634,6 +743,7 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
         .name("mini-film-review".to_string())
         .spawn(move || run_review_listener(listener, server_handle))
         .context("starting daemon review server thread")?;
+    handle.start_retouch_scheduler()?;
 
     Ok(handle)
 }
@@ -785,7 +895,7 @@ impl ReviewHandle {
         if result.is_ok()
             && let Some(render_key) = pending_retouch_key
         {
-            self.spawn_retouch_job(
+            self.schedule_retouch_job(
                 raw.to_path_buf(),
                 profile_index,
                 output.to_path_buf(),
@@ -907,110 +1017,117 @@ impl ReviewHandle {
         Ok(Some((profile, image.retouch.clone())))
     }
 
-    fn spawn_retouch_job(
+    fn schedule_retouch_job(
         &self,
         raw: PathBuf,
         profile_index: usize,
         output: PathBuf,
         render_key: String,
     ) {
+        self.retouch_scheduler
+            .schedule(raw, profile_index, output, render_key);
+    }
+
+    fn start_retouch_scheduler(&self) -> Result<()> {
         let handle = self.clone();
-        let _ = thread::Builder::new()
+        thread::Builder::new()
             .name("mini-film-review-retouch".to_string())
             .spawn(move || {
-                thread::sleep(REVIEW_RETOUCH_DEBOUNCE);
-                let Ok(Some((profile, retouch))) =
-                    handle.retouch_task_snapshot(&raw, profile_index, &render_key)
-                else {
-                    return;
-                };
-                let started = std::time::Instant::now();
-                let _ = handle.update_render_if_key(&raw, profile_index, &render_key, |render| {
-                    render.status = ReviewRenderStatus::Processing;
-                    render.error = None;
-                });
-                let temp_output = retouch_temp_output(&output, &render_key);
-                let result = handle.render_retouch_output(
-                    &raw,
-                    &profile,
-                    profile_index,
-                    &retouch,
-                    &temp_output,
-                );
-                match result {
-                    Ok(()) => {
-                        match handle.retouch_task_snapshot(&raw, profile_index, &render_key) {
-                            Ok(Some(_)) => {
-                                if let Some(parent) = output.parent()
-                                    && let Err(error) = fs::create_dir_all(parent)
-                                {
-                                    let _ = handle.update_render_if_key(
-                                        &raw,
-                                        profile_index,
-                                        &render_key,
-                                        |render| {
-                                            render.status = ReviewRenderStatus::Failed;
-                                            render.render_key = None;
-                                            render.error = Some(error.to_string());
-                                            render.duration_ms =
-                                                Some(started.elapsed().as_millis() as u64);
-                                        },
-                                    );
-                                    let _ = fs::remove_file(&temp_output);
-                                    return;
-                                }
-                                if let Err(error) = fs::rename(&temp_output, &output) {
-                                    let _ = handle.update_render_if_key(
-                                        &raw,
-                                        profile_index,
-                                        &render_key,
-                                        |render| {
-                                            render.status = ReviewRenderStatus::Failed;
-                                            render.render_key = None;
-                                            render.error = Some(error.to_string());
-                                            render.duration_ms =
-                                                Some(started.elapsed().as_millis() as u64);
-                                        },
-                                    );
-                                    let _ = fs::remove_file(&temp_output);
-                                    return;
-                                }
-                                let _ = handle.update_render_if_key(
-                                    &raw,
-                                    profile_index,
-                                    &render_key,
-                                    |render| {
-                                        render.status = ReviewRenderStatus::Done;
-                                        render.render_key = None;
-                                        render.output_path = Some(output.clone());
-                                        render.error = None;
-                                        render.duration_ms =
-                                            Some(started.elapsed().as_millis() as u64);
-                                    },
-                                );
-                            }
-                            _ => {
-                                let _ = fs::remove_file(&temp_output);
-                            }
+                loop {
+                    let job = handle.retouch_scheduler.next_job();
+                    handle.run_scheduled_retouch_job(job);
+                }
+            })
+            .context("starting review retouch scheduler thread")?;
+        Ok(())
+    }
+
+    fn run_scheduled_retouch_job(&self, job: ScheduledRetouchJob) {
+        let Ok(Some((profile, retouch))) =
+            self.retouch_task_snapshot(&job.raw, job.profile_index, &job.render_key)
+        else {
+            return;
+        };
+        let started = Instant::now();
+        let _ = self.update_render_if_key(&job.raw, job.profile_index, &job.render_key, |render| {
+            render.status = ReviewRenderStatus::Processing;
+            render.error = None;
+        });
+        let temp_output = retouch_temp_output(&job.output, &job.render_key);
+        let result = self.render_retouch_output(
+            &job.raw,
+            &profile,
+            job.profile_index,
+            &retouch,
+            &temp_output,
+        );
+        match result {
+            Ok(()) => {
+                match self.retouch_task_snapshot(&job.raw, job.profile_index, &job.render_key) {
+                    Ok(Some(_)) => {
+                        if let Some(parent) = job.output.parent()
+                            && let Err(error) = fs::create_dir_all(parent)
+                        {
+                            self.record_retouch_render_failed(
+                                &job,
+                                &temp_output,
+                                started,
+                                error.to_string(),
+                            );
+                            return;
                         }
-                    }
-                    Err(error) => {
-                        let message = format!("{error:#}");
-                        let _ = handle.update_render_if_key(
-                            &raw,
-                            profile_index,
-                            &render_key,
+                        if let Err(error) = fs::rename(&temp_output, &job.output) {
+                            self.record_retouch_render_failed(
+                                &job,
+                                &temp_output,
+                                started,
+                                error.to_string(),
+                            );
+                            return;
+                        }
+                        let _ = self.update_render_if_key(
+                            &job.raw,
+                            job.profile_index,
+                            &job.render_key,
                             |render| {
-                                render.status = ReviewRenderStatus::Failed;
+                                render.status = ReviewRenderStatus::Done;
                                 render.render_key = None;
-                                render.error = Some(message);
+                                render.output_path = Some(job.output.clone());
+                                render.error = None;
                                 render.duration_ms = Some(started.elapsed().as_millis() as u64);
                             },
                         );
+                    }
+                    _ => {
                         let _ = fs::remove_file(&temp_output);
                     }
                 }
-            });
+            }
+            Err(error) => {
+                self.record_retouch_render_failed(
+                    &job,
+                    &temp_output,
+                    started,
+                    format!("{error:#}"),
+                );
+            }
+        }
+    }
+
+    fn record_retouch_render_failed(
+        &self,
+        job: &ScheduledRetouchJob,
+        temp_output: &Path,
+        started: Instant,
+        message: String,
+    ) {
+        let _ = self.update_render_if_key(&job.raw, job.profile_index, &job.render_key, |render| {
+            render.status = ReviewRenderStatus::Failed;
+            render.render_key = None;
+            render.error = Some(message);
+            render.duration_ms = Some(started.elapsed().as_millis() as u64);
+        });
+        let _ = fs::remove_file(temp_output);
     }
 
     fn render_retouch_output(
@@ -1107,7 +1224,12 @@ impl ReviewHandle {
                 );
             }
             image.rating = update.rating.min(5);
-            image.label = update.label;
+            image.labels = if update.labels.is_empty() {
+                normalize_review_labels([update.label])
+            } else {
+                normalize_review_labels(update.labels)
+            };
+            image.label = first_review_label(&image.labels);
             image.tags = normalize_tags(update.tags);
             image.notes = update.notes.trim().to_string();
             let retouch_changed = update
@@ -1152,7 +1274,7 @@ impl ReviewHandle {
         drop(store);
         self.broadcast_state()?;
         for (raw, profile_index, output, render_key) in retouch_jobs {
-            self.spawn_retouch_job(raw, profile_index, output, render_key);
+            self.schedule_retouch_job(raw, profile_index, output, render_key);
         }
         Ok(())
     }
@@ -1208,6 +1330,7 @@ impl ReviewHandle {
                     "selected_profile_index": image.selected_profile_index,
                     "rating": image.rating,
                     "label": image.label,
+                    "labels": image_review_labels(image),
                     "tags": image.tags,
                     "notes": image.notes,
                     "retouch": image.retouch,
@@ -2511,7 +2634,11 @@ fn image_passes_publish_filters(image: &ReviewImage, options: &ReviewPublishOpti
     if image.rating < options.min_rating {
         return false;
     }
-    if !options.labels.is_empty() && !options.labels.contains(&image.label) {
+    if !options.labels.is_empty()
+        && image_review_labels(image)
+            .iter()
+            .all(|label| !options.labels.contains(label))
+    {
         return false;
     }
     if !options.tags.is_empty()
@@ -2777,11 +2904,57 @@ fn review_label_name(label: ReviewLabel) -> &'static str {
     }
 }
 
+fn normalize_review_labels<I>(labels: I) -> Vec<ReviewLabel>
+where
+    I: IntoIterator<Item = ReviewLabel>,
+{
+    let selected = labels
+        .into_iter()
+        .filter(|label| *label != ReviewLabel::None)
+        .collect::<HashSet<_>>();
+    [
+        ReviewLabel::Red,
+        ReviewLabel::Yellow,
+        ReviewLabel::Green,
+        ReviewLabel::Blue,
+        ReviewLabel::Purple,
+    ]
+    .into_iter()
+    .filter(|label| selected.contains(label))
+    .collect()
+}
+
+fn first_review_label(labels: &[ReviewLabel]) -> ReviewLabel {
+    labels.first().copied().unwrap_or(ReviewLabel::None)
+}
+
+fn image_review_labels(image: &ReviewImage) -> Vec<ReviewLabel> {
+    if image.labels.is_empty() {
+        normalize_review_labels([image.label])
+    } else {
+        normalize_review_labels(image.labels.clone())
+    }
+}
+
+fn review_labels_text(labels: &[ReviewLabel]) -> String {
+    if labels.is_empty() {
+        "none".to_string()
+    } else {
+        labels
+            .iter()
+            .map(|label| review_label_name(*label))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+}
+
 fn write_review_metadata(
     path: &Path,
     image: &ReviewImage,
     render: &ReviewProfileRender,
 ) -> Result<()> {
+    let labels = image_review_labels(image);
+    let labels_text = review_labels_text(&labels);
     let mut command = Command::new("exiftool");
     command
         .arg("-overwrite_original")
@@ -2790,16 +2963,16 @@ fn write_review_metadata(
         .arg("-q")
         .arg(format!("-Rating={}", image.rating))
         .arg(format!("-XMP:Rating={}", image.rating))
-        .arg(format!("-Label={}", review_label_name(image.label)))
-        .arg(format!("-XMP:Label={}", review_label_name(image.label)))
+        .arg(format!("-Label={labels_text}"))
+        .arg(format!("-XMP:Label={labels_text}"))
         .arg(format!("-XMP:PreservedFileName={}", image.file_name))
         .arg(format!("-XMP:Nickname={}", image.relative_path))
         .arg(format!(
-            "-UserComment=mini-film {} review profile={} rating={} label={} {} notes={}",
+            "-UserComment=mini-film {} review profile={} rating={} labels={} {} notes={}",
             env!("CARGO_PKG_VERSION"),
             render.profile_stem,
             image.rating,
-            review_label_name(image.label),
+            labels_text,
             image.retouch.summary(),
             image.notes
         ));
@@ -2927,6 +3100,7 @@ mod tests {
             ),
             publish_jobs: Arc::new(Mutex::new(Vec::new())),
             next_publish_job_id: Arc::new(Mutex::new(1)),
+            retouch_scheduler: Arc::new(ReviewRetouchScheduler::default()),
         }
     }
 
@@ -3015,6 +3189,45 @@ mod tests {
     }
 
     #[test]
+    fn retouch_scheduler_coalesces_same_raw_profile_to_latest_job() {
+        let scheduler = ReviewRetouchScheduler::default();
+        scheduler.schedule_after(
+            PathBuf::from("frame.NEF"),
+            1,
+            PathBuf::from("old.jpg"),
+            "old".to_string(),
+            Duration::ZERO,
+        );
+        scheduler.schedule_after(
+            PathBuf::from("frame.NEF"),
+            1,
+            PathBuf::from("new.jpg"),
+            "new".to_string(),
+            Duration::ZERO,
+        );
+
+        let job = scheduler.next_job();
+
+        assert_eq!(job.raw, PathBuf::from("frame.NEF"));
+        assert_eq!(job.profile_index, 1);
+        assert_eq!(job.output, PathBuf::from("new.jpg"));
+        assert_eq!(job.render_key, "new");
+    }
+
+    #[test]
+    fn normalize_review_labels_removes_none_and_keeps_display_order() {
+        assert_eq!(
+            normalize_review_labels([
+                ReviewLabel::Purple,
+                ReviewLabel::None,
+                ReviewLabel::Red,
+                ReviewLabel::Purple,
+            ]),
+            vec![ReviewLabel::Red, ReviewLabel::Purple]
+        );
+    }
+
+    #[test]
     fn review_update_advances_shared_server_ui_state() {
         let temp = tempfile::tempdir().unwrap();
         let input = temp.path().join("in");
@@ -3039,6 +3252,7 @@ mod tests {
                 image_id: 1,
                 rating: 1,
                 label: ReviewLabel::Green,
+                labels: vec![ReviewLabel::Green],
                 tags: vec!["keep".to_string()],
                 notes: String::new(),
                 retouch: None,
@@ -3058,6 +3272,7 @@ mod tests {
                 image_id: 2,
                 rating: 0,
                 label: ReviewLabel::None,
+                labels: Vec::new(),
                 tags: Vec::new(),
                 notes: String::new(),
                 retouch: None,
@@ -3130,6 +3345,7 @@ mod tests {
             selected_profile_index: 0,
             rating: 3,
             label: ReviewLabel::Red,
+            labels: vec![ReviewLabel::Red],
             tags: vec!["42".to_string()],
             notes: "keeper".to_string(),
             retouch: RetouchSettings::default(),
@@ -3178,6 +3394,7 @@ mod tests {
             selected_profile_index: 0,
             rating: 2,
             label: ReviewLabel::None,
+            labels: Vec::new(),
             tags: Vec::new(),
             notes: String::new(),
             retouch: RetouchSettings::default(),
@@ -3236,6 +3453,7 @@ mod tests {
             selected_profile_index: 0,
             rating: 5,
             label: ReviewLabel::None,
+            labels: Vec::new(),
             tags: Vec::new(),
             notes: String::new(),
             retouch: RetouchSettings::default(),

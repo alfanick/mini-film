@@ -11,7 +11,7 @@ const state = {
   localRetouchDirty: false,
 };
 
-const RETOUCH_SAVE_DEBOUNCE_MS = 900;
+const RETOUCH_SAVE_DEBOUNCE_MS = 1200;
 
 const els = {
   status: document.getElementById("status"),
@@ -28,6 +28,7 @@ const els = {
   controls: document.querySelector(".controls"),
   tags: document.getElementById("tags"),
   notes: document.getElementById("notes"),
+  retouchGrid: document.getElementById("retouch-grid"),
   cropOverlay: document.getElementById("crop-overlay"),
   cropBox: document.getElementById("crop-box"),
   retouchReset: document.getElementById("retouch-reset"),
@@ -95,6 +96,10 @@ async function loadState() {
 }
 
 function applyState(data) {
+  if (state.data?.version && data?.version && state.data.version !== data.version) {
+    window.location.reload();
+    return;
+  }
   state.data = data;
   state.localRetouchDirty = false;
   applyServerUi(data);
@@ -230,6 +235,7 @@ function updateViewerSafeArea() {
 
   els.workspace.style.setProperty("--review-panel-safe", `${panelSafe}px`);
   els.workspace.style.setProperty("--review-profile-safe", `${profileSafe}px`);
+  if (!els.retouchGrid.hidden) positionRetouchGrid();
   if (!els.cropOverlay.hidden) positionCropOverlay();
 }
 
@@ -278,7 +284,8 @@ function renderList(images) {
     const meta = document.createElement("div");
     meta.className = "image-row-meta";
     const progress = renderProgressSummary(image);
-    meta.textContent = `rating ${image.rating} ${image.label !== "none" ? image.label : ""} | ${progress.text}`;
+    const labels = labelText(imageLabels(image));
+    meta.textContent = `rating ${image.rating}${labels ? ` ${labels}` : ""} | ${progress.text}`;
 
     const indicator = document.createElement("span");
     indicator.className = `image-row-indicator ${progress.state}`;
@@ -418,6 +425,7 @@ function renderCurrent(image) {
   }
 
   applyDraftRetouch(image, selected);
+  renderRetouchGrid(image, selected);
   renderCropOverlay(image);
   renderProfiles(image);
   preloadNearbyImages(image);
@@ -737,9 +745,21 @@ function setActiveReviewButtons(image) {
   document.querySelectorAll("[data-rating]").forEach((button) => {
     button.classList.toggle("active", Number(image?.rating || 0) === Number(button.dataset.rating));
   });
+  const labels = new Set(imageLabels(image));
   document.querySelectorAll("[data-label]").forEach((button) => {
-    button.classList.toggle("active", (image?.label || "none") === button.dataset.label);
+    button.classList.toggle("active", labels.has(button.dataset.label));
   });
+}
+
+function imageLabels(image) {
+  if (Array.isArray(image?.labels) && image.labels.length > 0) {
+    return image.labels.filter((label) => label && label !== "none");
+  }
+  return image?.label && image.label !== "none" ? [image.label] : [];
+}
+
+function labelText(labels) {
+  return labels.join(",");
 }
 
 function currentTags() {
@@ -863,6 +883,7 @@ function applyLocalRetouch(retouch, options = {}) {
   image.retouch = normalizedRetouch(retouch);
   setRetouchInputs(image.retouch);
   applyDraftRetouch(image, selectedProfile(image));
+  renderRetouchGrid(image, selectedProfile(image));
   renderCropOverlay(image);
   renderList(filteredImages());
   renderProfiles(image);
@@ -924,6 +945,26 @@ function retouchIsDefault(retouch) {
     normalized.rotation_degrees === 0 &&
     !normalized.crop
   );
+}
+
+function renderRetouchGrid(image, selected = selectedProfile(image)) {
+  const retouch = normalizedRetouch(image?.retouch || defaultRetouch());
+  const display = profileDisplayState(image, selected);
+  const rotating =
+    Math.abs(retouch.rotation_degrees) > 0.001 &&
+    (state.localRetouchDirty || display.state === "retouch-queued" || display.state === "retouch-processing");
+  els.retouchGrid.hidden = !rotating;
+  if (rotating) positionRetouchGrid();
+}
+
+function positionRetouchGrid() {
+  const imageRect = els.image.getBoundingClientRect();
+  const viewerRect = els.viewer.getBoundingClientRect();
+  if (imageRect.width <= 1 || imageRect.height <= 1) return;
+  els.retouchGrid.style.left = `${imageRect.left - viewerRect.left}px`;
+  els.retouchGrid.style.top = `${imageRect.top - viewerRect.top}px`;
+  els.retouchGrid.style.width = `${imageRect.width}px`;
+  els.retouchGrid.style.height = `${imageRect.height}px`;
 }
 
 function renderCropOverlay(image) {
@@ -1032,7 +1073,8 @@ function reviewRequestBody(image, patch = {}, options = {}) {
   return {
     image_id: image.id,
     rating: patch.rating ?? image.rating,
-    label: patch.label ?? image.label,
+    label: patch.label ?? (patch.labels ? patch.labels[0] || "none" : image.label || "none"),
+    labels: patch.labels ?? imageLabels(image),
     tags: patch.tags ?? (options.useInputs ? currentTags() : image.tags || []),
     notes: patch.notes ?? (options.useInputs ? els.notes.value : image.notes || ""),
     retouch: patch.retouch ?? (options.useInputs ? retouchFromInputs(image) : image.retouch || defaultRetouch()),
@@ -1116,7 +1158,18 @@ async function toggleSelectedProfilePublish() {
 function toggleCurrentLabel(label) {
   const image = findImage(state.currentId);
   if (!image) return;
-  saveReview({ label: image.label === label ? "none" : label });
+  if (label === "none") {
+    saveReview({ label: "none", labels: [] });
+    return;
+  }
+  const labels = new Set(imageLabels(image));
+  if (labels.has(label)) {
+    labels.delete(label);
+  } else {
+    labels.add(label);
+  }
+  const nextLabels = ["red", "yellow", "green", "blue", "purple"].filter((candidate) => labels.has(candidate));
+  saveReview({ label: nextLabels[0] || "none", labels: nextLabels });
 }
 
 function adjustedCurrentRating(delta) {
@@ -1131,12 +1184,7 @@ document.querySelectorAll("[data-rating]").forEach((button) => {
 
 document.querySelectorAll("[data-label]").forEach((button) => {
   button.addEventListener("click", () => {
-    const label = button.dataset.label;
-    if (label === "none") {
-      saveReview({ label });
-    } else {
-      toggleCurrentLabel(label);
-    }
+    toggleCurrentLabel(button.dataset.label);
   });
 });
 
@@ -1148,6 +1196,7 @@ els.notes.addEventListener("blur", () => saveReview());
 els.notes.addEventListener("input", scheduleAutosave);
 els.image.addEventListener("load", () => {
   scheduleViewerSafeAreaUpdate();
+  renderRetouchGrid(findImage(state.currentId));
   renderCropOverlay(findImage(state.currentId));
 });
 [
@@ -1195,6 +1244,18 @@ els.cropBox.addEventListener("pointerdown", startCropDrag);
 els.cropBox.addEventListener("pointermove", updateCropDrag);
 els.cropBox.addEventListener("pointerup", endCropDrag);
 els.cropBox.addEventListener("pointercancel", endCropDrag);
+document.querySelectorAll(".retouch label > span").forEach((label) => {
+  label.title = "Double-click to reset";
+  label.addEventListener("dblclick", (event) => {
+    event.preventDefault();
+    const input = label.parentElement?.querySelector('input[type="range"]');
+    if (!input) return;
+    input.value = input.defaultValue || "0";
+    const retouch = retouchFromInputs();
+    updateRetouchReadouts(retouch);
+    applyLocalRetouch(retouch);
+  });
+});
 els.minRating.addEventListener("change", () => {
   updateSharedUi({ current_image_id: state.currentId, min_rating: minRating() }).catch((error) => console.error(error));
 });
@@ -1334,11 +1395,7 @@ window.addEventListener("keydown", (event) => {
   }
   if (["r", "y", "g", "b", "v", "n"].includes(event.key.toLowerCase())) {
     const label = { r: "red", y: "yellow", g: "green", b: "blue", v: "purple", n: "none" }[event.key.toLowerCase()];
-    if (label === "none") {
-      saveReview({ label });
-    } else {
-      toggleCurrentLabel(label);
-    }
+    toggleCurrentLabel(label);
   }
 });
 

@@ -65,16 +65,28 @@ fn add_retouch_geometry_args(
     };
     let retouch = retouch.clone().normalized();
     let rotation = normalize_rotation(retouch.rotation_degrees);
+    let (mut width, mut height) =
+        image::image_dimensions(input).with_context(|| format!("reading {}", input.display()))?;
     if rotation != 0.0 {
         command.arg("-background").arg("black");
         command.arg("-rotate").arg(format_geometry_float(rotation));
-    }
-    if let Some(crop) = retouch.crop {
-        let (mut width, mut height) = image::image_dimensions(input)
-            .with_context(|| format!("reading {}", input.display()))?;
         if is_quarter_turn(rotation) {
             std::mem::swap(&mut width, &mut height);
+        } else if !is_half_turn(rotation) {
+            let (auto_width, auto_height) = rotated_auto_crop_dimensions(width, height, rotation);
+            command
+                .arg("-gravity")
+                .arg("Center")
+                .arg("-crop")
+                .arg(format!("{auto_width}x{auto_height}+0+0"))
+                .arg("+repage")
+                .arg("-gravity")
+                .arg("NorthWest");
+            width = auto_width;
+            height = auto_height;
         }
+    }
+    if let Some(crop) = retouch.crop {
         let crop_width = ((crop.width * width as f32).round() as u32).clamp(1, width.max(1));
         let crop_height = ((crop.height * height as f32).round() as u32).clamp(1, height.max(1));
         let max_x = width.saturating_sub(crop_width);
@@ -92,6 +104,47 @@ fn add_retouch_geometry_args(
 fn is_quarter_turn(rotation: f32) -> bool {
     let normalized = normalize_rotation(rotation).abs();
     (normalized - 90.0).abs() < 0.001
+}
+
+fn is_half_turn(rotation: f32) -> bool {
+    (normalize_rotation(rotation).abs() - 180.0).abs() < 0.001
+}
+
+fn rotated_auto_crop_dimensions(width: u32, height: u32, rotation: f32) -> (u32, u32) {
+    let width = width.max(1) as f64;
+    let height = height.max(1) as f64;
+    let radians = (normalize_rotation(rotation).abs() as f64).to_radians();
+    let sin_a = radians.sin().abs();
+    let cos_a = radians.cos().abs();
+    if sin_a <= f64::EPSILON || cos_a <= f64::EPSILON {
+        return (width.round() as u32, height.round() as u32);
+    }
+
+    let (long_side, short_side) = if width >= height {
+        (width, height)
+    } else {
+        (height, width)
+    };
+    let (auto_width, auto_height) =
+        if short_side <= 2.0 * sin_a * cos_a * long_side || (sin_a - cos_a).abs() < f64::EPSILON {
+            let side = 0.5 * short_side;
+            if width >= height {
+                (side / sin_a, side / cos_a)
+            } else {
+                (side / cos_a, side / sin_a)
+            }
+        } else {
+            let cos_2a = cos_a * cos_a - sin_a * sin_a;
+            (
+                (width * cos_a - height * sin_a) / cos_2a,
+                (height * cos_a - width * sin_a) / cos_2a,
+            )
+        };
+
+    (
+        auto_width.floor().max(1.0).min(width).round() as u32,
+        auto_height.floor().max(1.0).min(height).round() as u32,
+    )
 }
 
 fn format_geometry_float(value: f32) -> String {
@@ -279,6 +332,7 @@ pub(crate) fn output_ext(output: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::retouch::RetouchSettings;
     use crate::cli::JpegSubsampling;
 
     fn export_options() -> ExportOptions {
@@ -299,6 +353,36 @@ mod tests {
             .get_args()
             .map(|arg| arg.to_string_lossy().to_string())
             .collect()
+    }
+
+    #[test]
+    fn arbitrary_rotation_auto_crops_before_user_crop() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = temp.path().join("input.png");
+        image::RgbImage::new(400, 300).save(&input).unwrap();
+        let mut command = Command::new("convert");
+        let retouch = RetouchSettings {
+            rotation_degrees: 5.0,
+            ..Default::default()
+        };
+
+        add_retouch_geometry_args(&mut command, &input, Some(&retouch)).unwrap();
+
+        let args = command_args(&command);
+        assert_eq!(
+            &args[..8],
+            [
+                "-background",
+                "black",
+                "-rotate",
+                "5",
+                "-gravity",
+                "Center",
+                "-crop",
+                "378x268+0+0",
+            ]
+        );
+        assert_eq!(&args[8..], ["+repage", "-gravity", "NorthWest"]);
     }
 
     #[test]

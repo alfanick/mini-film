@@ -43,6 +43,7 @@
         <section class="viewer">
           <div id="empty" class="empty">Waiting for pictures</div>
           <img id="main-image" alt="" />
+          <div id="retouch-grid" class="retouch-grid" hidden></div>
           <div id="crop-overlay" class="crop-overlay" hidden>
             <div id="crop-box" class="crop-box">
               <span data-crop-handle="nw"></span>
@@ -75,7 +76,6 @@
             </div>
 
             <div class="labels" role="group" aria-label="Label">
-              <button data-label="none" type="button">None</button>
               <button data-label="red" type="button">Red</button>
               <button data-label="yellow" type="button">Yellow</button>
               <button data-label="green" type="button">Green</button>
@@ -201,7 +201,7 @@
             </div>
             <div class="shortcut-row">
               <span class="shortcut-keys"><kbd>n</kbd></span>
-              <span>Clear the color label.</span>
+              <span>Clear all color labels.</span>
             </div>
           </section>
 

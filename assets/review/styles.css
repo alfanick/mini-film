@@ -276,6 +276,43 @@ button:disabled {
   transform: rotate(var(--draft-rotation, 0deg));
 }
 
+.retouch-grid {
+  position: absolute;
+  z-index: 3;
+  pointer-events: none;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  background-image:
+    linear-gradient(
+      to right,
+      transparent calc(33.333% - 0.5px),
+      rgba(255, 255, 255, 0.5) 33.333%,
+      transparent calc(33.333% + 0.5px)
+    ),
+    linear-gradient(
+      to right,
+      transparent calc(66.666% - 0.5px),
+      rgba(255, 255, 255, 0.5) 66.666%,
+      transparent calc(66.666% + 0.5px)
+    ),
+    linear-gradient(
+      to bottom,
+      transparent calc(33.333% - 0.5px),
+      rgba(255, 255, 255, 0.5) 33.333%,
+      transparent calc(33.333% + 0.5px)
+    ),
+    linear-gradient(
+      to bottom,
+      transparent calc(66.666% - 0.5px),
+      rgba(255, 255, 255, 0.5) 66.666%,
+      transparent calc(66.666% + 0.5px)
+    );
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.28);
+}
+
+.retouch-grid[hidden] {
+  display: none;
+}
+
 .crop-overlay {
   position: absolute;
   z-index: 4;
@@ -530,9 +567,9 @@ button:disabled {
 .retouch {
   grid-column: 1 / -1;
   display: grid;
-  grid-template-columns: repeat(4, minmax(120px, 1fr));
-  gap: 6px 10px;
-  padding-top: 6px;
+  grid-template-columns: repeat(5, minmax(100px, 1fr));
+  gap: 4px 8px;
+  padding-top: 5px;
   border-top: 1px solid rgba(120, 120, 112, 0.24);
 }
 
@@ -540,7 +577,7 @@ button:disabled {
 .retouch-actions {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
 }
 
 .retouch-header {
@@ -552,12 +589,17 @@ button:disabled {
 
 .retouch label {
   display: grid;
-  grid-template-columns: 68px minmax(70px, 1fr) 42px;
-  gap: 6px;
+  grid-template-columns: 56px minmax(54px, 1fr) 34px;
+  gap: 4px;
   align-items: center;
   min-width: 0;
   color: #66665f;
   font-size: 10px;
+}
+
+.retouch label > span {
+  cursor: pointer;
+  user-select: none;
 }
 
 .retouch input[type="range"] {
@@ -892,11 +934,11 @@ kbd {
   }
 
   .retouch {
-    grid-template-columns: repeat(3, minmax(116px, 1fr));
+    grid-template-columns: repeat(4, minmax(96px, 1fr));
   }
 
   .retouch label {
-    grid-template-columns: 62px minmax(60px, 1fr) 40px;
+    grid-template-columns: 54px minmax(54px, 1fr) 34px;
   }
 }
 
