@@ -1,4 +1,6 @@
-use super::{model::*, prelude::*, preview::*, publish::*, scheduler::*, server::*, store::*};
+use super::{
+    history::*, model::*, prelude::*, preview::*, publish::*, scheduler::*, server::*, store::*,
+};
 
 /// Start the embedded review server and return a handle daemon workers can update.
 ///
@@ -20,6 +22,7 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
     let mut store = load_store(&state_path)?.unwrap_or_else(|| ReviewStore::new(Vec::new()));
     store.sync_profiles(config.profiles);
     save_store(&state_path, &store)?;
+    let history_profiles = store.profiles.clone();
 
     let gallery_defaults = handle_gallery_defaults(&config.gallery);
     let publish_defaults = ReviewPublishDefaults::new(
@@ -55,6 +58,11 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
         next_publish_job_id: Arc::new(Mutex::new(1)),
         retouch_scheduler: Arc::new(ReviewRetouchScheduler::default()),
     };
+    handle.append_history(history_server_started(
+        &handle.input_root,
+        &handle.output_root,
+        &history_profiles,
+    ))?;
 
     let listener = std::net::TcpListener::bind(&config.address)
         .with_context(|| format!("binding review server to {}", config.address))?;
@@ -80,6 +88,10 @@ impl ReviewHandle {
         &self.state_path
     }
 
+    pub(super) fn append_history(&self, entry: HistoryEntry) -> Result<()> {
+        append_history_entry(&self.output_root, entry)
+    }
+
     pub(crate) fn publish_root(&self) -> PathBuf {
         self.output_root.join("reviewed")
     }
@@ -95,9 +107,12 @@ impl ReviewHandle {
 
     pub(crate) fn record_discovered_raw(&self, raw: &Path) -> Result<()> {
         let mut preview_job = None;
+        let mut history_entry = None;
         let mut store = self.lock_store()?;
+        let discovered = !store.images.iter().any(|image| image.raw_path == raw);
         let image = store.ensure_image(&self.input_root, raw)?;
         let preview_path = self.preview_path_for(raw, image.id);
+        let mut preview_queued = false;
         if !preview_path.is_file()
             && !matches!(
                 image.preview.status,
@@ -110,9 +125,16 @@ impl ReviewHandle {
             image.preview.updated_at = now_string();
             image.updated_at = now_string();
             preview_job = Some((raw.to_path_buf(), preview_path));
+            preview_queued = true;
+        }
+        if discovered || preview_queued {
+            history_entry = Some(history_image_discovered(image, discovered, preview_queued));
         }
         save_store(&self.state_path, &store)?;
         drop(store);
+        if let Some(entry) = history_entry {
+            self.append_history(entry)?;
+        }
         self.broadcast_state()?;
         if let Some((raw, preview_path)) = preview_job {
             self.spawn_preview_job(raw, preview_path);
@@ -175,11 +197,16 @@ impl ReviewHandle {
     {
         let mut store = self.lock_store()?;
         let image = store.ensure_image(&self.input_root, raw)?;
+        let before = image.preview.clone();
         update(&mut image.preview);
         image.preview.updated_at = now_string();
         image.updated_at = now_string();
+        let history_entry = history_preview_changed(image, &before, &image.preview);
         save_store(&self.state_path, &store)?;
         drop(store);
+        if let Some(entry) = history_entry {
+            self.append_history(entry)?;
+        }
         self.broadcast_state()
     }
 
@@ -271,11 +298,17 @@ impl ReviewHandle {
         else {
             bail!("review profile index {profile_index} is not configured");
         };
+        let before = render.clone();
         update(render);
         render.updated_at = now_string();
+        let after = render.clone();
         image.updated_at = now_string();
+        let history_entry = history_render_changed(image, &before, &after);
         save_store(&self.state_path, &store)?;
         drop(store);
+        if let Some(entry) = history_entry {
+            self.append_history(entry)?;
+        }
         self.broadcast_state()
     }
 
@@ -290,6 +323,7 @@ impl ReviewHandle {
         F: FnOnce(&mut ReviewProfileRender),
     {
         let mut updated = false;
+        let mut history_entry = None;
         let mut store = self.lock_store()?;
         let image = store.ensure_image(&self.input_root, raw)?;
         let Some(render) = image
@@ -300,14 +334,20 @@ impl ReviewHandle {
             bail!("review profile index {profile_index} is not configured");
         };
         if render.render_key.as_deref() == Some(render_key) {
+            let before = render.clone();
             update(render);
             render.updated_at = now_string();
+            let after = render.clone();
             image.updated_at = now_string();
+            history_entry = history_render_changed(image, &before, &after);
             updated = true;
             save_store(&self.state_path, &store)?;
         }
         drop(store);
         if updated {
+            if let Some(entry) = history_entry {
+                self.append_history(entry)?;
+            }
             self.broadcast_state()?;
         }
         Ok(updated)
@@ -527,7 +567,9 @@ impl ReviewHandle {
 
     pub(super) fn apply_review_update(&self, update: ReviewUpdateRequest) -> Result<()> {
         let mut retouch_jobs = Vec::new();
+        let mut history_entries = Vec::new();
         let mut store = self.lock_store()?;
+        let before_ui = store.ui.clone();
         let advance = update
             .advance_after_update
             .then(|| store.planned_advance_after(update.image_id));
@@ -550,6 +592,7 @@ impl ReviewHandle {
                     update.image_id
                 );
             }
+            let before_image = image.clone();
             image.rating = update.rating.min(5);
             image.labels = if update.labels.is_empty() {
                 normalize_review_labels([update.label])
@@ -612,14 +655,23 @@ impl ReviewHandle {
                 }
             }
             image.updated_at = now_string();
+            if let Some(entry) = history_review_changed(&before_image, image) {
+                history_entries.push(entry);
+            }
         }
         if let Some(advance) = advance {
             store.apply_advance(advance);
         } else {
             store.normalize_ui();
         }
+        if let Some(entry) = history_ui_changed(&store, &before_ui, &store.ui) {
+            history_entries.push(entry);
+        }
         save_store(&self.state_path, &store)?;
         drop(store);
+        for entry in history_entries {
+            self.append_history(entry)?;
+        }
         self.broadcast_state()?;
         for (raw, profile_index, output, render_key) in retouch_jobs {
             self.schedule_retouch_job(raw, profile_index, output, render_key);
@@ -629,9 +681,14 @@ impl ReviewHandle {
 
     pub(super) fn apply_ui_update(&self, update: ReviewUiUpdateRequest) -> Result<()> {
         let mut store = self.lock_store()?;
+        let before_ui = store.ui.clone();
         store.set_ui(update)?;
+        let history_entry = history_ui_changed(&store, &before_ui, &store.ui);
         save_store(&self.state_path, &store)?;
         drop(store);
+        if let Some(entry) = history_entry {
+            self.append_history(entry)?;
+        }
         self.broadcast_state()
     }
 
@@ -782,6 +839,7 @@ impl ReviewHandle {
             .lock()
             .map_err(|_| anyhow!("review publish jobs lock poisoned"))?
             .push(job.clone());
+        self.append_history(history_publish_started(&job, &args))?;
         self.broadcast_state()?;
 
         let handle = self.clone();
@@ -976,12 +1034,18 @@ impl ReviewHandle {
         let Some(job) = jobs.iter_mut().find(|job| job.id == job_id) else {
             bail!("review publish job {job_id} does not exist");
         };
+        let before = job.clone();
         update(job);
+        let after = job.clone();
+        let history_entry = history_publish_changed(&before, &after);
         if jobs.len() > 20 {
             let remove = jobs.len() - 20;
             jobs.drain(0..remove);
         }
         drop(jobs);
+        if let Some(entry) = history_entry {
+            self.append_history(entry)?;
+        }
         self.broadcast_state()
     }
 

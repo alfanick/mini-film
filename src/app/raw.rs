@@ -1,7 +1,9 @@
 use std::{
-    fs,
+    fs, io,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    thread,
+    time::Duration,
 };
 
 use anyhow::{Context, Result, bail};
@@ -53,6 +55,7 @@ pub(crate) fn run_raw_develop_jpeg(
     )
 }
 
+#[derive(Clone, Copy)]
 enum RawOutput {
     Tiff16,
     Jpeg8 {
@@ -80,6 +83,52 @@ fn run_rawtherapee(
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
 
+    let status =
+        rawtherapee_status_with_retry(rawtherapee, profiles, raw, output, output_format, quiet)?;
+
+    if !status.success() {
+        bail!("rawtherapee failed with status {status}");
+    }
+    if !output.exists() {
+        bail!("rawtherapee finished without creating {}", output.display());
+    }
+
+    Ok(())
+}
+
+fn rawtherapee_status_with_retry(
+    rawtherapee: &Path,
+    profiles: &[PathBuf],
+    raw: &Path,
+    output: &Path,
+    output_format: RawOutput,
+    quiet: bool,
+) -> Result<std::process::ExitStatus> {
+    const MAX_ATTEMPTS: usize = 6;
+    for attempt in 1..=MAX_ATTEMPTS {
+        let mut command =
+            rawtherapee_command(rawtherapee, profiles, raw, output, output_format, quiet);
+        match command.status() {
+            Ok(status) => return Ok(status),
+            Err(error) if is_executable_busy(&error) && attempt < MAX_ATTEMPTS => {
+                thread::sleep(Duration::from_millis(25 * attempt as u64));
+            }
+            Err(error) => {
+                return Err(error).with_context(|| format!("running {}", rawtherapee.display()));
+            }
+        }
+    }
+    unreachable!("rawtherapee retry loop always returns")
+}
+
+fn rawtherapee_command(
+    rawtherapee: &Path,
+    profiles: &[PathBuf],
+    raw: &Path,
+    output: &Path,
+    output_format: RawOutput,
+    quiet: bool,
+) -> Command {
     let mut command = Command::new(rawtherapee);
     command.arg("-q").arg("-Y");
     for profile in profiles {
@@ -103,18 +152,11 @@ fn run_rawtherapee(
     if quiet {
         command.stdout(Stdio::null()).stderr(Stdio::null());
     }
-    let status = command
-        .status()
-        .with_context(|| format!("running {}", rawtherapee.display()))?;
+    command
+}
 
-    if !status.success() {
-        bail!("rawtherapee failed with status {status}");
-    }
-    if !output.exists() {
-        bail!("rawtherapee finished without creating {}", output.display());
-    }
-
-    Ok(())
+fn is_executable_busy(error: &io::Error) -> bool {
+    error.raw_os_error() == Some(26)
 }
 
 fn rawtherapee_subsampling(subsampling: JpegSubsampling) -> u8 {
@@ -156,14 +198,16 @@ mod tests {
             )
             .replace("__CREATE_OUTPUT__", if create_output { "1" } else { "0" })
             .replace("__EXIT_CODE__", &exit_code.to_string());
-        let mut file = fs::File::create(path)?;
+        let temp_path = path.with_extension("tmp");
+        let mut file = fs::File::create(&temp_path)?;
         file.write_all(rendered.as_bytes())?;
         file.flush()?;
         file.sync_all()?;
         drop(file);
-        let mut permissions = fs::metadata(path)?.permissions();
+        let mut permissions = fs::metadata(&temp_path)?.permissions();
         permissions.set_mode(0o755);
-        fs::set_permissions(path, permissions)?;
+        fs::set_permissions(&temp_path, permissions)?;
+        fs::rename(&temp_path, path)?;
         Ok(path.with_file_name("command.log"))
     }
 

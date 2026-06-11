@@ -615,14 +615,16 @@ mod tests {
     }
 
     fn write_executable_script(path: &Path, rendered: &str) -> Result<()> {
-        let mut file = fs::File::create(path)?;
+        let temp_path = path.with_extension("tmp");
+        let mut file = fs::File::create(&temp_path)?;
         file.write_all(rendered.as_bytes())?;
         file.flush()?;
         file.sync_all()?;
         drop(file);
-        let mut permissions = fs::metadata(path)?.permissions();
+        let mut permissions = fs::metadata(&temp_path)?.permissions();
         permissions.set_mode(0o755);
-        fs::set_permissions(path, permissions)?;
+        fs::set_permissions(&temp_path, permissions)?;
+        fs::rename(&temp_path, path)?;
         Ok(())
     }
 

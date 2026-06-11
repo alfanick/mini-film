@@ -301,6 +301,100 @@ fn review_update_advances_shared_server_ui_state() {
 }
 
 #[test]
+fn review_history_records_review_and_publish_state_changes() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(input.join("day")).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let raw = input.join("day").join("frame-1.NEF");
+    fs::write(&raw, b"raw").unwrap();
+
+    let handle = test_handle(
+        input,
+        output.clone(),
+        vec![profile(0, "Classic"), profile(1, "Fade")],
+    );
+
+    handle.record_discovered_raw(&raw).unwrap();
+    handle
+        .apply_review_update(ReviewUpdateRequest {
+            image_id: 1,
+            rating: 4,
+            label: ReviewLabel::Red,
+            labels: vec![ReviewLabel::Red],
+            tags: vec!["keep".to_string()],
+            notes: "publish candidate".to_string(),
+            retouch: None,
+            selected_profile_index: 1,
+            publish_profile_indexes: Some(vec![1]),
+            advance_after_update: false,
+        })
+        .unwrap();
+    handle
+        .apply_ui_update(ReviewUiUpdateRequest {
+            current_image_id: Some(1),
+            min_rating: 3,
+        })
+        .unwrap();
+
+    handle.publish_jobs.lock().unwrap().push(ReviewPublishJob {
+        id: 1,
+        album: "finals".to_string(),
+        status: ReviewPublishJobStatus::Running,
+        started_at: now_string(),
+        finished_at: None,
+        processed: 0,
+        total: 0,
+        step: "starting".to_string(),
+        current: None,
+        linked: 0,
+        skipped: 0,
+        galleries: 0,
+        error: None,
+    });
+    handle
+        .record_publish_job_progress(
+            1,
+            &ReviewPublishProgress {
+                processed: 1,
+                total: 2,
+                linked: 1,
+                skipped: 0,
+                galleries: 0,
+                step: "link".to_string(),
+                current: Some("frame-1.jpg".to_string()),
+            },
+        )
+        .unwrap();
+    handle
+        .record_publish_job_done(
+            1,
+            &PublishReport {
+                linked: 1,
+                skipped: 1,
+                min_rating: 3,
+                galleries: 0,
+                gallery_roots: Vec::new(),
+            },
+        )
+        .unwrap();
+
+    let history = fs::read_to_string(output.join("history.txt")).unwrap();
+    assert!(history.contains("review image day/frame-1.NEF #1"));
+    assert!(history.contains("review metadata changed day/frame-1.NEF #1"));
+    assert!(history.contains("rating: 0 -> 4"));
+    assert!(history.contains("labels: none -> red"));
+    assert!(history.contains("tags: none -> keep"));
+    assert!(history.contains("selected profile: 0:Classic -> 1:Fade"));
+    assert!(history.contains("review UI changed"));
+    assert!(history.contains("minimum rating: 0 -> 3"));
+    assert!(history.contains("review publish job #1 changed"));
+    assert!(history.contains("processed: 0 -> 1"));
+    assert!(history.contains("status: running -> done"));
+}
+
+#[test]
 fn review_state_reports_connected_client_count() {
     let temp = tempfile::tempdir().unwrap();
     let input = temp.path().join("in");

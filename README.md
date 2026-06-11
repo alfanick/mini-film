@@ -339,9 +339,11 @@ connected browser through the server-sent event stream. At the end of a pass,
 the shared filter moves to the next rating level.
 
 Review data and the shared browser position are persisted in
-`<output>/mini-film-review.json`. That makes it possible to restart the daemon,
-reopen the browser, and continue the multi-pass culling flow where it stopped. A
-typical pass is to rate everything `0` or `1`, filter to `>= 1`, rate the
+`<output>/mini-film-review.json`. A human-readable audit trail of review, render,
+and publish state changes is appended to `<output>/history.txt`. Together those
+files make it possible to restart the daemon, reopen the browser, and continue
+the multi-pass culling flow where it stopped. A typical pass is to rate
+everything `0` or `1`, filter to `>= 1`, rate the
 survivors higher, and repeat until the final subset is ready.
 
 Keyboard shortcuts are available in the browser UI; press `?` to show the
