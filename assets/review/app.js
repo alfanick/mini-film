@@ -488,17 +488,14 @@ function renderImageExif(image) {
   const parts = [
     exif.shooting_mode ? `Mode ${exif.shooting_mode}` : "",
     exif.camera_model || "",
-    exif.lens_model || "",
+    exif.focal_length || "",
     exif.iso ? `ISO ${exif.iso}` : "",
     exif.aperture || "",
     exif.shutter_speed || "",
   ].filter(Boolean);
-  for (const part of parts) {
-    const item = document.createElement("span");
-    item.textContent = part;
-    item.title = part;
-    els.imageExif.append(item);
-  }
+  const text = parts.join(" · ");
+  els.imageExif.textContent = text;
+  els.imageExif.title = text;
 }
 
 function selectedProfile(image) {

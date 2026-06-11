@@ -643,6 +643,8 @@ impl ReviewHandle {
         let images = images
             .iter()
             .map(|image| {
+                let mut exif = image.exif.clone();
+                exif.sanitize_text_fields();
                 let profiles = image
                     .profiles
                     .iter()
@@ -667,7 +669,7 @@ impl ReviewHandle {
                     "id": image.id,
                     "relative_path": image.relative_path,
                     "file_name": image.file_name,
-                    "exif": image.exif,
+                    "exif": exif,
                     "preview_status": image.preview.status,
                     "preview_url": if image.preview.status == ReviewRenderStatus::Done {
                         Some(format!("preview/{}", image.id))

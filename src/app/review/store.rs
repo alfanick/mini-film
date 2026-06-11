@@ -36,6 +36,7 @@ impl ReviewStore {
             if self.images[index].exif.is_empty() {
                 self.images[index].exif = extract_gallery_exif(raw).unwrap_or_default();
             }
+            self.images[index].exif.sanitize_text_fields();
             return Ok(&mut self.images[index]);
         }
 
@@ -51,12 +52,14 @@ impl ReviewStore {
             .and_then(|name| name.to_str())
             .unwrap_or("unknown")
             .to_string();
+        let mut exif = extract_gallery_exif(raw).unwrap_or_default();
+        exif.sanitize_text_fields();
         let mut image = ReviewImage {
             id,
             raw_path: raw.to_path_buf(),
             relative_path: relative,
             file_name,
-            exif: extract_gallery_exif(raw).unwrap_or_default(),
+            exif,
             preview: ReviewPreview::default(),
             selected_profile_index: 0,
             rating: 0,

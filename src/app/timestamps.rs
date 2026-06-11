@@ -31,6 +31,16 @@ impl GalleryExifData {
             && self.lens_model.is_none()
             && self.shooting_mode.is_none()
     }
+
+    pub(crate) fn sanitize_text_fields(&mut self) {
+        clean_optional_exif_text(&mut self.focal_length);
+        clean_optional_exif_text(&mut self.aperture);
+        clean_optional_exif_text(&mut self.shutter_speed);
+        clean_optional_exif_text(&mut self.iso);
+        clean_optional_exif_text(&mut self.camera_model);
+        clean_optional_exif_text(&mut self.lens_model);
+        clean_optional_exif_text(&mut self.shooting_mode);
+    }
 }
 
 pub(crate) fn sync_output_timestamps_from_exif(raw: &Path, output: &Path) -> Result<bool> {
@@ -173,10 +183,9 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
     let shutter_speed = exif_field_value(&exif, Tag::ExposureTime);
     let iso = extract_capture_iso_from_exif(&exif).map(|iso| iso.to_string());
 
-    let camera_model = exif_field_value(&exif, Tag::Model).map(strip_surrounding_quotes);
+    let camera_model = exif_field_value(&exif, Tag::Model);
     let lens_model = exif_field_value(&exif, Tag::LensModel)
-        .or_else(|| exif_field_value(&exif, Tag::LensSpecification))
-        .map(strip_surrounding_quotes);
+        .or_else(|| exif_field_value(&exif, Tag::LensSpecification));
     let shooting_mode = exif_exposure_program(&exif);
 
     Ok(GalleryExifData {
@@ -190,12 +199,67 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
     })
 }
 
-fn strip_surrounding_quotes(value: String) -> String {
+fn clean_optional_exif_text(value: &mut Option<String>) {
+    *value = value
+        .take()
+        .map(clean_exif_display_text)
+        .filter(|value| !value.is_empty());
+}
+
+fn clean_exif_display_text(value: String) -> String {
+    let trimmed = value.trim_matches('\0').trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    if trimmed.contains('\0')
+        && let Some(value) = trimmed
+            .split('\0')
+            .map(clean_exif_scalar_text)
+            .find(|value| !value.is_empty())
+    {
+        return value;
+    }
+
+    first_quoted_exif_list_value(trimmed).unwrap_or_else(|| clean_exif_scalar_text(trimmed))
+}
+
+fn clean_exif_scalar_text(value: &str) -> String {
     value
         .trim()
         .trim_matches('"')
         .trim_matches('\'')
+        .trim_matches('\0')
+        .trim()
         .to_string()
+}
+
+fn first_quoted_exif_list_value(value: &str) -> Option<String> {
+    let mut chars = value.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '"' || ch == '\'' {
+            let quote = ch;
+            let mut item = String::new();
+            for next in chars.by_ref() {
+                if next == quote {
+                    break;
+                }
+                item.push(next);
+            }
+            let cleaned = clean_exif_scalar_text(&item);
+            if !cleaned.is_empty() {
+                return Some(cleaned);
+            }
+            continue;
+        }
+
+        if ch == ',' || ch.is_whitespace() {
+            continue;
+        }
+
+        return None;
+    }
+    None
 }
 
 fn format_exif_aperture(raw: String) -> String {
@@ -342,7 +406,7 @@ fn exif_field_value(exif: &exif::Exif, tag: Tag) -> Option<String> {
     exif.fields()
         .find(|field| field.tag == tag)
         .map(|field| field.display_value().with_unit(exif).to_string())
-        .map(|value| value.trim_matches('\0').trim().to_string())
+        .map(clean_exif_display_text)
         .filter(|value| !value.is_empty())
 }
 
@@ -412,8 +476,8 @@ fn unix_timestamp_to_system_time(timestamp: i64) -> Option<SystemTime> {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_exif_aperture, parse_exif_datetime, parse_exif_datetime_with_offset,
-        parse_iso_value, strip_surrounding_quotes, sync_output_timestamps_from_exif,
+        clean_exif_display_text, format_exif_aperture, parse_exif_datetime,
+        parse_exif_datetime_with_offset, parse_iso_value, sync_output_timestamps_from_exif,
     };
     use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
     use filetime::{FileTime, set_file_atime, set_file_mtime};
@@ -540,18 +604,38 @@ mod tests {
     }
 
     #[test]
-    fn strip_surrounding_quotes_removes_camera_wrappers() {
+    fn clean_exif_display_text_removes_camera_wrappers() {
         assert_eq!(
-            strip_surrounding_quotes("\"NIKON Z 6\"".to_string()),
+            clean_exif_display_text("\"NIKON Z 6\"".to_string()),
             "NIKON Z 6"
         );
         assert_eq!(
-            strip_surrounding_quotes("'NIKON Z 6'".to_string()),
+            clean_exif_display_text("'NIKON Z 6'".to_string()),
             "NIKON Z 6"
         );
         assert_eq!(
-            strip_surrounding_quotes("NIKON Z 6".to_string()),
+            clean_exif_display_text("NIKON Z 6".to_string()),
             "NIKON Z 6"
+        );
+    }
+
+    #[test]
+    fn clean_exif_display_text_uses_first_non_empty_ascii_item() {
+        assert_eq!(
+            clean_exif_display_text("\"NIKKOR Z 28mm f/2.8\", \"\", \"\", \"\"".to_string()),
+            "NIKKOR Z 28mm f/2.8"
+        );
+        assert_eq!(
+            clean_exif_display_text("\"\", \"\", \"NIKKOR\"".to_string()),
+            "NIKKOR"
+        );
+        assert_eq!(
+            clean_exif_display_text("Lens, Inc 28mm".to_string()),
+            "Lens, Inc 28mm"
+        );
+        assert_eq!(
+            clean_exif_display_text("NIKON Z 7_2\0\0".to_string()),
+            "NIKON Z 7_2"
         );
     }
 }
