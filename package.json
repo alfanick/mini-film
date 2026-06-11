@@ -1,6 +1,6 @@
 {
   "name": "mini-film",
-  "version": "7.6.1",
+  "version": "7.6.2",
   "private": true,
   "description": "Frontend asset checks for embedded mini-film review and gallery UIs.",
   "scripts": {
@@ -10,12 +10,12 @@
     "check:assets": "npm run format:assets:check && npm run lint:assets"
   },
   "devDependencies": {
-    "@eslint/js": "10.0.1",
-    "eslint": "10.4.1",
+    "@eslint/js": "9.39.4",
+    "eslint": "9.39.4",
     "globals": "17.6.0",
     "htmlhint": "1.9.2",
     "prettier": "3.8.4",
-    "stylelint": "17.13.0",
-    "stylelint-config-standard": "40.0.0"
+    "stylelint": "16.18.0",
+    "stylelint-config-standard": "38.0.0"
   }
 }
