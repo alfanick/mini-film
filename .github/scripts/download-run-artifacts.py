@@ -10,6 +10,14 @@ from io import BytesIO
 from pathlib import Path
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+NO_REDIRECT_OPENER = urllib.request.build_opener(NoRedirect)
+
+
 def request_json(url, token):
     request = urllib.request.Request(
         url,
@@ -26,7 +34,7 @@ def request_json(url, token):
         return json.loads(response.read().decode("utf-8"))
 
 
-def request_bytes(url, token):
+def request_redirect_location(url, token):
     request = urllib.request.Request(
         url,
         headers={
@@ -36,8 +44,35 @@ def request_bytes(url, token):
             "User-Agent": "mini-film-release-workflow",
         },
     )
+    try:
+        with NO_REDIRECT_OPENER.open(request, timeout=60) as response:
+            return None, response.read()
+    except urllib.error.HTTPError as error:
+        if error.code in (301, 302, 303, 307, 308):
+            location = error.headers.get("Location")
+            if location:
+                return location, None
+        raise
+
+
+def request_unsigned_bytes(url):
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "mini-film-release-workflow",
+        },
+    )
     with urllib.request.urlopen(request, timeout=180) as response:
         return response.read()
+
+
+def request_bytes(url, token):
+    redirect, body = request_redirect_location(url, token)
+    if body is not None:
+        return body
+    if not redirect:
+        raise RuntimeError(f"artifact download did not return a body or redirect: {url}")
+    return request_unsigned_bytes(redirect)
 
 
 def list_artifacts(repo, run_id, token):
