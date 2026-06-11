@@ -251,6 +251,7 @@ function updateViewerSafeArea() {
   els.workspace.style.setProperty("--review-profile-safe", `${profileSafe}px`);
   if (!els.retouchGrid.hidden) positionRetouchGrid();
   if (!els.cropOverlay.hidden) positionCropOverlay();
+  if (!els.gestureFeedback.hidden) positionGestureFeedback();
 }
 
 let viewerSafeAreaFrame = 0;
@@ -1068,7 +1069,7 @@ function positionRetouchGrid() {
 
 function renderCropOverlay(image) {
   const crop = cropForOverlay(image);
-  const visible = Boolean(image && crop);
+  const visible = Boolean(image && cropDraftIsFor(image) && crop);
   els.cropOverlay.hidden = !visible;
   els.cropBox.hidden = !visible;
   els.cropTools.hidden = !cropDraftIsFor(image);
@@ -1109,7 +1110,13 @@ function cropDraftIsFor(image) {
 function cropForOverlay(image) {
   if (!image) return null;
   if (cropDraftIsFor(image)) return state.cropDraft || fullFrameCrop();
-  return normalizedRetouch(image.retouch || defaultRetouch()).crop;
+  return null;
+}
+
+function hasCropAdjustment(image) {
+  if (!image) return false;
+  const retouch = normalizedRetouch(image.retouch || defaultRetouch());
+  return Boolean(retouch.crop) || Math.abs(retouch.rotation_degrees) > 0.001;
 }
 
 function clearCropDraftState() {
@@ -1164,20 +1171,21 @@ function approveCropEditing() {
 function clearCropDraft() {
   const image = findImage(state.currentId);
   if (!image) return;
-  if (!cropDraftIsFor(image)) {
-    beginCropEditing();
-  }
-  state.cropDraft = null;
-  state.cropDraftRotation = 0;
-  updateCropRotationControls();
-  applyDraftRetouch(image, selectedProfile(image));
-  renderRetouchGrid(image, selectedProfile(image));
-  renderCropOverlay(image);
+  clearCropDraftState();
+  applyLocalRetouch(
+    normalizedRetouch({
+      ...retouchFromInputs(image),
+      crop: null,
+      rotation_degrees: 0,
+    }),
+  );
 }
 
 function updateCropButtons(image) {
   const editing = cropDraftIsFor(image);
-  els.cropToggle.classList.toggle("active", editing);
+  const adjusted = editing || hasCropAdjustment(image);
+  els.cropToggle.classList.toggle("active", adjusted);
+  els.cropToggle.title = adjusted ? "Crop or rotation adjustment active" : "Crop/rotate";
   els.cropOk.hidden = !editing;
   els.cropCancel.hidden = !editing;
 }
@@ -1512,10 +1520,23 @@ function showCurrentRatingFeedback() {
 function showGestureFeedback(text) {
   clearTimeout(state.gestureFeedbackTimer);
   els.gestureFeedback.textContent = text;
+  positionGestureFeedback();
   els.gestureFeedback.hidden = false;
   state.gestureFeedbackTimer = setTimeout(() => {
     els.gestureFeedback.hidden = true;
   }, 850);
+}
+
+function positionGestureFeedback() {
+  const imageRect = els.image.getBoundingClientRect();
+  const viewerRect = els.viewer.getBoundingClientRect();
+  if (imageRect.width <= 0 || imageRect.height <= 0 || viewerRect.width <= 0 || viewerRect.height <= 0) {
+    els.gestureFeedback.style.left = "50%";
+    els.gestureFeedback.style.top = "50%";
+    return;
+  }
+  els.gestureFeedback.style.left = `${imageRect.left - viewerRect.left + imageRect.width / 2}px`;
+  els.gestureFeedback.style.top = `${imageRect.top - viewerRect.top + imageRect.height / 2}px`;
 }
 
 function startViewerTouch(event) {
@@ -1547,7 +1568,7 @@ async function endViewerTouch(event) {
   const absX = Math.abs(dx);
   const absY = Math.abs(dy);
   if (absX >= TOUCH_SWIPE_MIN_PX && absX / Math.max(1, absY) >= TOUCH_SWIPE_RATIO) {
-    await move(dx > 0 ? 1 : -1);
+    await move(dx > 0 ? -1 : 1);
     showCurrentRatingFeedback();
     return;
   }
