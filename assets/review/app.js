@@ -1650,6 +1650,15 @@ function pointerTargetElement(event) {
   return event.target instanceof Element ? event.target : null;
 }
 
+function isViewerGestureSurface(event) {
+  const target = pointerTargetElement(event);
+  return Boolean(target && !target.closest(".crop-overlay, .crop-tools, .retouch-grid"));
+}
+
+function preventNativeViewerAction(event) {
+  if (isViewerGestureSurface(event)) event.preventDefault();
+}
+
 function canStartViewerZoom(event) {
   if (state.cropEditing || !findImage(state.currentId) || !els.image.getAttribute("src")) return false;
   if (event.pointerType !== "touch" && event.button !== 0) return false;
@@ -1658,7 +1667,7 @@ function canStartViewerZoom(event) {
 }
 
 function startZoomHold(event) {
-  if (!canStartViewerZoom(event)) return;
+  if (!canStartViewerZoom(event)) return false;
   cancelZoomHold();
   state.zoomLastPoint = { clientX: event.clientX, clientY: event.clientY };
   state.zoomPress = {
@@ -1672,6 +1681,7 @@ function startZoomHold(event) {
   } catch {
     // Some browsers reject capture for already-cancelled touch gestures.
   }
+  return true;
 }
 
 function activateZoomFromHold(pointerId) {
@@ -1744,7 +1754,7 @@ function cssUrl(value) {
 }
 
 function startViewerTouch(event) {
-  startZoomHold(event);
+  if (startZoomHold(event)) event.preventDefault();
   if (event.pointerType !== "touch" || state.cropEditing || !findImage(state.currentId)) return;
   const target = pointerTargetElement(event);
   if (target?.closest(".crop-overlay, .crop-tools")) return;
@@ -1826,8 +1836,12 @@ els.viewer.addEventListener("pointercancel", (event) => {
   state.touchGesture = null;
 });
 els.viewer.addEventListener("contextmenu", (event) => {
-  if (state.zoomActive || event.target === els.image) event.preventDefault();
+  if (state.zoomActive || state.zoomPress || isViewerGestureSurface(event)) event.preventDefault();
 });
+els.viewer.addEventListener("dragstart", preventNativeViewerAction);
+els.viewer.addEventListener("selectstart", preventNativeViewerAction);
+els.viewer.addEventListener("touchstart", preventNativeViewerAction, { passive: false });
+els.viewer.addEventListener("touchmove", preventNativeViewerAction, { passive: false });
 [
   els.retouchExposure,
   els.retouchHighlights,
