@@ -280,17 +280,25 @@ function renderList(images) {
     const title = document.createElement("div");
     title.className = "image-row-title";
     title.textContent = image.file_name;
+    title.title = image.relative_path || image.file_name;
 
     const meta = document.createElement("div");
     meta.className = "image-row-meta";
     const progress = renderProgressSummary(image);
     const labels = imageLabels(image);
-    meta.append(document.createTextNode(`rating ${image.rating}`));
+    const rating = document.createElement("span");
+    rating.className = "image-row-rating";
+    rating.append(document.createTextNode(`${image.rating}`));
     if (labels.length > 0) {
-      meta.append(document.createTextNode(" "));
-      meta.append(renderLabelBadges(labels));
+      rating.append(document.createTextNode(" "));
+      rating.append(renderLabelBadges(labels));
     }
-    meta.append(document.createTextNode(` | ${progress.text}`));
+
+    const progressText = document.createElement("span");
+    progressText.className = "image-row-progress";
+    progressText.textContent = progress.text;
+    progressText.title = progress.title;
+    meta.append(rating, progressText);
 
     const indicator = document.createElement("span");
     indicator.className = `image-row-indicator ${progress.state}`;
