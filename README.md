@@ -1,18 +1,36 @@
 # mini-film
 
-`mini-film` is a RAW film-emulation workflow tool. It combines RawTherapee RAW
-development, XMP/Hald film profiles, procedural grain, batch processing, camera
-ingest, and a live browser review/publish UI into one command-line application.
+`mini-film` is a complete RAW-to-review-to-publish workflow for photographers
+who want film-emulation output without opening Lightroom. It watches an inbox of
+RAW files, develops them through RawTherapee, applies user-supplied film profiles
+and grain, serves a live review UI, records ratings/tags/notes, and publishes the
+final selection with metadata preserved.
+
+The fastest way in is the desktop app:
+
+```sh
+mini-film app
+```
+
+That opens a native wizard for the usual daemon/review settings, profile
+selection, Nikon WTU ingest, lens corrections, output folders, and publishing
+defaults. The app remembers the last successful setup, starts the same daemon
+pipeline used by the CLI, waits for the embedded review server, and then opens
+the review UI in a webview. Terminal output is still kept when launched from a
+shell, so long-running processing stays inspectable.
+
+For scripted use, every part of the workflow is still available as CLI commands:
+`apply`, `batch`, `daemon`, `sampler`, `pp3`, `info`, `nikon`, and `update`.
 
 ## Top Features
 
+- **Single-binary desktop workflow**: `mini-film app` provides a Tauri launcher
+  with native directory pickers, a structured profile tree, saved options,
+  network sharing toggle, Nikon WTU IP input, and system light/dark theme.
 - **Live review and publish workflow**: run `daemon` on an inbox folder, open the
   browser UI, review new pictures as they arrive, rate/tag/label them in
   multiple passes, compare profile variants, and publish the final selection
   with live job progress.
-- **Desktop app mode**: run `mini-film app` to open a Tauri wizard, choose the
-  daemon/review options, start the daemon in-process, and continue in an
-  embedded review webview.
 - **Film emulation from user-supplied profiles**: apply XMP emulation presets,
   Hald CLUT PNGs, or RawTherapee `.pp3` files; convert Adobe Camera Raw /
   Lightroom `crs:RGBTable` profile XMPs into cached 16-bit Hald PNGs.
@@ -78,9 +96,10 @@ Run the desktop wizard instead of writing the daemon command manually:
 mini-film app
 ```
 
-The app wizard starts the same daemon/review workflow in the current process,
-then opens the review UI inside the Tauri webview. The GUI binary keeps normal
-terminal stdout/stderr behavior when launched from a shell.
+The app wizard defaults to `~/Pictures/Scratch/Inbox` for input,
+`~/Pictures/mini-film` for output, and `~/Pictures/RNI` as the profile-library
+root unless `MINI_FILM_PROFILES_ROOT` is set. It remembers the last successful
+setup in `~/.cache/mini-film/app-settings.json`.
 
 Use Nikon WTU ingest with the same daemon:
 

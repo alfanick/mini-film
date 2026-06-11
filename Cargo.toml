@@ -1,6 +1,6 @@
 [package]
 name = "mini-film"
-version = "9.0.0"
+version = "9.1.0"
 description = "Apply Lightroom-style film emulation profiles to RAW files with RawTherapee and HALD workflows."
 repository = "https://github.com/alfanick/mini-film"
 homepage = "https://github.com/alfanick/mini-film"
@@ -10,7 +10,7 @@ license = "MIT"
 
 [features]
 default = ["desktop-app"]
-desktop-app = ["dep:tauri", "dep:tauri-build"]
+desktop-app = ["dep:tauri", "dep:tauri-build", "dep:tauri-plugin-dialog"]
 github-update = ["dep:self_update"]
 
 [profile.release]
@@ -54,6 +54,7 @@ async-stream = "0.3.6"
 tower-http = { version = "0.6.11", features = ["fs"] }
 tower = "0.5.3"
 tauri = { version = "2.11.2", optional = true }
+tauri-plugin-dialog = { version = "2.7.1", optional = true }
 
 [build-dependencies]
 tauri-build = { version = "2.6.2", optional = true }

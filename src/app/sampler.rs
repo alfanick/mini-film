@@ -454,7 +454,7 @@ fn resolve_sampler_jobs(jobs: Option<usize>) -> Result<usize> {
     Ok(jobs)
 }
 
-fn collect_xmp_profiles(root: &Path) -> Result<Vec<PathBuf>> {
+pub(crate) fn collect_xmp_profiles(root: &Path) -> Result<Vec<PathBuf>> {
     let mut profiles = Vec::new();
     for entry in WalkDir::new(root)
         .follow_links(true)
@@ -477,7 +477,7 @@ fn collect_xmp_profiles(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(profiles)
 }
 
-fn emulation_root(root: &Path) -> PathBuf {
+pub(crate) fn emulation_root(root: &Path) -> PathBuf {
     let direct = root.join("emulations");
     if direct.is_dir() {
         return direct;
@@ -1416,7 +1416,7 @@ impl ProfileTrie {
     }
 }
 
-fn profile_display_name_from_relative(relative: &str) -> String {
+pub(crate) fn profile_display_name_from_relative(relative: &str) -> String {
     let stem = Path::new(relative)
         .file_stem()
         .and_then(|s| s.to_str())
@@ -1424,7 +1424,7 @@ fn profile_display_name_from_relative(relative: &str) -> String {
     stem.trim().to_string()
 }
 
-fn profile_name_parts(name: &str) -> Vec<String> {
+pub(crate) fn profile_name_parts(name: &str) -> Vec<String> {
     let parts: Vec<_> = name
         .replace(['_', '-', '/', '.'], " ")
         .split_whitespace()
@@ -1751,7 +1751,7 @@ fn profile_filename_without_xmp(filename: &str) -> String {
         .to_string()
 }
 
-fn variant_sort_key(label: &str) -> String {
+pub(crate) fn variant_sort_key(label: &str) -> String {
     variant_sort_key_from_parts(&profile_name_parts(label), label)
 }
 

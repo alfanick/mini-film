@@ -20,23 +20,35 @@
 
         <form id="wizard" autocomplete="off">
           <div class="grid two">
-            <label>
-              <span>Input Inbox</span>
-              <input id="input" name="input" required placeholder="/path/to/inbox" />
-            </label>
-            <label>
-              <span>Output Folder</span>
-              <input id="output" name="output" required placeholder="/path/to/output" />
-            </label>
+            <div class="field">
+              <label for="input">Input Inbox</label>
+              <div class="path-row">
+                <input id="input" name="input" required placeholder="/path/to/inbox" />
+                <button type="button" class="secondary" data-pick-directory="input">Choose</button>
+              </div>
+            </div>
+            <div class="field">
+              <label for="output">Output Folder</label>
+              <div class="path-row">
+                <input id="output" name="output" required placeholder="/path/to/output" />
+                <button type="button" class="secondary" data-pick-directory="output">Choose</button>
+              </div>
+            </div>
           </div>
 
-          <label>
-            <span>Profiles Root</span>
-            <input id="profilesRoot" name="profilesRoot" placeholder="/path/to/profile-library" />
-          </label>
+          <div class="field">
+            <label for="profilesRoot">Profiles Root</label>
+            <div class="path-row">
+              <input id="profilesRoot" name="profilesRoot" placeholder="/path/to/profile-library" />
+              <button type="button" class="secondary" data-pick-directory="profilesRoot">Choose</button>
+            </div>
+          </div>
 
-          <label>
-            <span>Profiles</span>
+          <div class="field">
+            <div class="field-title">
+              <label for="profiles">Profiles</label>
+              <button type="button" class="secondary" id="chooseProfiles">Choose Profiles</button>
+            </div>
             <textarea
               id="profiles"
               name="profiles"
@@ -44,17 +56,28 @@
               rows="4"
               placeholder="One profile selector per line, for example:&#10;Classic Film&#10;Soft Fade grainy"
             ></textarea>
-          </label>
+          </div>
 
           <div class="grid three">
             <label>
-              <span>Review Address</span>
-              <input id="reviewAddress" name="reviewAddress" />
+              <span>Review Port</span>
+              <input id="reviewPort" name="reviewPort" inputmode="numeric" type="number" min="1" max="65535" />
+            </label>
+            <label>
+              <span>Nikon WTU IP</span>
+              <input id="nikonWtu" name="nikonWtu" placeholder="optional" />
             </label>
             <label>
               <span>Jobs</span>
               <input id="jobs" name="jobs" inputmode="numeric" type="number" min="1" />
             </label>
+          </div>
+
+          <div class="checks inline">
+            <label><input id="allowOthers" name="allowOthers" type="checkbox" /> Allow others on the network</label>
+          </div>
+
+          <div class="grid three">
             <label>
               <span>Long Edge</span>
               <input id="longEdge" name="longEdge" inputmode="numeric" type="number" min="1" />
@@ -99,10 +122,6 @@
                 <input id="haldDir" name="haldDir" />
               </label>
               <label>
-                <span>Nikon WTU IP</span>
-                <input id="nikonWtu" name="nikonWtu" placeholder="optional" />
-              </label>
-              <label>
                 <span>Color Denoise ISO</span>
                 <input id="colorNoiseIsoThreshold" name="colorNoiseIsoThreshold" type="number" min="0" />
               </label>
@@ -130,5 +149,25 @@
         </form>
       </section>
     </main>
+    <div id="profilePicker" class="modal" hidden>
+      <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="profilePickerTitle">
+        <header>
+          <div>
+            <p class="eyebrow" id="profilePickerRoot">profiles</p>
+            <h2 id="profilePickerTitle">Choose Profiles</h2>
+          </div>
+          <button type="button" class="secondary" id="closeProfilePicker">Close</button>
+        </header>
+        <div class="modal-tools">
+          <input id="profileFilter" placeholder="Filter profiles" />
+          <span id="profilePickerCount" class="status">0 selected</span>
+        </div>
+        <div id="profileTree" class="profile-tree"></div>
+        <footer>
+          <button type="button" class="secondary" id="clearProfiles">Clear</button>
+          <button type="button" id="applyProfiles">Use Selected Profiles</button>
+        </footer>
+      </section>
+    </div>
   </body>
 </html>
