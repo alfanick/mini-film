@@ -43,9 +43,15 @@ jobs:
           cd /
           find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
           cd "$GITHUB_WORKSPACE"
-          git init
+          git -c init.defaultBranch=main init
           git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git -c http.extraheader="AUTHORIZATION: bearer ${GITHUB_TOKEN}" fetch --force --tags origin "$CHECKOUT_REF"
+          auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+          if ! git -c "http.https://github.com/.extraheader=${auth_header}" fetch --force --tags origin "$CHECKOUT_REF" &&
+            ! git -c "http.https://github.com/.extraheader=${auth_header}" fetch --force --tags origin "refs/heads/${CHECKOUT_REF}" &&
+            ! git -c "http.https://github.com/.extraheader=${auth_header}" fetch --force --tags origin "refs/tags/${CHECKOUT_REF}"; then
+            echo "Failed to fetch ${CHECKOUT_REF} from ${GITHUB_REPOSITORY}" >&2
+            exit 1
+          fi
           git checkout --force FETCH_HEAD
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
@@ -147,9 +153,15 @@ jobs:
           cd /
           find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
           cd "$GITHUB_WORKSPACE"
-          git init
+          git -c init.defaultBranch=main init
           git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git -c http.extraheader="AUTHORIZATION: bearer ${GITHUB_TOKEN}" fetch --force --tags origin "$CHECKOUT_REF"
+          auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+          if ! git -c "http.https://github.com/.extraheader=${auth_header}" fetch --force --tags origin "$CHECKOUT_REF" &&
+            ! git -c "http.https://github.com/.extraheader=${auth_header}" fetch --force --tags origin "refs/heads/${CHECKOUT_REF}" &&
+            ! git -c "http.https://github.com/.extraheader=${auth_header}" fetch --force --tags origin "refs/tags/${CHECKOUT_REF}"; then
+            echo "Failed to fetch ${CHECKOUT_REF} from ${GITHUB_REPOSITORY}" >&2
+            exit 1
+          fi
           git checkout --force FETCH_HEAD
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
@@ -331,9 +343,15 @@ jobs:
           cd /
           find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
           cd "$GITHUB_WORKSPACE"
-          git init
+          git -c init.defaultBranch=main init
           git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git -c http.extraheader="AUTHORIZATION: bearer ${GITHUB_TOKEN}" fetch --force --tags origin "$CHECKOUT_REF"
+          auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+          if ! git -c "http.https://github.com/.extraheader=${auth_header}" fetch --force --tags origin "$CHECKOUT_REF" &&
+            ! git -c "http.https://github.com/.extraheader=${auth_header}" fetch --force --tags origin "refs/heads/${CHECKOUT_REF}" &&
+            ! git -c "http.https://github.com/.extraheader=${auth_header}" fetch --force --tags origin "refs/tags/${CHECKOUT_REF}"; then
+            echo "Failed to fetch ${CHECKOUT_REF} from ${GITHUB_REPOSITORY}" >&2
+            exit 1
+          fi
           git checkout --force FETCH_HEAD
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
