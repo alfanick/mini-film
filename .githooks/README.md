@@ -10,8 +10,10 @@ git config core.hooksPath .githooks
 
 Installed hooks:
 
-- `pre-commit` runs `cargo fmt --all -- --check` and `cargo clippy --all-targets -- -D warnings`
-- `pre-push` runs the same checks
-- `run-style-checks.sh` (used by both hooks) now includes a toolchain version check via `check-cargo-versions.sh`
+- `pre-commit` checks toolchain versions, direct Cargo dependency freshness,
+  frontend assets, Rust formatting, CLI-only clippy, and GUI clippy when the
+  local WebKitGTK development packages are installed.
+- `pre-push` runs the same checks.
+- `run-style-checks.sh` is the shared check runner used by both hooks.
 
 This makes both commit and push fail early when formatting or lint checks are not clean.

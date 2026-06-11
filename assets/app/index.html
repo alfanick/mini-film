@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>mini-film app</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <main class="shell">
+      <section class="panel">
+        <header>
+          <div>
+            <p class="eyebrow">mini-film</p>
+            <h1>Start Review Daemon</h1>
+          </div>
+          <span id="version" class="version">loading</span>
+        </header>
+
+        <form id="wizard" autocomplete="off">
+          <div class="grid two">
+            <label>
+              <span>Input Inbox</span>
+              <input id="input" name="input" required placeholder="/path/to/inbox" />
+            </label>
+            <label>
+              <span>Output Folder</span>
+              <input id="output" name="output" required placeholder="/path/to/output" />
+            </label>
+          </div>
+
+          <label>
+            <span>Profiles Root</span>
+            <input id="profilesRoot" name="profilesRoot" placeholder="/path/to/profile-library" />
+          </label>
+
+          <label>
+            <span>Profiles</span>
+            <textarea
+              id="profiles"
+              name="profiles"
+              required
+              rows="4"
+              placeholder="One profile selector per line, for example:&#10;Classic Film&#10;Soft Fade grainy"
+            ></textarea>
+          </label>
+
+          <div class="grid three">
+            <label>
+              <span>Review Address</span>
+              <input id="reviewAddress" name="reviewAddress" />
+            </label>
+            <label>
+              <span>Jobs</span>
+              <input id="jobs" name="jobs" inputmode="numeric" type="number" min="1" />
+            </label>
+            <label>
+              <span>Long Edge</span>
+              <input id="longEdge" name="longEdge" inputmode="numeric" type="number" min="1" />
+            </label>
+          </div>
+
+          <div class="grid three">
+            <label>
+              <span>JPEG Quality</span>
+              <input id="jpgQuality" name="jpgQuality" inputmode="numeric" type="number" min="1" max="100" />
+            </label>
+            <label>
+              <span>Gallery</span>
+              <select id="gallery" name="gallery">
+                <option value="">None</option>
+                <option value="modern">Modern</option>
+                <option value="soft">Soft</option>
+                <option value="compact">Compact</option>
+                <option value="hero">Hero</option>
+                <option value="phone">Phone</option>
+              </select>
+            </label>
+            <label>
+              <span>Publish Folder</span>
+              <input id="publishAlbum" name="publishAlbum" />
+            </label>
+          </div>
+
+          <details>
+            <summary>Engine and processing options</summary>
+            <div class="grid two compact">
+              <label>
+                <span>RawTherapee</span>
+                <input id="rawtherapee" name="rawtherapee" />
+              </label>
+              <label>
+                <span>Convert</span>
+                <input id="convert" name="convert" />
+              </label>
+              <label>
+                <span>Hald Cache</span>
+                <input id="haldDir" name="haldDir" />
+              </label>
+              <label>
+                <span>Nikon WTU IP</span>
+                <input id="nikonWtu" name="nikonWtu" placeholder="optional" />
+              </label>
+              <label>
+                <span>Color Denoise ISO</span>
+                <input id="colorNoiseIsoThreshold" name="colorNoiseIsoThreshold" type="number" min="0" />
+              </label>
+              <label>
+                <span>Grain Preset</span>
+                <select id="grainPreset" name="grainPreset">
+                  <option value="">Profile default</option>
+                  <option value="light">Light</option>
+                  <option value="medium">Medium</option>
+                  <option value="heavy">Heavy</option>
+                </select>
+              </label>
+            </div>
+            <div class="checks">
+              <label><input id="progressiveJpeg" name="progressiveJpeg" type="checkbox" /> Progressive JPEG</label>
+              <label><input id="noGrain" name="noGrain" type="checkbox" /> Disable profile grain</label>
+              <label><input id="lensCorrections" name="lensCorrections" type="checkbox" /> Lens corrections</label>
+            </div>
+          </details>
+
+          <footer>
+            <p id="status" class="status">Ready.</p>
+            <button id="start" type="submit">Start Review</button>
+          </footer>
+        </form>
+      </section>
+    </main>
+  </body>
+</html>

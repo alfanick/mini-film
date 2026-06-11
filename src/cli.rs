@@ -16,6 +16,9 @@ pub(crate) struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum CommandKind {
+    /// Launch the desktop wizard and embedded review webview.
+    App,
+
     /// Convert Adobe Camera Raw crs:RGBTable XMP profiles to Hald CLUT PNGs.
     Hald {
         /// XMP profile file or directory to convert.
@@ -1130,6 +1133,9 @@ mod tests {
 
         let cli = Cli::parse_from(["mini-film", "update"]);
         assert!(matches!(cli.command, CommandKind::Update));
+
+        let cli = Cli::parse_from(["mini-film", "app"]);
+        assert!(matches!(cli.command, CommandKind::App));
     }
 
     #[test]

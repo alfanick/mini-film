@@ -1,0 +1,186 @@
+:root {
+  color-scheme: light;
+  font-family: "PragmataPro Mono Liga", "PragmataPro Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: #f3f2ee;
+  color: #1f2527;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+.shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+}
+
+.panel {
+  width: min(1120px, 100%);
+  border: 1px solid #c9c5ba;
+  background: #fbfaf6;
+  box-shadow: 0 20px 60px rgba(31, 37, 39, 0.14);
+  padding: 28px;
+}
+
+header,
+footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+header {
+  margin-bottom: 24px;
+}
+
+h1,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 30px;
+  font-weight: 700;
+}
+
+.eyebrow,
+.version {
+  color: #687174;
+  font-size: 13px;
+}
+
+form {
+  display: grid;
+  gap: 18px;
+}
+
+.grid {
+  display: grid;
+  gap: 16px;
+}
+
+.two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.compact {
+  margin-top: 14px;
+}
+
+label {
+  display: grid;
+  gap: 7px;
+  font-size: 13px;
+  color: #4d5659;
+}
+
+input,
+textarea,
+select {
+  width: 100%;
+  border: 1px solid #b8b4aa;
+  border-radius: 4px;
+  background: #fff;
+  color: #1f2527;
+  padding: 10px 11px;
+  font: inherit;
+  font-size: 14px;
+}
+
+textarea {
+  resize: vertical;
+  min-height: 96px;
+}
+
+details {
+  border-top: 1px solid #ddd8ce;
+  padding-top: 14px;
+}
+
+summary {
+  cursor: pointer;
+  color: #334044;
+  font-weight: 700;
+}
+
+.checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px 22px;
+  margin-top: 14px;
+}
+
+.checks label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.checks input {
+  width: auto;
+}
+
+footer {
+  border-top: 1px solid #ddd8ce;
+  padding-top: 18px;
+}
+
+.status {
+  min-height: 20px;
+  color: #475154;
+  font-size: 13px;
+}
+
+.status.error {
+  color: #a93120;
+}
+
+button {
+  border: 0;
+  border-radius: 4px;
+  background: #1f2527;
+  color: #fff;
+  padding: 11px 18px;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+@media (max-width: 820px) {
+  .shell {
+    padding: 16px;
+    place-items: start stretch;
+  }
+
+  .panel {
+    padding: 18px;
+  }
+
+  .two,
+  .three {
+    grid-template-columns: 1fr;
+  }
+
+  header,
+  footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}

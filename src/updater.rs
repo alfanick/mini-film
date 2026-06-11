@@ -46,11 +46,12 @@ pub(crate) fn run_binary_update(_timeout: Duration) -> anyhow::Result<String> {
 
 #[cfg(feature = "github-update")]
 fn check_for_update() -> anyhow::Result<self_update::Status> {
+    let target = asset_target();
     let status = self_update::backends::github::Update::configure()
         .repo_owner("alfanick")
         .repo_name("mini-film")
         .bin_name("mini-film")
-        .target(asset_target())
+        .target(&target)
         .no_confirm(true)
         .show_download_progress(false)
         .current_version(cargo_crate_version!())
@@ -76,8 +77,8 @@ fn api_host_is_reachable(host: &str, port: u16, timeout: Duration) -> bool {
 }
 
 #[cfg(feature = "github-update")]
-fn asset_target() -> &'static str {
-    if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+fn asset_target() -> String {
+    let base = if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
         "x86_64-pc-windows-msvc"
     } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         "x86_64-unknown-linux-gnu"
@@ -87,6 +88,12 @@ fn asset_target() -> &'static str {
         "aarch64-apple-darwin"
     } else {
         self_update::get_target()
+    };
+
+    if cfg!(feature = "desktop-app") {
+        format!("{base}-gui")
+    } else {
+        base.to_string()
     }
 }
 

@@ -10,6 +10,9 @@ ingest, and a live browser review/publish UI into one command-line application.
   browser UI, review new pictures as they arrive, rate/tag/label them in
   multiple passes, compare profile variants, and publish the final selection
   with live job progress.
+- **Desktop app mode**: run `mini-film app` to open a Tauri wizard, choose the
+  daemon/review options, start the daemon in-process, and continue in an
+  embedded review webview.
 - **Film emulation from user-supplied profiles**: apply XMP emulation presets,
   Hald CLUT PNGs, or RawTherapee `.pp3` files; convert Adobe Camera Raw /
   Lightroom `crs:RGBTable` profile XMPs into cached 16-bit Hald PNGs.
@@ -69,6 +72,16 @@ mini-film daemon /path/to/inbox /path/to/output \
 Then open `http://localhost:8090`, review pictures as they are processed, and use
 the publish wizard to export the final album.
 
+Run the desktop wizard instead of writing the daemon command manually:
+
+```sh
+mini-film app
+```
+
+The app wizard starts the same daemon/review workflow in the current process,
+then opens the review UI inside the Tauri webview. The GUI binary keeps normal
+terminal stdout/stderr behavior when launched from a shell.
+
 Use Nikon WTU ingest with the same daemon:
 
 ```sh
@@ -84,6 +97,31 @@ mini-film daemon /path/to/inbox /path/to/output \
 ```sh
 cargo build --release
 ```
+
+The default build includes the Tauri desktop app so `cargo run --release -- app`
+works from the normal binary. On Linux this requires the WebKitGTK development
+packages used by Tauri. On Debian/Ubuntu/Linux Mint:
+
+```sh
+sudo apt-get install \
+  libwebkit2gtk-4.1-dev \
+  libjavascriptcoregtk-4.1-dev \
+  libsoup-3.0-dev \
+  libgtk-3-dev \
+  libayatana-appindicator3-dev \
+  librsvg2-dev \
+  patchelf
+```
+
+To build the command-line binary without desktop GUI dependencies:
+
+```sh
+cargo build --release --no-default-features
+```
+
+GitHub releases publish both CLI artifacts and GUI artifacts. GUI artifact names
+end in `-gui` before the platform extension, and GUI builds update from matching
+`-gui` release assets.
 
 Required external dependencies at startup for image-generation commands:
 

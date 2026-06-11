@@ -114,24 +114,60 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             extension: ""
+            artifact_suffix: ""
             runs_on: self-hosted
             use_cross: false
             cargo_features: "github-update"
+            default_features: false
           - target: aarch64-unknown-linux-gnu
             extension: ""
+            artifact_suffix: ""
             runs_on: ubuntu-latest
             use_cross: true
             cargo_features: ""
+            default_features: false
           - target: aarch64-apple-darwin
             extension: ""
+            artifact_suffix: ""
             runs_on: macos-latest
             use_cross: false
             cargo_features: "github-update"
+            default_features: false
           - target: x86_64-pc-windows-msvc
             runs_on: windows-latest
             extension: ".exe"
+            artifact_suffix: ""
             use_cross: false
             cargo_features: "github-update"
+            default_features: false
+          - target: x86_64-unknown-linux-gnu
+            extension: ""
+            artifact_suffix: "-gui"
+            runs_on: self-hosted
+            use_cross: false
+            cargo_features: "github-update"
+            default_features: true
+          - target: aarch64-unknown-linux-gnu
+            extension: ""
+            artifact_suffix: "-gui"
+            runs_on: ubuntu-24.04-arm
+            use_cross: false
+            cargo_features: "github-update"
+            default_features: true
+          - target: aarch64-apple-darwin
+            extension: ""
+            artifact_suffix: "-gui"
+            runs_on: macos-latest
+            use_cross: false
+            cargo_features: "github-update"
+            default_features: true
+          - target: x86_64-pc-windows-msvc
+            runs_on: windows-latest
+            extension: ".exe"
+            artifact_suffix: "-gui"
+            use_cross: false
+            cargo_features: "github-update"
+            default_features: true
 
     steps:
       - name: Checkout (GitHub-hosted)
@@ -208,6 +244,29 @@ jobs:
         run: |
           cargo install --locked cross
 
+      - name: Install Linux GUI dependencies
+        if: ${{ matrix.artifact_suffix == '-gui' && contains(matrix.target, 'linux') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v apt-get >/dev/null 2>&1; then
+            echo "apt-get is required to install Linux GUI build dependencies on this runner." >&2
+            exit 1
+          fi
+          apt_prefix=()
+          if [ "$(id -u)" -ne 0 ]; then
+            apt_prefix=(sudo)
+          fi
+          "${apt_prefix[@]}" apt-get update
+          "${apt_prefix[@]}" apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
       - name: Build release binary
         shell: bash
         run: |
@@ -217,18 +276,22 @@ jobs:
           if [ -n "$cargo_features" ]; then
             feature_args=(--features "$cargo_features")
           fi
+          default_feature_args=()
+          if [ "${{ matrix.default_features }}" != "true" ]; then
+            default_feature_args=(--no-default-features)
+          fi
 
           if [ "${{ matrix.use_cross }}" = "true" ]; then
-            if ! env PKG_CONFIG_ALLOW_CROSS=1 cross build --release --target "${{ matrix.target }}" "${feature_args[@]}"; then
+            if ! env PKG_CONFIG_ALLOW_CROSS=1 cross build --release --target "${{ matrix.target }}" "${default_feature_args[@]}" "${feature_args[@]}"; then
               echo "::warning::cross build failed; retrying native cargo build for ${{ matrix.target }}."
-              PKG_CONFIG_ALLOW_CROSS=1 cargo build --release --target "${{ matrix.target }}" "${feature_args[@]}"
+              PKG_CONFIG_ALLOW_CROSS=1 cargo build --release --target "${{ matrix.target }}" "${default_feature_args[@]}" "${feature_args[@]}"
             fi
           else
-            PKG_CONFIG_ALLOW_CROSS=1 cargo build --release --target "${{ matrix.target }}" "${feature_args[@]}"
+            PKG_CONFIG_ALLOW_CROSS=1 cargo build --release --target "${{ matrix.target }}" "${default_feature_args[@]}" "${feature_args[@]}"
           fi
 
       - name: Publish to crates.io
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        if: matrix.target == 'x86_64-unknown-linux-gnu' && matrix.artifact_suffix == ''
         shell: bash
         run: |
           set -euo pipefail
@@ -303,14 +366,14 @@ jobs:
           set -euo pipefail
           mkdir -p artifacts
           binary="target/${{ matrix.target }}/release/mini-film${{ matrix.extension }}"
-          artifact="artifacts/mini-film-${{ steps.release-tag.outputs.tag }}-${{ matrix.target }}${{ matrix.extension }}"
+          artifact="artifacts/mini-film-${{ steps.release-tag.outputs.tag }}-${{ matrix.target }}${{ matrix.artifact_suffix }}${{ matrix.extension }}"
           cp "$binary" "$artifact"
 
       - name: Upload artifact
         if: ${{ matrix.runs_on != 'self-hosted' }}
         uses: actions/upload-artifact@v4
         with:
-          name: mini-film-${{ matrix.target }}
+          name: mini-film-${{ matrix.target }}${{ matrix.artifact_suffix }}
           path: artifacts/*
           if-no-files-found: error
 

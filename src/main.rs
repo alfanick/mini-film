@@ -16,6 +16,7 @@ use clap::Parser;
 use crate::app::apply::{ApplyArgs, run_apply};
 use crate::app::batch::{BatchArgs, run_batch};
 use crate::app::batch_daemon::{BatchDaemonArgs, run_batch_daemon};
+use crate::app::desktop::run_desktop_app;
 use crate::app::info::{InfoArgs, run_info};
 use crate::app::nikon::{NikonArgs, run_nikon};
 use crate::app::pp3::{Pp3Args, run_pp3};
@@ -41,6 +42,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse_from(&args);
 
     match cli.command {
+        CommandKind::App => run_desktop_app(),
         CommandKind::Hald {
             input,
             output,
