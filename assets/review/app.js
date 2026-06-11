@@ -16,6 +16,7 @@ const state = {
   gestureFeedbackTimer: null,
   retouchInputImageId: null,
   localRetouchDirty: false,
+  mobileDrawer: null,
 };
 
 const RETOUCH_SAVE_DEBOUNCE_MS = 1200;
@@ -72,6 +73,8 @@ const els = {
   minRating: document.getElementById("min-rating"),
   app: document.querySelector(".app"),
   shortcutsHelp: document.getElementById("shortcuts-help"),
+  mobileDrawerButtons: document.querySelectorAll("[data-mobile-drawer]"),
+  mobilePublish: document.getElementById("mobile-publish"),
   shortcutsOverlay: document.getElementById("shortcuts-overlay"),
   shortcutsClose: document.getElementById("shortcuts-close"),
   appVersion: document.getElementById("app-version"),
@@ -101,6 +104,7 @@ const els = {
 };
 
 const wideProfilesQuery = window.matchMedia("(min-width: 901px) and (min-height: 620px)");
+const mobileReviewQuery = window.matchMedia("(max-width: 600px), (max-width: 950px) and (max-height: 520px)");
 
 function reviewUrl(path) {
   return path.replace(/^\/+/, "");
@@ -438,6 +442,7 @@ function renderCurrent(image) {
     els.notes.value = "";
     state.lastInputImageId = null;
     setActiveReviewButtons(null);
+    updateMobileActionLabels(null);
     return;
   }
 
@@ -479,6 +484,7 @@ function renderCurrent(image) {
   renderRetouchGrid(image, selected);
   renderCropOverlay(image);
   renderProfiles(image);
+  updateMobileActionLabels(image);
   preloadNearbyImages(image);
 }
 
@@ -629,6 +635,57 @@ function renderProfiles(image) {
 
     card.append(name, status);
     els.profiles.append(card);
+  });
+}
+
+function isMobileReviewLayout() {
+  return mobileReviewQuery.matches;
+}
+
+function setMobileDrawer(drawer) {
+  const nextDrawer = isMobileReviewLayout() ? drawer : null;
+  state.mobileDrawer = nextDrawer;
+  els.app.classList.toggle("mobile-drawer-open", Boolean(nextDrawer));
+  for (const name of ["profiles", "retouch", "metadata"]) {
+    els.app.classList.toggle(`mobile-drawer-${name}`, nextDrawer === name);
+  }
+  els.mobileDrawerButtons.forEach((button) => {
+    const active = nextDrawer === button.dataset.mobileDrawer;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+  scheduleViewerSafeAreaUpdate();
+}
+
+function toggleMobileDrawer(drawer) {
+  setMobileDrawer(state.mobileDrawer === drawer ? null : drawer);
+}
+
+function syncMobileReviewLayout() {
+  if (!isMobileReviewLayout() && state.mobileDrawer) {
+    setMobileDrawer(null);
+    return;
+  }
+  setMobileDrawer(state.mobileDrawer);
+}
+
+function updateMobileActionLabels(image) {
+  const profileCount = image?.profiles?.length || 0;
+  const tagsCount = image?.tags?.length || 0;
+  const hasNotes = Boolean(image?.notes);
+  const retouchActive = image ? !retouchIsDefault(image.retouch || defaultRetouch()) : false;
+  els.mobileDrawerButtons.forEach((button) => {
+    const drawer = button.dataset.mobileDrawer;
+    if (drawer === "profiles") {
+      button.textContent = profileCount > 0 ? `Profiles ${profileCount}` : "Profiles";
+      button.title = `${profileCount} profile ${profileCount === 1 ? "render" : "renders"}`;
+    } else if (drawer === "retouch") {
+      button.textContent = retouchActive ? "Retouch *" : "Retouch";
+      button.title = retouchActive ? "Retouch adjustments are active" : "Retouch";
+    } else if (drawer === "metadata") {
+      button.textContent = tagsCount > 0 || hasNotes ? "Meta *" : "Meta";
+      button.title = `${tagsCount} ${plural(tagsCount, "tag")}${hasNotes ? ", notes present" : ""}`;
+    }
   });
 }
 
@@ -1706,6 +1763,14 @@ function confirmMetadataInput(event) {
 }
 
 function focusMetadataInput(input) {
+  if (isMobileReviewLayout()) {
+    setMobileDrawer("metadata");
+    requestAnimationFrame(() => {
+      input.focus();
+      input.select();
+    });
+    return;
+  }
   input.focus();
   input.select();
 }
@@ -1724,6 +1789,10 @@ function clearRetouchSaveTimer() {
 }
 
 els.publish.addEventListener("click", () => togglePublishWizard(true));
+els.mobilePublish.addEventListener("click", () => togglePublishWizard(true));
+els.mobileDrawerButtons.forEach((button) => {
+  button.addEventListener("click", () => toggleMobileDrawer(button.dataset.mobileDrawer));
+});
 els.publishCancel.addEventListener("click", () => togglePublishWizard(false));
 els.publishOverlay.addEventListener("click", (event) => {
   if (event.target === els.publishOverlay) togglePublishWizard(false);
@@ -1784,6 +1853,11 @@ window.addEventListener("keydown", (event) => {
   if (event.target === els.tags) return;
   if (event.target === els.notes) return;
   if (event.target === els.minRating) return;
+  if (event.key === "Escape" && state.mobileDrawer) {
+    event.preventDefault();
+    setMobileDrawer(null);
+    return;
+  }
   if (event.key === "?" || (event.key === "/" && event.shiftKey)) {
     event.preventDefault();
     toggleShortcuts(true);
@@ -1852,6 +1926,7 @@ wideProfilesQuery.addEventListener("change", () => {
   syncProfilesPlacement();
   scheduleViewerSafeAreaUpdate();
 });
+mobileReviewQuery.addEventListener("change", syncMobileReviewLayout);
 window.addEventListener("resize", scheduleViewerSafeAreaUpdate);
 document.addEventListener("fullscreenchange", scheduleViewerSafeAreaUpdate);
 

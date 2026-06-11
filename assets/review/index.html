@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>mini-film review</title>
     <link rel="stylesheet" href="assets/styles.css" />
   </head>
@@ -74,6 +74,13 @@
               <div id="image-subtitle" class="image-subtitle"></div>
             </div>
             <div id="profile-state" class="profile-state"></div>
+          </div>
+
+          <div class="mobile-actions" aria-label="Review tools">
+            <button data-mobile-drawer="profiles" type="button">Profiles</button>
+            <button data-mobile-drawer="retouch" type="button">Retouch</button>
+            <button data-mobile-drawer="metadata" type="button">Meta</button>
+            <button id="mobile-publish" type="button">Publish</button>
           </div>
 
           <div id="profiles" class="profiles"></div>
