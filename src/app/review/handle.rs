@@ -2,7 +2,7 @@ use super::{model::*, prelude::*, preview::*, publish::*, scheduler::*, server::
 
 /// Start the embedded review server and return a handle daemon workers can update.
 ///
-/// The server is a small blocking HTTP listener running on its own thread.
+/// The server is an async Axum/Tokio HTTP listener running on its own thread.
 /// Daemon workers update the shared review store whenever RAW files are queued
 /// or rendered, and browser clients subscribe to `/api/events` for live SSE
 /// state updates. This keeps review responsive while daemon workers keep
@@ -28,9 +28,10 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
         &config.export,
         gallery_defaults,
     );
+    let (subscribers, _) = broadcast::channel(256);
     let handle = ReviewHandle {
         state: Arc::new(Mutex::new(store)),
-        subscribers: Arc::new(Mutex::new(Vec::new())),
+        subscribers: Arc::new(subscribers),
         state_path,
         input_root: config.input_root,
         output_root: config.output_root,
@@ -55,12 +56,19 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
         retouch_scheduler: Arc::new(ReviewRetouchScheduler::default()),
     };
 
-    let server = tiny_http::Server::http(&config.address)
-        .map_err(|error| anyhow!("binding review server to {}: {error}", config.address))?;
+    let listener = std::net::TcpListener::bind(&config.address)
+        .with_context(|| format!("binding review server to {}", config.address))?;
+    listener
+        .set_nonblocking(true)
+        .context("setting review listener nonblocking")?;
     let server_handle = handle.clone();
     thread::Builder::new()
         .name("mini-film-review".to_string())
-        .spawn(move || run_review_listener(server, server_handle))
+        .spawn(move || {
+            if let Err(error) = run_review_listener(listener, server_handle) {
+                eprintln!("review server failed: {error:#}");
+            }
+        })
         .context("starting daemon review server thread")?;
     handle.start_retouch_scheduler()?;
 
@@ -961,46 +969,18 @@ impl ReviewHandle {
             .clone())
     }
 
-    pub(super) fn subscribe(&self) -> Result<Receiver<String>> {
-        let (sender, receiver) = mpsc::channel();
-        {
-            let mut subscribers = self
-                .subscribers
-                .lock()
-                .map_err(|_| anyhow!("review subscribers lock poisoned"))?;
-            subscribers.push(sender);
-        }
-        self.broadcast_state()?;
-        Ok(receiver)
+    pub(super) fn subscribe(&self) -> broadcast::Receiver<String> {
+        self.subscribers.subscribe()
     }
 
     pub(super) fn broadcast_state(&self) -> Result<()> {
         let state = self.api_state_json()?;
-        let mut subscribers = self
-            .subscribers
-            .lock()
-            .map_err(|_| anyhow!("review subscribers lock poisoned"))?;
-        let before = subscribers.len();
-        subscribers.retain(|subscriber| subscriber.send(state.clone()).is_ok());
-        let after = subscribers.len();
-        drop(subscribers);
-        if after < before {
-            let state = self.api_state_json()?;
-            let mut subscribers = self
-                .subscribers
-                .lock()
-                .map_err(|_| anyhow!("review subscribers lock poisoned"))?;
-            subscribers.retain(|subscriber| subscriber.send(state.clone()).is_ok());
-        }
+        let _ = self.subscribers.send(state);
         Ok(())
     }
 
     pub(super) fn client_count(&self) -> Result<usize> {
-        Ok(self
-            .subscribers
-            .lock()
-            .map_err(|_| anyhow!("review subscribers lock poisoned"))?
-            .len())
+        Ok(self.subscribers.receiver_count())
     }
 
     pub(super) fn lock_store(&self) -> Result<std::sync::MutexGuard<'_, ReviewStore>> {

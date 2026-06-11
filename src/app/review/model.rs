@@ -45,7 +45,7 @@ pub(crate) struct ReviewProfile {
 #[derive(Clone)]
 pub(crate) struct ReviewHandle {
     pub(super) state: Arc<Mutex<ReviewStore>>,
-    pub(super) subscribers: Arc<Mutex<Vec<Sender<String>>>>,
+    pub(super) subscribers: Arc<broadcast::Sender<String>>,
     pub(super) state_path: PathBuf,
     pub(super) input_root: PathBuf,
     pub(super) output_root: PathBuf,

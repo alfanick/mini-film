@@ -277,6 +277,13 @@ function renderList(images) {
       await carrySelectedProfileToImage(image.id, carryProfileIndex);
     });
 
+    const thumb = document.createElement("img");
+    thumb.className = "image-row-thumb";
+    thumb.alt = "";
+    if (image.preview_url) {
+      thumb.src = image.preview_url;
+    }
+
     const title = document.createElement("div");
     title.className = "image-row-title";
     title.textContent = image.file_name;
@@ -305,7 +312,7 @@ function renderList(images) {
     indicator.title = progress.title;
     indicator.setAttribute("aria-label", progress.title);
 
-    button.append(title, meta, indicator);
+    button.append(thumb, title, meta, indicator);
     els.list.append(button);
   }
 }

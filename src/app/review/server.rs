@@ -1,33 +1,57 @@
-use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
+use std::convert::Infallible;
+
+use async_stream::stream;
+use axum::{
+    Router,
+    body::{Body, Bytes, to_bytes},
+    extract::State,
+    http::{Method, Request, StatusCode, header},
+    response::{
+        IntoResponse, Response,
+        sse::{Event, KeepAlive, Sse},
+    },
+};
+use tower::ServiceExt;
+use tower_http::services::ServeFile;
 
 use super::{model::*, prelude::*};
 
-pub(super) fn run_review_listener(server: Server, handle: ReviewHandle) {
-    for request in server.incoming_requests() {
-        let handle = handle.clone();
-        let _ = thread::Builder::new()
-            .name("mini-film-review-client".to_string())
-            .spawn(move || {
-                if let Err(error) = handle_review_request(request, &handle) {
-                    eprintln!("review server connection failed: {error:#}");
-                }
-            });
-    }
+pub(super) fn run_review_listener(
+    listener: std::net::TcpListener,
+    handle: ReviewHandle,
+) -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .thread_name("mini-film-review-async")
+        .enable_all()
+        .build()
+        .context("building review HTTP runtime")?;
+    runtime.block_on(async move {
+        let listener = tokio::net::TcpListener::from_std(listener)
+            .context("creating async review listener")?;
+        axum::serve(listener, review_router(handle))
+            .await
+            .context("running review HTTP server")
+    })
 }
 
-pub(super) fn handle_review_request(mut request: Request, handle: &ReviewHandle) -> Result<()> {
-    let path = normalized_request_path(&request);
-    if request.method() == &Method::Get && path == "/api/events" {
-        let response = event_stream_response(handle)?;
-        return request
-            .respond(response)
-            .context("writing review event stream response");
+fn review_router(handle: ReviewHandle) -> Router {
+    Router::new().fallback(review_request).with_state(handle)
+}
+
+async fn review_request(State(handle): State<ReviewHandle>, request: Request<Body>) -> Response {
+    let (parts, body) = request.into_parts();
+    let path = review_route_path(parts.uri.path());
+    if parts.method == Method::GET && path == "/api/events" {
+        return event_stream_response(handle);
     }
 
-    let response = route_request(&mut request, handle)?;
-    request
-        .respond(response.into_tiny())
-        .context("writing review HTTP response")
+    let body = match to_bytes(body, 16 * 1024 * 1024).await {
+        Ok(body) => body,
+        Err(error) => {
+            return json_error(400, anyhow!("reading HTTP request body: {error}")).into_response();
+        }
+    };
+    route_request(parts.method, &path, body, &handle).await
 }
 
 pub(super) struct HttpResponse {
@@ -36,63 +60,65 @@ pub(super) struct HttpResponse {
     pub(super) body: Vec<u8>,
 }
 
-pub(super) fn route_request(request: &mut Request, handle: &ReviewHandle) -> Result<HttpResponse> {
-    let path = normalized_request_path(request);
-    match (request.method(), path.as_str()) {
-        (&Method::Get, "/") | (&Method::Get, "/review") => Ok(text_response(
-            200,
-            "text/html; charset=utf-8",
-            review_index_html(),
-        )),
-        (&Method::Get, "/assets/styles.css") => Ok(text_response(
-            200,
-            "text/css; charset=utf-8",
-            review_styles(),
-        )),
-        (&Method::Get, "/assets/app.js") => Ok(text_response(
+pub(super) async fn route_request(
+    method: Method,
+    path: &str,
+    body: Bytes,
+    handle: &ReviewHandle,
+) -> Response {
+    match (method, path) {
+        (Method::GET, "/") | (Method::GET, "/review") => {
+            text_response(200, "text/html; charset=utf-8", review_index_html()).into_response()
+        }
+        (Method::GET, "/assets/styles.css") => {
+            text_response(200, "text/css; charset=utf-8", review_styles()).into_response()
+        }
+        (Method::GET, "/assets/app.js") => text_response(
             200,
             "application/javascript; charset=utf-8",
             review_script(),
-        )),
-        (&Method::Get, "/api/state") => match handle.api_state_json() {
-            Ok(body) => Ok(text_response(200, "application/json; charset=utf-8", &body)),
-            Err(error) => Ok(json_error(500, error)),
+        )
+        .into_response(),
+        (Method::GET, "/api/state") => match handle.api_state_json() {
+            Ok(body) => {
+                text_response(200, "application/json; charset=utf-8", &body).into_response()
+            }
+            Err(error) => json_error(500, error).into_response(),
         },
-        (&Method::Post, "/api/review") => {
-            match request_body(request)
-                .and_then(|body| {
-                    serde_json::from_slice::<ReviewUpdateRequest>(&body)
-                        .context("parsing review update")
-                })
+        (Method::POST, "/api/review") => {
+            match serde_json::from_slice::<ReviewUpdateRequest>(&body)
+                .context("parsing review update")
                 .and_then(|update| handle.apply_review_update(update))
                 .and_then(|()| handle.api_state_json())
             {
-                Ok(body) => Ok(text_response(200, "application/json; charset=utf-8", &body)),
-                Err(error) => Ok(json_error(400, error)),
+                Ok(body) => {
+                    text_response(200, "application/json; charset=utf-8", &body).into_response()
+                }
+                Err(error) => json_error(400, error).into_response(),
             }
         }
-        (&Method::Post, "/api/ui") => match request_body(request)
-            .and_then(|body| {
-                serde_json::from_slice::<ReviewUiUpdateRequest>(&body)
-                    .context("parsing review UI update")
-            })
+        (Method::POST, "/api/ui") => match serde_json::from_slice::<ReviewUiUpdateRequest>(&body)
+            .context("parsing review UI update")
             .and_then(|update| handle.apply_ui_update(update))
             .and_then(|()| handle.api_state_json())
         {
-            Ok(body) => Ok(text_response(200, "application/json; charset=utf-8", &body)),
-            Err(error) => Ok(json_error(400, error)),
+            Ok(body) => {
+                text_response(200, "application/json; charset=utf-8", &body).into_response()
+            }
+            Err(error) => json_error(400, error).into_response(),
         },
-        (&Method::Post, "/api/publish") => match request_body(request)
-            .and_then(|body| parse_publish_request(&body))
+        (Method::POST, "/api/publish") => match parse_publish_request(&body)
             .and_then(|request| handle.start_publish_job(request))
             .and_then(|_| handle.api_state_json())
         {
-            Ok(body) => Ok(text_response(200, "application/json; charset=utf-8", &body)),
-            Err(error) => Ok(json_error(500, error)),
+            Ok(body) => {
+                text_response(200, "application/json; charset=utf-8", &body).into_response()
+            }
+            Err(error) => json_error(500, error).into_response(),
         },
-        (&Method::Get, _) if path.starts_with("/media/") => Ok(media_response(&path, handle)),
-        (&Method::Get, _) if path.starts_with("/preview/") => Ok(preview_response(&path, handle)),
-        _ => Ok(text_response(404, "text/plain; charset=utf-8", "not found")),
+        (Method::GET, _) if path.starts_with("/media/") => media_response(path, handle).await,
+        (Method::GET, _) if path.starts_with("/preview/") => preview_response(path, handle).await,
+        _ => text_response(404, "text/plain; charset=utf-8", "not found").into_response(),
     }
 }
 
@@ -119,57 +145,71 @@ pub(super) fn review_route_path(path: &str) -> String {
     path.to_string()
 }
 
-pub(super) fn media_response(path: &str, handle: &ReviewHandle) -> HttpResponse {
+pub(super) async fn media_response(path: &str, handle: &ReviewHandle) -> Response {
     let parts = path
         .trim_start_matches("/media/")
         .split('/')
         .collect::<Vec<_>>();
     if parts.len() != 2 {
-        return text_response(404, "text/plain; charset=utf-8", "not found");
+        return text_response(404, "text/plain; charset=utf-8", "not found").into_response();
     }
     let image_id = match parts[0].parse::<u64>() {
         Ok(id) => id,
         Err(_) => {
-            return text_response(400, "text/plain; charset=utf-8", "bad image id");
+            return text_response(400, "text/plain; charset=utf-8", "bad image id").into_response();
         }
     };
     let profile_index = match parts[1].parse::<usize>() {
         Ok(index) => index,
         Err(_) => {
-            return text_response(400, "text/plain; charset=utf-8", "bad profile index");
+            return text_response(400, "text/plain; charset=utf-8", "bad profile index")
+                .into_response();
         }
     };
-    match handle
-        .media_path(image_id, profile_index)
-        .and_then(|path| fs::read(&path).with_context(|| format!("reading {}", path.display())))
-    {
-        Ok(body) => HttpResponse {
-            status: 200,
-            content_type: "image/jpeg",
-            body,
-        },
-        Err(error) => json_error(404, error),
+    match handle.media_path(image_id, profile_index) {
+        Ok(path) => serve_review_file(path, "image/jpeg").await,
+        Err(error) => json_error(404, error).into_response(),
     }
 }
 
-pub(super) fn preview_response(path: &str, handle: &ReviewHandle) -> HttpResponse {
+pub(super) async fn preview_response(path: &str, handle: &ReviewHandle) -> Response {
     let id = path.trim_start_matches("/preview/");
     let image_id = match id.parse::<u64>() {
         Ok(id) => id,
         Err(_) => {
-            return text_response(400, "text/plain; charset=utf-8", "bad image id");
+            return text_response(400, "text/plain; charset=utf-8", "bad image id").into_response();
         }
     };
-    match handle
-        .preview_media_path(image_id)
-        .and_then(|path| fs::read(&path).with_context(|| format!("reading {}", path.display())))
+    match handle.preview_media_path(image_id) {
+        Ok(path) => serve_review_file(path, "image/jpeg").await,
+        Err(error) => json_error(404, error).into_response(),
+    }
+}
+
+async fn serve_review_file(path: PathBuf, content_type: &'static str) -> Response {
+    let mime = match content_type.parse() {
+        Ok(mime) => mime,
+        Err(error) => {
+            return json_error(500, anyhow!("invalid review media content type: {error}"))
+                .into_response();
+        }
+    };
+    let request = match Request::builder()
+        .method(Method::GET)
+        .uri("/")
+        .body(Body::empty())
     {
-        Ok(body) => HttpResponse {
-            status: 200,
-            content_type: "image/jpeg",
-            body,
-        },
-        Err(error) => json_error(404, error),
+        Ok(request) => request,
+        Err(error) => {
+            return json_error(500, anyhow!("building review media request: {error}"))
+                .into_response();
+        }
+    };
+    match ServeFile::new_with_mime(path, &mime).oneshot(request).await {
+        Ok(response) => response.map(Body::new).into_response(),
+        Err(error) => {
+            json_error(500, anyhow!("serving review media from disk: {error}")).into_response()
+        }
     }
 }
 
@@ -180,33 +220,29 @@ pub(super) fn parse_publish_request(body: &[u8]) -> Result<PublishRequest> {
     serde_json::from_slice(body).context("parsing publish request")
 }
 
-fn normalized_request_path(request: &Request) -> String {
-    review_route_path(request.url().split('?').next().unwrap_or("/"))
-}
-
-fn request_body(request: &mut Request) -> Result<Vec<u8>> {
-    let mut body = Vec::new();
-    request
-        .as_reader()
-        .read_to_end(&mut body)
-        .context("reading HTTP request body")?;
-    Ok(body)
-}
-
-fn event_stream_response(handle: &ReviewHandle) -> Result<Response<SseBody>> {
-    let receiver = handle.subscribe()?;
-    Ok(Response::new(
-        StatusCode(200),
-        vec![
-            header("Content-Type", "text/event-stream"),
-            header("Cache-Control", "no-cache"),
-            header("Connection", "keep-alive"),
-            header("X-Accel-Buffering", "no"),
-        ],
-        SseBody::new(receiver),
-        None,
-        None,
-    ))
+fn event_stream_response(handle: ReviewHandle) -> Response {
+    let mut receiver = handle.subscribe();
+    let initial_state = handle.api_state_json();
+    let stream = stream! {
+        match initial_state {
+            Ok(state) => yield Ok::<_, Infallible>(Event::default().data(state)),
+            Err(error) => yield Ok(Event::default().event("error").data(error.to_string())),
+        }
+        loop {
+            match receiver.recv().await {
+                Ok(state) => yield Ok(Event::default().data(state)),
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    if let Ok(state) = handle.api_state_json() {
+                        yield Ok(Event::default().data(state));
+                    }
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    };
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
 }
 
 fn text_response(status: u16, content_type: &'static str, body: &str) -> HttpResponse {
@@ -225,56 +261,14 @@ fn json_error(status: u16, error: anyhow::Error) -> HttpResponse {
     )
 }
 
-fn header(name: &str, value: &str) -> Header {
-    Header::from_bytes(name.as_bytes(), value.as_bytes()).expect("valid static HTTP header")
-}
-
-impl HttpResponse {
-    fn into_tiny(self) -> Response<std::io::Cursor<Vec<u8>>> {
-        Response::from_data(self.body)
-            .with_status_code(StatusCode(self.status))
-            .with_header(header("Content-Type", self.content_type))
-    }
-}
-
-struct SseBody {
-    receiver: Receiver<String>,
-    buffer: Vec<u8>,
-    offset: usize,
-}
-
-impl SseBody {
-    fn new(receiver: Receiver<String>) -> Self {
-        Self {
-            receiver,
-            buffer: Vec::new(),
-            offset: 0,
-        }
-    }
-}
-
-impl Read for SseBody {
-    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
-        if output.is_empty() {
-            return Ok(0);
-        }
-        while self.offset >= self.buffer.len() {
-            match self.receiver.recv() {
-                Ok(state) => {
-                    self.buffer = format!("data: {state}\n\n").into_bytes();
-                    self.offset = 0;
-                }
-                Err(_) => return Ok(0),
-            }
-        }
-        let remaining = &self.buffer[self.offset..];
-        let count = remaining.len().min(output.len());
-        output[..count].copy_from_slice(&remaining[..count]);
-        self.offset += count;
-        if self.offset >= self.buffer.len() {
-            self.buffer.clear();
-            self.offset = 0;
-        }
-        Ok(count)
+impl IntoResponse for HttpResponse {
+    fn into_response(self) -> Response {
+        let status = StatusCode::from_u16(self.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        (
+            status,
+            [(header::CONTENT_TYPE, self.content_type)],
+            self.body,
+        )
+            .into_response()
     }
 }

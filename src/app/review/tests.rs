@@ -25,9 +25,10 @@ fn test_export_options() -> ExportOptions {
 
 fn test_handle(input: PathBuf, output: PathBuf, profiles: Vec<ReviewProfile>) -> ReviewHandle {
     let export = test_export_options();
+    let (subscribers, _) = broadcast::channel(256);
     ReviewHandle {
         state: Arc::new(Mutex::new(ReviewStore::new(profiles))),
-        subscribers: Arc::new(Mutex::new(Vec::new())),
+        subscribers: Arc::new(subscribers),
         state_path: output.join("mini-film-review.json"),
         input_root: input.clone(),
         output_root: output.clone(),
@@ -260,7 +261,7 @@ fn review_state_reports_connected_client_count() {
         serde_json::from_str::<serde_json::Value>(&handle.api_state_json().unwrap()).unwrap();
     assert_eq!(state["client_count"], 0);
 
-    let client = handle.subscribe().unwrap();
+    let client = handle.subscribe();
     let state =
         serde_json::from_str::<serde_json::Value>(&handle.api_state_json().unwrap()).unwrap();
     assert_eq!(state["client_count"], 1);
