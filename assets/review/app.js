@@ -281,6 +281,7 @@ function ShortcutsOverlay() {
         [["Swipe ↑/↓"], "Change the rating without advancing."],
         [["Wheel ←/→"], "Move between visible pictures after a short scroll threshold."],
         [["Wheel ↑/↓"], "Preview the previous or next profile after a short scroll threshold."],
+        [["Mouse Back/Forward"], "Decrease or increase the rating without advancing."],
         [["Hold"], "Zoom into the picture under the cursor or finger until released."],
         [["Profile"], "Click a profile thumbnail to preview it; use its checkbox to include it in publishing."],
       ],
@@ -2204,7 +2205,7 @@ function normalizeWheelDelta(event, value) {
   return value;
 }
 
-function shouldIgnoreNavigationWheel(event) {
+function shouldIgnoreReviewNavigationEvent(event) {
   if (!els.publishOverlay.hidden || !els.shortcutsOverlay.hidden || state.cropEditing) return true;
   if (event.ctrlKey || event.metaKey || event.altKey) return true;
   return Boolean(
@@ -2237,7 +2238,7 @@ function navigationWheelStep(event) {
 }
 
 function handleNavigationWheel(event) {
-  if (shouldIgnoreNavigationWheel(event)) return;
+  if (shouldIgnoreReviewNavigationEvent(event)) return;
   event.preventDefault();
 
   const step = navigationWheelStep(event);
@@ -2248,6 +2249,21 @@ function handleNavigationWheel(event) {
     return;
   }
   selectProfileRelative(step.direction > 0 ? 1 : -1).catch((error) => console.error(error));
+}
+
+function isBackForwardMouseButton(event) {
+  return event.button === 3 || event.button === 4;
+}
+
+function handleBackForwardMouseDown(event) {
+  if (!isBackForwardMouseButton(event) || shouldIgnoreReviewNavigationEvent(event)) return;
+  event.preventDefault();
+  rateCurrentWithoutAdvance(adjustedCurrentRating(event.button === 4 ? 1 : -1)).catch((error) => console.error(error));
+}
+
+function suppressBackForwardMouseDefault(event) {
+  if (!isBackForwardMouseButton(event) || shouldIgnoreReviewNavigationEvent(event)) return;
+  event.preventDefault();
 }
 
 function adjustedCurrentRating(delta) {
@@ -2706,6 +2722,9 @@ window.addEventListener("keydown", (event) => {
 });
 
 els.workspace.addEventListener("wheel", handleNavigationWheel, { passive: false });
+els.workspace.addEventListener("mousedown", handleBackForwardMouseDown);
+els.workspace.addEventListener("mouseup", suppressBackForwardMouseDefault);
+els.workspace.addEventListener("auxclick", suppressBackForwardMouseDefault);
 
 window.addEventListener("beforeunload", () => {
   const image = findImage(state.currentId);
