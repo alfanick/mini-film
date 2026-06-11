@@ -18,6 +18,9 @@ permissions:
   contents: write
   actions: read
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   resolve-release:
     name: Resolve release context
@@ -254,22 +257,21 @@ jobs:
         run: |
           set -euo pipefail
           cargo_features="${{ matrix.cargo_features }}"
-          feature_args=()
-          if [ -n "$cargo_features" ]; then
-            feature_args=(--features "$cargo_features")
-          fi
-          default_feature_args=()
+          build_args=(--release --target "${{ matrix.target }}")
           if [ "${{ matrix.default_features }}" != "true" ]; then
-            default_feature_args=(--no-default-features)
+            build_args+=(--no-default-features)
+          fi
+          if [ -n "$cargo_features" ]; then
+            build_args+=(--features "$cargo_features")
           fi
 
           if [ "${{ matrix.use_cross }}" = "true" ]; then
-            if ! env PKG_CONFIG_ALLOW_CROSS=1 cross build --release --target "${{ matrix.target }}" "${default_feature_args[@]}" "${feature_args[@]}"; then
+            if ! env PKG_CONFIG_ALLOW_CROSS=1 cross build "${build_args[@]}"; then
               echo "::warning::cross build failed; retrying native cargo build for ${{ matrix.target }}."
-              PKG_CONFIG_ALLOW_CROSS=1 cargo build --release --target "${{ matrix.target }}" "${default_feature_args[@]}" "${feature_args[@]}"
+              PKG_CONFIG_ALLOW_CROSS=1 cargo build "${build_args[@]}"
             fi
           else
-            PKG_CONFIG_ALLOW_CROSS=1 cargo build --release --target "${{ matrix.target }}" "${default_feature_args[@]}" "${feature_args[@]}"
+            PKG_CONFIG_ALLOW_CROSS=1 cargo build "${build_args[@]}"
           fi
 
       - name: Publish to crates.io
