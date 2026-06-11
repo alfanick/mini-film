@@ -77,15 +77,41 @@ def upsert_release(repo, tag, target, notes, token):
     release = get_release(repo, tag, token)
     payload = {"tag_name": tag, "target_commitish": target, "name": tag, "body": notes}
     if release is None:
-        return github_request("POST", f"https://api.github.com/repos/{repo}/releases", token, payload)
-    return github_request("PATCH", release["url"], token, {"name": tag, "body": notes})
+        return (
+            github_request(
+                "POST",
+                f"https://api.github.com/repos/{repo}/releases",
+                token,
+                {**payload, "draft": True},
+            ),
+            True,
+        )
+    if release.get("immutable", False):
+        return release, False
+    if release.get("draft", False):
+        return github_request("PATCH", release["url"], token, payload), True
+    return github_request("PATCH", release["url"], token, {"name": tag, "body": notes}), False
 
 
-def upload_assets(release, assets_dir, token):
+def asset_files(assets_dir):
     files = sorted(path for path in assets_dir.iterdir() if path.is_file())
     if not files:
         raise RuntimeError(f"no assets found in {assets_dir}")
+    return files
 
+
+def assert_immutable_release_complete(release, files, token):
+    existing = {asset["name"] for asset in list_assets(release, token)}
+    missing = [path.name for path in files if path.name not in existing]
+    if missing:
+        missing_list = ", ".join(missing)
+        raise RuntimeError(
+            f"release {release['tag_name']} is immutable and is missing expected assets: {missing_list}"
+        )
+    print(f"release {release['tag_name']} is immutable and already has all expected assets")
+
+
+def upload_assets(release, files, token):
     existing = {asset["name"]: asset for asset in list_assets(release, token)}
     for path in files:
         old = existing.get(path.name)
@@ -95,6 +121,12 @@ def upload_assets(release, assets_dir, token):
         upload_url = f"{upload_base}?{urllib.parse.urlencode({'name': path.name})}"
         github_upload(upload_url, token, path)
         print(f"uploaded {path.name}")
+
+
+def publish_release(release, token):
+    if not release.get("draft", False):
+        return release
+    return github_request("PATCH", release["url"], token, {"draft": False})
 
 
 def main():
@@ -112,8 +144,14 @@ def main():
         return 1
 
     notes = args.notes.read_text(encoding="utf-8")
-    release = upsert_release(args.repo, args.tag, args.target, notes, token)
-    upload_assets(release, args.assets, token)
+    files = asset_files(args.assets)
+    release, should_publish = upsert_release(args.repo, args.tag, args.target, notes, token)
+    if release.get("immutable", False):
+        assert_immutable_release_complete(release, files, token)
+        return 0
+    upload_assets(release, files, token)
+    if should_publish:
+        publish_release(release, token)
     return 0
 
 
