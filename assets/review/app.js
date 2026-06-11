@@ -31,8 +31,18 @@ const TOUCH_SWIPE_RATIO = 1.65;
 const ZOOM_LONG_PRESS_MS = 380;
 const ZOOM_MOVE_CANCEL_PX = 22;
 const ZOOM_SCALE = 2.6;
+const WHEEL_NAV_THRESHOLD_PX = 90;
+const WHEEL_NAV_RESET_MS = 220;
+const WHEEL_NAV_COOLDOWN_MS = 260;
 const RATING_VALUES = [0, 1, 2, 3, 4, 5];
 const COLOR_LABELS = ["red", "yellow", "green", "blue", "purple"];
+
+let wheelNavigation = {
+  axis: null,
+  amount: 0,
+  lastAt: 0,
+  lockedUntil: 0,
+};
 
 preactRender(h(ReviewShell), document.getElementById("review-root"));
 
@@ -269,6 +279,8 @@ function ShortcutsOverlay() {
       [
         [["Swipe ←/→"], "Move between visible pictures without changing the rating."],
         [["Swipe ↑/↓"], "Change the rating without advancing."],
+        [["Wheel ←/→"], "Move between visible pictures after a short scroll threshold."],
+        [["Wheel ↑/↓"], "Preview the previous or next profile after a short scroll threshold."],
         [["Hold"], "Zoom into the picture under the cursor or finger until released."],
         [["Profile"], "Click a profile thumbnail to preview it; use its checkbox to include it in publishing."],
       ],
@@ -2186,6 +2198,58 @@ function toggleCurrentLabel(label) {
   saveReview({ label: nextLabels[0] || "none", labels: nextLabels });
 }
 
+function normalizeWheelDelta(event, value) {
+  if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) return value * 40;
+  if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) return value * window.innerHeight;
+  return value;
+}
+
+function shouldIgnoreNavigationWheel(event) {
+  if (!els.publishOverlay.hidden || !els.shortcutsOverlay.hidden || state.cropEditing) return true;
+  if (event.ctrlKey || event.metaKey || event.altKey) return true;
+  return Boolean(
+    event.target.closest("input, textarea, select, .retouch, .crop-tools, .publish-card, .shortcuts-card"),
+  );
+}
+
+function navigationWheelStep(event) {
+  const dx = normalizeWheelDelta(event, event.deltaX);
+  const dy = normalizeWheelDelta(event, event.deltaY);
+  const axis = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
+  const delta = axis === "x" ? dx : dy;
+  if (!Number.isFinite(delta) || Math.abs(delta) < 1) return null;
+
+  const now = performance.now();
+  if (now < wheelNavigation.lockedUntil) return null;
+  if (wheelNavigation.axis !== axis || now - wheelNavigation.lastAt > WHEEL_NAV_RESET_MS) {
+    wheelNavigation.axis = axis;
+    wheelNavigation.amount = 0;
+  }
+
+  wheelNavigation.amount += delta;
+  wheelNavigation.lastAt = now;
+  if (Math.abs(wheelNavigation.amount) < WHEEL_NAV_THRESHOLD_PX) return null;
+
+  const direction = Math.sign(wheelNavigation.amount);
+  wheelNavigation.amount = 0;
+  wheelNavigation.lockedUntil = now + WHEEL_NAV_COOLDOWN_MS;
+  return { axis, direction };
+}
+
+function handleNavigationWheel(event) {
+  if (shouldIgnoreNavigationWheel(event)) return;
+  event.preventDefault();
+
+  const step = navigationWheelStep(event);
+  if (!step) return;
+
+  if (step.axis === "x") {
+    move(step.direction > 0 ? 1 : -1).catch((error) => console.error(error));
+    return;
+  }
+  selectProfileRelative(step.direction > 0 ? 1 : -1).catch((error) => console.error(error));
+}
+
 function adjustedCurrentRating(delta) {
   const image = findImage(state.currentId);
   const rating = Number(image?.rating || 0) + delta;
@@ -2640,6 +2704,8 @@ window.addEventListener("keydown", (event) => {
     toggleCurrentLabel(label);
   }
 });
+
+els.workspace.addEventListener("wheel", handleNavigationWheel, { passive: false });
 
 window.addEventListener("beforeunload", () => {
   const image = findImage(state.currentId);
