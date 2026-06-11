@@ -482,11 +482,14 @@ function selectedProfile(image) {
 }
 
 function selectedProfileForImage(image) {
-  return (
-    (image?.profiles || []).find((profile) => profile.profile_index === image.selected_profile_index) ||
-    image?.profiles?.[0] ||
-    null
-  );
+  const profiles = image?.profiles || [];
+  const selected = profiles.find((profile) => profile.profile_index === image.selected_profile_index);
+  const fallback = selected || profiles[0] || null;
+  const publishIndexes = new Set(publishProfileIndexes(image));
+  if (fallback && publishIndexes.size > 0 && !publishIndexes.has(fallback.profile_index)) {
+    return profiles.find((profile) => publishIndexes.has(profile.profile_index)) || fallback;
+  }
+  return fallback;
 }
 
 function isLocalRetouchDraft(image) {
@@ -549,6 +552,7 @@ function togglePublishProfile(image, profileIndex) {
 function renderProfiles(image) {
   els.profiles.replaceChildren();
   const publishIndexes = new Set(publishProfileIndexes(image));
+  const previewProfile = selectedProfile(image);
   image.profiles.forEach((profile) => {
     const cardUrl = profile.url || image.preview_url;
     const publishSelected = publishIndexes.has(profile.profile_index);
@@ -557,7 +561,7 @@ function renderProfiles(image) {
     card.type = "button";
     card.className = [
       "profile-card",
-      profile.profile_index === image.selected_profile_index ? "active" : "",
+      profile.profile_index === previewProfile?.profile_index ? "active" : "",
       profile.url ? "" : "pending",
       display.state,
       publishSelected ? "publish-selected" : "publish-excluded",
