@@ -16,6 +16,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
   resolve-release:
@@ -32,10 +33,21 @@ jobs:
       source_ref: ${{ steps.release.outputs.source_ref }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.ref_name }}
+        shell: bash
+        env:
+          CHECKOUT_REF: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.ref_name }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE"
+          cd /
+          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+          cd "$GITHUB_WORKSPACE"
+          git init
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -c http.extraheader="AUTHORIZATION: bearer ${GITHUB_TOKEN}" fetch --force --tags origin "$CHECKOUT_REF"
+          git checkout --force FETCH_HEAD
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Check cargo versions
         shell: bash
@@ -116,17 +128,37 @@ jobs:
             cargo_features: "github-update"
 
     steps:
-      - name: Checkout
+      - name: Checkout (GitHub-hosted)
+        if: ${{ matrix.runs_on != 'self-hosted' }}
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: ${{ needs.resolve-release.outputs.source_ref }}
+
+      - name: Checkout (self-hosted)
+        if: ${{ matrix.runs_on == 'self-hosted' }}
+        shell: bash
+        env:
+          CHECKOUT_REF: ${{ needs.resolve-release.outputs.source_ref }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE"
+          cd /
+          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+          cd "$GITHUB_WORKSPACE"
+          git init
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -c http.extraheader="AUTHORIZATION: bearer ${GITHUB_TOKEN}" fetch --force --tags origin "$CHECKOUT_REF"
+          git checkout --force FETCH_HEAD
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Check cargo versions
         shell: bash
         run: ./.githooks/check-cargo-versions.sh
 
       - name: Cache cargo registry, git deps, and target
+        if: ${{ matrix.runs_on != 'self-hosted' }}
         uses: actions/cache@v4
         with:
           path: |
@@ -145,10 +177,19 @@ jobs:
           echo "tag=${{ needs.resolve-release.outputs.release_tag }}" >> "$GITHUB_OUTPUT"
 
       - name: Install Rust
+        if: ${{ matrix.runs_on != 'self-hosted' }}
         uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: nightly
           targets: ${{ matrix.target }}
+
+      - name: Install Rust (self-hosted)
+        if: ${{ matrix.runs_on == 'self-hosted' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install nightly --target "${{ matrix.target }}"
+          rustup default nightly
 
       - name: Install cross
         if: matrix.use_cross
@@ -254,11 +295,22 @@ jobs:
           cp "$binary" "$artifact"
 
       - name: Upload artifact
+        if: ${{ matrix.runs_on != 'self-hosted' }}
         uses: actions/upload-artifact@v4
         with:
           name: mini-film-${{ matrix.target }}
           path: artifacts/*
           if-no-files-found: error
+
+      - name: Store artifact on self-hosted runner
+        if: ${{ matrix.runs_on == 'self-hosted' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          store="$HOME/.cache/mini-film/release-artifacts/${GITHUB_RUN_ID}"
+          mkdir -p "$store"
+          cp artifacts/* "$store/"
+          echo "Stored self-hosted artifact in $store"
 
   publish-release:
     name: Publish release
@@ -269,10 +321,21 @@ jobs:
     if: needs.resolve-release.outputs.should_release == 'true'
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          ref: ${{ needs.resolve-release.outputs.source_ref }}
+        shell: bash
+        env:
+          CHECKOUT_REF: ${{ needs.resolve-release.outputs.source_ref }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE"
+          cd /
+          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+          cd "$GITHUB_WORKSPACE"
+          git init
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -c http.extraheader="AUTHORIZATION: bearer ${GITHUB_TOKEN}" fetch --force --tags origin "$CHECKOUT_REF"
+          git checkout --force FETCH_HEAD
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Check cargo versions
         shell: bash
@@ -285,12 +348,33 @@ jobs:
           set -euo pipefail
           echo "tag=${{ needs.resolve-release.outputs.release_tag }}" >> "$GITHUB_OUTPUT"
 
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          pattern: mini-film-*
-          merge-multiple: true
+      - name: Collect release artifacts
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          rm -rf artifacts
+          mkdir -p artifacts
+          python3 .github/scripts/download-run-artifacts.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --run-id "$GITHUB_RUN_ID" \
+            --pattern 'mini-film-*' \
+            --output artifacts
+
+          self_hosted_store="$HOME/.cache/mini-film/release-artifacts/${GITHUB_RUN_ID}"
+          if [[ -d "$self_hosted_store" ]]; then
+            cp "$self_hosted_store"/* artifacts/
+          fi
+
+          shopt -s nullglob
+          files=(artifacts/*)
+          if [[ "${#files[@]}" -eq 0 ]]; then
+            echo "No release artifacts were collected." >&2
+            exit 1
+          fi
+          printf 'Collected release artifacts:\n'
+          printf '  %s\n' "${files[@]}"
 
       - name: Generate release notes
         shell: bash
@@ -316,10 +400,14 @@ jobs:
           fi
 
       - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.resolve-release.outputs.release_tag }}
-          name: ${{ needs.resolve-release.outputs.release_tag }}
-          body_path: release-notes.md
-          files: |
-            artifacts/*
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/publish-github-release.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --tag "${{ needs.resolve-release.outputs.release_tag }}" \
+            --target "${{ needs.resolve-release.outputs.source_ref }}" \
+            --notes release-notes.md \
+            --assets artifacts

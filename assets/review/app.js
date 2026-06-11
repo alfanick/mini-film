@@ -266,10 +266,13 @@ function filteredImagesFromData(data) {
 
 function renderList(images) {
   els.list.replaceChildren();
+  let activeRow = null;
   for (const image of images) {
     const button = document.createElement("button");
     button.type = "button";
-    button.className = `image-row${image.id === state.currentId ? " active" : ""}`;
+    const isActive = image.id === state.currentId;
+    button.className = `image-row${isActive ? " active" : ""}`;
+    if (isActive) activeRow = button;
     button.addEventListener("click", async () => {
       const carryProfileIndex = selectedProfile(findImage(state.currentId))?.profile_index;
       await saveCurrentIfNeeded();
@@ -313,6 +316,11 @@ function renderList(images) {
 
     button.append(thumb, title, meta, indicator);
     els.list.append(button);
+  }
+  if (activeRow) {
+    requestAnimationFrame(() => {
+      activeRow.scrollIntoView({ block: "nearest", inline: "nearest" });
+    });
   }
 }
 

@@ -14,37 +14,34 @@ jobs:
     name: Test and quality checks
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        shell: bash
+        env:
+          CHECKOUT_REF: ${{ github.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE"
+          cd /
+          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+          cd "$GITHUB_WORKSPACE"
+          git init
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -c http.extraheader="AUTHORIZATION: bearer ${GITHUB_TOKEN}" fetch --force --tags origin "$CHECKOUT_REF"
+          git checkout --force FETCH_HEAD
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: nightly
-          components: clippy, rustfmt
+        run: |
+          set -euo pipefail
+          rustup toolchain install nightly --component clippy,rustfmt
+          rustup default nightly
 
       - name: Check cargo versions
         run: ./.githooks/check-cargo-versions.sh
 
-      - name: Cache npm
-        uses: actions/cache@v4
-        with:
-          path: ~/.npm
-          key: ${{ runner.os }}-npm-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-npm-
-
       - name: Check HTML/CSS/JS assets
         run: ./.githooks/check-frontend-assets.sh
-
-      - name: Cache cargo registry and git deps
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
 
       - name: Run unit tests (with report)
         id: unit-tests
@@ -169,24 +166,8 @@ jobs:
             echo '```'
             echo '</details>'
             echo
-            echo "Full test log is also available as artifact: unit-test-log"
+            echo "Full test log path on the self-hosted runner: /tmp/unit-tests.log"
           } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload unit test log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: unit-test-log
-          path: /tmp/unit-tests.log
-          if-no-files-found: ignore
-
-      - name: Upload coverage report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-lcov
-          path: target/coverage/lcov.info
-          if-no-files-found: ignore
 
       - name: Build
         run: cargo build --all-targets
@@ -203,14 +184,29 @@ jobs:
     needs: test-and-lint
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.test-and-lint.result == 'success' }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - name: Checkout
+        shell: bash
+        env:
+          CHECKOUT_REF: ${{ github.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE"
+          cd /
+          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+          cd "$GITHUB_WORKSPACE"
+          git init
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -c http.extraheader="AUTHORIZATION: bearer ${GITHUB_TOKEN}" fetch --force --tags origin "$CHECKOUT_REF"
+          git checkout --force FETCH_HEAD
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Check cargo versions
         run: ./.githooks/check-cargo-versions.sh
 
       - name: Create and push version tag if version changed
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
@@ -240,7 +236,8 @@ jobs:
           fi
 
           tag="v${new_version}"
-          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+          auth_header="AUTHORIZATION: bearer ${GITHUB_TOKEN}"
+          if git -c http.extraheader="$auth_header" ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
             echo "Tag ${tag} already exists in remote; skipping."
             exit 0
           fi
@@ -251,9 +248,9 @@ jobs:
           fi
 
           git tag "$tag" "$current_sha"
-          if ! git push origin "$tag"; then
+          if ! git -c http.extraheader="$auth_header" push origin "$tag"; then
             echo "Push of ${tag} failed, checking if tag appeared in remote concurrently..."
-            if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+            if git -c http.extraheader="$auth_header" ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
               echo "Tag ${tag} already exists in remote after push race; treating as success."
               exit 0
             fi
@@ -271,7 +268,22 @@ jobs:
     needs: test-and-lint
     if: always()
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        shell: bash
+        env:
+          CHECKOUT_REF: ${{ github.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE"
+          cd /
+          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+          cd "$GITHUB_WORKSPACE"
+          git init
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -c http.extraheader="AUTHORIZATION: bearer ${GITHUB_TOKEN}" fetch --force --tags origin "$CHECKOUT_REF"
+          git checkout --force FETCH_HEAD
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Cleanup self-hosted workspace
         run: |
