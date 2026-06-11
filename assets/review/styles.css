@@ -727,31 +727,31 @@ button:disabled {
 
 .label-badge[data-label="red"],
 .labels button[data-label="red"],
-.publish-labels label[data-label="red"] {
+.publish-labels label[data-publish-label="red"] {
   --label-color: #d33131;
 }
 
 .label-badge[data-label="yellow"],
 .labels button[data-label="yellow"],
-.publish-labels label[data-label="yellow"] {
+.publish-labels label[data-publish-label="yellow"] {
   --label-color: #c79400;
 }
 
 .label-badge[data-label="green"],
 .labels button[data-label="green"],
-.publish-labels label[data-label="green"] {
+.publish-labels label[data-publish-label="green"] {
   --label-color: #258247;
 }
 
 .label-badge[data-label="blue"],
 .labels button[data-label="blue"],
-.publish-labels label[data-label="blue"] {
+.publish-labels label[data-publish-label="blue"] {
   --label-color: #2874d0;
 }
 
 .label-badge[data-label="purple"],
 .labels button[data-label="purple"],
-.publish-labels label[data-label="purple"] {
+.publish-labels label[data-publish-label="purple"] {
   --label-color: #8b45c7;
 }
 
@@ -790,16 +790,11 @@ button:disabled {
   grid-column: 1 / -1;
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-auto-rows: minmax(24px, auto);
+  align-items: center;
   gap: 4px 8px;
   padding-top: 5px;
   border-top: 1px solid rgba(120, 120, 112, 0.24);
-}
-
-.retouch-group {
-  display: grid;
-  align-content: start;
-  gap: 4px;
-  min-width: 0;
 }
 
 .retouch-header,
@@ -807,6 +802,8 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 4px;
+  min-width: 0;
+  min-height: 24px;
 }
 
 .retouch-header {
@@ -822,6 +819,7 @@ button:disabled {
   gap: 4px;
   align-items: center;
   min-width: 0;
+  min-height: 24px;
   color: #66665f;
   font-size: 10px;
 }
@@ -846,7 +844,7 @@ button:disabled {
 }
 
 .retouch-actions {
-  justify-content: end;
+  justify-content: start;
   flex-wrap: wrap;
 }
 
@@ -994,9 +992,10 @@ button:disabled {
   white-space: nowrap;
 }
 
-.publish-labels label[data-label] span {
-  width: 18px;
-  height: 18px;
+.publish-labels label[data-publish-label] span {
+  min-width: 56px;
+  height: 20px;
+  padding: 0 7px;
   border-radius: 4px;
   background: var(--label-color);
   color: #fff;

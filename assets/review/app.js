@@ -822,11 +822,11 @@ function updatePublishModeText() {
 }
 
 function setActiveReviewButtons(image) {
-  document.querySelectorAll("[data-rating]").forEach((button) => {
+  document.querySelectorAll(".rating button[data-rating]").forEach((button) => {
     button.classList.toggle("active", Number(image?.rating || 0) === Number(button.dataset.rating));
   });
   const labels = new Set(imageLabels(image));
-  document.querySelectorAll("[data-label]").forEach((button) => {
+  document.querySelectorAll(".labels button[data-label]").forEach((button) => {
     button.classList.toggle("active", labels.has(button.dataset.label));
   });
 }
@@ -1594,11 +1594,11 @@ async function endViewerTouch(event) {
   }
 }
 
-document.querySelectorAll("[data-rating]").forEach((button) => {
+document.querySelectorAll(".rating button[data-rating]").forEach((button) => {
   button.addEventListener("click", () => rateCurrentAndAdvance(Number(button.dataset.rating)));
 });
 
-document.querySelectorAll("[data-label]").forEach((button) => {
+document.querySelectorAll(".labels button[data-label]").forEach((button) => {
   button.addEventListener("click", () => {
     toggleCurrentLabel(button.dataset.label);
   });

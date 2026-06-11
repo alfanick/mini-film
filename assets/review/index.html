@@ -104,66 +104,56 @@
             </label>
 
             <section class="retouch" aria-label="Retouch">
-              <div class="retouch-group">
-                <div class="retouch-header">
-                  <span>Retouch</span>
-                  <button id="retouch-reset" type="button">Reset</button>
-                </div>
-                <div class="retouch-actions">
-                  <button id="crop-toggle" type="button">Crop/rotate</button>
-                  <button id="crop-ok" type="button" hidden>OK</button>
-                  <button id="crop-cancel" type="button" hidden>Cancel</button>
-                  <button id="crop-reset" type="button">Clear</button>
-                </div>
+              <div class="retouch-header">
+                <span>Retouch</span>
+                <button id="retouch-reset" type="button">Reset</button>
               </div>
-              <div class="retouch-group">
-                <label>
-                  <span>Exposure</span>
-                  <input id="retouch-exposure" type="range" min="-4" max="4" step="0.05" value="0" />
-                  <output id="retouch-exposure-value">0</output>
-                </label>
-                <label>
-                  <span>Contrast</span>
-                  <input id="retouch-clarity" type="range" min="-100" max="100" step="1" value="0" />
-                  <output id="retouch-clarity-value">0</output>
-                </label>
+              <label>
+                <span>Exposure</span>
+                <input id="retouch-exposure" type="range" min="-4" max="4" step="0.05" value="0" />
+                <output id="retouch-exposure-value">0</output>
+              </label>
+              <label>
+                <span>Highlights</span>
+                <input id="retouch-highlights" type="range" min="-100" max="100" step="1" value="0" />
+                <output id="retouch-highlights-value">0</output>
+              </label>
+              <label>
+                <span>Whites</span>
+                <input id="retouch-whites" type="range" min="-100" max="100" step="1" value="0" />
+                <output id="retouch-whites-value">0</output>
+              </label>
+              <label>
+                <span>Temp</span>
+                <input id="retouch-temperature" type="range" min="-2500" max="2500" step="50" value="0" />
+                <output id="retouch-temperature-value">0K</output>
+              </label>
+              <div class="retouch-actions">
+                <button id="crop-toggle" type="button">Crop/rotate</button>
+                <button id="crop-ok" type="button" hidden>OK</button>
+                <button id="crop-cancel" type="button" hidden>Cancel</button>
+                <button id="crop-reset" type="button">Clear</button>
               </div>
-              <div class="retouch-group">
-                <label>
-                  <span>Highlights</span>
-                  <input id="retouch-highlights" type="range" min="-100" max="100" step="1" value="0" />
-                  <output id="retouch-highlights-value">0</output>
-                </label>
-                <label>
-                  <span>Shadows</span>
-                  <input id="retouch-shadows" type="range" min="-100" max="100" step="1" value="0" />
-                  <output id="retouch-shadows-value">0</output>
-                </label>
-              </div>
-              <div class="retouch-group">
-                <label>
-                  <span>Whites</span>
-                  <input id="retouch-whites" type="range" min="-100" max="100" step="1" value="0" />
-                  <output id="retouch-whites-value">0</output>
-                </label>
-                <label>
-                  <span>Blacks</span>
-                  <input id="retouch-blacks" type="range" min="-100" max="100" step="1" value="0" />
-                  <output id="retouch-blacks-value">0</output>
-                </label>
-              </div>
-              <div class="retouch-group">
-                <label>
-                  <span>Temp</span>
-                  <input id="retouch-temperature" type="range" min="-2500" max="2500" step="50" value="0" />
-                  <output id="retouch-temperature-value">0K</output>
-                </label>
-                <label>
-                  <span>Offset</span>
-                  <input id="retouch-offset" type="range" min="-100" max="100" step="1" value="0" />
-                  <output id="retouch-offset-value">0</output>
-                </label>
-              </div>
+              <label>
+                <span>Contrast</span>
+                <input id="retouch-clarity" type="range" min="-100" max="100" step="1" value="0" />
+                <output id="retouch-clarity-value">0</output>
+              </label>
+              <label>
+                <span>Shadows</span>
+                <input id="retouch-shadows" type="range" min="-100" max="100" step="1" value="0" />
+                <output id="retouch-shadows-value">0</output>
+              </label>
+              <label>
+                <span>Blacks</span>
+                <input id="retouch-blacks" type="range" min="-100" max="100" step="1" value="0" />
+                <output id="retouch-blacks-value">0</output>
+              </label>
+              <label>
+                <span>Offset</span>
+                <input id="retouch-offset" type="range" min="-100" max="100" step="1" value="0" />
+                <output id="retouch-offset-value">0</output>
+              </label>
             </section>
           </div>
         </section>
@@ -306,20 +296,20 @@
             </label>
             <div class="publish-labels">
               <span>Colour labels</span>
-              <label data-label="red" title="Red"
-                ><input type="checkbox" name="publish-label" value="red" /> <span>R</span></label
+              <label data-publish-label="red" title="Red"
+                ><input type="checkbox" name="publish-label" value="red" /> <span>Red</span></label
               >
-              <label data-label="yellow" title="Yellow"
-                ><input type="checkbox" name="publish-label" value="yellow" /> <span>Y</span></label
+              <label data-publish-label="yellow" title="Yellow"
+                ><input type="checkbox" name="publish-label" value="yellow" /> <span>Yellow</span></label
               >
-              <label data-label="green" title="Green"
-                ><input type="checkbox" name="publish-label" value="green" /> <span>G</span></label
+              <label data-publish-label="green" title="Green"
+                ><input type="checkbox" name="publish-label" value="green" /> <span>Green</span></label
               >
-              <label data-label="blue" title="Blue"
-                ><input type="checkbox" name="publish-label" value="blue" /> <span>B</span></label
+              <label data-publish-label="blue" title="Blue"
+                ><input type="checkbox" name="publish-label" value="blue" /> <span>Blue</span></label
               >
-              <label data-label="purple" title="Purple"
-                ><input type="checkbox" name="publish-label" value="purple" /> <span>P</span></label
+              <label data-publish-label="purple" title="Purple"
+                ><input type="checkbox" name="publish-label" value="purple" /> <span>Purple</span></label
               >
             </div>
             <label>
