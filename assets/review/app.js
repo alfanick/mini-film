@@ -1814,7 +1814,7 @@ document.querySelectorAll(".labels button[data-label]").forEach((button) => {
 els.tags.addEventListener("change", () => saveReview());
 els.tags.addEventListener("blur", () => saveReview());
 els.tags.addEventListener("input", scheduleAutosave);
-els.tags.addEventListener("keydown", confirmMetadataInput);
+els.tags.addEventListener("keydown", confirmTagsInput);
 els.notes.addEventListener("change", () => saveReview());
 els.notes.addEventListener("blur", () => saveReview());
 els.notes.addEventListener("input", scheduleAutosave);
@@ -1898,9 +1898,16 @@ function confirmMetadataInput(event) {
   if (event.key !== "Enter") return;
   event.preventDefault();
   clearTimeout(autosaveTimer);
-  saveCurrentIfNeeded()
-    .catch((error) => console.error(error))
-    .finally(() => event.currentTarget.blur());
+  event.currentTarget.blur();
+  saveCurrentIfNeeded().catch((error) => console.error(error));
+}
+
+function confirmTagsInput(event) {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  clearTimeout(autosaveTimer);
+  event.currentTarget.blur();
+  move(1).catch((error) => console.error(error));
 }
 
 function focusMetadataInput(input) {
