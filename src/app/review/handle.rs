@@ -129,7 +129,7 @@ impl ReviewHandle {
                 if let Err(error) = handle.record_preview_processing(&raw) {
                     eprintln!("review preview state update failed: {error:#}");
                 }
-                let result = extract_embedded_preview(&raw, &output);
+                let result = extract_embedded_preview(&raw, &output, &handle.convert);
                 match result {
                     Ok(()) => {
                         if let Err(error) = handle.record_preview_done(&raw, &output) {

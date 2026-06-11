@@ -43,6 +43,7 @@
         <section class="viewer">
           <div id="empty" class="empty">Waiting for pictures</div>
           <img id="main-image" alt="" />
+          <div id="gesture-feedback" class="gesture-feedback" hidden></div>
           <div id="retouch-grid" class="retouch-grid" hidden></div>
           <div id="crop-overlay" class="crop-overlay" hidden>
             <div id="crop-box" class="crop-box">
@@ -50,6 +51,15 @@
               <span data-crop-handle="ne"></span>
               <span data-crop-handle="sw"></span>
               <span data-crop-handle="se"></span>
+            </div>
+            <div id="crop-tools" class="crop-tools" hidden>
+              <button id="crop-rotate-left" type="button">-90</button>
+              <label>
+                <span>Rotate</span>
+                <input id="crop-rotation" type="range" min="-180" max="180" step="0.25" value="0" />
+                <output id="crop-rotation-value">0</output>
+              </label>
+              <button id="crop-rotate-right" type="button">+90</button>
             </div>
           </div>
         </section>
@@ -133,15 +143,10 @@
                 <input id="retouch-clarity" type="range" min="-100" max="100" step="1" value="0" />
                 <output id="retouch-clarity-value">0</output>
               </label>
-              <label>
-                <span>Rotate</span>
-                <input id="retouch-rotation" type="range" min="-180" max="180" step="0.25" value="0" />
-                <output id="retouch-rotation-value">0</output>
-              </label>
               <div class="retouch-actions">
-                <button id="rotate-left" type="button">-90</button>
-                <button id="rotate-right" type="button">+90</button>
-                <button id="crop-toggle" type="button">Crop</button>
+                <button id="crop-toggle" type="button">Crop/rotate</button>
+                <button id="crop-ok" type="button" hidden>OK</button>
+                <button id="crop-cancel" type="button" hidden>Cancel</button>
                 <button id="crop-reset" type="button">Clear</button>
               </div>
             </section>
@@ -245,6 +250,7 @@
           <div>
             <h2 id="publish-title">Publish</h2>
             <p id="publish-mode">Link existing reviewed outputs when settings match daemon defaults.</p>
+            <p id="publish-count" class="publish-count"></p>
           </div>
           <button id="publish-cancel" type="button">Cancel</button>
         </header>

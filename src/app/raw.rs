@@ -130,7 +130,7 @@ mod tests {
     const RAWTHAPE_HELPER_SCRIPT: &str = include_str!("../../scripts/tests/rawtherapee_helper.sh");
 
     use super::*;
-    use std::{fs, os::unix::fs::PermissionsExt};
+    use std::{fs, io::Write, os::unix::fs::PermissionsExt};
 
     #[test]
     fn jpeg_subsampling_maps_to_rawtherapee_js_values() {
@@ -156,7 +156,11 @@ mod tests {
             )
             .replace("__CREATE_OUTPUT__", if create_output { "1" } else { "0" })
             .replace("__EXIT_CODE__", &exit_code.to_string());
-        fs::write(path, rendered)?;
+        let mut file = fs::File::create(path)?;
+        file.write_all(rendered.as_bytes())?;
+        file.flush()?;
+        file.sync_all()?;
+        drop(file);
         let mut permissions = fs::metadata(path)?.permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(path, permissions)?;

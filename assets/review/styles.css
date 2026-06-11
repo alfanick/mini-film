@@ -348,6 +348,8 @@ button:disabled {
     calc(var(--review-panel-safe) + var(--review-viewer-edge)) var(--review-viewer-edge);
   background: #20201f;
   overflow: hidden;
+  touch-action: none;
+  user-select: none;
 }
 
 .viewer img {
@@ -360,6 +362,30 @@ button:disabled {
   max-height: 100%;
   place-self: center;
   object-fit: contain;
+}
+
+.gesture-feedback {
+  position: absolute;
+  z-index: 6;
+  left: 50%;
+  top: 50%;
+  min-width: 86px;
+  transform: translate(-50%, -50%);
+  border: 1px solid rgba(255, 255, 255, 0.34);
+  border-radius: 8px;
+  background: rgba(20, 20, 18, 0.78);
+  color: #fff;
+  padding: 14px 18px;
+  font-size: clamp(32px, 7vw, 72px);
+  font-weight: 750;
+  line-height: 1;
+  text-align: center;
+  pointer-events: none;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+}
+
+.gesture-feedback[hidden] {
+  display: none;
 }
 
 .viewer.has-image img {
@@ -472,6 +498,57 @@ button:disabled {
   right: -9px;
   bottom: -9px;
   cursor: nwse-resize;
+}
+
+.crop-tools {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: min(520px, calc(100% - 24px));
+  transform: translateX(-50%);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 7px;
+  background: rgba(22, 22, 20, 0.82);
+  color: #fff;
+  padding: 8px;
+  pointer-events: auto;
+  touch-action: none;
+  backdrop-filter: blur(8px);
+}
+
+.crop-tools[hidden] {
+  display: none;
+}
+
+.crop-tools button {
+  min-width: 44px;
+  min-height: 34px;
+  border-color: rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+
+.crop-tools label {
+  display: grid;
+  grid-template-columns: auto minmax(80px, 1fr) 42px;
+  flex: 1;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  font-size: 11px;
+}
+
+.crop-tools input {
+  width: 100%;
+  accent-color: #fff;
+}
+
+.crop-tools output {
+  text-align: right;
 }
 
 .empty {
@@ -831,6 +908,11 @@ button:disabled {
   margin: 4px 0 0;
   color: #66665f;
   font-size: 12px;
+}
+
+.publish-header .publish-count {
+  color: #222;
+  font-weight: 650;
 }
 
 .publish-grid {

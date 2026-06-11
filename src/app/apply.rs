@@ -530,7 +530,7 @@ mod tests {
     use crate::app::profile::ResolvedProfile;
     use crate::cli::ExportOptions;
     use image::{ImageBuffer, ImageFormat, Rgb};
-    use std::{fs, os::unix::fs::PermissionsExt};
+    use std::{fs, io::Write, os::unix::fs::PermissionsExt};
 
     #[test]
     fn grain_override_accepts_tuple_presets_and_none() {
@@ -596,10 +596,7 @@ mod tests {
             .replace("__OUTPUT_IMAGE__", &output_image.display().to_string())
             .replace("__CREATE_OUTPUT__", "1")
             .replace("__EXIT_CODE__", "0");
-        fs::write(path, rendered)?;
-        let mut permissions = fs::metadata(path)?.permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(path, permissions)?;
+        write_executable_script(path, &rendered)?;
 
         Ok(FakeRawtherapee {
             log: path.with_file_name("raw.log"),
@@ -613,11 +610,20 @@ mod tests {
                 &path.with_file_name("convert.log").display().to_string(),
             )
             .replace("__EXIT_CODE__", "0");
-        fs::write(path, rendered)?;
+        write_executable_script(path, &rendered)?;
+        Ok(path.with_file_name("convert.log"))
+    }
+
+    fn write_executable_script(path: &Path, rendered: &str) -> Result<()> {
+        let mut file = fs::File::create(path)?;
+        file.write_all(rendered.as_bytes())?;
+        file.flush()?;
+        file.sync_all()?;
+        drop(file);
         let mut permissions = fs::metadata(path)?.permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(path, permissions)?;
-        Ok(path.with_file_name("convert.log"))
+        Ok(())
     }
 
     fn make_source_image(path: &Path) {

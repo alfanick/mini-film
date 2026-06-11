@@ -6,12 +6,21 @@ const state = {
   preloaded: new Set(),
   viewerSafeAreaObserver: null,
   cropEditing: false,
+  cropDraft: null,
+  cropDraftRotation: 0,
+  cropDraftImageId: null,
   cropDrag: null,
+  cropPointers: new Map(),
+  cropTouchGesture: null,
+  touchGesture: null,
+  gestureFeedbackTimer: null,
   retouchInputImageId: null,
   localRetouchDirty: false,
 };
 
 const RETOUCH_SAVE_DEBOUNCE_MS = 1200;
+const TOUCH_SWIPE_MIN_PX = 72;
+const TOUCH_SWIPE_RATIO = 1.65;
 
 const els = {
   status: document.getElementById("status"),
@@ -21,6 +30,7 @@ const els = {
   viewer: document.querySelector(".viewer"),
   panel: document.querySelector(".panel"),
   image: document.getElementById("main-image"),
+  gestureFeedback: document.getElementById("gesture-feedback"),
   title: document.getElementById("image-title"),
   subtitle: document.getElementById("image-subtitle"),
   profileState: document.getElementById("profile-state"),
@@ -31,6 +41,11 @@ const els = {
   retouchGrid: document.getElementById("retouch-grid"),
   cropOverlay: document.getElementById("crop-overlay"),
   cropBox: document.getElementById("crop-box"),
+  cropTools: document.getElementById("crop-tools"),
+  cropRotation: document.getElementById("crop-rotation"),
+  cropRotationValue: document.getElementById("crop-rotation-value"),
+  cropRotateLeft: document.getElementById("crop-rotate-left"),
+  cropRotateRight: document.getElementById("crop-rotate-right"),
   retouchReset: document.getElementById("retouch-reset"),
   retouchExposure: document.getElementById("retouch-exposure"),
   retouchExposureValue: document.getElementById("retouch-exposure-value"),
@@ -46,11 +61,9 @@ const els = {
   retouchTemperatureValue: document.getElementById("retouch-temperature-value"),
   retouchClarity: document.getElementById("retouch-clarity"),
   retouchClarityValue: document.getElementById("retouch-clarity-value"),
-  retouchRotation: document.getElementById("retouch-rotation"),
-  retouchRotationValue: document.getElementById("retouch-rotation-value"),
-  rotateLeft: document.getElementById("rotate-left"),
-  rotateRight: document.getElementById("rotate-right"),
   cropToggle: document.getElementById("crop-toggle"),
+  cropOk: document.getElementById("crop-ok"),
+  cropCancel: document.getElementById("crop-cancel"),
   cropReset: document.getElementById("crop-reset"),
   publish: document.getElementById("publish"),
   minRating: document.getElementById("min-rating"),
@@ -65,6 +78,7 @@ const els = {
   publishSubmit: document.getElementById("publish-submit"),
   publishStatus: document.getElementById("publish-status"),
   publishMode: document.getElementById("publish-mode"),
+  publishCount: document.getElementById("publish-count"),
   publishAlbum: document.getElementById("publish-album"),
   publishMinRating: document.getElementById("publish-min-rating"),
   publishTags: document.getElementById("publish-tags"),
@@ -408,6 +422,7 @@ function renderProgressSummary(image) {
 
 function renderCurrent(image) {
   if (!image) {
+    clearCropDraftState();
     els.viewer.classList.remove("has-image");
     els.image.removeAttribute("src");
     els.title.textContent = "";
@@ -425,6 +440,9 @@ function renderCurrent(image) {
   const mainUrl = selected?.url || image.preview_url;
   const previewNote = selected?.url ? "" : image.preview_url ? " | camera preview" : "";
   const selectedState = profileDisplayState(image, selected);
+  if (state.cropDraftImageId !== null && state.cropDraftImageId !== image.id) {
+    clearCropDraftState();
+  }
   els.title.textContent = image.file_name;
   els.subtitle.textContent = `${image.relative_path} | rating ${image.rating}`;
   els.profileState.textContent = selected ? `${selected.profile_stem}: ${selectedState.text}${previewNote}` : "";
@@ -723,6 +741,33 @@ function publishFormBody() {
   return body;
 }
 
+function publishSelectionStats(body = publishFormBody()) {
+  const labels = new Set((body.labels || []).filter(Boolean));
+  const tags = new Set((body.tags || []).map((tag) => tag.toLowerCase()));
+  let pictures = 0;
+  let outputs = 0;
+  for (const image of state.data?.images || []) {
+    if (!imagePassesPublishFilters(image, body.min_rating, labels, tags)) continue;
+    pictures += 1;
+    outputs += publishProfileIndexes(image).length;
+  }
+  return { pictures, outputs };
+}
+
+function imagePassesPublishFilters(image, minRatingValue, labels, tags) {
+  if (Number(image.rating || 0) < Number(minRatingValue || 0)) return false;
+  if (labels.size > 0 && imageLabels(image).every((label) => !labels.has(label))) return false;
+  if (tags.size > 0 && !(image.tags || []).some((tag) => tags.has(String(tag).toLowerCase()))) {
+    return false;
+  }
+  return true;
+}
+
+function updatePublishCount() {
+  const { pictures, outputs } = publishSelectionStats();
+  els.publishCount.textContent = `${pictures} ${plural(pictures, "picture")} selected, ${outputs} ${plural(outputs, "output")} will be exported.`;
+}
+
 function splitPublishTags(raw) {
   return raw
     .split(/[,\s]+/)
@@ -765,6 +810,7 @@ function updatePublishModeText() {
   els.publishMode.textContent = rerender
     ? "Changed output settings will rerender selected pictures from the original RAW files."
     : "Settings match daemon defaults, so publish will hardlink reviewed outputs when possible.";
+  updatePublishCount();
   updatePublishStatus();
 }
 
@@ -880,7 +926,7 @@ function retouchFromInputs(image = findImage(state.currentId)) {
       clarity: Number(els.retouchClarity.value || 0),
     },
     crop: existing.crop,
-    rotation_degrees: Number(els.retouchRotation.value || 0),
+    rotation_degrees: existing.rotation_degrees,
   });
 }
 
@@ -893,7 +939,6 @@ function setRetouchInputs(retouch) {
   els.retouchBlacks.value = String(normalized.adjustments.blacks);
   els.retouchTemperature.value = String(normalized.adjustments.temperature);
   els.retouchClarity.value = String(normalized.adjustments.clarity);
-  els.retouchRotation.value = String(clamp(normalized.rotation_degrees, -180, 180));
   updateRetouchReadouts(normalized);
 }
 
@@ -906,7 +951,6 @@ function updateRetouchReadouts(retouch = retouchFromInputs()) {
   els.retouchBlacksValue.value = signed(normalized.adjustments.blacks, 0);
   els.retouchTemperatureValue.value = `${signed(normalized.adjustments.temperature, 0)}K`;
   els.retouchClarityValue.value = signed(normalized.adjustments.clarity, 0);
-  els.retouchRotationValue.value = `${signed(normalized.rotation_degrees, 1)}°`;
 }
 
 function signed(value, digits) {
@@ -937,9 +981,14 @@ function applyLocalRetouch(retouch, options = {}) {
 }
 
 function applyDraftRetouch(image, selected) {
-  const retouch = normalizedRetouch(image?.retouch || defaultRetouch());
+  const retouch = cropDraftIsFor(image)
+    ? normalizedRetouch({
+        ...(image?.retouch || defaultRetouch()),
+        rotation_degrees: state.cropDraftRotation,
+      })
+    : normalizedRetouch(image?.retouch || defaultRetouch());
   const pending = state.localRetouchDirty || (selected && selected.status !== "done");
-  const active = pending && !retouchIsDefault(retouch);
+  const active = (pending || cropDraftIsFor(image)) && !retouchIsDefault(retouch);
   els.viewer.classList.toggle("draft-retouch", active);
   if (!active) {
     els.image.style.removeProperty("--draft-rotation");
@@ -990,11 +1039,19 @@ function retouchIsDefault(retouch) {
 }
 
 function renderRetouchGrid(image, selected = selectedProfile(image)) {
-  const retouch = normalizedRetouch(image?.retouch || defaultRetouch());
+  const retouch = cropDraftIsFor(image)
+    ? normalizedRetouch({
+        ...(image?.retouch || defaultRetouch()),
+        rotation_degrees: state.cropDraftRotation,
+      })
+    : normalizedRetouch(image?.retouch || defaultRetouch());
   const display = profileDisplayState(image, selected);
   const rotating =
     Math.abs(retouch.rotation_degrees) > 0.001 &&
-    (state.localRetouchDirty || display.state === "retouch-queued" || display.state === "retouch-processing");
+    (cropDraftIsFor(image) ||
+      state.localRetouchDirty ||
+      display.state === "retouch-queued" ||
+      display.state === "retouch-processing");
   els.retouchGrid.hidden = !rotating;
   if (rotating) positionRetouchGrid();
 }
@@ -1010,18 +1067,21 @@ function positionRetouchGrid() {
 }
 
 function renderCropOverlay(image) {
-  const retouch = normalizedRetouch(image?.retouch || defaultRetouch());
-  const crop = retouch.crop;
-  const visible = Boolean(image && (state.cropEditing || crop));
+  const crop = cropForOverlay(image);
+  const visible = Boolean(image && crop);
   els.cropOverlay.hidden = !visible;
-  els.cropToggle.classList.toggle("active", state.cropEditing);
-  if (!visible) return;
+  els.cropBox.hidden = !visible;
+  els.cropTools.hidden = !cropDraftIsFor(image);
+  updateCropButtons(image);
+  updateCropRotationControls();
+  if (!visible) {
+    return;
+  }
   positionCropOverlay();
-  const effective = crop || { x: 0.1, y: 0.1, width: 0.8, height: 0.8 };
-  els.cropBox.style.left = `${effective.x * 100}%`;
-  els.cropBox.style.top = `${effective.y * 100}%`;
-  els.cropBox.style.width = `${effective.width * 100}%`;
-  els.cropBox.style.height = `${effective.height * 100}%`;
+  els.cropBox.style.left = `${crop.x * 100}%`;
+  els.cropBox.style.top = `${crop.y * 100}%`;
+  els.cropBox.style.width = `${crop.width * 100}%`;
+  els.cropBox.style.height = `${crop.height * 100}%`;
 }
 
 function positionCropOverlay() {
@@ -1034,17 +1094,193 @@ function positionCropOverlay() {
   els.cropOverlay.style.height = `${imageRect.height}px`;
 }
 
-function ensureCrop(retouch = retouchFromInputs()) {
-  if (retouch.crop) return retouch;
-  return normalizedRetouch({ ...retouch, crop: { x: 0.1, y: 0.1, width: 0.8, height: 0.8 } });
+function defaultCrop() {
+  return { x: 0.1, y: 0.1, width: 0.8, height: 0.8 };
+}
+
+function fullFrameCrop() {
+  return { x: 0, y: 0, width: 1, height: 1 };
+}
+
+function cropDraftIsFor(image) {
+  return Boolean(image && state.cropEditing && state.cropDraftImageId === image.id);
+}
+
+function cropForOverlay(image) {
+  if (!image) return null;
+  if (cropDraftIsFor(image)) return state.cropDraft || fullFrameCrop();
+  return normalizedRetouch(image.retouch || defaultRetouch()).crop;
+}
+
+function clearCropDraftState() {
+  state.cropEditing = false;
+  state.cropDraft = null;
+  state.cropDraftRotation = 0;
+  state.cropDraftImageId = null;
+  state.cropDrag = null;
+  state.cropPointers.clear();
+  state.cropTouchGesture = null;
+}
+
+function beginCropEditing() {
+  const image = findImage(state.currentId);
+  if (!image) return;
+  if (cropDraftIsFor(image)) return;
+  clearRetouchSaveTimer();
+  const retouch = normalizedRetouch(image.retouch || defaultRetouch());
+  state.cropEditing = true;
+  state.cropDraftImageId = image.id;
+  state.cropDraft = retouch.crop || defaultCrop();
+  state.cropDraftRotation = retouch.rotation_degrees;
+  updateCropRotationControls();
+  applyDraftRetouch(image, selectedProfile(image));
+  renderRetouchGrid(image, selectedProfile(image));
+  renderCropOverlay(image);
+}
+
+function cancelCropEditing() {
+  const image = findImage(state.currentId);
+  clearCropDraftState();
+  applyDraftRetouch(image, selectedProfile(image));
+  renderRetouchGrid(image, selectedProfile(image));
+  renderCropOverlay(image);
+}
+
+function approveCropEditing() {
+  const image = findImage(state.currentId);
+  if (!cropDraftIsFor(image)) return;
+  const crop = state.cropDraft ? { ...state.cropDraft } : null;
+  const rotation = state.cropDraftRotation;
+  clearCropDraftState();
+  applyLocalRetouch(
+    normalizedRetouch({
+      ...retouchFromInputs(image),
+      crop,
+      rotation_degrees: rotation,
+    }),
+  );
+}
+
+function clearCropDraft() {
+  const image = findImage(state.currentId);
+  if (!image) return;
+  if (!cropDraftIsFor(image)) {
+    beginCropEditing();
+  }
+  state.cropDraft = null;
+  state.cropDraftRotation = 0;
+  updateCropRotationControls();
+  applyDraftRetouch(image, selectedProfile(image));
+  renderRetouchGrid(image, selectedProfile(image));
+  renderCropOverlay(image);
+}
+
+function updateCropButtons(image) {
+  const editing = cropDraftIsFor(image);
+  els.cropToggle.classList.toggle("active", editing);
+  els.cropOk.hidden = !editing;
+  els.cropCancel.hidden = !editing;
+}
+
+function updateCropRotationControls() {
+  els.cropRotation.value = String(clamp(state.cropDraftRotation, -180, 180));
+  els.cropRotationValue.value = `${signed(state.cropDraftRotation, 1)}°`;
+}
+
+function setCropDraftRotation(value) {
+  let image = findImage(state.currentId);
+  if (!cropDraftIsFor(image)) {
+    beginCropEditing();
+    image = findImage(state.currentId);
+    if (!cropDraftIsFor(image)) return;
+  }
+  state.cropDraftRotation = normalizeRotation(value);
+  updateCropRotationControls();
+  applyDraftRetouch(image, selectedProfile(image));
+  renderRetouchGrid(image, selectedProfile(image));
+  renderCropOverlay(image);
+}
+
+function cropPointer(event) {
+  return { x: event.clientX, y: event.clientY };
+}
+
+function cropPointerPair() {
+  return Array.from(state.cropPointers.values()).slice(0, 2);
+}
+
+function cropGestureMetrics(points, rect) {
+  const [first, second] = points;
+  return {
+    center: {
+      x: ((first.x + second.x) / 2 - rect.left) / Math.max(1, rect.width),
+      y: ((first.y + second.y) / 2 - rect.top) / Math.max(1, rect.height),
+    },
+    distance: Math.hypot(second.x - first.x, second.y - first.y),
+    angle: Math.atan2(second.y - first.y, second.x - first.x),
+  };
+}
+
+function startCropTouchGesture() {
+  const points = cropPointerPair();
+  if (points.length < 2) return;
+  const rect = els.cropOverlay.getBoundingClientRect();
+  const metrics = cropGestureMetrics(points, rect);
+  state.cropDrag = null;
+  state.cropTouchGesture = {
+    rect,
+    startDistance: Math.max(1, metrics.distance),
+    startAngle: metrics.angle,
+    crop: state.cropDraft || fullFrameCrop(),
+    rotation: state.cropDraftRotation,
+  };
+}
+
+function updateCropTouchGesture() {
+  const gesture = state.cropTouchGesture;
+  const points = cropPointerPair();
+  if (!gesture || points.length < 2) return;
+  const image = findImage(state.currentId);
+  const metrics = cropGestureMetrics(points, gesture.rect);
+  const scale = metrics.distance / gesture.startDistance;
+  const size = Math.min(gesture.crop.width, gesture.crop.height) * scale;
+  state.cropDraft = squareCropAround(metrics.center, size);
+  state.cropDraftRotation = normalizeRotation(
+    gesture.rotation + ((metrics.angle - gesture.startAngle) * 180) / Math.PI,
+  );
+  updateCropRotationControls();
+  applyDraftRetouch(image, selectedProfile(image));
+  renderRetouchGrid(image);
+  renderCropOverlay(image);
+}
+
+function squareCropAround(center, size) {
+  const normalizedSize = clamp(size, 0.01, 1);
+  return normalizedRetouch({
+    crop: {
+      x: clamp(center.x, 0, 1) - normalizedSize / 2,
+      y: clamp(center.y, 0, 1) - normalizedSize / 2,
+      width: normalizedSize,
+      height: normalizedSize,
+    },
+  }).crop;
 }
 
 function startCropDrag(event) {
-  if (!state.cropEditing) return;
+  const image = findImage(state.currentId);
+  if (!cropDraftIsFor(image)) return;
   event.preventDefault();
   event.stopPropagation();
-  const image = findImage(state.currentId);
-  const retouch = ensureCrop(image?.retouch || retouchFromInputs());
+  state.cropPointers.set(event.pointerId, cropPointer(event));
+  try {
+    els.cropBox.setPointerCapture(event.pointerId);
+  } catch {
+    // Pointer capture can fail if the browser already cancelled the touch.
+  }
+  if (state.cropPointers.size >= 2) {
+    startCropTouchGesture();
+    return;
+  }
   const rect = els.cropOverlay.getBoundingClientRect();
   state.cropDrag = {
     pointerId: event.pointerId,
@@ -1052,40 +1288,83 @@ function startCropDrag(event) {
     startX: event.clientX,
     startY: event.clientY,
     rect,
-    crop: retouch.crop,
+    crop: state.cropDraft || fullFrameCrop(),
   };
-  els.cropBox.setPointerCapture(event.pointerId);
 }
 
 function updateCropDrag(event) {
+  if (state.cropPointers.has(event.pointerId)) {
+    state.cropPointers.set(event.pointerId, cropPointer(event));
+  }
+  if (state.cropTouchGesture) {
+    event.preventDefault();
+    updateCropTouchGesture();
+    return;
+  }
+  if (state.cropPointers.size >= 2) {
+    event.preventDefault();
+    startCropTouchGesture();
+    updateCropTouchGesture();
+    return;
+  }
   const drag = state.cropDrag;
   if (!drag || drag.pointerId !== event.pointerId) return;
   event.preventDefault();
   const dx = (event.clientX - drag.startX) / Math.max(1, drag.rect.width);
   const dy = (event.clientY - drag.startY) / Math.max(1, drag.rect.height);
-  let { x, y, width, height } = drag.crop;
+  let crop;
   if (drag.handle === "move") {
-    x += dx;
-    y += dy;
+    crop = normalizedRetouch({
+      crop: {
+        ...drag.crop,
+        x: drag.crop.x + dx,
+        y: drag.crop.y + dy,
+      },
+    }).crop;
   } else {
-    if (drag.handle.includes("w")) {
-      x += dx;
-      width -= dx;
-    }
-    if (drag.handle.includes("e")) width += dx;
-    if (drag.handle.includes("n")) {
-      y += dy;
-      height -= dy;
-    }
-    if (drag.handle.includes("s")) height += dy;
+    crop = aspectLockedCrop(drag.crop, drag.handle, dx, dy);
   }
-  applyLocalRetouch(normalizedRetouch({ ...retouchFromInputs(), crop: { x, y, width, height } }));
+  state.cropDraft = crop;
+  renderCropOverlay(findImage(state.currentId));
+}
+
+function aspectLockedCrop(start, handle, dx, dy) {
+  const anchorX = handle.includes("w") ? start.x + start.width : start.x;
+  const anchorY = handle.includes("n") ? start.y + start.height : start.y;
+  const signX = handle.includes("w") ? -1 : 1;
+  const signY = handle.includes("n") ? -1 : 1;
+  const targetWidth = signX > 0 ? start.width + dx : start.width - dx;
+  const targetHeight = signY > 0 ? start.height + dy : start.height - dy;
+  let size = Math.min(Math.abs(targetWidth), Math.abs(targetHeight));
+  size = clamp(size, 0.01, 1);
+  if (signX > 0) {
+    size = Math.min(size, 1 - anchorX);
+  } else {
+    size = Math.min(size, anchorX);
+  }
+  if (signY > 0) {
+    size = Math.min(size, 1 - anchorY);
+  } else {
+    size = Math.min(size, anchorY);
+  }
+  return normalizedRetouch({
+    crop: {
+      x: signX > 0 ? anchorX : anchorX - size,
+      y: signY > 0 ? anchorY : anchorY - size,
+      width: size,
+      height: size,
+    },
+  }).crop;
 }
 
 function endCropDrag(event) {
-  if (!state.cropDrag || state.cropDrag.pointerId !== event.pointerId) return;
-  state.cropDrag = null;
-  scheduleRetouchSave();
+  state.cropPointers.delete(event.pointerId);
+  if (state.cropTouchGesture && state.cropPointers.size < 2) {
+    state.cropTouchGesture = null;
+  }
+  if (state.cropDrag && state.cropDrag.pointerId === event.pointerId) {
+    state.cropDrag = null;
+  }
 }
 
 async function saveReview(patch = {}) {
@@ -1220,6 +1499,63 @@ function adjustedCurrentRating(delta) {
   return Math.max(0, Math.min(5, rating));
 }
 
+async function rateCurrentWithoutAdvance(rating) {
+  await saveReview({ rating });
+  showCurrentRatingFeedback();
+}
+
+function showCurrentRatingFeedback() {
+  const image = findImage(state.currentId);
+  showGestureFeedback(String(Number(image?.rating || 0)));
+}
+
+function showGestureFeedback(text) {
+  clearTimeout(state.gestureFeedbackTimer);
+  els.gestureFeedback.textContent = text;
+  els.gestureFeedback.hidden = false;
+  state.gestureFeedbackTimer = setTimeout(() => {
+    els.gestureFeedback.hidden = true;
+  }, 850);
+}
+
+function startViewerTouch(event) {
+  if (event.pointerType !== "touch" || state.cropEditing || !findImage(state.currentId)) return;
+  if (event.target.closest(".crop-tools")) return;
+  state.touchGesture = {
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+  };
+  try {
+    els.viewer.setPointerCapture(event.pointerId);
+  } catch {
+    // The browser may cancel touch capture during system gestures.
+  }
+}
+
+function updateViewerTouch(event) {
+  if (!state.touchGesture || state.touchGesture.pointerId !== event.pointerId) return;
+  event.preventDefault();
+}
+
+async function endViewerTouch(event) {
+  const gesture = state.touchGesture;
+  if (!gesture || gesture.pointerId !== event.pointerId) return;
+  state.touchGesture = null;
+  const dx = event.clientX - gesture.startX;
+  const dy = event.clientY - gesture.startY;
+  const absX = Math.abs(dx);
+  const absY = Math.abs(dy);
+  if (absX >= TOUCH_SWIPE_MIN_PX && absX / Math.max(1, absY) >= TOUCH_SWIPE_RATIO) {
+    await move(dx > 0 ? 1 : -1);
+    showCurrentRatingFeedback();
+    return;
+  }
+  if (absY >= TOUCH_SWIPE_MIN_PX && absY / Math.max(1, absX) >= TOUCH_SWIPE_RATIO) {
+    await rateCurrentWithoutAdvance(adjustedCurrentRating(dy < 0 ? 1 : -1));
+  }
+}
+
 document.querySelectorAll("[data-rating]").forEach((button) => {
   button.addEventListener("click", () => rateCurrentAndAdvance(Number(button.dataset.rating)));
 });
@@ -1241,6 +1577,14 @@ els.image.addEventListener("load", () => {
   renderRetouchGrid(findImage(state.currentId));
   renderCropOverlay(findImage(state.currentId));
 });
+els.viewer.addEventListener("pointerdown", startViewerTouch);
+els.viewer.addEventListener("pointermove", updateViewerTouch);
+els.viewer.addEventListener("pointerup", (event) => {
+  endViewerTouch(event).catch((error) => console.error(error));
+});
+els.viewer.addEventListener("pointercancel", () => {
+  state.touchGesture = null;
+});
 [
   els.retouchExposure,
   els.retouchHighlights,
@@ -1249,7 +1593,6 @@ els.image.addEventListener("load", () => {
   els.retouchBlacks,
   els.retouchTemperature,
   els.retouchClarity,
-  els.retouchRotation,
 ].forEach((input) => {
   input.addEventListener("input", () => {
     const retouch = retouchFromInputs();
@@ -1259,29 +1602,13 @@ els.image.addEventListener("load", () => {
   input.addEventListener("change", () => scheduleRetouchSave());
 });
 els.retouchReset.addEventListener("click", () => applyLocalRetouch(defaultRetouch()));
-els.cropReset.addEventListener("click", () => {
-  const retouch = normalizedRetouch({ ...retouchFromInputs(), crop: null });
-  state.cropEditing = false;
-  applyLocalRetouch(retouch);
-});
-els.cropToggle.addEventListener("click", () => {
-  state.cropEditing = !state.cropEditing;
-  if (state.cropEditing) {
-    applyLocalRetouch(ensureCrop());
-  } else {
-    renderCropOverlay(findImage(state.currentId));
-  }
-});
-els.rotateLeft.addEventListener("click", () => {
-  const retouch = retouchFromInputs();
-  retouch.rotation_degrees = normalizeRotation(retouch.rotation_degrees - 90);
-  applyLocalRetouch(retouch);
-});
-els.rotateRight.addEventListener("click", () => {
-  const retouch = retouchFromInputs();
-  retouch.rotation_degrees = normalizeRotation(retouch.rotation_degrees + 90);
-  applyLocalRetouch(retouch);
-});
+els.cropReset.addEventListener("click", clearCropDraft);
+els.cropToggle.addEventListener("click", beginCropEditing);
+els.cropOk.addEventListener("click", approveCropEditing);
+els.cropCancel.addEventListener("click", cancelCropEditing);
+els.cropRotation.addEventListener("input", () => setCropDraftRotation(Number(els.cropRotation.value || 0)));
+els.cropRotateLeft.addEventListener("click", () => setCropDraftRotation(state.cropDraftRotation - 90));
+els.cropRotateRight.addEventListener("click", () => setCropDraftRotation(state.cropDraftRotation + 90));
 els.cropBox.addEventListener("pointerdown", startCropDrag);
 els.cropBox.addEventListener("pointermove", updateCropDrag);
 els.cropBox.addEventListener("pointerup", endCropDrag);
@@ -1327,23 +1654,12 @@ els.publishCancel.addEventListener("click", () => togglePublishWizard(false));
 els.publishOverlay.addEventListener("click", (event) => {
   if (event.target === els.publishOverlay) togglePublishWizard(false);
 });
-els.publishSizeMode.addEventListener("change", () => {
-  syncPublishSizeFields();
+els.publishForm.addEventListener("input", updatePublishModeText);
+els.publishForm.addEventListener("change", (event) => {
+  if (event.target === els.publishSizeMode) {
+    syncPublishSizeFields();
+  }
   updatePublishModeText();
-});
-[
-  els.publishOutputFormat,
-  els.publishLongEdge,
-  els.publishMaxWidth,
-  els.publishMaxHeight,
-  els.publishResize,
-  els.publishJpgQuality,
-  els.publishJpegSubsampling,
-  els.publishProgressive,
-  els.publishStripMetadata,
-].forEach((element) => {
-  element.addEventListener("input", updatePublishModeText);
-  element.addEventListener("change", updatePublishModeText);
 });
 els.publishForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -1387,7 +1703,7 @@ window.addEventListener("keydown", (event) => {
   if (event.target === els.tags) return;
   if (event.target === els.notes) return;
   if (event.target === els.minRating) return;
-  if (event.target.closest(".retouch")) return;
+  if (event.target.closest(".retouch") || event.target.closest(".crop-tools")) return;
   if (!els.shortcutsOverlay.hidden) {
     if (event.key === "Escape" || event.key === "?" || (event.key === "/" && event.shiftKey)) {
       event.preventDefault();

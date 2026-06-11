@@ -525,6 +525,7 @@ mod tests {
         writeln!(file, "#!/bin/sh").unwrap();
         writeln!(file, "exit {exit_code}").unwrap();
         file.flush().unwrap();
+        drop(file);
         let mut permissions = fs::metadata(path).unwrap().permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(path, permissions).unwrap();
