@@ -1,6 +1,6 @@
 [package]
 name = "mini-film"
-version = "7.6.3"
+version = "7.6.4"
 description = "Apply Lightroom-style film emulation profiles to RAW files with RawTherapee and HALD workflows."
 repository = "https://github.com/alfanick/mini-film"
 homepage = "https://github.com/alfanick/mini-film"
@@ -9,7 +9,7 @@ edition = "2024"
 license = "MIT"
 
 [features]
-github-update = []
+github-update = ["dep:self_update"]
 
 [profile.release]
 opt-level = 3
@@ -38,7 +38,7 @@ sanitize-filename = "0.7.0-beta"
 serde_json = "1.0.150"
 serde = { version = "1.0.228", features = ["derive"] }
 sha1 = "0.11.0"
-self_update = { version = "0.44.0", default-features = false, features = ["reqwest", "default-tls"] }
+self_update = { version = "0.44.0", default-features = false, features = ["reqwest", "default-tls"], optional = true }
 tar = "0.4.44"
 tempfile = "3.27.0"
 walkdir = "2.5.0"

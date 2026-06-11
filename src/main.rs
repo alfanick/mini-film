@@ -399,11 +399,12 @@ fn main() -> Result<()> {
 const RAWTHERAPEE_BINARY: &str = "rawtherapee-cli";
 const CONVERT_BINARY: &str = "convert";
 const EXIFTOOL_BINARY: &str = "exiftool";
+const CURL_BINARY: &str = "curl";
 
 fn startup_dependency_check(args: &[String]) -> Result<()> {
     let command = active_command_for_dependency_check(args);
     let help_mode = is_help_mode(args);
-    let needs_externals = match command {
+    let needs_image_externals = match command {
         Some("apply")
         | Some("batch")
         | Some("daemon")
@@ -412,23 +413,31 @@ fn startup_dependency_check(args: &[String]) -> Result<()> {
         Some(_) => false,
         None => help_mode,
     };
+    let needs_update_externals =
+        matches!(command, Some("update")) || (help_mode && command.is_none());
 
-    if !needs_externals {
+    if !needs_image_externals && !needs_update_externals {
         return Ok(());
     }
 
     let rawtherapee = resolve_dependency_path(args, "--rawtherapee", RAWTHERAPEE_BINARY);
     let convert = resolve_dependency_path(args, "--convert", CONVERT_BINARY);
     let exiftool = resolve_dependency_path(args, "--exiftool", EXIFTOOL_BINARY);
+    let curl = PathBuf::from(CURL_BINARY);
 
     let mut failures = Vec::new();
-    if let Err(error) = verify_dependency_binary("rawtherapee-cli", &rawtherapee) {
-        failures.push(error.to_string());
+    if needs_image_externals {
+        if let Err(error) = verify_dependency_binary("rawtherapee-cli", &rawtherapee) {
+            failures.push(error.to_string());
+        }
+        if let Err(error) = verify_dependency_binary("convert", &convert) {
+            failures.push(error.to_string());
+        }
+        if let Err(error) = verify_dependency_binary("exiftool", &exiftool) {
+            failures.push(error.to_string());
+        }
     }
-    if let Err(error) = verify_dependency_binary("convert", &convert) {
-        failures.push(error.to_string());
-    }
-    if let Err(error) = verify_dependency_binary("exiftool", &exiftool) {
+    if needs_update_externals && let Err(error) = verify_dependency_binary("curl", &curl) {
         failures.push(error.to_string());
     }
     if failures.is_empty() {

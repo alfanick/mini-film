@@ -91,6 +91,8 @@ Required external dependencies at startup for image-generation commands:
 - `convert` (ImageMagick/GraphicsMagick)
 - `exiftool`
 
+The `update` command also requires `curl` for downloading the Lensfun database.
+
 ## Coverage
 
 Generate LCOV coverage locally (requires `cargo-llvm-cov`):

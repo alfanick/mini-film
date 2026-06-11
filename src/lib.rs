@@ -1,4 +1,4 @@
-#![feature(portable_simd)]
+#![cfg_attr(target_arch = "x86_64", feature(portable_simd))]
 
 mod adjustments;
 mod grain;

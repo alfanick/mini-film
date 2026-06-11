@@ -1,3 +1,4 @@
+#[cfg(target_arch = "x86_64")]
 use std::simd::prelude::*;
 use std::{fs, path::Path};
 
@@ -119,9 +120,11 @@ fn render_grain_16_rows(
         .for_each(|(y, row)| {
             let texture_row = texture.row(y);
             match path {
+                #[cfg(target_arch = "x86_64")]
                 GrainSimdPath::Avx512 => unsafe {
                     render_grain_16_row_avx512(row, y, seed, luma_weight, model, texture_row)
                 },
+                #[cfg(target_arch = "x86_64")]
                 GrainSimdPath::Avx2 => unsafe {
                     render_grain_16_row_avx2(row, y, seed, luma_weight, model, texture_row)
                 },
@@ -145,32 +148,8 @@ unsafe fn render_grain_16_row_avx512(
     render_grain_16_row_simd::<16>(row, y, seed, luma_weight, model, texture);
 }
 
-#[cfg(not(target_arch = "x86_64"))]
-unsafe fn render_grain_16_row_avx512(
-    row: &mut [u16],
-    y: usize,
-    seed: u64,
-    luma_weight: &[f32],
-    model: &GrainModel,
-    texture: &[f32],
-) {
-    render_grain_16_row_simd::<16>(row, y, seed, luma_weight, model, texture);
-}
-
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn render_grain_16_row_avx2(
-    row: &mut [u16],
-    y: usize,
-    seed: u64,
-    luma_weight: &[f32],
-    model: &GrainModel,
-    texture: &[f32],
-) {
-    render_grain_16_row_simd::<8>(row, y, seed, luma_weight, model, texture);
-}
-
-#[cfg(not(target_arch = "x86_64"))]
 unsafe fn render_grain_16_row_avx2(
     row: &mut [u16],
     y: usize,
@@ -197,6 +176,7 @@ fn render_grain_16_row_scalar(
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 fn render_grain_16_row_simd<const LANES: usize>(
     row: &mut [u16],
     y: usize,
@@ -302,9 +282,11 @@ fn render_grain_8_rows(
         .for_each(|(y, row)| {
             let texture_row = texture.row(y);
             match path {
+                #[cfg(target_arch = "x86_64")]
                 GrainSimdPath::Avx512 => unsafe {
                     render_grain_8_row_avx512(row, y, seed, luma_weight, model, texture_row)
                 },
+                #[cfg(target_arch = "x86_64")]
                 GrainSimdPath::Avx2 => unsafe {
                     render_grain_8_row_avx2(row, y, seed, luma_weight, model, texture_row)
                 },
@@ -328,32 +310,8 @@ unsafe fn render_grain_8_row_avx512(
     render_grain_8_row_simd::<16>(row, y, seed, luma_weight, model, texture);
 }
 
-#[cfg(not(target_arch = "x86_64"))]
-unsafe fn render_grain_8_row_avx512(
-    row: &mut [u8],
-    y: usize,
-    seed: u64,
-    luma_weight: &[f32],
-    model: &GrainModel,
-    texture: &[f32],
-) {
-    render_grain_8_row_simd::<16>(row, y, seed, luma_weight, model, texture);
-}
-
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn render_grain_8_row_avx2(
-    row: &mut [u8],
-    y: usize,
-    seed: u64,
-    luma_weight: &[f32],
-    model: &GrainModel,
-    texture: &[f32],
-) {
-    render_grain_8_row_simd::<8>(row, y, seed, luma_weight, model, texture);
-}
-
-#[cfg(not(target_arch = "x86_64"))]
 unsafe fn render_grain_8_row_avx2(
     row: &mut [u8],
     y: usize,
@@ -380,6 +338,7 @@ fn render_grain_8_row_scalar(
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 fn render_grain_8_row_simd<const LANES: usize>(
     row: &mut [u8],
     y: usize,
@@ -448,7 +407,9 @@ fn render_grain_8_row_simd<const LANES: usize>(
 
 #[derive(Clone, Copy)]
 enum GrainSimdPath {
+    #[cfg(target_arch = "x86_64")]
     Avx512,
+    #[cfg(target_arch = "x86_64")]
     Avx2,
     Scalar,
 }

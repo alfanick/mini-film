@@ -1,4 +1,3 @@
-use self_update::Download;
 #[cfg(feature = "github-update")]
 use self_update::cargo_crate_version;
 
@@ -9,6 +8,7 @@ use std::fs;
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
 use std::time::Duration;
 
 use tar::Archive;
@@ -93,8 +93,7 @@ fn asset_target() -> &'static str {
 pub(crate) fn run_lensfun_update() -> anyhow::Result<LensfunUpdateReport> {
     let download_dir = tempfile::tempdir()?;
     let archive_path = download_dir.path().join("lensfun.tar.gz");
-    let mut archive_file = fs::File::create(&archive_path)?;
-    Download::from_url(LENSFUN_ARCHIVE_URL).download_to(&mut archive_file)?;
+    download_lensfun_archive(&archive_path)?;
 
     let mut archive = Archive::new(GzDecoder::new(fs::File::open(&archive_path)?));
     let extracted = download_dir.path().join("source");
@@ -110,6 +109,25 @@ pub(crate) fn run_lensfun_update() -> anyhow::Result<LensfunUpdateReport> {
         synced_dir: synced,
         copied_files: copied,
     })
+}
+
+fn download_lensfun_archive(output: &Path) -> anyhow::Result<()> {
+    let status = Command::new("curl")
+        .arg("--fail")
+        .arg("--location")
+        .arg("--silent")
+        .arg("--show-error")
+        .arg("--max-time")
+        .arg("120")
+        .arg("--output")
+        .arg(output)
+        .arg(LENSFUN_ARCHIVE_URL)
+        .status()
+        .map_err(|error| anyhow::anyhow!("running curl for Lensfun archive: {error}"))?;
+    if !status.success() {
+        anyhow::bail!("curl failed downloading Lensfun archive with status {status}");
+    }
+    Ok(())
 }
 
 fn locate_source_db_dir(extracted_root: &Path) -> anyhow::Result<PathBuf> {
