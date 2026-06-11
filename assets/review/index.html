@@ -42,8 +42,9 @@
       <main class="workspace">
         <section class="viewer">
           <div id="empty" class="empty">Waiting for pictures</div>
-          <img id="main-image" alt="" />
+          <img id="main-image" alt="" draggable="false" />
           <div id="gesture-feedback" class="gesture-feedback" hidden></div>
+          <div id="zoom-loupe" class="zoom-loupe" hidden></div>
           <div id="retouch-grid" class="retouch-grid" hidden></div>
           <div id="crop-overlay" class="crop-overlay" hidden>
             <div id="crop-box" class="crop-box">
@@ -198,6 +199,26 @@
           </section>
 
           <section class="shortcut-section">
+            <h3>Touch / Mouse</h3>
+            <div class="shortcut-row">
+              <span class="shortcut-keys"><kbd>Swipe ←/→</kbd></span>
+              <span>Move between visible pictures without changing the rating.</span>
+            </div>
+            <div class="shortcut-row">
+              <span class="shortcut-keys"><kbd>Swipe ↑/↓</kbd></span>
+              <span>Change the rating without advancing.</span>
+            </div>
+            <div class="shortcut-row">
+              <span class="shortcut-keys"><kbd>Hold</kbd></span>
+              <span>Zoom into the picture under the cursor or finger until released.</span>
+            </div>
+            <div class="shortcut-row">
+              <span class="shortcut-keys"><kbd>Profile</kbd></span>
+              <span>Click a profile thumbnail to preview it; use its checkbox to include it in publishing.</span>
+            </div>
+          </section>
+
+          <section class="shortcut-section">
             <h3>Rating</h3>
             <div class="shortcut-row">
               <span class="shortcut-keys"><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd><kbd>4</kbd><kbd>5</kbd></span>
@@ -262,6 +283,18 @@
             <div class="shortcut-row">
               <span class="shortcut-keys"><kbd>?</kbd><kbd>Esc</kbd></span>
               <span>Show or hide this shortcuts overlay.</span>
+            </div>
+          </section>
+
+          <section class="shortcut-section">
+            <h3>Retouch</h3>
+            <div class="shortcut-row">
+              <span class="shortcut-keys"><kbd>Double-click</kbd></span>
+              <span>Double-click a retouch control name to reset that value.</span>
+            </div>
+            <div class="shortcut-row">
+              <span class="shortcut-keys"><kbd>Crop</kbd><kbd>OK</kbd></span>
+              <span>Open crop/rotate, adjust the frame, then apply it with OK.</span>
             </div>
           </section>
         </div>

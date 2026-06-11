@@ -350,6 +350,7 @@ button:disabled {
   overflow: hidden;
   touch-action: none;
   user-select: none;
+  -webkit-touch-callout: none;
 }
 
 .viewer img {
@@ -362,6 +363,7 @@ button:disabled {
   max-height: 100%;
   place-self: center;
   object-fit: contain;
+  -webkit-user-drag: none;
 }
 
 .gesture-feedback {
@@ -386,6 +388,30 @@ button:disabled {
 
 .gesture-feedback[hidden] {
   display: none;
+}
+
+.zoom-loupe {
+  position: absolute;
+  z-index: 7;
+  width: min(220px, 34vmin);
+  height: min(220px, 34vmin);
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  border-radius: 999px;
+  background-color: #111;
+  background-repeat: no-repeat;
+  box-shadow:
+    0 10px 32px rgba(0, 0, 0, 0.46),
+    inset 0 0 0 1px rgba(0, 0, 0, 0.32);
+  pointer-events: none;
+  transform: translateZ(0);
+}
+
+.zoom-loupe[hidden] {
+  display: none;
+}
+
+.viewer.zooming img {
+  cursor: zoom-in;
 }
 
 .viewer.has-image img {

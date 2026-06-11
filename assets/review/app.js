@@ -13,6 +13,10 @@ const state = {
   cropPointers: new Map(),
   cropTouchGesture: null,
   touchGesture: null,
+  zoomPress: null,
+  zoomActive: false,
+  zoomPointerId: null,
+  zoomLastPoint: null,
   gestureFeedbackTimer: null,
   retouchInputImageId: null,
   localRetouchDirty: false,
@@ -22,6 +26,9 @@ const state = {
 const RETOUCH_SAVE_DEBOUNCE_MS = 1200;
 const TOUCH_SWIPE_MIN_PX = 72;
 const TOUCH_SWIPE_RATIO = 1.65;
+const ZOOM_LONG_PRESS_MS = 380;
+const ZOOM_MOVE_CANCEL_PX = 22;
+const ZOOM_SCALE = 2.6;
 
 const els = {
   status: document.getElementById("status"),
@@ -32,6 +39,7 @@ const els = {
   panel: document.querySelector(".panel"),
   image: document.getElementById("main-image"),
   gestureFeedback: document.getElementById("gesture-feedback"),
+  zoomLoupe: document.getElementById("zoom-loupe"),
   title: document.getElementById("image-title"),
   subtitle: document.getElementById("image-subtitle"),
   profileState: document.getElementById("profile-state"),
@@ -259,6 +267,8 @@ function updateViewerSafeArea() {
   if (!els.retouchGrid.hidden) positionRetouchGrid();
   if (!els.cropOverlay.hidden) positionCropOverlay();
   if (!els.gestureFeedback.hidden) positionGestureFeedback();
+  if (state.zoomActive && state.zoomLastPoint)
+    updateZoomLoupe(state.zoomLastPoint.clientX, state.zoomLastPoint.clientY);
 }
 
 let viewerSafeAreaFrame = 0;
@@ -430,6 +440,7 @@ function renderProgressSummary(image) {
 
 function renderCurrent(image) {
   if (!image) {
+    stopZoom();
     clearCropDraftState();
     els.viewer.classList.remove("has-image");
     els.image.removeAttribute("src");
@@ -473,9 +484,12 @@ function renderCurrent(image) {
   if (mainUrl) {
     els.viewer.classList.add("has-image");
     const stamp = selected?.url ? selected.updated_at : image.preview_updated_at;
-    els.image.src = versionedUrl(mainUrl, stamp);
+    const nextSrc = versionedUrl(mainUrl, stamp);
+    if (els.image.getAttribute("src") !== nextSrc) stopZoom();
+    els.image.src = nextSrc;
     els.image.alt = image.file_name;
   } else {
+    stopZoom();
     els.viewer.classList.remove("has-image");
     els.image.removeAttribute("src");
   }
@@ -1632,14 +1646,109 @@ function positionGestureFeedback() {
   els.gestureFeedback.style.top = `${imageRect.top - viewerRect.top + imageRect.height / 2}px`;
 }
 
-function startViewerTouch(event) {
-  if (event.pointerType !== "touch" || state.cropEditing || !findImage(state.currentId)) return;
-  if (event.target.closest(".crop-tools")) return;
-  state.touchGesture = {
+function pointerTargetElement(event) {
+  return event.target instanceof Element ? event.target : null;
+}
+
+function canStartViewerZoom(event) {
+  if (state.cropEditing || !findImage(state.currentId) || !els.image.getAttribute("src")) return false;
+  if (event.pointerType !== "touch" && event.button !== 0) return false;
+  const target = pointerTargetElement(event);
+  return !target?.closest(".crop-overlay, .crop-tools, .retouch-grid, .gesture-feedback, .zoom-loupe");
+}
+
+function startZoomHold(event) {
+  if (!canStartViewerZoom(event)) return;
+  cancelZoomHold();
+  state.zoomLastPoint = { clientX: event.clientX, clientY: event.clientY };
+  state.zoomPress = {
     pointerId: event.pointerId,
     startX: event.clientX,
     startY: event.clientY,
+    timer: setTimeout(() => activateZoomFromHold(event.pointerId), ZOOM_LONG_PRESS_MS),
   };
+  try {
+    els.viewer.setPointerCapture(event.pointerId);
+  } catch {
+    // Some browsers reject capture for already-cancelled touch gestures.
+  }
+}
+
+function activateZoomFromHold(pointerId) {
+  const press = state.zoomPress;
+  if (!press || press.pointerId !== pointerId || !findImage(state.currentId)) return;
+  state.zoomPress = null;
+  state.zoomActive = true;
+  state.zoomPointerId = pointerId;
+  state.touchGesture = null;
+  els.viewer.classList.add("zooming");
+  els.zoomLoupe.hidden = false;
+  const point = state.zoomLastPoint || { clientX: press.startX, clientY: press.startY };
+  updateZoomLoupe(point.clientX, point.clientY);
+}
+
+function cancelZoomHold() {
+  if (!state.zoomPress) return;
+  clearTimeout(state.zoomPress.timer);
+  state.zoomPress = null;
+}
+
+function stopZoom() {
+  cancelZoomHold();
+  state.zoomActive = false;
+  state.zoomPointerId = null;
+  state.zoomLastPoint = null;
+  els.viewer.classList.remove("zooming");
+  els.zoomLoupe.hidden = true;
+  els.zoomLoupe.style.removeProperty("background-image");
+  els.zoomLoupe.style.removeProperty("background-size");
+  els.zoomLoupe.style.removeProperty("background-position");
+  els.zoomLoupe.style.removeProperty("filter");
+}
+
+function updateZoomHold(event) {
+  if (!state.zoomPress || state.zoomPress.pointerId !== event.pointerId) return;
+  state.zoomLastPoint = { clientX: event.clientX, clientY: event.clientY };
+  const dx = event.clientX - state.zoomPress.startX;
+  const dy = event.clientY - state.zoomPress.startY;
+  if (Math.hypot(dx, dy) > ZOOM_MOVE_CANCEL_PX) cancelZoomHold();
+}
+
+function updateZoomLoupe(clientX, clientY) {
+  const imageRect = els.image.getBoundingClientRect();
+  const viewerRect = els.viewer.getBoundingClientRect();
+  if (imageRect.width <= 1 || imageRect.height <= 1 || viewerRect.width <= 1 || viewerRect.height <= 1) return;
+
+  state.zoomLastPoint = { clientX, clientY };
+  const loupeWidth = els.zoomLoupe.offsetWidth || 180;
+  const loupeHeight = els.zoomLoupe.offsetHeight || loupeWidth;
+  const left = clamp(clientX - viewerRect.left - loupeWidth / 2, 0, Math.max(0, viewerRect.width - loupeWidth));
+  const top = clamp(clientY - viewerRect.top - loupeHeight / 2, 0, Math.max(0, viewerRect.height - loupeHeight));
+  const relX = clamp((clientX - imageRect.left) / imageRect.width, 0, 1);
+  const relY = clamp((clientY - imageRect.top) / imageRect.height, 0, 1);
+  const bgX = loupeWidth / 2 - relX * imageRect.width * ZOOM_SCALE;
+  const bgY = loupeHeight / 2 - relY * imageRect.height * ZOOM_SCALE;
+  const imageUrl = els.image.currentSrc || els.image.src;
+  const imageStyle = window.getComputedStyle(els.image);
+
+  els.zoomLoupe.style.left = `${left}px`;
+  els.zoomLoupe.style.top = `${top}px`;
+  els.zoomLoupe.style.backgroundImage = `url("${cssUrl(imageUrl)}")`;
+  els.zoomLoupe.style.backgroundSize = `${imageRect.width * ZOOM_SCALE}px ${imageRect.height * ZOOM_SCALE}px`;
+  els.zoomLoupe.style.backgroundPosition = `${bgX}px ${bgY}px`;
+  els.zoomLoupe.style.filter = imageStyle.filter === "none" ? "" : imageStyle.filter;
+}
+
+function cssUrl(value) {
+  return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function startViewerTouch(event) {
+  startZoomHold(event);
+  if (event.pointerType !== "touch" || state.cropEditing || !findImage(state.currentId)) return;
+  const target = pointerTargetElement(event);
+  if (target?.closest(".crop-overlay, .crop-tools")) return;
+  state.touchGesture = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY };
   try {
     els.viewer.setPointerCapture(event.pointerId);
   } catch {
@@ -1648,11 +1757,23 @@ function startViewerTouch(event) {
 }
 
 function updateViewerTouch(event) {
+  if (state.zoomActive && state.zoomPointerId === event.pointerId) {
+    event.preventDefault();
+    updateZoomLoupe(event.clientX, event.clientY);
+    return;
+  }
+  updateZoomHold(event);
   if (!state.touchGesture || state.touchGesture.pointerId !== event.pointerId) return;
   event.preventDefault();
 }
 
 async function endViewerTouch(event) {
+  if (state.zoomActive && state.zoomPointerId === event.pointerId) {
+    event.preventDefault();
+    stopZoom();
+    return;
+  }
+  if (state.zoomPress?.pointerId === event.pointerId) cancelZoomHold();
   const gesture = state.touchGesture;
   if (!gesture || gesture.pointerId !== event.pointerId) return;
   state.touchGesture = null;
@@ -1689,6 +1810,7 @@ els.notes.addEventListener("blur", () => saveReview());
 els.notes.addEventListener("input", scheduleAutosave);
 els.notes.addEventListener("keydown", confirmMetadataInput);
 els.image.addEventListener("load", () => {
+  if (state.zoomActive) stopZoom();
   scheduleViewerSafeAreaUpdate();
   renderRetouchGrid(findImage(state.currentId));
   renderCropOverlay(findImage(state.currentId));
@@ -1698,8 +1820,13 @@ els.viewer.addEventListener("pointermove", updateViewerTouch);
 els.viewer.addEventListener("pointerup", (event) => {
   endViewerTouch(event).catch((error) => console.error(error));
 });
-els.viewer.addEventListener("pointercancel", () => {
+els.viewer.addEventListener("pointercancel", (event) => {
+  if (state.zoomActive && state.zoomPointerId === event.pointerId) stopZoom();
+  if (state.zoomPress?.pointerId === event.pointerId) cancelZoomHold();
   state.touchGesture = null;
+});
+els.viewer.addEventListener("contextmenu", (event) => {
+  if (state.zoomActive || event.target === els.image) event.preventDefault();
 });
 [
   els.retouchExposure,
