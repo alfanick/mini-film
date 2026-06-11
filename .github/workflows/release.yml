@@ -247,25 +247,7 @@ jobs:
       - name: Install Linux GUI dependencies
         if: ${{ matrix.artifact_suffix == '-gui' && contains(matrix.target, 'linux') }}
         shell: bash
-        run: |
-          set -euo pipefail
-          if ! command -v apt-get >/dev/null 2>&1; then
-            echo "apt-get is required to install Linux GUI build dependencies on this runner." >&2
-            exit 1
-          fi
-          apt_prefix=()
-          if [ "$(id -u)" -ne 0 ]; then
-            apt_prefix=(sudo)
-          fi
-          "${apt_prefix[@]}" apt-get update
-          "${apt_prefix[@]}" apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libjavascriptcoregtk-4.1-dev \
-            libsoup-3.0-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            patchelf
+        run: ./.github/scripts/install-linux-gui-deps.sh
 
       - name: Build release binary
         shell: bash
