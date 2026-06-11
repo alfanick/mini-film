@@ -219,16 +219,18 @@ button:disabled {
 .image-row-title {
   grid-column: 2;
   grid-row: 1;
+  height: 13px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 11px;
-  line-height: 1.15;
+  line-height: 13px;
 }
 
 .image-row-meta {
   grid-column: 2;
   grid-row: 2;
+  height: 11px;
   min-width: 0;
   display: grid;
   grid-template-columns: 56px minmax(0, 1fr);
@@ -236,30 +238,39 @@ button:disabled {
   gap: 4px;
   color: #6e6e65;
   font-size: 9px;
-  line-height: 1.15;
+  line-height: 11px;
   white-space: nowrap;
+  overflow: hidden;
 }
 
 .label-badges {
-  display: inline-flex;
+  display: flex;
   width: 42px;
-  height: 10px;
+  height: 7px;
+  margin-left: 3px;
   gap: 1px;
   overflow: hidden;
-  vertical-align: -1px;
+  line-height: 0;
 }
 
 .label-badge {
   width: 7px;
-  height: 10px;
-  border-radius: 3px;
+  height: 7px;
+  border-radius: 2px;
   background: var(--label-color);
   color: #fff;
-  display: inline-flex;
+  display: block;
+  flex: 0 0 7px;
+  min-width: 0;
+  overflow: hidden;
+  text-indent: -999px;
+}
+
+.image-row-rating {
+  display: flex;
   align-items: center;
-  justify-content: center;
-  font-size: 0;
-  line-height: 1;
+  height: 11px;
+  min-width: 0;
 }
 
 .image-row-indicator {

@@ -297,7 +297,6 @@ function renderList(images) {
     rating.className = "image-row-rating";
     rating.append(document.createTextNode(`${image.rating}`));
     if (labels.length > 0) {
-      rating.append(document.createTextNode(" "));
       rating.append(renderLabelBadges(labels));
     }
 
