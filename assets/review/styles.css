@@ -583,9 +583,42 @@ button:disabled {
   margin-bottom: 8px;
 }
 
+.image-title-line {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  min-width: 0;
+}
+
 .image-title {
+  flex: 0 1 auto;
+  min-width: 0;
   font-size: 14px;
   font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.image-exif {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: nowrap;
+  gap: 2px 7px;
+  min-width: 0;
+  overflow: hidden;
+  color: #66665f;
+  font-size: 10px;
+  line-height: 1.18;
+}
+
+.image-exif:empty {
+  display: none;
+}
+
+.image-exif span {
+  min-width: 0;
+  max-width: min(36ch, 100%);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

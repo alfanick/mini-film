@@ -8,14 +8,29 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Local, NaiveDateTime, TimeZone, Utc};
 use exif::{Reader, Tag};
 use filetime::{FileTime, set_file_atime, set_file_mtime};
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct GalleryExifData {
     pub(crate) focal_length: Option<String>,
     pub(crate) aperture: Option<String>,
     pub(crate) shutter_speed: Option<String>,
     pub(crate) iso: Option<String>,
     pub(crate) camera_model: Option<String>,
+    pub(crate) lens_model: Option<String>,
+    pub(crate) shooting_mode: Option<String>,
+}
+
+impl GalleryExifData {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.focal_length.is_none()
+            && self.aperture.is_none()
+            && self.shutter_speed.is_none()
+            && self.iso.is_none()
+            && self.camera_model.is_none()
+            && self.lens_model.is_none()
+            && self.shooting_mode.is_none()
+    }
 }
 
 pub(crate) fn sync_output_timestamps_from_exif(raw: &Path, output: &Path) -> Result<bool> {
@@ -159,6 +174,10 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
     let iso = extract_capture_iso_from_exif(&exif).map(|iso| iso.to_string());
 
     let camera_model = exif_field_value(&exif, Tag::Model).map(strip_surrounding_quotes);
+    let lens_model = exif_field_value(&exif, Tag::LensModel)
+        .or_else(|| exif_field_value(&exif, Tag::LensSpecification))
+        .map(strip_surrounding_quotes);
+    let shooting_mode = exif_exposure_program(&exif);
 
     Ok(GalleryExifData {
         focal_length,
@@ -166,6 +185,8 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
         shutter_speed,
         iso,
         camera_model,
+        lens_model,
+        shooting_mode,
     })
 }
 
@@ -203,6 +224,17 @@ fn extract_capture_iso_from_exif(exif: &exif::Exif) -> Option<u32> {
         }
     }
     None
+}
+
+fn exif_exposure_program(exif: &exif::Exif) -> Option<String> {
+    match exif_uint_value(exif, Tag::ExposureProgram) {
+        Some(1) => Some("M".to_string()),
+        Some(2) => Some("P".to_string()),
+        Some(3) => Some("A".to_string()),
+        Some(4) => Some("S".to_string()),
+        Some(0) | None => None,
+        Some(_) => exif_field_value(exif, Tag::ExposureProgram),
+    }
 }
 
 fn set_file_times(path: &Path, timestamp: &SystemTime) -> Result<()> {
@@ -312,6 +344,12 @@ fn exif_field_value(exif: &exif::Exif, tag: Tag) -> Option<String> {
         .map(|field| field.display_value().with_unit(exif).to_string())
         .map(|value| value.trim_matches('\0').trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn exif_uint_value(exif: &exif::Exif, tag: Tag) -> Option<u32> {
+    exif.fields()
+        .find(|field| field.tag == tag)
+        .and_then(|field| field.value.get_uint(0))
 }
 
 fn parse_exif_datetime_with_offset(datetime: &str, offset: Option<&str>) -> Option<SystemTime> {

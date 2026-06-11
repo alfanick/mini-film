@@ -27,5 +27,6 @@ pub(super) use crate::{
     app::export::validate_export_options,
     app::profile::resolve_profile,
     app::retouch::{BasicRetouchAdjustments, RetouchSettings},
+    app::timestamps::{GalleryExifData, extract_gallery_exif},
     cli::{BatchOutputFormat, ExportOptions, GalleryTemplate, LensCorrections},
 };

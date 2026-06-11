@@ -36,6 +36,7 @@ const els = {
   profileState: document.getElementById("profile-state"),
   profiles: document.getElementById("profiles"),
   controls: document.querySelector(".controls"),
+  imageExif: document.getElementById("image-exif"),
   tags: document.getElementById("tags"),
   notes: document.getElementById("notes"),
   retouchGrid: document.getElementById("retouch-grid"),
@@ -431,6 +432,7 @@ function renderCurrent(image) {
     els.title.textContent = "";
     els.subtitle.textContent = "";
     els.profileState.textContent = "";
+    els.imageExif.replaceChildren();
     els.profiles.replaceChildren();
     els.tags.value = "";
     els.notes.value = "";
@@ -448,6 +450,7 @@ function renderCurrent(image) {
   }
   els.title.textContent = image.file_name;
   els.subtitle.textContent = `${image.relative_path} | rating ${image.rating}`;
+  renderImageExif(image);
   els.profileState.textContent = selected ? `${selected.profile_stem}: ${selectedState.text}${previewNote}` : "";
   const imageChanged = state.lastInputImageId !== image.id;
   if (imageChanged || document.activeElement !== els.tags) {
@@ -477,6 +480,25 @@ function renderCurrent(image) {
   renderCropOverlay(image);
   renderProfiles(image);
   preloadNearbyImages(image);
+}
+
+function renderImageExif(image) {
+  els.imageExif.replaceChildren();
+  const exif = image?.exif || {};
+  const parts = [
+    exif.shooting_mode ? `Mode ${exif.shooting_mode}` : "",
+    exif.camera_model || "",
+    exif.lens_model || "",
+    exif.iso ? `ISO ${exif.iso}` : "",
+    exif.aperture || "",
+    exif.shutter_speed || "",
+  ].filter(Boolean);
+  for (const part of parts) {
+    const item = document.createElement("span");
+    item.textContent = part;
+    item.title = part;
+    els.imageExif.append(item);
+  }
 }
 
 function selectedProfile(image) {

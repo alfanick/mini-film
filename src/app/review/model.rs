@@ -92,6 +92,8 @@ pub(super) struct ReviewImage {
     pub(super) relative_path: String,
     pub(super) file_name: String,
     #[serde(default)]
+    pub(super) exif: GalleryExifData,
+    #[serde(default)]
     pub(super) preview: ReviewPreview,
     pub(super) selected_profile_index: usize,
     #[serde(default)]

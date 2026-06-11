@@ -33,6 +33,9 @@ impl ReviewStore {
         raw: &Path,
     ) -> Result<&mut ReviewImage> {
         if let Some(index) = self.images.iter().position(|image| image.raw_path == raw) {
+            if self.images[index].exif.is_empty() {
+                self.images[index].exif = extract_gallery_exif(raw).unwrap_or_default();
+            }
             return Ok(&mut self.images[index]);
         }
 
@@ -53,6 +56,7 @@ impl ReviewStore {
             raw_path: raw.to_path_buf(),
             relative_path: relative,
             file_name,
+            exif: extract_gallery_exif(raw).unwrap_or_default(),
             preview: ReviewPreview::default(),
             selected_profile_index: 0,
             rating: 0,
