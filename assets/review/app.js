@@ -59,6 +59,8 @@ const els = {
   retouchBlacksValue: document.getElementById("retouch-blacks-value"),
   retouchTemperature: document.getElementById("retouch-temperature"),
   retouchTemperatureValue: document.getElementById("retouch-temperature-value"),
+  retouchOffset: document.getElementById("retouch-offset"),
+  retouchOffsetValue: document.getElementById("retouch-offset-value"),
   retouchClarity: document.getElementById("retouch-clarity"),
   retouchClarityValue: document.getElementById("retouch-clarity-value"),
   cropToggle: document.getElementById("crop-toggle"),
@@ -871,6 +873,7 @@ function defaultRetouch() {
       whites: 0,
       blacks: 0,
       temperature: 0,
+      offset: 0,
       clarity: 0,
     },
     crop: null,
@@ -900,6 +903,7 @@ function normalizedRetouch(retouch) {
       whites: clamp(Number(normalized.adjustments?.whites) || 0, -100, 100),
       blacks: clamp(Number(normalized.adjustments?.blacks) || 0, -100, 100),
       temperature: clamp(Number(normalized.adjustments?.temperature) || 0, -2500, 2500),
+      offset: clamp(Number(normalized.adjustments?.offset) || 0, -100, 100),
       clarity: clamp(Number(normalized.adjustments?.clarity) || 0, -100, 100),
     },
     crop,
@@ -928,6 +932,7 @@ function retouchFromInputs(image = findImage(state.currentId)) {
       whites: Number(els.retouchWhites.value || 0),
       blacks: Number(els.retouchBlacks.value || 0),
       temperature: Number(els.retouchTemperature.value || 0),
+      offset: Number(els.retouchOffset.value || 0),
       clarity: Number(els.retouchClarity.value || 0),
     },
     crop: existing.crop,
@@ -943,6 +948,7 @@ function setRetouchInputs(retouch) {
   els.retouchWhites.value = String(normalized.adjustments.whites);
   els.retouchBlacks.value = String(normalized.adjustments.blacks);
   els.retouchTemperature.value = String(normalized.adjustments.temperature);
+  els.retouchOffset.value = String(normalized.adjustments.offset);
   els.retouchClarity.value = String(normalized.adjustments.clarity);
   updateRetouchReadouts(normalized);
 }
@@ -955,6 +961,7 @@ function updateRetouchReadouts(retouch = retouchFromInputs()) {
   els.retouchWhitesValue.value = signed(normalized.adjustments.whites, 0);
   els.retouchBlacksValue.value = signed(normalized.adjustments.blacks, 0);
   els.retouchTemperatureValue.value = `${signed(normalized.adjustments.temperature, 0)}K`;
+  els.retouchOffsetValue.value = signed(normalized.adjustments.offset, 0);
   els.retouchClarityValue.value = signed(normalized.adjustments.clarity, 0);
 }
 
@@ -1010,6 +1017,7 @@ function applyDraftRetouch(image, selected) {
   const whites = retouch.adjustments.whites;
   const blacks = retouch.adjustments.blacks;
   const temperature = retouch.adjustments.temperature;
+  const offset = retouch.adjustments.offset;
   const clarity = retouch.adjustments.clarity;
   const brightness = clamp(
     1 + exposure * 0.13 + whites * 0.002 - blacks * 0.0015 + shadows * 0.0015 - highlights * 0.0008,
@@ -1017,9 +1025,13 @@ function applyDraftRetouch(image, selected) {
     1.85,
   );
   const contrast = clamp(1 + clarity * 0.004 + (highlights - shadows) * 0.0008, 0.55, 1.65);
-  const saturation = clamp(1 + clarity * 0.0015 + Math.abs(temperature) * 0.000015, 0.7, 1.3);
+  const saturation = clamp(
+    1 + clarity * 0.0015 + Math.abs(temperature) * 0.000015 + Math.abs(offset) * 0.0006,
+    0.7,
+    1.3,
+  );
   const sepia = clamp(Math.max(0, temperature) / 2500, 0, 1) * 0.12;
-  const hue = clamp(-temperature / 2500, -1, 1) * 5;
+  const hue = clamp(-temperature / 2500, -1, 1) * 5 + clamp(offset / 100, -1, 1) * 4;
   els.image.style.setProperty("--draft-rotation", `${retouch.rotation_degrees}deg`);
   els.image.style.setProperty("--draft-brightness", brightness.toFixed(3));
   els.image.style.setProperty("--draft-contrast", contrast.toFixed(3));
@@ -1037,6 +1049,7 @@ function retouchIsDefault(retouch) {
     normalized.adjustments.whites === 0 &&
     normalized.adjustments.blacks === 0 &&
     normalized.adjustments.temperature === 0 &&
+    normalized.adjustments.offset === 0 &&
     normalized.adjustments.clarity === 0 &&
     normalized.rotation_degrees === 0 &&
     !normalized.crop
@@ -1594,9 +1607,11 @@ document.querySelectorAll("[data-label]").forEach((button) => {
 els.tags.addEventListener("change", () => saveReview());
 els.tags.addEventListener("blur", () => saveReview());
 els.tags.addEventListener("input", scheduleAutosave);
+els.tags.addEventListener("keydown", confirmMetadataInput);
 els.notes.addEventListener("change", () => saveReview());
 els.notes.addEventListener("blur", () => saveReview());
 els.notes.addEventListener("input", scheduleAutosave);
+els.notes.addEventListener("keydown", confirmMetadataInput);
 els.image.addEventListener("load", () => {
   scheduleViewerSafeAreaUpdate();
   renderRetouchGrid(findImage(state.currentId));
@@ -1617,6 +1632,7 @@ els.viewer.addEventListener("pointercancel", () => {
   els.retouchWhites,
   els.retouchBlacks,
   els.retouchTemperature,
+  els.retouchOffset,
   els.retouchClarity,
 ].forEach((input) => {
   input.addEventListener("input", () => {
@@ -1659,6 +1675,20 @@ let retouchSaveTimer = null;
 function scheduleAutosave() {
   clearTimeout(autosaveTimer);
   autosaveTimer = setTimeout(() => saveCurrentIfNeeded(), 500);
+}
+
+function confirmMetadataInput(event) {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  clearTimeout(autosaveTimer);
+  saveCurrentIfNeeded()
+    .catch((error) => console.error(error))
+    .finally(() => event.currentTarget.blur());
+}
+
+function focusMetadataInput(input) {
+  input.focus();
+  input.select();
 }
 
 function scheduleRetouchSave() {
@@ -1725,10 +1755,6 @@ window.addEventListener("keydown", (event) => {
     }
     if (event.target.closest(".publish-card")) return;
   }
-  if (event.target === els.tags) return;
-  if (event.target === els.notes) return;
-  if (event.target === els.minRating) return;
-  if (event.target.closest(".retouch") || event.target.closest(".crop-tools")) return;
   if (!els.shortcutsOverlay.hidden) {
     if (event.key === "Escape" || event.key === "?" || (event.key === "/" && event.shiftKey)) {
       event.preventDefault();
@@ -1736,11 +1762,25 @@ window.addEventListener("keydown", (event) => {
     }
     return;
   }
+  if (event.target === els.tags) return;
+  if (event.target === els.notes) return;
+  if (event.target === els.minRating) return;
   if (event.key === "?" || (event.key === "/" && event.shiftKey)) {
     event.preventDefault();
     toggleShortcuts(true);
     return;
   }
+  if (event.key === ",") {
+    event.preventDefault();
+    focusMetadataInput(els.tags);
+    return;
+  }
+  if (event.key === "/") {
+    event.preventDefault();
+    focusMetadataInput(els.notes);
+    return;
+  }
+  if (event.target.closest(".retouch") || event.target.closest(".crop-tools")) return;
   if (event.key === "ArrowRight" || event.key.toLowerCase() === "l" || event.key === "Enter") move(1);
   if (event.key === "ArrowLeft" || event.key.toLowerCase() === "h") move(-1);
   if (event.key === "PageDown") {

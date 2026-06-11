@@ -574,7 +574,28 @@ impl ReviewHandle {
             }
             if retouch_changed {
                 let render_key = image.retouch.render_key();
-                for render in &mut image.profiles {
+                let publish_indexes = effective_publish_profile_indexes(image);
+                let visible_profile_index =
+                    preferred_preview_profile_index(image, &publish_indexes);
+                let publish_index_set = publish_indexes.iter().copied().collect::<HashSet<_>>();
+                let mut render_order = image
+                    .profiles
+                    .iter()
+                    .enumerate()
+                    .map(|(index, render)| {
+                        let priority = if Some(render.profile_index) == visible_profile_index {
+                            0
+                        } else if publish_index_set.contains(&render.profile_index) {
+                            1
+                        } else {
+                            2
+                        };
+                        (priority, index)
+                    })
+                    .collect::<Vec<_>>();
+                render_order.sort_by_key(|(priority, index)| (*priority, *index));
+                for (_, index) in render_order {
+                    let render = &mut image.profiles[index];
                     render.status = ReviewRenderStatus::Queued;
                     render.error = None;
                     render.duration_ms = None;

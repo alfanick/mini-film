@@ -104,50 +104,65 @@
             </label>
 
             <section class="retouch" aria-label="Retouch">
-              <div class="retouch-header">
-                <span>Retouch</span>
-                <button id="retouch-reset" type="button">Reset</button>
+              <div class="retouch-group">
+                <div class="retouch-header">
+                  <span>Retouch</span>
+                  <button id="retouch-reset" type="button">Reset</button>
+                </div>
+                <div class="retouch-actions">
+                  <button id="crop-toggle" type="button">Crop/rotate</button>
+                  <button id="crop-ok" type="button" hidden>OK</button>
+                  <button id="crop-cancel" type="button" hidden>Cancel</button>
+                  <button id="crop-reset" type="button">Clear</button>
+                </div>
               </div>
-              <label>
-                <span>Exposure</span>
-                <input id="retouch-exposure" type="range" min="-4" max="4" step="0.05" value="0" />
-                <output id="retouch-exposure-value">0</output>
-              </label>
-              <label>
-                <span>Contrast</span>
-                <input id="retouch-clarity" type="range" min="-100" max="100" step="1" value="0" />
-                <output id="retouch-clarity-value">0</output>
-              </label>
-              <label>
-                <span>Highlights</span>
-                <input id="retouch-highlights" type="range" min="-100" max="100" step="1" value="0" />
-                <output id="retouch-highlights-value">0</output>
-              </label>
-              <label>
-                <span>Shadows</span>
-                <input id="retouch-shadows" type="range" min="-100" max="100" step="1" value="0" />
-                <output id="retouch-shadows-value">0</output>
-              </label>
-              <label>
-                <span>Whites</span>
-                <input id="retouch-whites" type="range" min="-100" max="100" step="1" value="0" />
-                <output id="retouch-whites-value">0</output>
-              </label>
-              <label>
-                <span>Blacks</span>
-                <input id="retouch-blacks" type="range" min="-100" max="100" step="1" value="0" />
-                <output id="retouch-blacks-value">0</output>
-              </label>
-              <label>
-                <span>Temp</span>
-                <input id="retouch-temperature" type="range" min="-2500" max="2500" step="50" value="0" />
-                <output id="retouch-temperature-value">0K</output>
-              </label>
-              <div class="retouch-actions">
-                <button id="crop-toggle" type="button">Crop/rotate</button>
-                <button id="crop-ok" type="button" hidden>OK</button>
-                <button id="crop-cancel" type="button" hidden>Cancel</button>
-                <button id="crop-reset" type="button">Clear</button>
+              <div class="retouch-group">
+                <label>
+                  <span>Exposure</span>
+                  <input id="retouch-exposure" type="range" min="-4" max="4" step="0.05" value="0" />
+                  <output id="retouch-exposure-value">0</output>
+                </label>
+                <label>
+                  <span>Contrast</span>
+                  <input id="retouch-clarity" type="range" min="-100" max="100" step="1" value="0" />
+                  <output id="retouch-clarity-value">0</output>
+                </label>
+              </div>
+              <div class="retouch-group">
+                <label>
+                  <span>Highlights</span>
+                  <input id="retouch-highlights" type="range" min="-100" max="100" step="1" value="0" />
+                  <output id="retouch-highlights-value">0</output>
+                </label>
+                <label>
+                  <span>Shadows</span>
+                  <input id="retouch-shadows" type="range" min="-100" max="100" step="1" value="0" />
+                  <output id="retouch-shadows-value">0</output>
+                </label>
+              </div>
+              <div class="retouch-group">
+                <label>
+                  <span>Whites</span>
+                  <input id="retouch-whites" type="range" min="-100" max="100" step="1" value="0" />
+                  <output id="retouch-whites-value">0</output>
+                </label>
+                <label>
+                  <span>Blacks</span>
+                  <input id="retouch-blacks" type="range" min="-100" max="100" step="1" value="0" />
+                  <output id="retouch-blacks-value">0</output>
+                </label>
+              </div>
+              <div class="retouch-group">
+                <label>
+                  <span>Temp</span>
+                  <input id="retouch-temperature" type="range" min="-2500" max="2500" step="50" value="0" />
+                  <output id="retouch-temperature-value">0K</output>
+                </label>
+                <label>
+                  <span>Offset</span>
+                  <input id="retouch-offset" type="range" min="-100" max="100" step="1" value="0" />
+                  <output id="retouch-offset-value">0</output>
+                </label>
               </div>
             </section>
           </div>
@@ -219,6 +234,22 @@
             <div class="shortcut-row">
               <span class="shortcut-keys"><kbd>Space</kbd></span>
               <span>Include or skip the selected profile when publishing.</span>
+            </div>
+          </section>
+
+          <section class="shortcut-section">
+            <h3>Metadata</h3>
+            <div class="shortcut-row">
+              <span class="shortcut-keys"><kbd>,</kbd></span>
+              <span>Focus tags.</span>
+            </div>
+            <div class="shortcut-row">
+              <span class="shortcut-keys"><kbd>/</kbd></span>
+              <span>Focus notes.</span>
+            </div>
+            <div class="shortcut-row">
+              <span class="shortcut-keys"><kbd>Enter</kbd></span>
+              <span>Save tags or notes and return to review.</span>
             </div>
           </section>
 

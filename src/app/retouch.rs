@@ -24,6 +24,8 @@ pub(crate) struct BasicRetouchAdjustments {
     #[serde(default)]
     pub(crate) temperature: f32,
     #[serde(default)]
+    pub(crate) offset: f32,
+    #[serde(default)]
     pub(crate) clarity: f32,
 }
 
@@ -36,6 +38,7 @@ impl BasicRetouchAdjustments {
             whites: adjustments.whites,
             blacks: adjustments.blacks,
             temperature: 0.0,
+            offset: 0.0,
             clarity: adjustments.clarity,
         }
     }
@@ -48,6 +51,7 @@ impl BasicRetouchAdjustments {
             whites: self.whites + other.whites,
             blacks: self.blacks + other.blacks,
             temperature: self.temperature + other.temperature,
+            offset: self.offset + other.offset,
             clarity: self.clarity + other.clarity,
         }
     }
@@ -59,6 +63,7 @@ impl BasicRetouchAdjustments {
             && self.whites == 0.0
             && self.blacks == 0.0
             && self.temperature == 0.0
+            && self.offset == 0.0
             && self.clarity == 0.0
     }
 }
@@ -128,6 +133,7 @@ impl RetouchSettings {
         hasher.update(format!("{:.3}", normalized.adjustments.whites));
         hasher.update(format!("{:.3}", normalized.adjustments.blacks));
         hasher.update(format!("{:.3}", normalized.adjustments.temperature));
+        hasher.update(format!("{:.3}", normalized.adjustments.offset));
         hasher.update(format!("{:.3}", normalized.adjustments.clarity));
         hasher.update(format!("{:.3}", normalized.rotation_degrees));
         if let Some(crop) = normalized.crop {
@@ -159,13 +165,14 @@ impl RetouchSettings {
             })
             .unwrap_or_default();
         format!(
-            "retouch exposure={:.2} highlights={:.1} shadows={:.1} whites={:.1} blacks={:.1} temperature={:.0} clarity={:.1} rotation={:.1}{}",
+            "retouch exposure={:.2} highlights={:.1} shadows={:.1} whites={:.1} blacks={:.1} temperature={:.0} offset={:.1} clarity={:.1} rotation={:.1}{}",
             normalized.adjustments.exposure,
             normalized.adjustments.highlights,
             normalized.adjustments.shadows,
             normalized.adjustments.whites,
             normalized.adjustments.blacks,
             normalized.adjustments.temperature,
+            normalized.adjustments.offset,
             normalized.adjustments.clarity,
             normalized.rotation_degrees,
             crop
@@ -224,11 +231,20 @@ pub(crate) fn write_rawtherapee_retouch_profile(
     let _ = writeln!(out, "Enabled=true");
     let _ = writeln!(out, "Contrast={}", fmt_slider(effective.clarity));
     let _ = writeln!(out);
-    if effective.temperature != 0.0 {
+    if effective.temperature != 0.0 || effective.offset != 0.0 {
         let _ = writeln!(out, "[White Balance]");
         let _ = writeln!(out, "Enabled=true");
         let _ = writeln!(out, "Setting=Camera");
-        let _ = writeln!(out, "TemperatureBias={}", fmt_f32(effective.temperature));
+        if effective.temperature != 0.0 {
+            let _ = writeln!(out, "TemperatureBias={}", fmt_f32(effective.temperature));
+        }
+        if effective.offset != 0.0 {
+            let _ = writeln!(
+                out,
+                "Green={}",
+                fmt_f32(wb_green_from_offset(effective.offset))
+            );
+        }
         let _ = writeln!(out);
     }
     std::fs::write(path, out).with_context(|| format!("writing {}", path.display()))?;
@@ -249,6 +265,10 @@ fn fmt_f32(value: f32) -> String {
 
 fn fmt_slider(value: f32) -> String {
     fmt_f32(value.clamp(-100.0, 100.0))
+}
+
+fn wb_green_from_offset(offset: f32) -> f32 {
+    (1.0 + offset.clamp(-100.0, 100.0) * 0.002).clamp(0.8, 1.2)
 }
 
 #[cfg(test)]
@@ -315,6 +335,7 @@ mod tests {
                 whites: 10.0,
                 blacks: -5.0,
                 temperature: 450.0,
+                offset: 35.0,
                 clarity: 12.0,
             },
             crop: None,
@@ -336,6 +357,7 @@ mod tests {
         assert!(text.contains("ShadowCompr=30"));
         assert!(text.contains("[White Balance]"));
         assert!(text.contains("TemperatureBias=450"));
+        assert!(text.contains("Green=1.07"));
         assert!(text.contains("Contrast=12"));
     }
 }

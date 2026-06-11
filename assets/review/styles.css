@@ -789,10 +789,17 @@ button:disabled {
 .retouch {
   grid-column: 1 / -1;
   display: grid;
-  grid-template-columns: repeat(5, minmax(100px, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 4px 8px;
   padding-top: 5px;
   border-top: 1px solid rgba(120, 120, 112, 0.24);
+}
+
+.retouch-group {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  min-width: 0;
 }
 
 .retouch-header,
@@ -811,7 +818,7 @@ button:disabled {
 
 .retouch label {
   display: grid;
-  grid-template-columns: 56px minmax(54px, 1fr) 34px;
+  grid-template-columns: minmax(44px, 56px) minmax(0, 1fr) 34px;
   gap: 4px;
   align-items: center;
   min-width: 0;
@@ -821,6 +828,9 @@ button:disabled {
 
 .retouch label > span {
   cursor: pointer;
+  overflow: hidden;
+  text-overflow: clip;
+  white-space: nowrap;
   user-select: none;
 }
 
@@ -1175,11 +1185,11 @@ kbd {
   }
 
   .retouch {
-    grid-template-columns: repeat(4, minmax(96px, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
   }
 
   .retouch label {
-    grid-template-columns: 54px minmax(54px, 1fr) 34px;
+    grid-template-columns: minmax(42px, 54px) minmax(0, 1fr) 34px;
   }
 }
 
@@ -1271,11 +1281,11 @@ kbd {
   }
 
   .retouch {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
   }
 
   .retouch label {
-    grid-template-columns: 58px minmax(54px, 1fr) 38px;
+    grid-template-columns: minmax(40px, 54px) minmax(0, 1fr) 34px;
   }
 
   .shortcut-sections {

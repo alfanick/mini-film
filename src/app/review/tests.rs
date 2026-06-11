@@ -88,6 +88,58 @@ fn test_publish_options(album: &str) -> ReviewPublishOptions {
     }
 }
 
+fn profile_render(index: usize, stem: &str) -> ReviewProfileRender {
+    ReviewProfileRender {
+        profile_index: index,
+        profile_stem: stem.to_string(),
+        status: ReviewRenderStatus::Done,
+        output_path: None,
+        error: None,
+        duration_ms: Some(1),
+        render_key: None,
+        updated_at: now_string(),
+    }
+}
+
+#[test]
+fn preferred_preview_profile_prefers_checked_profile_when_visible_is_unchecked() {
+    let image = ReviewImage {
+        id: 1,
+        raw_path: PathBuf::from("/in/frame.NEF"),
+        relative_path: "frame.NEF".to_string(),
+        file_name: "frame.NEF".to_string(),
+        selected_profile_index: 2,
+        rating: 0,
+        label: ReviewLabel::None,
+        labels: Vec::new(),
+        tags: Vec::new(),
+        notes: String::new(),
+        retouch: RetouchSettings::default(),
+        publish_profile_indexes: Some(vec![1]),
+        preview: ReviewPreview::default(),
+        profiles: vec![
+            profile_render(0, "A"),
+            profile_render(1, "B"),
+            profile_render(2, "C"),
+        ],
+        updated_at: now_string(),
+    };
+
+    let publish_indexes = effective_publish_profile_indexes(&image);
+    assert_eq!(
+        preferred_preview_profile_index(&image, &publish_indexes),
+        Some(1)
+    );
+
+    let mut no_checked = image;
+    no_checked.publish_profile_indexes = Some(Vec::new());
+    let publish_indexes = effective_publish_profile_indexes(&no_checked);
+    assert_eq!(
+        preferred_preview_profile_index(&no_checked, &publish_indexes),
+        Some(2)
+    );
+}
+
 #[test]
 fn review_state_defaults_to_first_profile_and_records_outputs() {
     let temp = tempfile::tempdir().unwrap();
