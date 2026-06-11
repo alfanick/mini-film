@@ -216,12 +216,32 @@ impl ReviewHandle {
         profile_index: usize,
         expected_output: &Path,
     ) -> Result<()> {
-        self.update_render(raw, profile_index, |render| {
-            render.status = ReviewRenderStatus::Queued;
-            render.output_path = Some(expected_output.to_path_buf());
-            render.error = None;
-            render.duration_ms = None;
-        })
+        let mut store = self.lock_store()?;
+        let image = store.ensure_image(&self.input_root, raw)?;
+        let render_key = retouch_render_key(&image.retouch);
+        let Some(render) = image
+            .profiles
+            .iter_mut()
+            .find(|render| render.profile_index == profile_index)
+        else {
+            bail!("review profile index {profile_index} is not configured");
+        };
+        let before = render.clone();
+        render.status = ReviewRenderStatus::Queued;
+        render.output_path = Some(expected_output.to_path_buf());
+        render.error = None;
+        render.duration_ms = None;
+        render.render_key = render_key;
+        render.updated_at = now_string();
+        let after = render.clone();
+        image.updated_at = now_string();
+        let history_entry = history_render_changed(image, &before, &after);
+        save_store(&self.state_path, &store)?;
+        drop(store);
+        if let Some(entry) = history_entry {
+            self.append_history(entry)?;
+        }
+        self.broadcast_state()
     }
 
     pub(crate) fn record_profile_processing(&self, raw: &Path, profile_index: usize) -> Result<()> {
@@ -1105,6 +1125,11 @@ pub(super) fn retouch_temp_output(output: &Path, render_key: &str) -> PathBuf {
         .and_then(|stem| stem.to_str())
         .unwrap_or("review");
     output.with_file_name(format!(".{stem}.retouch-{render_key}.{extension}"))
+}
+
+pub(super) fn retouch_render_key(retouch: &RetouchSettings) -> Option<String> {
+    let normalized = retouch.clone().normalized();
+    (normalized != RetouchSettings::default()).then(|| normalized.render_key())
 }
 
 pub(super) fn apply_base_render_done(

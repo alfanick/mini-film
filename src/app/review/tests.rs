@@ -201,6 +201,58 @@ fn base_render_done_triggers_pending_retouch_without_marking_done() {
 }
 
 #[test]
+fn queued_missing_output_reuses_saved_retouch_settings() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let raw = input.join("frame.NEF");
+    let rendered = output.join("Classic").join("frame.jpg");
+    fs::write(&raw, b"raw").unwrap();
+
+    let handle = test_handle(input, output, vec![profile(0, "Classic")]);
+    handle.record_discovered_raw(&raw).unwrap();
+    let saved_retouch = RetouchSettings {
+        adjustments: BasicRetouchAdjustments {
+            exposure: 0.35,
+            clarity: 12.0,
+            ..BasicRetouchAdjustments::default()
+        },
+        ..RetouchSettings::default()
+    }
+    .normalized();
+    let expected_key = saved_retouch.render_key();
+    {
+        let mut store = handle.lock_store().unwrap();
+        let image = store
+            .images
+            .iter_mut()
+            .find(|image| image.raw_path == raw)
+            .unwrap();
+        image.retouch = saved_retouch;
+    }
+
+    handle.record_profile_queued(&raw, 0, &rendered).unwrap();
+    {
+        let store = handle.lock_store().unwrap();
+        let render = &store.images[0].profiles[0];
+        assert_eq!(render.status, ReviewRenderStatus::Queued);
+        assert_eq!(render.output_path.as_deref(), Some(rendered.as_path()));
+        assert_eq!(render.render_key.as_deref(), Some(expected_key.as_str()));
+    }
+
+    handle
+        .record_profile_done(&raw, 0, &rendered, Duration::from_millis(42))
+        .unwrap();
+    let job = handle.retouch_scheduler.next_job();
+    assert_eq!(job.raw, raw);
+    assert_eq!(job.profile_index, 0);
+    assert_eq!(job.output, rendered);
+    assert_eq!(job.render_key, expected_key);
+}
+
+#[test]
 fn retouch_scheduler_coalesces_same_raw_profile_to_latest_job() {
     let scheduler = ReviewRetouchScheduler::default();
     scheduler.schedule_after(
