@@ -1,0 +1,315 @@
+use super::model::*;
+use super::prelude::*;
+
+impl ReviewStore {
+    pub(super) fn new(profiles: Vec<ReviewProfile>) -> Self {
+        Self {
+            next_id: 1,
+            profiles,
+            images: Vec::new(),
+            ui: ReviewUiState::default(),
+        }
+    }
+
+    pub(super) fn sync_profiles(&mut self, profiles: Vec<ReviewProfile>) {
+        self.profiles = profiles;
+        let profiles = self.profiles.clone();
+        for image in &mut self.images {
+            if matches!(
+                image.preview.status,
+                ReviewRenderStatus::Queued | ReviewRenderStatus::Processing
+            ) {
+                image.preview.status = ReviewRenderStatus::Missing;
+                image.preview.updated_at = now_string();
+            }
+            sync_image_profile_renders(image, &profiles);
+        }
+        self.normalize_ui();
+    }
+
+    pub(super) fn ensure_image(
+        &mut self,
+        input_root: &Path,
+        raw: &Path,
+    ) -> Result<&mut ReviewImage> {
+        if let Some(index) = self.images.iter().position(|image| image.raw_path == raw) {
+            return Ok(&mut self.images[index]);
+        }
+
+        let id = self.next_id;
+        self.next_id += 1;
+        let relative = raw
+            .strip_prefix(input_root)
+            .unwrap_or(raw)
+            .to_string_lossy()
+            .to_string();
+        let file_name = raw
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let mut image = ReviewImage {
+            id,
+            raw_path: raw.to_path_buf(),
+            relative_path: relative,
+            file_name,
+            preview: ReviewPreview::default(),
+            selected_profile_index: 0,
+            rating: 0,
+            label: ReviewLabel::None,
+            labels: Vec::new(),
+            tags: Vec::new(),
+            notes: String::new(),
+            retouch: RetouchSettings::default(),
+            publish_profile_indexes: None,
+            profiles: Vec::new(),
+            updated_at: now_string(),
+        };
+        sync_image_profile_renders(&mut image, &self.profiles);
+        self.images.push(image);
+        self.normalize_ui();
+        let index = self.images.len() - 1;
+        Ok(&mut self.images[index])
+    }
+
+    pub(super) fn normalize_ui(&mut self) {
+        self.ui.min_rating = self.ui.min_rating.min(5);
+        let visible = self.visible_image_ids_at(self.ui.min_rating);
+        if !self
+            .ui
+            .current_image_id
+            .is_some_and(|id| visible.contains(&id))
+        {
+            self.ui.current_image_id = visible.first().copied();
+        }
+    }
+
+    pub(super) fn set_ui(&mut self, update: ReviewUiUpdateRequest) -> Result<()> {
+        self.ui.min_rating = update.min_rating.min(5);
+        if let Some(id) = update.current_image_id {
+            if !self.images.iter().any(|image| image.id == id) {
+                bail!("review image {id} does not exist");
+            }
+            self.ui.current_image_id = Some(id);
+        }
+        self.normalize_ui();
+        Ok(())
+    }
+
+    pub(super) fn planned_advance_after(&self, image_id: u64) -> ReviewAdvance {
+        let visible = self.visible_image_ids_at(self.ui.min_rating);
+        let Some(index) = visible.iter().position(|id| *id == image_id) else {
+            return ReviewAdvance::FirstVisible;
+        };
+        if let Some(next) = visible.get(index + 1) {
+            ReviewAdvance::Image(*next)
+        } else {
+            ReviewAdvance::NextPass
+        }
+    }
+
+    pub(super) fn apply_advance(&mut self, advance: ReviewAdvance) {
+        match advance {
+            ReviewAdvance::Image(id) => {
+                self.ui.current_image_id = Some(id);
+                self.normalize_ui();
+            }
+            ReviewAdvance::FirstVisible => self.normalize_ui(),
+            ReviewAdvance::NextPass => {
+                self.ui.min_rating = self.ui.min_rating.saturating_add(1).min(5);
+                self.ui.current_image_id = self
+                    .visible_image_ids_at(self.ui.min_rating)
+                    .first()
+                    .copied();
+                self.normalize_ui();
+            }
+        }
+    }
+
+    pub(super) fn visible_image_ids_at(&self, min_rating: u8) -> Vec<u64> {
+        let mut images = self
+            .images
+            .iter()
+            .filter(|image| image.rating >= min_rating.min(5))
+            .map(|image| (image.relative_path.as_str(), image.id))
+            .collect::<Vec<_>>();
+        images.sort_by(|left, right| left.0.cmp(right.0));
+        images.into_iter().map(|(_, id)| id).collect()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ReviewAdvance {
+    Image(u64),
+    FirstVisible,
+    NextPass,
+}
+
+pub(super) fn sync_image_profile_renders(image: &mut ReviewImage, profiles: &[ReviewProfile]) {
+    let existing = image
+        .profiles
+        .iter()
+        .cloned()
+        .map(|render| (render.profile_index, render))
+        .collect::<HashMap<_, _>>();
+    image.profiles = profiles
+        .iter()
+        .map(|profile| {
+            existing
+                .get(&profile.index)
+                .cloned()
+                .unwrap_or_else(|| ReviewProfileRender {
+                    profile_index: profile.index,
+                    profile_stem: profile.stem.clone(),
+                    status: ReviewRenderStatus::Missing,
+                    output_path: None,
+                    error: None,
+                    duration_ms: None,
+                    render_key: None,
+                    updated_at: now_string(),
+                })
+        })
+        .collect();
+    if !image
+        .profiles
+        .iter()
+        .any(|profile| profile.profile_index == image.selected_profile_index)
+    {
+        image.selected_profile_index = profiles.first().map(|profile| profile.index).unwrap_or(0);
+    }
+    image.publish_profile_indexes = Some(effective_publish_profile_indexes(image));
+}
+
+pub(super) fn effective_publish_profile_indexes(image: &ReviewImage) -> Vec<usize> {
+    match &image.publish_profile_indexes {
+        Some(indexes) => normalize_publish_profile_indexes(indexes, &image.profiles),
+        None => image
+            .profiles
+            .iter()
+            .map(|profile| profile.profile_index)
+            .collect(),
+    }
+}
+
+pub(super) fn normalize_publish_profile_indexes(
+    indexes: &[usize],
+    profiles: &[ReviewProfileRender],
+) -> Vec<usize> {
+    let selected = indexes.iter().copied().collect::<HashSet<_>>();
+    profiles
+        .iter()
+        .filter_map(|profile| {
+            selected
+                .contains(&profile.profile_index)
+                .then_some(profile.profile_index)
+        })
+        .collect()
+}
+
+pub(super) fn validate_publish_profile_indexes(
+    indexes: &[usize],
+    profiles: &[ReviewProfileRender],
+) -> Result<()> {
+    let valid = profiles
+        .iter()
+        .map(|profile| profile.profile_index)
+        .collect::<HashSet<_>>();
+    for index in indexes {
+        if !valid.contains(index) {
+            bail!("publish profile index {index} is not available");
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn load_store(path: &Path) -> Result<Option<ReviewStore>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let text = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    serde_json::from_str(&text)
+        .with_context(|| format!("parsing {}", path.display()))
+        .map(Some)
+}
+
+pub(super) fn save_store(path: &Path, store: &ReviewStore) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+    let text = serde_json::to_string_pretty(store).context("serializing review state")?;
+    let temp = path.with_extension("json.tmp");
+    fs::write(&temp, text).with_context(|| format!("writing {}", temp.display()))?;
+    fs::rename(&temp, path)
+        .with_context(|| format!("renaming {} to {}", temp.display(), path.display()))
+}
+
+pub(super) fn now_string() -> String {
+    chrono::Local::now().to_rfc3339()
+}
+
+pub(super) fn normalize_tags(tags: Vec<String>) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for tag in tags {
+        let tag = tag.trim();
+        if tag.is_empty() || normalized.iter().any(|existing| existing == tag) {
+            continue;
+        }
+        normalized.push(tag.to_string());
+    }
+    normalized
+}
+
+pub(super) fn review_label_name(label: ReviewLabel) -> &'static str {
+    match label {
+        ReviewLabel::None => "none",
+        ReviewLabel::Red => "red",
+        ReviewLabel::Yellow => "yellow",
+        ReviewLabel::Green => "green",
+        ReviewLabel::Blue => "blue",
+        ReviewLabel::Purple => "purple",
+    }
+}
+
+pub(super) fn normalize_review_labels<I>(labels: I) -> Vec<ReviewLabel>
+where
+    I: IntoIterator<Item = ReviewLabel>,
+{
+    let selected = labels
+        .into_iter()
+        .filter(|label| *label != ReviewLabel::None)
+        .collect::<HashSet<_>>();
+    [
+        ReviewLabel::Red,
+        ReviewLabel::Yellow,
+        ReviewLabel::Green,
+        ReviewLabel::Blue,
+        ReviewLabel::Purple,
+    ]
+    .into_iter()
+    .filter(|label| selected.contains(label))
+    .collect()
+}
+
+pub(super) fn first_review_label(labels: &[ReviewLabel]) -> ReviewLabel {
+    labels.first().copied().unwrap_or(ReviewLabel::None)
+}
+
+pub(super) fn image_review_labels(image: &ReviewImage) -> Vec<ReviewLabel> {
+    if image.labels.is_empty() {
+        normalize_review_labels([image.label])
+    } else {
+        normalize_review_labels(image.labels.clone())
+    }
+}
+
+pub(super) fn review_labels_text(labels: &[ReviewLabel]) -> String {
+    if labels.is_empty() {
+        "none".to_string()
+    } else {
+        labels
+            .iter()
+            .map(|label| review_label_name(*label))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+}

@@ -76,11 +76,11 @@
             </div>
 
             <div class="labels" role="group" aria-label="Label">
-              <button data-label="red" type="button">Red</button>
-              <button data-label="yellow" type="button">Yellow</button>
-              <button data-label="green" type="button">Green</button>
-              <button data-label="blue" type="button">Blue</button>
-              <button data-label="purple" type="button">Purple</button>
+              <button data-label="red" type="button" title="Red" aria-label="Red label">R</button>
+              <button data-label="yellow" type="button" title="Yellow" aria-label="Yellow label">Y</button>
+              <button data-label="green" type="button" title="Green" aria-label="Green label">G</button>
+              <button data-label="blue" type="button" title="Blue" aria-label="Blue label">B</button>
+              <button data-label="purple" type="button" title="Purple" aria-label="Purple label">P</button>
             </div>
 
             <label class="tags">
@@ -269,11 +269,21 @@
             </label>
             <div class="publish-labels">
               <span>Colour labels</span>
-              <label><input type="checkbox" name="publish-label" value="red" /> Red</label>
-              <label><input type="checkbox" name="publish-label" value="yellow" /> Yellow</label>
-              <label><input type="checkbox" name="publish-label" value="green" /> Green</label>
-              <label><input type="checkbox" name="publish-label" value="blue" /> Blue</label>
-              <label><input type="checkbox" name="publish-label" value="purple" /> Purple</label>
+              <label data-label="red" title="Red"
+                ><input type="checkbox" name="publish-label" value="red" /> <span>R</span></label
+              >
+              <label data-label="yellow" title="Yellow"
+                ><input type="checkbox" name="publish-label" value="yellow" /> <span>Y</span></label
+              >
+              <label data-label="green" title="Green"
+                ><input type="checkbox" name="publish-label" value="green" /> <span>G</span></label
+              >
+              <label data-label="blue" title="Blue"
+                ><input type="checkbox" name="publish-label" value="blue" /> <span>B</span></label
+              >
+              <label data-label="purple" title="Purple"
+                ><input type="checkbox" name="publish-label" value="purple" /> <span>P</span></label
+              >
             </div>
             <label>
               <span>Tags</span>

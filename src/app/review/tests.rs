@@ -1,0 +1,469 @@
+use super::prelude::*;
+use super::{handle::*, model::*, preview::*, publish::*, scheduler::*, server::*, store::*};
+
+fn profile(index: usize, stem: &str) -> ReviewProfile {
+    ReviewProfile {
+        index,
+        selector: stem.to_string(),
+        stem: stem.to_string(),
+        retouch_base: BasicRetouchAdjustments::default(),
+    }
+}
+
+fn test_export_options() -> ExportOptions {
+    ExportOptions {
+        jpg_quality: 90,
+        resize: None,
+        long_edge: None,
+        max_width: None,
+        max_height: None,
+        jpeg_subsampling: crate::cli::JpegSubsampling::S444,
+        strip_metadata: false,
+        progressive_jpeg: false,
+    }
+}
+
+fn test_handle(input: PathBuf, output: PathBuf, profiles: Vec<ReviewProfile>) -> ReviewHandle {
+    let export = test_export_options();
+    ReviewHandle {
+        state: Arc::new(Mutex::new(ReviewStore::new(profiles))),
+        subscribers: Arc::new(Mutex::new(Vec::new())),
+        state_path: output.join("mini-film-review.json"),
+        input_root: input.clone(),
+        output_root: output.clone(),
+        hald_dir: output.join("hald"),
+        profiles_root: input.clone(),
+        hald_level: 16,
+        rawtherapee: PathBuf::from("rawtherapee-cli"),
+        output_format: BatchOutputFormat::Jpg,
+        gallery: None,
+        convert: PathBuf::from("convert"),
+        export: export.clone(),
+        jobs: 1,
+        no_grain: false,
+        color_noise_iso_threshold: 1600,
+        lens_corrections: LensCorrections::default(),
+        grain: None,
+        grain_preset: None,
+        grain_seed: Some(1),
+        publish_defaults: ReviewPublishDefaults::new(
+            "published".to_string(),
+            BatchOutputFormat::Jpg,
+            &export,
+            ReviewGalleryDefaults {
+                template: None,
+                thumbnail_long_edge: 1024,
+                columns: 4,
+            },
+        ),
+        publish_jobs: Arc::new(Mutex::new(Vec::new())),
+        next_publish_job_id: Arc::new(Mutex::new(1)),
+        retouch_scheduler: Arc::new(ReviewRetouchScheduler::default()),
+    }
+}
+
+fn test_publish_options(album: &str) -> ReviewPublishOptions {
+    ReviewPublishOptions {
+        album: PathBuf::from(album),
+        min_rating: 2,
+        labels: HashSet::new(),
+        tags: HashSet::new(),
+        output_format: BatchOutputFormat::Jpg,
+        hald_dir: PathBuf::from("hald"),
+        profiles_root: PathBuf::from("profiles"),
+        hald_level: 16,
+        rawtherapee: PathBuf::from("rawtherapee-cli"),
+        convert: PathBuf::from("convert"),
+        jobs: 2,
+        export: test_export_options(),
+        rerender_raw: false,
+        no_grain: false,
+        color_noise_iso_threshold: 1600,
+        lens_corrections: LensCorrections::default(),
+        grain: None,
+        grain_preset: None,
+        grain_seed: Some(1),
+        write_metadata: false,
+    }
+}
+
+#[test]
+fn review_state_defaults_to_first_profile_and_records_outputs() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(input.join("day")).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let raw = input.join("day").join("frame.NEF");
+    fs::write(&raw, b"raw").unwrap();
+    let rendered = output.join("day").join("Classic").join("frame.jpg");
+    fs::create_dir_all(rendered.parent().unwrap()).unwrap();
+    fs::write(&rendered, b"jpg").unwrap();
+
+    let handle = test_handle(
+        input,
+        output,
+        vec![profile(0, "Classic"), profile(1, "Fade")],
+    );
+
+    handle.record_discovered_raw(&raw).unwrap();
+    handle
+        .record_profile_done(&raw, 0, &rendered, Duration::from_millis(42))
+        .unwrap();
+    let text = handle.api_state_json().unwrap();
+    assert!(text.contains("\"selected_profile_index\":0"));
+    assert!(text.contains("\"publish_profile_indexes\":[0,1]"));
+    assert!(text.contains("\"status\":\"done\""));
+    assert!(text.contains("media/1/0"));
+}
+
+#[test]
+fn base_render_done_triggers_pending_retouch_without_marking_done() {
+    let output = PathBuf::from("frame.jpg");
+    let mut render = ReviewProfileRender {
+        profile_index: 0,
+        profile_stem: "Classic".to_string(),
+        status: ReviewRenderStatus::Queued,
+        output_path: None,
+        error: Some("old".to_string()),
+        duration_ms: None,
+        render_key: Some("retouch-key".to_string()),
+        updated_at: now_string(),
+    };
+
+    let key = apply_base_render_done(&mut render, &output, Duration::from_millis(42));
+
+    assert_eq!(key.as_deref(), Some("retouch-key"));
+    assert_eq!(render.status, ReviewRenderStatus::Queued);
+    assert_eq!(render.output_path.as_deref(), Some(output.as_path()));
+    assert_eq!(render.error, None);
+    assert_eq!(render.duration_ms, Some(42));
+
+    render.render_key = None;
+    let key = apply_base_render_done(&mut render, &output, Duration::from_millis(7));
+    assert_eq!(key, None);
+    assert_eq!(render.status, ReviewRenderStatus::Done);
+    assert_eq!(render.duration_ms, Some(7));
+}
+
+#[test]
+fn retouch_scheduler_coalesces_same_raw_profile_to_latest_job() {
+    let scheduler = ReviewRetouchScheduler::default();
+    scheduler.schedule_after(
+        PathBuf::from("frame.NEF"),
+        1,
+        PathBuf::from("old.jpg"),
+        "old".to_string(),
+        Duration::ZERO,
+    );
+    scheduler.schedule_after(
+        PathBuf::from("frame.NEF"),
+        1,
+        PathBuf::from("new.jpg"),
+        "new".to_string(),
+        Duration::ZERO,
+    );
+
+    let job = scheduler.next_job();
+
+    assert_eq!(job.raw, PathBuf::from("frame.NEF"));
+    assert_eq!(job.profile_index, 1);
+    assert_eq!(job.output, PathBuf::from("new.jpg"));
+    assert_eq!(job.render_key, "new");
+}
+
+#[test]
+fn normalize_review_labels_removes_none_and_keeps_display_order() {
+    assert_eq!(
+        normalize_review_labels([
+            ReviewLabel::Purple,
+            ReviewLabel::None,
+            ReviewLabel::Red,
+            ReviewLabel::Purple,
+        ]),
+        vec![ReviewLabel::Red, ReviewLabel::Purple]
+    );
+}
+
+#[test]
+fn review_update_advances_shared_server_ui_state() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(input.join("day")).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let first = input.join("day").join("frame-1.NEF");
+    let second = input.join("day").join("frame-2.NEF");
+    fs::write(&first, b"raw").unwrap();
+    fs::write(&second, b"raw").unwrap();
+
+    let handle = test_handle(
+        input,
+        output,
+        vec![profile(0, "Classic"), profile(1, "Fade")],
+    );
+
+    handle.record_discovered_raw(&first).unwrap();
+    handle.record_discovered_raw(&second).unwrap();
+    handle
+        .apply_review_update(ReviewUpdateRequest {
+            image_id: 1,
+            rating: 1,
+            label: ReviewLabel::Green,
+            labels: vec![ReviewLabel::Green],
+            tags: vec!["keep".to_string()],
+            notes: String::new(),
+            retouch: None,
+            selected_profile_index: 0,
+            publish_profile_indexes: Some(vec![0, 1]),
+            advance_after_update: true,
+        })
+        .unwrap();
+
+    let state =
+        serde_json::from_str::<serde_json::Value>(&handle.api_state_json().unwrap()).unwrap();
+    assert_eq!(state["ui"]["current_image_id"], 2);
+    assert_eq!(state["ui"]["min_rating"], 0);
+
+    handle
+        .apply_review_update(ReviewUpdateRequest {
+            image_id: 2,
+            rating: 0,
+            label: ReviewLabel::None,
+            labels: Vec::new(),
+            tags: Vec::new(),
+            notes: String::new(),
+            retouch: None,
+            selected_profile_index: 0,
+            publish_profile_indexes: Some(vec![0, 1]),
+            advance_after_update: true,
+        })
+        .unwrap();
+
+    let state =
+        serde_json::from_str::<serde_json::Value>(&handle.api_state_json().unwrap()).unwrap();
+    assert_eq!(state["ui"]["current_image_id"], 1);
+    assert_eq!(state["ui"]["min_rating"], 1);
+}
+
+#[test]
+fn review_state_reports_connected_client_count() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+
+    let handle = test_handle(input, output, vec![profile(0, "Classic")]);
+
+    let state =
+        serde_json::from_str::<serde_json::Value>(&handle.api_state_json().unwrap()).unwrap();
+    assert_eq!(state["client_count"], 0);
+
+    let client = handle.subscribe().unwrap();
+    let state =
+        serde_json::from_str::<serde_json::Value>(&handle.api_state_json().unwrap()).unwrap();
+    assert_eq!(state["client_count"], 1);
+
+    drop(client);
+    handle.broadcast_state().unwrap();
+    let state =
+        serde_json::from_str::<serde_json::Value>(&handle.api_state_json().unwrap()).unwrap();
+    assert_eq!(state["client_count"], 0);
+}
+
+#[test]
+fn review_route_path_accepts_reverse_proxy_prefixes() {
+    assert_eq!(review_route_path("/api/state"), "/api/state");
+    assert_eq!(review_route_path("/mini-film/api/state"), "/api/state");
+    assert_eq!(
+        review_route_path("/nested/mini-film/assets/app.js"),
+        "/assets/app.js"
+    );
+    assert_eq!(review_route_path("/mini-film/media/1/0"), "/media/1/0");
+    assert_eq!(review_route_path("/mini-film/preview/1"), "/preview/1");
+    assert_eq!(review_route_path("/mini-film/review"), "/review");
+    assert_eq!(review_route_path("/mini-film/"), "/");
+}
+
+#[test]
+fn publish_flat_album_filters_rating_label_and_tag() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = temp.path().join("out");
+    let source = output.join("day").join("Classic").join("frame.jpg");
+    fs::create_dir_all(source.parent().unwrap()).unwrap();
+    fs::write(&source, b"jpg").unwrap();
+
+    let mut store = ReviewStore::new(vec![profile(0, "Classic")]);
+    store.images.push(ReviewImage {
+        id: 1,
+        raw_path: PathBuf::from("/in/day/frame.NEF"),
+        relative_path: "day/frame.NEF".to_string(),
+        file_name: "frame.NEF".to_string(),
+        selected_profile_index: 0,
+        rating: 3,
+        label: ReviewLabel::Red,
+        labels: vec![ReviewLabel::Red],
+        tags: vec!["42".to_string()],
+        notes: "keeper".to_string(),
+        retouch: RetouchSettings::default(),
+        publish_profile_indexes: Some(vec![0]),
+        preview: ReviewPreview::default(),
+        profiles: vec![ReviewProfileRender {
+            profile_index: 0,
+            profile_stem: "Classic".to_string(),
+            status: ReviewRenderStatus::Done,
+            output_path: Some(source.clone()),
+            error: None,
+            duration_ms: Some(1),
+            render_key: None,
+            updated_at: now_string(),
+        }],
+        updated_at: now_string(),
+    });
+
+    let mut options = test_publish_options("published/final");
+    options.labels = HashSet::from([ReviewLabel::Red]);
+    options.tags = HashSet::from(["42".to_string()]);
+    let report = publish_store_inner(&store, Path::new("/in"), &output, &options, None).unwrap();
+    assert_eq!(report.linked, 1);
+    assert_eq!(report.skipped, 0);
+    assert!(output.join("published/final/frame.jpg").exists());
+}
+
+#[test]
+fn publish_flat_album_suffixes_non_default_profiles() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = temp.path().join("out");
+    let classic = output.join("day").join("Classic").join("frame.jpg");
+    let fade = output.join("day").join("Fade").join("frame.jpg");
+    fs::create_dir_all(classic.parent().unwrap()).unwrap();
+    fs::create_dir_all(fade.parent().unwrap()).unwrap();
+    fs::write(&classic, b"classic").unwrap();
+    fs::write(&fade, b"fade").unwrap();
+
+    let mut store = ReviewStore::new(vec![profile(0, "Classic"), profile(1, "Fade")]);
+    store.images.push(ReviewImage {
+        id: 1,
+        raw_path: PathBuf::from("/in/day/frame.NEF"),
+        relative_path: "day/frame.NEF".to_string(),
+        file_name: "frame.NEF".to_string(),
+        selected_profile_index: 0,
+        rating: 2,
+        label: ReviewLabel::None,
+        labels: Vec::new(),
+        tags: Vec::new(),
+        notes: String::new(),
+        retouch: RetouchSettings::default(),
+        publish_profile_indexes: Some(vec![1]),
+        preview: ReviewPreview::default(),
+        profiles: vec![
+            ReviewProfileRender {
+                profile_index: 0,
+                profile_stem: "Classic".to_string(),
+                status: ReviewRenderStatus::Done,
+                output_path: Some(classic.clone()),
+                error: None,
+                duration_ms: Some(1),
+                render_key: None,
+                updated_at: now_string(),
+            },
+            ReviewProfileRender {
+                profile_index: 1,
+                profile_stem: "Fade".to_string(),
+                status: ReviewRenderStatus::Done,
+                output_path: Some(fade.clone()),
+                error: None,
+                duration_ms: Some(1),
+                render_key: None,
+                updated_at: now_string(),
+            },
+        ],
+        updated_at: now_string(),
+    });
+
+    let options = test_publish_options("published");
+    let report = publish_store_inner(&store, Path::new("/in"), &output, &options, None).unwrap();
+    assert_eq!(report.linked, 1);
+    assert!(!output.join("published/frame.jpg").exists());
+    assert!(output.join("published/frame-Fade.jpg").exists());
+}
+
+#[test]
+fn publish_store_reports_realtime_progress() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = temp.path().join("out");
+    let classic = output.join("day").join("Classic").join("frame.jpg");
+    let fade = output.join("day").join("Fade").join("frame.jpg");
+    fs::create_dir_all(classic.parent().unwrap()).unwrap();
+    fs::create_dir_all(fade.parent().unwrap()).unwrap();
+    fs::write(&classic, b"classic").unwrap();
+    fs::write(&fade, b"fade").unwrap();
+
+    let mut store = ReviewStore::new(vec![profile(0, "Classic"), profile(1, "Fade")]);
+    store.images.push(ReviewImage {
+        id: 1,
+        raw_path: PathBuf::from("/in/day/frame.NEF"),
+        relative_path: "day/frame.NEF".to_string(),
+        file_name: "frame.NEF".to_string(),
+        selected_profile_index: 0,
+        rating: 5,
+        label: ReviewLabel::None,
+        labels: Vec::new(),
+        tags: Vec::new(),
+        notes: String::new(),
+        retouch: RetouchSettings::default(),
+        publish_profile_indexes: Some(vec![0, 1]),
+        preview: ReviewPreview::default(),
+        profiles: vec![
+            ReviewProfileRender {
+                profile_index: 0,
+                profile_stem: "Classic".to_string(),
+                status: ReviewRenderStatus::Done,
+                output_path: Some(classic.clone()),
+                error: None,
+                duration_ms: Some(1),
+                render_key: None,
+                updated_at: now_string(),
+            },
+            ReviewProfileRender {
+                profile_index: 1,
+                profile_stem: "Fade".to_string(),
+                status: ReviewRenderStatus::Done,
+                output_path: Some(fade.clone()),
+                error: None,
+                duration_ms: Some(1),
+                render_key: None,
+                updated_at: now_string(),
+            },
+        ],
+        updated_at: now_string(),
+    });
+
+    let events = Mutex::new(Vec::new());
+    let progress = |event: ReviewPublishProgress| {
+        events.lock().unwrap().push(event);
+    };
+    let options = test_publish_options("published");
+    let report =
+        publish_store_inner(&store, Path::new("/in"), &output, &options, Some(&progress)).unwrap();
+    let events = events.lock().unwrap();
+    assert_eq!(report.linked, 2);
+    assert!(events.iter().any(|event| event.total == 2));
+    assert!(events.iter().any(|event| event.processed == 2));
+    assert!(events.iter().any(|event| event.step == "link"));
+}
+
+#[test]
+fn short_path_sha1_is_stable_and_short() {
+    let first = short_path_sha1(Path::new("/tmp/frame.NEF"));
+    assert_eq!(first, short_path_sha1(Path::new("/tmp/frame.NEF")));
+    assert_ne!(first, short_path_sha1(Path::new("/tmp/other.NEF")));
+    assert_eq!(first.len(), 16);
+}
+
+#[test]
+fn jpeg_detection_requires_marker() {
+    assert!(looks_like_jpeg(&[0xff, 0xd8, 0xff, 0xee]));
+    assert!(!looks_like_jpeg(b"not jpeg"));
+}

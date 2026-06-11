@@ -196,6 +196,26 @@ button:disabled {
   white-space: nowrap;
 }
 
+.label-badges {
+  display: inline-flex;
+  gap: 2px;
+  vertical-align: -2px;
+}
+
+.label-badge {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  background: var(--label-color);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
+}
+
 .image-row-indicator {
   width: 8px;
   height: 8px;
@@ -540,6 +560,55 @@ button:disabled {
   flex-wrap: wrap;
 }
 
+.labels button {
+  --label-color: #555;
+
+  width: 28px;
+  min-width: 28px;
+  padding-inline: 0;
+  border-color: color-mix(in srgb, var(--label-color) 55%, #fff);
+  background: color-mix(in srgb, var(--label-color) 14%, #fff);
+  color: color-mix(in srgb, var(--label-color) 72%, #111);
+  font-weight: 800;
+}
+
+.label-badge[data-label="red"],
+.labels button[data-label="red"],
+.publish-labels label[data-label="red"] {
+  --label-color: #d33131;
+}
+
+.label-badge[data-label="yellow"],
+.labels button[data-label="yellow"],
+.publish-labels label[data-label="yellow"] {
+  --label-color: #c79400;
+}
+
+.label-badge[data-label="green"],
+.labels button[data-label="green"],
+.publish-labels label[data-label="green"] {
+  --label-color: #258247;
+}
+
+.label-badge[data-label="blue"],
+.labels button[data-label="blue"],
+.publish-labels label[data-label="blue"] {
+  --label-color: #2874d0;
+}
+
+.label-badge[data-label="purple"],
+.labels button[data-label="purple"],
+.publish-labels label[data-label="purple"] {
+  --label-color: #8b45c7;
+}
+
+.labels button:hover,
+.labels button.active {
+  border-color: var(--label-color);
+  background: var(--label-color);
+  color: #fff;
+}
+
 .tags,
 .notes {
   display: grid;
@@ -755,6 +824,20 @@ button:disabled {
   gap: 5px;
   color: #33332f;
   white-space: nowrap;
+}
+
+.publish-labels label[data-label] span {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  background: var(--label-color);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
 }
 
 .publish-sizes {

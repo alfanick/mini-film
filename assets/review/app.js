@@ -284,8 +284,13 @@ function renderList(images) {
     const meta = document.createElement("div");
     meta.className = "image-row-meta";
     const progress = renderProgressSummary(image);
-    const labels = labelText(imageLabels(image));
-    meta.textContent = `rating ${image.rating}${labels ? ` ${labels}` : ""} | ${progress.text}`;
+    const labels = imageLabels(image);
+    meta.append(document.createTextNode(`rating ${image.rating}`));
+    if (labels.length > 0) {
+      meta.append(document.createTextNode(" "));
+      meta.append(renderLabelBadges(labels));
+    }
+    meta.append(document.createTextNode(` | ${progress.text}`));
 
     const indicator = document.createElement("span");
     indicator.className = `image-row-indicator ${progress.state}`;
@@ -758,8 +763,23 @@ function imageLabels(image) {
   return image?.label && image.label !== "none" ? [image.label] : [];
 }
 
-function labelText(labels) {
-  return labels.join(",");
+function labelLetter(label) {
+  return { red: "R", yellow: "Y", green: "G", blue: "B", purple: "P" }[label] || "";
+}
+
+function renderLabelBadges(labels) {
+  const wrap = document.createElement("span");
+  wrap.className = "label-badges";
+  wrap.title = labels.join(", ");
+  wrap.setAttribute("aria-label", labels.join(", "));
+  for (const label of labels) {
+    const badge = document.createElement("span");
+    badge.className = "label-badge";
+    badge.dataset.label = label;
+    badge.textContent = labelLetter(label);
+    wrap.append(badge);
+  }
+  return wrap;
 }
 
 function currentTags() {
