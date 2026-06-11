@@ -19,6 +19,12 @@ pub(crate) fn review_script() -> &'static str {
     read_text_asset("app.js")
 }
 
+pub(crate) fn review_text_asset(path: &str) -> Option<&'static str> {
+    REVIEW_ASSETS
+        .get_file(path)
+        .and_then(|file| file.contents_utf8())
+}
+
 fn read_text_asset(path: &str) -> &'static str {
     let file = REVIEW_ASSETS
         .get_file(path)

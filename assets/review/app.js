@@ -1,3 +1,5 @@
+import { Fragment, h, render as preactRender } from "./vendor/preact.module.js";
+
 const state = {
   data: null,
   currentId: null,
@@ -29,6 +31,536 @@ const TOUCH_SWIPE_RATIO = 1.65;
 const ZOOM_LONG_PRESS_MS = 380;
 const ZOOM_MOVE_CANCEL_PX = 22;
 const ZOOM_SCALE = 2.6;
+const RATING_VALUES = [0, 1, 2, 3, 4, 5];
+const COLOR_LABELS = ["red", "yellow", "green", "blue", "purple"];
+
+preactRender(h(ReviewShell), document.getElementById("review-root"));
+
+function ReviewShell() {
+  return h(
+    Fragment,
+    null,
+    h(
+      "div",
+      { class: "app" },
+      h(
+        "aside",
+        { class: "sidebar" },
+        h(
+          "header",
+          { class: "sidebar-header" },
+          h("div", null, h("h1", null, "Review"), h("div", { id: "app-version", class: "app-version" }, "mini-film")),
+          h(
+            "div",
+            { class: "header-actions" },
+            h(
+              "button",
+              { id: "shortcuts-help", class: "help-button", type: "button", "aria-label": "Keyboard shortcuts" },
+              "?",
+            ),
+            h(
+              "button",
+              { id: "publish", class: "publish-button", type: "button", title: "Publish", "aria-label": "Publish" },
+              "Pub",
+            ),
+          ),
+        ),
+        h(
+          "div",
+          { class: "filter" },
+          h(
+            "label",
+            null,
+            h("span", null, "Show rating >="),
+            h(
+              "select",
+              { id: "min-rating" },
+              RATING_VALUES.map((rating) => h("option", { key: rating, value: String(rating) }, String(rating))),
+            ),
+          ),
+        ),
+        h(
+          "div",
+          { class: "status" },
+          h("span", { id: "live-dot", class: "live-dot" }),
+          h("span", { id: "status" }, "Connecting..."),
+        ),
+        h("div", { id: "image-list", class: "image-list" }),
+      ),
+      h(
+        "main",
+        { class: "workspace" },
+        h(
+          "section",
+          { class: "viewer" },
+          h("div", { id: "empty", class: "empty" }, "Waiting for pictures"),
+          h("img", { id: "main-image", alt: "", draggable: false }),
+          h("div", { id: "gesture-feedback", class: "gesture-feedback", hidden: true }),
+          h("div", { id: "zoom-loupe", class: "zoom-loupe", hidden: true }),
+          h("div", { id: "retouch-grid", class: "retouch-grid", hidden: true }),
+          h(
+            "div",
+            { id: "crop-overlay", class: "crop-overlay", hidden: true },
+            h(
+              "div",
+              { id: "crop-box", class: "crop-box" },
+              h("span", { "data-crop-handle": "nw" }),
+              h("span", { "data-crop-handle": "ne" }),
+              h("span", { "data-crop-handle": "sw" }),
+              h("span", { "data-crop-handle": "se" }),
+            ),
+            h(
+              "div",
+              { id: "crop-tools", class: "crop-tools", hidden: true },
+              h("button", { id: "crop-rotate-left", type: "button" }, "-90"),
+              h(
+                "label",
+                null,
+                h("span", null, "Rotate"),
+                h("input", { id: "crop-rotation", type: "range", min: "-180", max: "180", step: "0.25", value: "0" }),
+                h("output", { id: "crop-rotation-value" }, "0"),
+              ),
+              h("button", { id: "crop-rotate-right", type: "button" }, "+90"),
+            ),
+          ),
+        ),
+        h(
+          "section",
+          { class: "panel" },
+          h(
+            "div",
+            { class: "meta" },
+            h(
+              "div",
+              null,
+              h(
+                "div",
+                { class: "image-title-line" },
+                h("div", { id: "image-title", class: "image-title" }),
+                h("div", { id: "image-exif", class: "image-exif", "aria-label": "Camera settings" }),
+              ),
+              h("div", { id: "image-subtitle", class: "image-subtitle" }),
+            ),
+            h("div", { id: "profile-state", class: "profile-state" }),
+          ),
+          h(
+            "div",
+            { class: "mobile-actions", "aria-label": "Review tools" },
+            h("button", { "data-mobile-drawer": "profiles", type: "button" }, "Profiles"),
+            h("button", { "data-mobile-drawer": "retouch", type: "button" }, "Retouch"),
+            h("button", { "data-mobile-drawer": "metadata", type: "button" }, "Meta"),
+            h("button", { id: "mobile-publish", type: "button" }, "Publish"),
+          ),
+          h("div", { id: "profiles", class: "profiles" }),
+          h(ControlsShell),
+        ),
+      ),
+    ),
+    h(ShortcutsOverlay),
+    h(PublishOverlay),
+  );
+}
+
+function ControlsShell() {
+  return h(
+    "div",
+    { class: "controls" },
+    h(
+      "div",
+      { class: "rating", role: "group", "aria-label": "Rating" },
+      RATING_VALUES.map((rating) =>
+        h("button", { key: rating, "data-rating": String(rating), type: "button" }, String(rating)),
+      ),
+    ),
+    h(
+      "div",
+      { class: "labels", role: "group", "aria-label": "Label" },
+      COLOR_LABELS.map((label) =>
+        h(
+          "button",
+          {
+            key: label,
+            "data-label": label,
+            type: "button",
+            title: capitalize(label),
+            "aria-label": `${capitalize(label)} label`,
+          },
+          labelLetter(label),
+        ),
+      ),
+    ),
+    h(
+      "label",
+      { class: "tags" },
+      h("span", null, "Tags"),
+      h("input", { id: "tags", type: "text", inputMode: "numeric", autocomplete: "off", placeholder: "12, 42, 108" }),
+    ),
+    h(
+      "label",
+      { class: "notes" },
+      h("span", null, "Notes"),
+      h("input", { id: "notes", type: "text", autocomplete: "off", placeholder: "optional note" }),
+    ),
+    h(
+      "section",
+      { class: "retouch", "aria-label": "Retouch" },
+      h(
+        "div",
+        { class: "retouch-header" },
+        h("span", null, "Retouch"),
+        h("button", { id: "retouch-reset", type: "button" }, "Reset"),
+      ),
+      h(RetouchSlider, { id: "retouch-exposure", label: "Exposure", min: "-4", max: "4", step: "0.05", value: "0" }),
+      h(RetouchSlider, {
+        id: "retouch-highlights",
+        label: "Highlights",
+        min: "-100",
+        max: "100",
+        step: "1",
+        value: "0",
+      }),
+      h(RetouchSlider, { id: "retouch-whites", label: "Whites", min: "-100", max: "100", step: "1", value: "0" }),
+      h(RetouchSlider, {
+        id: "retouch-temperature",
+        label: "Temp",
+        min: "-2500",
+        max: "2500",
+        step: "50",
+        value: "0",
+        output: "0K",
+      }),
+      h(
+        "div",
+        { class: "retouch-actions" },
+        h("button", { id: "crop-toggle", type: "button" }, "Crop/rotate"),
+        h("button", { id: "crop-ok", type: "button", hidden: true }, "OK"),
+        h("button", { id: "crop-cancel", type: "button", hidden: true }, "Cancel"),
+        h("button", { id: "crop-reset", type: "button" }, "Clear"),
+      ),
+      h(RetouchSlider, { id: "retouch-clarity", label: "Contrast", min: "-100", max: "100", step: "1", value: "0" }),
+      h(RetouchSlider, { id: "retouch-shadows", label: "Shadows", min: "-100", max: "100", step: "1", value: "0" }),
+      h(RetouchSlider, { id: "retouch-blacks", label: "Blacks", min: "-100", max: "100", step: "1", value: "0" }),
+      h(RetouchSlider, { id: "retouch-offset", label: "Offset", min: "-100", max: "100", step: "1", value: "0" }),
+    ),
+  );
+}
+
+function RetouchSlider({ id, label, min, max, step, value, output = value }) {
+  return h(
+    "label",
+    null,
+    h("span", null, label),
+    h("input", { id, type: "range", min, max, step, value }),
+    h("output", { id: `${id}-value` }, output),
+  );
+}
+
+function ShortcutsOverlay() {
+  const sections = [
+    [
+      "Pictures",
+      [
+        [["←", "→"], "Previous or next picture without changing the rating."],
+        [["h", "l", "Enter"], "Alternative navigation keys for the same previous or next action."],
+      ],
+    ],
+    [
+      "Touch / Mouse",
+      [
+        [["Swipe ←/→"], "Move between visible pictures without changing the rating."],
+        [["Swipe ↑/↓"], "Change the rating without advancing."],
+        [["Hold"], "Zoom into the picture under the cursor or finger until released."],
+        [["Profile"], "Click a profile thumbnail to preview it; use its checkbox to include it in publishing."],
+      ],
+    ],
+    [
+      "Rating",
+      [
+        [["1", "2", "3", "4", "5"], "Set rating and advance to the next visible picture."],
+        [["↑", "↓"], "Increase or decrease the rating, then advance."],
+      ],
+    ],
+    [
+      "Labels",
+      [
+        [["6", "7", "8", "9", "0"], "Toggle red, yellow, green, blue, or purple labels without advancing."],
+        [["r", "y", "g", "b", "v"], "Same label toggles using mnemonic keys."],
+        [["n"], "Clear all color labels."],
+      ],
+    ],
+    [
+      "Profiles",
+      [
+        [["PgUp", "PgDn"], "Preview the previous or next profile for the current picture."],
+        [["Space"], "Include or skip the selected profile when publishing."],
+      ],
+    ],
+    [
+      "Metadata",
+      [
+        [[","], "Focus tags."],
+        [["/"], "Focus notes."],
+        [["Enter"], "Save tags and advance; save notes and return to review."],
+      ],
+    ],
+    [
+      "View",
+      [
+        [["f"], "Toggle fullscreen."],
+        [["?", "Esc"], "Show or hide this shortcuts overlay."],
+      ],
+    ],
+    [
+      "Retouch",
+      [
+        [["Double-click"], "Double-click a retouch control name to reset that value."],
+        [["Crop", "OK"], "Open crop/rotate, adjust the frame, then apply it with OK."],
+      ],
+    ],
+  ];
+  return h(
+    "div",
+    {
+      id: "shortcuts-overlay",
+      class: "shortcuts-overlay",
+      role: "dialog",
+      "aria-modal": "true",
+      "aria-labelledby": "shortcuts-title",
+      hidden: true,
+    },
+    h(
+      "section",
+      { class: "shortcuts-card" },
+      h(
+        "header",
+        { class: "shortcuts-header" },
+        h("h2", { id: "shortcuts-title" }, "Shortcuts"),
+        h("button", { id: "shortcuts-close", type: "button" }, "Close"),
+      ),
+      h(
+        "div",
+        { class: "shortcut-sections" },
+        sections.map(([title, rows]) =>
+          h(
+            "section",
+            { key: title, class: "shortcut-section" },
+            h("h3", null, title),
+            rows.map(([keys, description]) =>
+              h(
+                "div",
+                { key: `${title}-${description}`, class: "shortcut-row" },
+                h(
+                  "span",
+                  { class: "shortcut-keys" },
+                  keys.map((key) => h("kbd", { key }, key)),
+                ),
+                h("span", null, description),
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+function PublishOverlay() {
+  return h(
+    "div",
+    {
+      id: "publish-overlay",
+      class: "publish-overlay",
+      role: "dialog",
+      "aria-modal": "true",
+      "aria-labelledby": "publish-title",
+      hidden: true,
+    },
+    h(
+      "form",
+      { id: "publish-form", class: "publish-card" },
+      h(
+        "header",
+        { class: "publish-header" },
+        h(
+          "div",
+          null,
+          h("h2", { id: "publish-title" }, "Publish"),
+          h("p", { id: "publish-mode" }, "Link existing reviewed outputs when settings match daemon defaults."),
+          h("p", { id: "publish-count", class: "publish-count" }),
+        ),
+        h("button", { id: "publish-cancel", type: "button" }, "Cancel"),
+      ),
+      h(
+        "div",
+        { class: "publish-grid" },
+        h(PublishSelectionSection),
+        h(PublishOutputSection),
+        h(PublishGallerySection),
+      ),
+      h(
+        "footer",
+        { class: "publish-footer" },
+        h("div", { id: "publish-status", class: "publish-status" }),
+        h("button", { id: "publish-submit", type: "submit" }, "Start publish job"),
+      ),
+    ),
+  );
+}
+
+function PublishSelectionSection() {
+  return h(
+    "section",
+    { class: "publish-section" },
+    h("h3", null, "Selection"),
+    h(
+      "label",
+      null,
+      h("span", null, "Output folder"),
+      h("input", { id: "publish-album", type: "text", autocomplete: "off" }),
+    ),
+    h(
+      "label",
+      null,
+      h("span", null, "Rating >="),
+      h(
+        "select",
+        { id: "publish-min-rating" },
+        RATING_VALUES.map((rating) => h("option", { key: rating, value: String(rating) }, String(rating))),
+      ),
+    ),
+    h(
+      "div",
+      { class: "publish-labels" },
+      h("span", null, "Colour labels"),
+      COLOR_LABELS.map((label) =>
+        h(
+          "label",
+          { key: label, "data-publish-label": label, title: capitalize(label) },
+          h("input", { type: "checkbox", name: "publish-label", value: label }),
+          " ",
+          h("span", null, capitalize(label)),
+        ),
+      ),
+    ),
+    h(
+      "label",
+      null,
+      h("span", null, "Tags"),
+      h("input", {
+        id: "publish-tags",
+        type: "text",
+        autocomplete: "off",
+        placeholder: "optional comma-separated tags",
+      }),
+    ),
+  );
+}
+
+function PublishOutputSection() {
+  return h(
+    "section",
+    { class: "publish-section" },
+    h("h3", null, "Output"),
+    h(
+      "label",
+      null,
+      h("span", null, "Format"),
+      h(
+        "select",
+        { id: "publish-output-format" },
+        h("option", { value: "jpg" }, "JPG"),
+        h("option", { value: "tiff" }, "TIFF"),
+      ),
+    ),
+    h(
+      "label",
+      null,
+      h("span", null, "Size"),
+      h(
+        "select",
+        { id: "publish-size-mode" },
+        h("option", { value: "original" }, "Original size"),
+        h("option", { value: "long-edge" }, "Long edge"),
+        h("option", { value: "bounds" }, "Max width/height"),
+        h("option", { value: "geometry" }, "Convert geometry"),
+      ),
+    ),
+    h(
+      "div",
+      { class: "publish-sizes" },
+      h("input", { id: "publish-long-edge", type: "number", min: "1", placeholder: "long edge px" }),
+      h("input", { id: "publish-max-width", type: "number", min: "1", placeholder: "max width" }),
+      h("input", { id: "publish-max-height", type: "number", min: "1", placeholder: "max height" }),
+      h("input", { id: "publish-resize", type: "text", placeholder: "e.g. 3840x3840>" }),
+    ),
+    h(
+      "label",
+      null,
+      h("span", null, "JPG quality"),
+      h("input", { id: "publish-jpg-quality", type: "number", min: "1", max: "100" }),
+    ),
+    h(
+      "label",
+      null,
+      h("span", null, "Subsampling"),
+      h(
+        "select",
+        { id: "publish-jpeg-subsampling" },
+        h("option", { value: "s444" }, "4:4:4"),
+        h("option", { value: "s422" }, "4:2:2"),
+        h("option", { value: "s420" }, "4:2:0"),
+      ),
+    ),
+    h(
+      "div",
+      { class: "publish-checks" },
+      h("label", null, h("input", { id: "publish-progressive", type: "checkbox" }), " Progressive JPG"),
+      h("label", null, h("input", { id: "publish-strip-metadata", type: "checkbox" }), " Strip metadata"),
+    ),
+  );
+}
+
+function PublishGallerySection() {
+  return h(
+    "section",
+    { class: "publish-section publish-section-wide" },
+    h("h3", null, "Gallery"),
+    h(
+      "label",
+      null,
+      h("span", null, "Template"),
+      h(
+        "select",
+        { id: "publish-gallery" },
+        [
+          ["none", "No gallery"],
+          ["modern", "Modern"],
+          ["soft", "Soft"],
+          ["compact", "Compact"],
+          ["hero", "Hero"],
+          ["phone", "Phone"],
+          ["all", "All templates"],
+        ].map(([value, label]) => h("option", { key: value, value }, label)),
+      ),
+    ),
+    h(
+      "label",
+      null,
+      h("span", null, "Columns"),
+      h("input", { id: "publish-gallery-columns", type: "number", min: "1", max: "12" }),
+    ),
+    h(
+      "label",
+      null,
+      h("span", null, "Thumbnail edge"),
+      h("input", { id: "publish-gallery-thumbnail-long-edge", type: "number", min: "1" }),
+    ),
+  );
+}
+
+function capitalize(value) {
+  return value ? `${value[0].toUpperCase()}${value.slice(1)}` : "";
+}
 
 const els = {
   status: document.getElementById("status"),
@@ -206,37 +738,51 @@ function publishProgressPercent(job) {
   return Math.max(0, Math.min(100, Math.round((processed / total) * 100)));
 }
 
+function PublishStatus({ job }) {
+  if (job.status === "running") {
+    const percent = publishProgressPercent(job);
+    return h(
+      "div",
+      null,
+      h(
+        "div",
+        null,
+        `Publishing ${job.album}: ${percent}% ${job.step || "publish"}${job.current ? ` | ${job.current}` : ""}`,
+      ),
+      h("div", { class: "publish-progress" }, h("span", { style: { width: `${percent}%` } })),
+      h(
+        "div",
+        { class: "publish-progress-counts" },
+        `${job.processed || 0}/${job.total || 0} outputs | linked ${job.linked || 0} | skipped ${job.skipped || 0} | galleries ${job.galleries || 0}`,
+      ),
+    );
+  }
+  if (job.status === "done") {
+    return `Published ${job.linked} files to ${job.album}; skipped ${job.skipped}; galleries ${job.galleries}.`;
+  }
+  return `Publish failed: ${job.error || "unknown error"}`;
+}
+
 function updatePublishStatus() {
   const job = latestPublishJob();
   if (!job) {
-    els.publishStatus.textContent = publishWouldRerender()
-      ? "Changed output settings will rerender from original RAWs."
-      : "Default settings will link existing reviewed outputs.";
     els.publishSubmit.disabled = false;
+    preactRender(
+      publishWouldRerender()
+        ? "Changed output settings will rerender from original RAWs."
+        : "Default settings will link existing reviewed outputs.",
+      els.publishStatus,
+    );
     return;
   }
-  els.publishStatus.replaceChildren();
   if (job.status === "running") {
     els.publishSubmit.disabled = true;
-    const percent = publishProgressPercent(job);
-    const text = document.createElement("div");
-    text.textContent = `Publishing ${job.album}: ${percent}% ${job.step || "publish"}${job.current ? ` | ${job.current}` : ""}`;
-    const bar = document.createElement("div");
-    bar.className = "publish-progress";
-    const fill = document.createElement("span");
-    fill.style.width = `${percent}%`;
-    bar.append(fill);
-    const counts = document.createElement("div");
-    counts.className = "publish-progress-counts";
-    counts.textContent = `${job.processed || 0}/${job.total || 0} outputs | linked ${job.linked || 0} | skipped ${job.skipped || 0} | galleries ${job.galleries || 0}`;
-    els.publishStatus.append(text, bar, counts);
   } else if (job.status === "done") {
     els.publishSubmit.disabled = false;
-    els.publishStatus.textContent = `Published ${job.linked} files to ${job.album}; skipped ${job.skipped}; galleries ${job.galleries}.`;
   } else {
     els.publishSubmit.disabled = false;
-    els.publishStatus.textContent = `Publish failed: ${job.error || "unknown error"}`;
   }
+  preactRender(h(PublishStatus, { job }), els.publishStatus);
 }
 
 function syncProfilesPlacement() {
@@ -297,63 +843,73 @@ function filteredImagesFromData(data) {
 }
 
 function renderList(images) {
-  els.list.replaceChildren();
-  let activeRow = null;
-  for (const image of images) {
-    const button = document.createElement("button");
-    button.type = "button";
-    const isActive = image.id === state.currentId;
-    button.className = `image-row${isActive ? " active" : ""}`;
-    if (isActive) activeRow = button;
-    button.addEventListener("click", async () => {
-      const carryProfileIndex = selectedProfile(findImage(state.currentId))?.profile_index;
-      await saveCurrentIfNeeded();
-      await updateSharedUi({ current_image_id: image.id, min_rating: minRating() });
-      await carrySelectedProfileToImage(image.id, carryProfileIndex);
-    });
-
-    const thumb = document.createElement("img");
-    thumb.className = "image-row-thumb";
-    thumb.alt = "";
-    if (image.preview_url) {
-      thumb.src = image.preview_url;
-    }
-
-    const title = document.createElement("div");
-    title.className = "image-row-title";
-    title.textContent = image.file_name;
-    title.title = image.relative_path || image.file_name;
-
-    const meta = document.createElement("div");
-    meta.className = "image-row-meta";
-    const progress = renderProgressSummary(image);
-    const labels = imageLabels(image);
-    const rating = document.createElement("span");
-    rating.className = "image-row-rating";
-    rating.append(document.createTextNode(`${image.rating}`));
-    if (labels.length > 0) {
-      rating.append(renderLabelBadges(labels));
-    }
-
-    const progressText = document.createElement("span");
-    progressText.className = "image-row-progress";
-    progressText.textContent = progress.text;
-    progressText.title = progress.title;
-    meta.append(rating, progressText);
-
-    const indicator = document.createElement("span");
-    indicator.className = `image-row-indicator ${progress.state}`;
-    indicator.title = progress.title;
-    indicator.setAttribute("aria-label", progress.title);
-
-    button.append(thumb, title, meta, indicator);
-    els.list.append(button);
-  }
+  preactRender(
+    h(ImageList, {
+      images,
+      currentId: state.currentId,
+      onSelect: async (image) => {
+        const carryProfileIndex = selectedProfile(findImage(state.currentId))?.profile_index;
+        await saveCurrentIfNeeded();
+        await updateSharedUi({ current_image_id: image.id, min_rating: minRating() });
+        await carrySelectedProfileToImage(image.id, carryProfileIndex);
+      },
+    }),
+    els.list,
+  );
+  const activeRow = els.list.querySelector(".image-row.active");
   if (activeRow) {
     requestAnimationFrame(() => {
       activeRow.scrollIntoView({ block: "nearest", inline: "nearest" });
     });
   }
+}
+
+function ImageList({ images, currentId, onSelect }) {
+  return images.map((image) => {
+    const progress = renderProgressSummary(image);
+    const labels = imageLabels(image);
+    const isActive = image.id === currentId;
+    return h(
+      "button",
+      {
+        key: image.id,
+        type: "button",
+        class: `image-row${isActive ? " active" : ""}`,
+        onClick: () => onSelect(image).catch((error) => console.error(error)),
+      },
+      h("img", {
+        class: "image-row-thumb",
+        alt: "",
+        src: image.preview_url || undefined,
+      }),
+      h(
+        "div",
+        {
+          class: "image-row-title",
+          title: image.relative_path || image.file_name,
+        },
+        image.file_name,
+      ),
+      h(
+        "div",
+        { class: "image-row-meta" },
+        h("span", { class: "image-row-rating" }, image.rating, labels.length > 0 ? h(LabelBadges, { labels }) : null),
+        h(
+          "span",
+          {
+            class: "image-row-progress",
+            title: progress.title,
+          },
+          progress.text,
+        ),
+      ),
+      h("span", {
+        class: `image-row-indicator ${progress.state}`,
+        title: progress.title,
+        "aria-label": progress.title,
+      }),
+    );
+  });
 }
 
 function renderProgressSummary(image) {
@@ -448,7 +1004,7 @@ function renderCurrent(image) {
     els.subtitle.textContent = "";
     els.profileState.textContent = "";
     els.imageExif.replaceChildren();
-    els.profiles.replaceChildren();
+    preactRender(null, els.profiles);
     els.tags.value = "";
     els.notes.value = "";
     state.lastInputImageId = null;
@@ -591,16 +1147,30 @@ function togglePublishProfile(image, profileIndex) {
 }
 
 function renderProfiles(image) {
-  els.profiles.replaceChildren();
+  preactRender(
+    h(ProfileList, {
+      image,
+      onSelect: async (profile) => {
+        await saveReview({ selected_profile_index: profile.profile_index });
+      },
+      onTogglePublish: async (profile) => {
+        await saveReview({ publish_profile_indexes: togglePublishProfile(image, profile.profile_index) });
+      },
+    }),
+    els.profiles,
+  );
+}
+
+function ProfileList({ image, onSelect, onTogglePublish }) {
+  if (!image) return null;
   const publishIndexes = new Set(publishProfileIndexes(image));
   const previewProfile = selectedProfile(image);
-  image.profiles.forEach((profile) => {
+  return (image.profiles || []).map((profile) => {
     const cardUrl = profile.url || image.preview_url;
     const publishSelected = publishIndexes.has(profile.profile_index);
     const display = profileDisplayState(image, profile);
-    const card = document.createElement("button");
-    card.type = "button";
-    card.className = [
+    const sourceStatus = profile.url ? display.text : `${display.text} | preview`;
+    const classes = [
       "profile-card",
       profile.profile_index === previewProfile?.profile_index ? "active" : "",
       profile.url ? "" : "pending",
@@ -609,46 +1179,47 @@ function renderProfiles(image) {
     ]
       .filter(Boolean)
       .join(" ");
-    card.addEventListener("click", async () => {
-      await saveReview({ selected_profile_index: profile.profile_index });
-    });
-
-    const publish = document.createElement("input");
-    publish.type = "checkbox";
-    publish.className = "profile-publish";
-    publish.checked = publishSelected;
-    publish.title = publishSelected ? "Included in publish" : "Skipped by publish";
-    publish.setAttribute("aria-label", `Publish ${profile.profile_stem}`);
-    publish.addEventListener("click", (event) => event.stopPropagation());
-    publish.addEventListener("change", async (event) => {
-      event.stopPropagation();
-      await saveReview({ publish_profile_indexes: togglePublishProfile(image, profile.profile_index) });
-    });
-    card.append(publish);
-
-    if (cardUrl) {
-      const img = document.createElement("img");
-      const stamp = profile.url ? profile.updated_at : image.preview_updated_at;
-      img.src = versionedUrl(cardUrl, stamp);
-      img.alt = profile.profile_stem;
-      img.addEventListener("load", () => {
-        card.classList.toggle("portrait", img.naturalHeight > img.naturalWidth);
-      });
-      card.append(img);
-    }
-
-    const name = document.createElement("div");
-    name.className = "profile-name";
-    name.textContent = profile.profile_stem;
-
-    const status = document.createElement("div");
-    status.className = "profile-status";
-    const sourceStatus = profile.url ? display.text : `${display.text} | preview`;
-    status.textContent = `${sourceStatus} | ${publishSelected ? "publish" : "skip"}`;
-    status.title = display.title;
-
-    card.append(name, status);
-    els.profiles.append(card);
+    return h(
+      "button",
+      {
+        key: profile.profile_index,
+        type: "button",
+        class: classes,
+        onClick: () => onSelect(profile).catch((error) => console.error(error)),
+      },
+      h("input", {
+        type: "checkbox",
+        class: "profile-publish",
+        checked: publishSelected,
+        title: publishSelected ? "Included in publish" : "Skipped by publish",
+        "aria-label": `Publish ${profile.profile_stem}`,
+        onClick: (event) => event.stopPropagation(),
+        onChange: (event) => {
+          event.stopPropagation();
+          onTogglePublish(profile).catch((error) => console.error(error));
+        },
+      }),
+      cardUrl
+        ? h("img", {
+            src: versionedUrl(cardUrl, profile.url ? profile.updated_at : image.preview_updated_at),
+            alt: profile.profile_stem,
+            onLoad: (event) => {
+              event.currentTarget
+                .closest(".profile-card")
+                ?.classList.toggle("portrait", event.currentTarget.naturalHeight > event.currentTarget.naturalWidth);
+            },
+          })
+        : null,
+      h("div", { class: "profile-name" }, profile.profile_stem),
+      h(
+        "div",
+        {
+          class: "profile-status",
+          title: display.title,
+        },
+        `${sourceStatus} | ${publishSelected ? "publish" : "skip"}`,
+      ),
+    );
   });
 }
 
@@ -932,19 +1503,26 @@ function labelLetter(label) {
   return { red: "R", yellow: "Y", green: "G", blue: "B", purple: "P" }[label] || "";
 }
 
-function renderLabelBadges(labels) {
-  const wrap = document.createElement("span");
-  wrap.className = "label-badges";
-  wrap.title = labels.join(", ");
-  wrap.setAttribute("aria-label", labels.join(", "));
-  for (const label of labels) {
-    const badge = document.createElement("span");
-    badge.className = "label-badge";
-    badge.dataset.label = label;
-    badge.textContent = labelLetter(label);
-    wrap.append(badge);
-  }
-  return wrap;
+function LabelBadges({ labels }) {
+  return h(
+    "span",
+    {
+      class: "label-badges",
+      title: labels.join(", "),
+      "aria-label": labels.join(", "),
+    },
+    labels.map((label) =>
+      h(
+        "span",
+        {
+          key: label,
+          class: "label-badge",
+          "data-label": label,
+        },
+        labelLetter(label),
+      ),
+    ),
+  );
 }
 
 function currentTags() {

@@ -79,6 +79,17 @@ pub(super) async fn route_request(
             review_script(),
         )
         .into_response(),
+        (Method::GET, _) if path.starts_with("/assets/vendor/") => {
+            let asset_path = path.trim_start_matches("/assets/");
+            match review_text_asset(asset_path) {
+                Some(body) => {
+                    text_response(200, review_asset_content_type(asset_path), body).into_response()
+                }
+                None => {
+                    text_response(404, "text/plain; charset=utf-8", "not found").into_response()
+                }
+            }
+        }
         (Method::GET, "/api/state") => match handle.api_state_json() {
             Ok(body) => {
                 text_response(200, "application/json; charset=utf-8", &body).into_response()
@@ -119,6 +130,14 @@ pub(super) async fn route_request(
         (Method::GET, _) if path.starts_with("/media/") => media_response(path, handle).await,
         (Method::GET, _) if path.starts_with("/preview/") => preview_response(path, handle).await,
         _ => text_response(404, "text/plain; charset=utf-8", "not found").into_response(),
+    }
+}
+
+pub(super) fn review_asset_content_type(path: &str) -> &'static str {
+    if path.ends_with(".js") {
+        "application/javascript; charset=utf-8"
+    } else {
+        "text/plain; charset=utf-8"
     }
 }
 

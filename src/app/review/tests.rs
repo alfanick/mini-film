@@ -428,10 +428,24 @@ fn review_route_path_accepts_reverse_proxy_prefixes() {
         review_route_path("/nested/mini-film/assets/app.js"),
         "/assets/app.js"
     );
+    assert_eq!(
+        review_route_path("/nested/mini-film/assets/vendor/preact.module.js"),
+        "/assets/vendor/preact.module.js"
+    );
     assert_eq!(review_route_path("/mini-film/media/1/0"), "/media/1/0");
     assert_eq!(review_route_path("/mini-film/preview/1"), "/preview/1");
     assert_eq!(review_route_path("/mini-film/review"), "/review");
     assert_eq!(review_route_path("/mini-film/"), "/");
+}
+
+#[test]
+fn review_vendor_assets_are_embedded_as_javascript() {
+    assert!(review_text_asset("vendor/preact.module.js").is_some());
+    assert!(review_text_asset("vendor/hooks.module.js").is_some());
+    assert_eq!(
+        review_asset_content_type("vendor/preact.module.js"),
+        "application/javascript; charset=utf-8"
+    );
 }
 
 #[test]
