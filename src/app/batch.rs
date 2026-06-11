@@ -162,6 +162,7 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
         grain_preset: args.grain_preset.clone(),
         grain_seed: args.grain_seed,
         export: args.export.clone(),
+        retouch: None,
     };
     let mut resolved = resolve_profile(&apply_args, temp_dir.path())?;
     if let Some(grain) =
@@ -707,6 +708,7 @@ fn process_batch_file_inner(
                 env!("CARGO_PKG_VERSION"),
                 context.resolved.resolved_stem
             )),
+            retouch: None,
         },
         context.resolved,
         seed,

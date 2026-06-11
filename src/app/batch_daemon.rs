@@ -286,6 +286,7 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
                 index,
                 selector: profile.selector.clone(),
                 stem: profile.stem.clone(),
+                retouch_base: profile.resolved.retouch_base,
             })
             .collect();
         Some(start_review_server(ReviewConfig {
@@ -925,6 +926,7 @@ fn resolve_daemon_profiles(args: &BatchDaemonArgs, temp_dir: &Path) -> Result<Ve
                 grain_preset: args.grain_preset.clone(),
                 grain_seed: args.grain_seed,
                 export: args.export.clone(),
+                retouch: None,
             };
             let mut resolved = resolve_profile(&apply_args, &profile_tmp_dir)
                 .with_context(|| format!("resolving profile {selector}"))?;
@@ -1175,6 +1177,7 @@ fn process_single_profile(
                 env!("CARGO_PKG_VERSION"),
                 profile_stem
             )),
+            retouch: None,
         },
         &profile.resolved,
         seed,
@@ -1423,6 +1426,7 @@ mod tests {
                 grain: mini_film::GrainSettings::default(),
                 sharpening_applied: false,
                 resolved_stem: "Portra 400 grainy".to_string(),
+                retouch_base: Default::default(),
             },
             profile_report: "profile report".to_string(),
         });
@@ -1527,6 +1531,7 @@ mod tests {
                 grain: mini_film::GrainSettings::default(),
                 sharpening_applied: false,
                 resolved_stem: "Portra 400 grainy".to_string(),
+                retouch_base: Default::default(),
             },
             profile_report: "profile report".to_string(),
         });

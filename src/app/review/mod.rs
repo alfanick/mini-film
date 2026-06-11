@@ -19,14 +19,19 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha1::{Digest, Sha1};
+use tempfile::Builder;
 
 use crate::app::review_assets::{review_index_html, review_script, review_styles};
 use crate::{
-    app::apply::{ApplyArgs, run_apply},
+    app::apply::{ApplyArgs, ApplyJob, apply_resolved, resolve_grain_override, run_apply},
     app::batch::{FolderGalleryOptions, render_gallery_for_folder},
     app::export::validate_export_options,
+    app::profile::resolve_profile,
+    app::retouch::{BasicRetouchAdjustments, RetouchSettings},
     cli::{BatchOutputFormat, ExportOptions, GalleryTemplate, LensCorrections},
 };
+
+const REVIEW_RETOUCH_DEBOUNCE: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug)]
 pub(crate) struct ReviewConfig {
@@ -59,11 +64,13 @@ pub(crate) struct ReviewGalleryConfig {
     pub(crate) thumbnail_long_edge: u32,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub(crate) struct ReviewProfile {
     pub(crate) index: usize,
     pub(crate) selector: String,
     pub(crate) stem: String,
+    #[serde(default)]
+    pub(crate) retouch_base: BasicRetouchAdjustments,
 }
 
 #[derive(Clone)]
@@ -126,6 +133,8 @@ struct ReviewImage {
     #[serde(default)]
     notes: String,
     #[serde(default)]
+    retouch: RetouchSettings,
+    #[serde(default)]
     publish_profile_indexes: Option<Vec<usize>>,
     profiles: Vec<ReviewProfileRender>,
     updated_at: String,
@@ -170,6 +179,8 @@ struct ReviewProfileRender {
     output_path: Option<PathBuf>,
     error: Option<String>,
     duration_ms: Option<u64>,
+    #[serde(default)]
+    render_key: Option<String>,
     updated_at: String,
 }
 
@@ -191,6 +202,8 @@ struct ReviewUpdateRequest {
     tags: Vec<String>,
     #[serde(default)]
     notes: String,
+    #[serde(default)]
+    retouch: Option<RetouchSettings>,
     selected_profile_index: usize,
     #[serde(default)]
     publish_profile_indexes: Option<Vec<usize>>,
@@ -475,6 +488,7 @@ impl ReviewStore {
             label: ReviewLabel::None,
             tags: Vec::new(),
             notes: String::new(),
+            retouch: RetouchSettings::default(),
             publish_profile_indexes: None,
             profiles: Vec::new(),
             updated_at: now_string(),
@@ -748,6 +762,10 @@ impl ReviewHandle {
 
     pub(crate) fn record_profile_processing(&self, raw: &Path, profile_index: usize) -> Result<()> {
         self.update_render(raw, profile_index, |render| {
+            if render.render_key.is_some() {
+                render.error = None;
+                return;
+            }
             render.status = ReviewRenderStatus::Processing;
             render.error = None;
         })
@@ -760,12 +778,21 @@ impl ReviewHandle {
         output: &Path,
         duration: Duration,
     ) -> Result<()> {
-        self.update_render(raw, profile_index, |render| {
-            render.status = ReviewRenderStatus::Done;
-            render.output_path = Some(output.to_path_buf());
-            render.error = None;
-            render.duration_ms = Some(duration.as_millis() as u64);
-        })
+        let mut pending_retouch_key = None;
+        let result = self.update_render(raw, profile_index, |render| {
+            pending_retouch_key = apply_base_render_done(render, output, duration);
+        });
+        if result.is_ok()
+            && let Some(render_key) = pending_retouch_key
+        {
+            self.spawn_retouch_job(
+                raw.to_path_buf(),
+                profile_index,
+                output.to_path_buf(),
+                render_key,
+            );
+        }
+        result
     }
 
     pub(crate) fn record_profile_failed(
@@ -777,6 +804,14 @@ impl ReviewHandle {
         error: &str,
     ) -> Result<()> {
         self.update_render(raw, profile_index, |render| {
+            if render.render_key.is_some()
+                && matches!(
+                    render.status,
+                    ReviewRenderStatus::Queued | ReviewRenderStatus::Processing
+                )
+            {
+                return;
+            }
             render.status = ReviewRenderStatus::Failed;
             if let Some(output) = output {
                 render.output_path = Some(output.to_path_buf());
@@ -807,7 +842,247 @@ impl ReviewHandle {
         self.broadcast_state()
     }
 
+    fn update_render_if_key<F>(
+        &self,
+        raw: &Path,
+        profile_index: usize,
+        render_key: &str,
+        update: F,
+    ) -> Result<bool>
+    where
+        F: FnOnce(&mut ReviewProfileRender),
+    {
+        let mut updated = false;
+        let mut store = self.lock_store()?;
+        let image = store.ensure_image(&self.input_root, raw)?;
+        let Some(render) = image
+            .profiles
+            .iter_mut()
+            .find(|render| render.profile_index == profile_index)
+        else {
+            bail!("review profile index {profile_index} is not configured");
+        };
+        if render.render_key.as_deref() == Some(render_key) {
+            update(render);
+            render.updated_at = now_string();
+            image.updated_at = now_string();
+            updated = true;
+            save_store(&self.state_path, &store)?;
+        }
+        drop(store);
+        if updated {
+            self.broadcast_state()?;
+        }
+        Ok(updated)
+    }
+
+    fn retouch_task_snapshot(
+        &self,
+        raw: &Path,
+        profile_index: usize,
+        render_key: &str,
+    ) -> Result<Option<(ReviewProfile, RetouchSettings)>> {
+        let store = self.lock_store()?;
+        let Some(image) = store.images.iter().find(|image| image.raw_path == raw) else {
+            return Ok(None);
+        };
+        let Some(render) = image
+            .profiles
+            .iter()
+            .find(|render| render.profile_index == profile_index)
+        else {
+            return Ok(None);
+        };
+        if render.render_key.as_deref() != Some(render_key) {
+            return Ok(None);
+        }
+        let Some(profile) = store
+            .profiles
+            .iter()
+            .find(|profile| profile.index == profile_index)
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        Ok(Some((profile, image.retouch.clone())))
+    }
+
+    fn spawn_retouch_job(
+        &self,
+        raw: PathBuf,
+        profile_index: usize,
+        output: PathBuf,
+        render_key: String,
+    ) {
+        let handle = self.clone();
+        let _ = thread::Builder::new()
+            .name("mini-film-review-retouch".to_string())
+            .spawn(move || {
+                thread::sleep(REVIEW_RETOUCH_DEBOUNCE);
+                let Ok(Some((profile, retouch))) =
+                    handle.retouch_task_snapshot(&raw, profile_index, &render_key)
+                else {
+                    return;
+                };
+                let started = std::time::Instant::now();
+                let _ = handle.update_render_if_key(&raw, profile_index, &render_key, |render| {
+                    render.status = ReviewRenderStatus::Processing;
+                    render.error = None;
+                });
+                let temp_output = retouch_temp_output(&output, &render_key);
+                let result = handle.render_retouch_output(
+                    &raw,
+                    &profile,
+                    profile_index,
+                    &retouch,
+                    &temp_output,
+                );
+                match result {
+                    Ok(()) => {
+                        match handle.retouch_task_snapshot(&raw, profile_index, &render_key) {
+                            Ok(Some(_)) => {
+                                if let Some(parent) = output.parent()
+                                    && let Err(error) = fs::create_dir_all(parent)
+                                {
+                                    let _ = handle.update_render_if_key(
+                                        &raw,
+                                        profile_index,
+                                        &render_key,
+                                        |render| {
+                                            render.status = ReviewRenderStatus::Failed;
+                                            render.render_key = None;
+                                            render.error = Some(error.to_string());
+                                            render.duration_ms =
+                                                Some(started.elapsed().as_millis() as u64);
+                                        },
+                                    );
+                                    let _ = fs::remove_file(&temp_output);
+                                    return;
+                                }
+                                if let Err(error) = fs::rename(&temp_output, &output) {
+                                    let _ = handle.update_render_if_key(
+                                        &raw,
+                                        profile_index,
+                                        &render_key,
+                                        |render| {
+                                            render.status = ReviewRenderStatus::Failed;
+                                            render.render_key = None;
+                                            render.error = Some(error.to_string());
+                                            render.duration_ms =
+                                                Some(started.elapsed().as_millis() as u64);
+                                        },
+                                    );
+                                    let _ = fs::remove_file(&temp_output);
+                                    return;
+                                }
+                                let _ = handle.update_render_if_key(
+                                    &raw,
+                                    profile_index,
+                                    &render_key,
+                                    |render| {
+                                        render.status = ReviewRenderStatus::Done;
+                                        render.render_key = None;
+                                        render.output_path = Some(output.clone());
+                                        render.error = None;
+                                        render.duration_ms =
+                                            Some(started.elapsed().as_millis() as u64);
+                                    },
+                                );
+                            }
+                            _ => {
+                                let _ = fs::remove_file(&temp_output);
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        let message = format!("{error:#}");
+                        let _ = handle.update_render_if_key(
+                            &raw,
+                            profile_index,
+                            &render_key,
+                            |render| {
+                                render.status = ReviewRenderStatus::Failed;
+                                render.render_key = None;
+                                render.error = Some(message);
+                                render.duration_ms = Some(started.elapsed().as_millis() as u64);
+                            },
+                        );
+                        let _ = fs::remove_file(&temp_output);
+                    }
+                }
+            });
+    }
+
+    fn render_retouch_output(
+        &self,
+        raw: &Path,
+        profile: &ReviewProfile,
+        profile_index: usize,
+        retouch: &RetouchSettings,
+        output: &Path,
+    ) -> Result<()> {
+        let raw = safe_existing_raw_source(raw, &self.input_root)?;
+        let temp_dir = Builder::new()
+            .prefix("mini-film-review-retouch-")
+            .tempdir()?;
+        let apply_args = ApplyArgs {
+            raw: raw.clone(),
+            output: output.to_path_buf(),
+            profile: profile.selector.clone(),
+            hald_dir: self.hald_dir.clone(),
+            profiles_root: self.profiles_root.clone(),
+            hald_level: self.hald_level,
+            rawtherapee: self.rawtherapee.clone(),
+            convert: self.convert.clone(),
+            keep_intermediate: None,
+            no_grain: self.no_grain,
+            color_noise_iso_threshold: self.color_noise_iso_threshold,
+            lens_corrections: self.lens_corrections,
+            grain: self.grain.clone(),
+            grain_preset: self.grain_preset.clone(),
+            grain_seed: self.grain_seed,
+            export: self.export.clone(),
+            retouch: None,
+        };
+        let mut resolved = resolve_profile(&apply_args, temp_dir.path())?;
+        if let Some(grain) =
+            resolve_grain_override(self.grain.as_deref(), self.grain_preset.as_deref())?
+        {
+            resolved.grain = grain;
+        }
+        let seed = self
+            .grain_seed
+            .map(|seed| review_publish_seed(seed, &raw, profile_index))
+            .unwrap_or_else(|| review_publish_seed(0, &raw, profile_index));
+        apply_resolved(
+            ApplyJob {
+                raw: &raw,
+                output,
+                rawtherapee: &self.rawtherapee,
+                convert: &self.convert,
+                keep_intermediate: None,
+                no_grain: self.no_grain,
+                color_noise_iso_threshold: self.color_noise_iso_threshold,
+                lens_corrections: self.lens_corrections,
+                export: &self.export,
+                quiet: true,
+                exif_comment: Some(format!(
+                    "mini-film {} usage=review profile={} {}",
+                    env!("CARGO_PKG_VERSION"),
+                    profile.stem,
+                    retouch.summary()
+                )),
+                retouch: Some(retouch),
+            },
+            &resolved,
+            seed,
+            temp_dir.path(),
+            None,
+        )
+    }
+
     fn apply_review_update(&self, update: ReviewUpdateRequest) -> Result<()> {
+        let mut retouch_jobs = Vec::new();
         let mut store = self.lock_store()?;
         let advance = update
             .advance_after_update
@@ -835,11 +1110,36 @@ impl ReviewHandle {
             image.label = update.label;
             image.tags = normalize_tags(update.tags);
             image.notes = update.notes.trim().to_string();
+            let retouch_changed = update
+                .retouch
+                .as_ref()
+                .is_some_and(|retouch| retouch.clone().normalized() != image.retouch);
+            if let Some(retouch) = update.retouch {
+                image.retouch = retouch.normalized();
+            }
             image.selected_profile_index = update.selected_profile_index;
             if let Some(indexes) = update.publish_profile_indexes {
                 validate_publish_profile_indexes(&indexes, &image.profiles)?;
                 image.publish_profile_indexes =
                     Some(normalize_publish_profile_indexes(&indexes, &image.profiles));
+            }
+            if retouch_changed {
+                let render_key = image.retouch.render_key();
+                for render in &mut image.profiles {
+                    render.status = ReviewRenderStatus::Queued;
+                    render.error = None;
+                    render.duration_ms = None;
+                    render.render_key = Some(render_key.clone());
+                    render.updated_at = now_string();
+                    if let Some(output) = &render.output_path {
+                        retouch_jobs.push((
+                            image.raw_path.clone(),
+                            render.profile_index,
+                            output.clone(),
+                            render_key.clone(),
+                        ));
+                    }
+                }
             }
             image.updated_at = now_string();
         }
@@ -850,7 +1150,11 @@ impl ReviewHandle {
         }
         save_store(&self.state_path, &store)?;
         drop(store);
-        self.broadcast_state()
+        self.broadcast_state()?;
+        for (raw, profile_index, output, render_key) in retouch_jobs {
+            self.spawn_retouch_job(raw, profile_index, output, render_key);
+        }
+        Ok(())
     }
 
     fn apply_ui_update(&self, update: ReviewUiUpdateRequest) -> Result<()> {
@@ -884,6 +1188,7 @@ impl ReviewHandle {
                             },
                             "error": render.error,
                             "duration_ms": render.duration_ms,
+                            "retouch_pending": render.render_key.is_some(),
                             "updated_at": render.updated_at,
                         })
                     })
@@ -905,6 +1210,7 @@ impl ReviewHandle {
                     "label": image.label,
                     "tags": image.tags,
                     "notes": image.notes,
+                    "retouch": image.retouch,
                     "publish_profile_indexes": effective_publish_profile_indexes(image),
                     "profiles": profiles,
                     "updated_at": image.updated_at,
@@ -1278,6 +1584,7 @@ fn sync_image_profile_renders(image: &mut ReviewImage, profiles: &[ReviewProfile
                     output_path: None,
                     error: None,
                     duration_ms: None,
+                    render_key: None,
                     updated_at: now_string(),
                 })
         })
@@ -2274,7 +2581,43 @@ fn rerender_review_output(
             .grain_seed
             .map(|seed| review_publish_seed(seed, &image.raw_path, profile.index)),
         export: options.export.clone(),
+        retouch: Some(image.retouch.clone()),
     })
+}
+
+fn retouch_temp_output(output: &Path, render_key: &str) -> PathBuf {
+    let extension = output
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("jpg");
+    let stem = output
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("review");
+    output.with_file_name(format!(".{stem}.retouch-{render_key}.{extension}"))
+}
+
+fn apply_base_render_done(
+    render: &mut ReviewProfileRender,
+    output: &Path,
+    duration: Duration,
+) -> Option<String> {
+    if render.render_key.is_some()
+        && matches!(
+            render.status,
+            ReviewRenderStatus::Queued | ReviewRenderStatus::Processing
+        )
+    {
+        render.output_path = Some(output.to_path_buf());
+        render.error = None;
+        render.duration_ms = Some(duration.as_millis() as u64);
+        return render.render_key.clone();
+    }
+    render.status = ReviewRenderStatus::Done;
+    render.output_path = Some(output.to_path_buf());
+    render.error = None;
+    render.duration_ms = Some(duration.as_millis() as u64);
+    None
 }
 
 fn canonical_existing_dir(path: &Path) -> Result<PathBuf> {
@@ -2452,11 +2795,12 @@ fn write_review_metadata(
         .arg(format!("-XMP:PreservedFileName={}", image.file_name))
         .arg(format!("-XMP:Nickname={}", image.relative_path))
         .arg(format!(
-            "-UserComment=mini-film {} review profile={} rating={} label={} notes={}",
+            "-UserComment=mini-film {} review profile={} rating={} label={} {} notes={}",
             env!("CARGO_PKG_VERSION"),
             render.profile_stem,
             image.rating,
             review_label_name(image.label),
+            image.retouch.summary(),
             image.notes
         ));
     if !image.notes.trim().is_empty() {
@@ -2531,6 +2875,7 @@ mod tests {
             index,
             selector: stem.to_string(),
             stem: stem.to_string(),
+            retouch_base: BasicRetouchAdjustments::default(),
         }
     }
 
@@ -2641,6 +2986,35 @@ mod tests {
     }
 
     #[test]
+    fn base_render_done_triggers_pending_retouch_without_marking_done() {
+        let output = PathBuf::from("frame.jpg");
+        let mut render = ReviewProfileRender {
+            profile_index: 0,
+            profile_stem: "Classic".to_string(),
+            status: ReviewRenderStatus::Queued,
+            output_path: None,
+            error: Some("old".to_string()),
+            duration_ms: None,
+            render_key: Some("retouch-key".to_string()),
+            updated_at: now_string(),
+        };
+
+        let key = apply_base_render_done(&mut render, &output, Duration::from_millis(42));
+
+        assert_eq!(key.as_deref(), Some("retouch-key"));
+        assert_eq!(render.status, ReviewRenderStatus::Queued);
+        assert_eq!(render.output_path.as_deref(), Some(output.as_path()));
+        assert_eq!(render.error, None);
+        assert_eq!(render.duration_ms, Some(42));
+
+        render.render_key = None;
+        let key = apply_base_render_done(&mut render, &output, Duration::from_millis(7));
+        assert_eq!(key, None);
+        assert_eq!(render.status, ReviewRenderStatus::Done);
+        assert_eq!(render.duration_ms, Some(7));
+    }
+
+    #[test]
     fn review_update_advances_shared_server_ui_state() {
         let temp = tempfile::tempdir().unwrap();
         let input = temp.path().join("in");
@@ -2667,6 +3041,7 @@ mod tests {
                 label: ReviewLabel::Green,
                 tags: vec!["keep".to_string()],
                 notes: String::new(),
+                retouch: None,
                 selected_profile_index: 0,
                 publish_profile_indexes: Some(vec![0, 1]),
                 advance_after_update: true,
@@ -2685,6 +3060,7 @@ mod tests {
                 label: ReviewLabel::None,
                 tags: Vec::new(),
                 notes: String::new(),
+                retouch: None,
                 selected_profile_index: 0,
                 publish_profile_indexes: Some(vec![0, 1]),
                 advance_after_update: true,
@@ -2756,6 +3132,7 @@ mod tests {
             label: ReviewLabel::Red,
             tags: vec!["42".to_string()],
             notes: "keeper".to_string(),
+            retouch: RetouchSettings::default(),
             publish_profile_indexes: Some(vec![0]),
             preview: ReviewPreview::default(),
             profiles: vec![ReviewProfileRender {
@@ -2765,6 +3142,7 @@ mod tests {
                 output_path: Some(source.clone()),
                 error: None,
                 duration_ms: Some(1),
+                render_key: None,
                 updated_at: now_string(),
             }],
             updated_at: now_string(),
@@ -2802,6 +3180,7 @@ mod tests {
             label: ReviewLabel::None,
             tags: Vec::new(),
             notes: String::new(),
+            retouch: RetouchSettings::default(),
             publish_profile_indexes: Some(vec![1]),
             preview: ReviewPreview::default(),
             profiles: vec![
@@ -2812,6 +3191,7 @@ mod tests {
                     output_path: Some(classic.clone()),
                     error: None,
                     duration_ms: Some(1),
+                    render_key: None,
                     updated_at: now_string(),
                 },
                 ReviewProfileRender {
@@ -2821,6 +3201,7 @@ mod tests {
                     output_path: Some(fade.clone()),
                     error: None,
                     duration_ms: Some(1),
+                    render_key: None,
                     updated_at: now_string(),
                 },
             ],
@@ -2857,6 +3238,7 @@ mod tests {
             label: ReviewLabel::None,
             tags: Vec::new(),
             notes: String::new(),
+            retouch: RetouchSettings::default(),
             publish_profile_indexes: Some(vec![0, 1]),
             preview: ReviewPreview::default(),
             profiles: vec![
@@ -2867,6 +3249,7 @@ mod tests {
                     output_path: Some(classic.clone()),
                     error: None,
                     duration_ms: Some(1),
+                    render_key: None,
                     updated_at: now_string(),
                 },
                 ReviewProfileRender {
@@ -2876,6 +3259,7 @@ mod tests {
                     output_path: Some(fade.clone()),
                     error: None,
                     duration_ms: Some(1),
+                    render_key: None,
                     updated_at: now_string(),
                 },
             ],

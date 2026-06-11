@@ -15,6 +15,7 @@ use mini_film::{
 use walkdir::WalkDir;
 
 use crate::app::apply::ApplyArgs;
+use crate::app::retouch::BasicRetouchAdjustments;
 
 pub(crate) struct ResolvedProfile {
     pub(crate) hald_path: Option<PathBuf>,
@@ -22,6 +23,7 @@ pub(crate) struct ResolvedProfile {
     pub(crate) grain: GrainSettings,
     pub(crate) sharpening_applied: bool,
     pub(crate) resolved_stem: String,
+    pub(crate) retouch_base: BasicRetouchAdjustments,
 }
 
 pub(crate) enum ProfileInfo {
@@ -155,6 +157,7 @@ pub(crate) fn resolve_profile(args: &ApplyArgs, temp_dir: &Path) -> Result<Resol
             grain: GrainSettings::default(),
             sharpening_applied: false,
             resolved_stem,
+            retouch_base: BasicRetouchAdjustments::default(),
         });
     }
 
@@ -252,6 +255,7 @@ fn profile_from_path(
             grain: GrainSettings::default(),
             sharpening_applied: false,
             resolved_stem,
+            retouch_base: BasicRetouchAdjustments::default(),
         }),
         Some(ext) if ext.eq_ignore_ascii_case("xmp") => {
             profile_from_xmp(path, hald_level, profiles_root, hald_dir, temp_dir)
@@ -262,6 +266,7 @@ fn profile_from_path(
             grain: GrainSettings::default(),
             sharpening_applied: false,
             resolved_stem,
+            retouch_base: BasicRetouchAdjustments::default(),
         }),
         Some(ext) => {
             bail!("unsupported profile path extension .{ext}; expected .png, .xmp, or .pp3")
@@ -436,6 +441,10 @@ fn profile_from_xmp_inner(
         grain: recipe.grain,
         sharpening_applied: converted.sharpening.is_enabled() || recipe.sharpening.is_enabled(),
         resolved_stem: profile_stem_for_output(path),
+        retouch_base: BasicRetouchAdjustments::from_profile_adjustments(&converted.adjustments)
+            .add(BasicRetouchAdjustments::from_profile_adjustments(
+                &recipe.adjustments,
+            )),
     })
 }
 
@@ -919,6 +928,7 @@ mod tests {
                 strip_metadata: false,
                 progressive_jpeg: false,
             },
+            retouch: None,
         }
     }
 

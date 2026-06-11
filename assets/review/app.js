@@ -5,7 +5,13 @@ const state = {
   saveQueue: Promise.resolve(),
   preloaded: new Set(),
   viewerSafeAreaObserver: null,
+  cropEditing: false,
+  cropDrag: null,
+  retouchInputImageId: null,
+  localRetouchDirty: false,
 };
+
+const RETOUCH_SAVE_DEBOUNCE_MS = 900;
 
 const els = {
   status: document.getElementById("status"),
@@ -22,6 +28,29 @@ const els = {
   controls: document.querySelector(".controls"),
   tags: document.getElementById("tags"),
   notes: document.getElementById("notes"),
+  cropOverlay: document.getElementById("crop-overlay"),
+  cropBox: document.getElementById("crop-box"),
+  retouchReset: document.getElementById("retouch-reset"),
+  retouchExposure: document.getElementById("retouch-exposure"),
+  retouchExposureValue: document.getElementById("retouch-exposure-value"),
+  retouchHighlights: document.getElementById("retouch-highlights"),
+  retouchHighlightsValue: document.getElementById("retouch-highlights-value"),
+  retouchShadows: document.getElementById("retouch-shadows"),
+  retouchShadowsValue: document.getElementById("retouch-shadows-value"),
+  retouchWhites: document.getElementById("retouch-whites"),
+  retouchWhitesValue: document.getElementById("retouch-whites-value"),
+  retouchBlacks: document.getElementById("retouch-blacks"),
+  retouchBlacksValue: document.getElementById("retouch-blacks-value"),
+  retouchTemperature: document.getElementById("retouch-temperature"),
+  retouchTemperatureValue: document.getElementById("retouch-temperature-value"),
+  retouchClarity: document.getElementById("retouch-clarity"),
+  retouchClarityValue: document.getElementById("retouch-clarity-value"),
+  retouchRotation: document.getElementById("retouch-rotation"),
+  retouchRotationValue: document.getElementById("retouch-rotation-value"),
+  rotateLeft: document.getElementById("rotate-left"),
+  rotateRight: document.getElementById("rotate-right"),
+  cropToggle: document.getElementById("crop-toggle"),
+  cropReset: document.getElementById("crop-reset"),
   publish: document.getElementById("publish"),
   minRating: document.getElementById("min-rating"),
   app: document.querySelector(".app"),
@@ -53,7 +82,7 @@ const els = {
   publishGalleryThumbnailLongEdge: document.getElementById("publish-gallery-thumbnail-long-edge"),
 };
 
-const wideProfilesQuery = window.matchMedia("(min-width: 1280px) and (min-height: 620px)");
+const wideProfilesQuery = window.matchMedia("(min-width: 901px) and (min-height: 620px)");
 
 function reviewUrl(path) {
   return path.replace(/^\/+/, "");
@@ -67,6 +96,7 @@ async function loadState() {
 
 function applyState(data) {
   state.data = data;
+  state.localRetouchDirty = false;
   applyServerUi(data);
   render();
 }
@@ -200,6 +230,7 @@ function updateViewerSafeArea() {
 
   els.workspace.style.setProperty("--review-panel-safe", `${panelSafe}px`);
   els.workspace.style.setProperty("--review-profile-safe", `${profileSafe}px`);
+  if (!els.cropOverlay.hidden) positionCropOverlay();
 }
 
 let viewerSafeAreaFrame = 0;
@@ -265,10 +296,19 @@ function renderProgressSummary(image) {
   const total = profiles.length;
   const done = profiles.filter((profile) => profile.status === "done").length;
   const failed = profiles.filter((profile) => profile.status === "failed").length;
+  const retouchProcessing = profiles.some((profile) => profile.retouch_pending && profile.status === "processing");
+  const retouchQueued = profiles.some((profile) => profile.retouch_pending && profile.status === "queued");
   const processing = profiles.some((profile) => profile.status === "processing");
   const queued = profiles.some((profile) => profile.status === "queued");
   const previewReady = Boolean(image.preview_url);
 
+  if (isLocalRetouchDraft(image)) {
+    return {
+      state: "retouch-draft",
+      text: "retouch draft",
+      title: "retouch draft preview is local; server render will queue after edits settle",
+    };
+  }
   if (total === 0) {
     return {
       state: "waiting",
@@ -288,6 +328,20 @@ function renderProgressSummary(image) {
       state: "ready",
       text: "ready",
       title: "all profiles are ready",
+    };
+  }
+  if (retouchProcessing) {
+    return {
+      state: "retouch-processing",
+      text: `retouch ${done}/${total}`,
+      title: `${done} of ${total} profiles ready, retouch render running`,
+    };
+  }
+  if (retouchQueued) {
+    return {
+      state: "retouch-queued",
+      text: `retouch ${done}/${total}`,
+      title: `${done} of ${total} profiles ready, retouch render queued`,
     };
   }
   if (processing) {
@@ -336,15 +390,19 @@ function renderCurrent(image) {
   const selected = selectedProfile(image);
   const mainUrl = selected?.url || image.preview_url;
   const previewNote = selected?.url ? "" : image.preview_url ? " | camera preview" : "";
+  const selectedState = profileDisplayState(image, selected);
   els.title.textContent = image.file_name;
   els.subtitle.textContent = `${image.relative_path} | rating ${image.rating}`;
-  els.profileState.textContent = selected ? `${selected.profile_stem}: ${selected.status}${previewNote}` : "";
+  els.profileState.textContent = selected ? `${selected.profile_stem}: ${selectedState.text}${previewNote}` : "";
   const imageChanged = state.lastInputImageId !== image.id;
   if (imageChanged || document.activeElement !== els.tags) {
     els.tags.value = image.tags.join(", ");
   }
   if (imageChanged || document.activeElement !== els.notes) {
     els.notes.value = image.notes || "";
+  }
+  if (imageChanged || !isRetouchControlActive()) {
+    setRetouchInputs(image.retouch || defaultRetouch());
   }
   state.lastInputImageId = image.id;
   setActiveReviewButtons(image);
@@ -359,6 +417,8 @@ function renderCurrent(image) {
     els.image.removeAttribute("src");
   }
 
+  applyDraftRetouch(image, selected);
+  renderCropOverlay(image);
   renderProfiles(image);
   preloadNearbyImages(image);
 }
@@ -373,6 +433,46 @@ function selectedProfileForImage(image) {
     image?.profiles?.[0] ||
     null
   );
+}
+
+function isLocalRetouchDraft(image) {
+  return Boolean(image && image.id === state.currentId && state.localRetouchDirty);
+}
+
+function profileDisplayState(image, profile) {
+  if (!profile) {
+    return {
+      state: "waiting",
+      text: "waiting",
+      title: "waiting for profile render",
+    };
+  }
+  if (isLocalRetouchDraft(image)) {
+    return {
+      state: "retouch-draft",
+      text: "retouch draft",
+      title: "local draft preview; server render will queue after edits settle",
+    };
+  }
+  if (profile.retouch_pending && profile.status === "processing") {
+    return {
+      state: "retouch-processing",
+      text: "retouch rendering",
+      title: "server-side retouch render is running",
+    };
+  }
+  if (profile.retouch_pending && profile.status === "queued") {
+    return {
+      state: "retouch-queued",
+      text: "retouch queued",
+      title: "server-side retouch render is queued",
+    };
+  }
+  return {
+    state: profile.status || "waiting",
+    text: profile.status || "waiting",
+    title: profile.error || profile.status || "waiting",
+  };
 }
 
 function publishProfileIndexes(image) {
@@ -398,12 +498,14 @@ function renderProfiles(image) {
   image.profiles.forEach((profile) => {
     const cardUrl = profile.url || image.preview_url;
     const publishSelected = publishIndexes.has(profile.profile_index);
+    const display = profileDisplayState(image, profile);
     const card = document.createElement("button");
     card.type = "button";
     card.className = [
       "profile-card",
       profile.profile_index === image.selected_profile_index ? "active" : "",
       profile.url ? "" : "pending",
+      display.state,
       publishSelected ? "publish-selected" : "publish-excluded",
     ]
       .filter(Boolean)
@@ -442,8 +544,9 @@ function renderProfiles(image) {
 
     const status = document.createElement("div");
     status.className = "profile-status";
-    const sourceStatus = profile.url ? profile.status : `${profile.status} | preview`;
+    const sourceStatus = profile.url ? display.text : `${display.text} | preview`;
     status.textContent = `${sourceStatus} | ${publishSelected ? "publish" : "skip"}`;
+    status.title = display.title;
 
     card.append(name, status);
     els.profiles.append(card);
@@ -646,9 +749,266 @@ function currentTags() {
     .filter(Boolean);
 }
 
+function defaultRetouch() {
+  return {
+    adjustments: {
+      exposure: 0,
+      highlights: 0,
+      shadows: 0,
+      whites: 0,
+      blacks: 0,
+      temperature: 0,
+      clarity: 0,
+    },
+    crop: null,
+    rotation_degrees: 0,
+  };
+}
+
+function normalizedRetouch(retouch) {
+  const normalized = retouch || defaultRetouch();
+  const crop = normalized.crop
+    ? {
+        x: clamp(Number(normalized.crop.x) || 0, 0, 1),
+        y: clamp(Number(normalized.crop.y) || 0, 0, 1),
+        width: clamp(Number(normalized.crop.width) || 1, 0.01, 1),
+        height: clamp(Number(normalized.crop.height) || 1, 0.01, 1),
+      }
+    : null;
+  if (crop) {
+    crop.x = clamp(crop.x, 0, 1 - crop.width);
+    crop.y = clamp(crop.y, 0, 1 - crop.height);
+  }
+  return {
+    adjustments: {
+      exposure: clamp(Number(normalized.adjustments?.exposure) || 0, -4, 4),
+      highlights: clamp(Number(normalized.adjustments?.highlights) || 0, -100, 100),
+      shadows: clamp(Number(normalized.adjustments?.shadows) || 0, -100, 100),
+      whites: clamp(Number(normalized.adjustments?.whites) || 0, -100, 100),
+      blacks: clamp(Number(normalized.adjustments?.blacks) || 0, -100, 100),
+      temperature: clamp(Number(normalized.adjustments?.temperature) || 0, -2500, 2500),
+      clarity: clamp(Number(normalized.adjustments?.clarity) || 0, -100, 100),
+    },
+    crop,
+    rotation_degrees: normalizeRotation(Number(normalized.rotation_degrees) || 0),
+  };
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function normalizeRotation(value) {
+  let rotation = Number.isFinite(value) ? value % 360 : 0;
+  if (rotation > 180) rotation -= 360;
+  if (rotation < -180) rotation += 360;
+  return Math.abs(rotation) < 0.0001 ? 0 : rotation;
+}
+
+function retouchFromInputs(image = findImage(state.currentId)) {
+  const existing = normalizedRetouch(image?.retouch || defaultRetouch());
+  return normalizedRetouch({
+    adjustments: {
+      exposure: Number(els.retouchExposure.value || 0),
+      highlights: Number(els.retouchHighlights.value || 0),
+      shadows: Number(els.retouchShadows.value || 0),
+      whites: Number(els.retouchWhites.value || 0),
+      blacks: Number(els.retouchBlacks.value || 0),
+      temperature: Number(els.retouchTemperature.value || 0),
+      clarity: Number(els.retouchClarity.value || 0),
+    },
+    crop: existing.crop,
+    rotation_degrees: Number(els.retouchRotation.value || 0),
+  });
+}
+
+function setRetouchInputs(retouch) {
+  const normalized = normalizedRetouch(retouch);
+  els.retouchExposure.value = String(normalized.adjustments.exposure);
+  els.retouchHighlights.value = String(normalized.adjustments.highlights);
+  els.retouchShadows.value = String(normalized.adjustments.shadows);
+  els.retouchWhites.value = String(normalized.adjustments.whites);
+  els.retouchBlacks.value = String(normalized.adjustments.blacks);
+  els.retouchTemperature.value = String(normalized.adjustments.temperature);
+  els.retouchClarity.value = String(normalized.adjustments.clarity);
+  els.retouchRotation.value = String(clamp(normalized.rotation_degrees, -180, 180));
+  updateRetouchReadouts(normalized);
+}
+
+function updateRetouchReadouts(retouch = retouchFromInputs()) {
+  const normalized = normalizedRetouch(retouch);
+  els.retouchExposureValue.value = signed(normalized.adjustments.exposure, 2);
+  els.retouchHighlightsValue.value = signed(normalized.adjustments.highlights, 0);
+  els.retouchShadowsValue.value = signed(normalized.adjustments.shadows, 0);
+  els.retouchWhitesValue.value = signed(normalized.adjustments.whites, 0);
+  els.retouchBlacksValue.value = signed(normalized.adjustments.blacks, 0);
+  els.retouchTemperatureValue.value = `${signed(normalized.adjustments.temperature, 0)}K`;
+  els.retouchClarityValue.value = signed(normalized.adjustments.clarity, 0);
+  els.retouchRotationValue.value = `${signed(normalized.rotation_degrees, 1)}°`;
+}
+
+function signed(value, digits) {
+  const rounded = Number(value || 0).toFixed(digits);
+  return Number(rounded) > 0 ? `+${rounded}` : rounded;
+}
+
+function isRetouchControlActive() {
+  return Boolean(document.activeElement?.closest(".retouch"));
+}
+
+function applyLocalRetouch(retouch, options = {}) {
+  const image = findImage(state.currentId);
+  if (!image) return;
+  state.localRetouchDirty = true;
+  image.retouch = normalizedRetouch(retouch);
+  setRetouchInputs(image.retouch);
+  applyDraftRetouch(image, selectedProfile(image));
+  renderCropOverlay(image);
+  renderList(filteredImages());
+  renderProfiles(image);
+  const selected = selectedProfile(image);
+  els.profileState.textContent = selected
+    ? `${selected.profile_stem}: ${profileDisplayState(image, selected).text}`
+    : "";
+  if (options.save !== false) scheduleRetouchSave();
+}
+
+function applyDraftRetouch(image, selected) {
+  const retouch = normalizedRetouch(image?.retouch || defaultRetouch());
+  const pending = state.localRetouchDirty || (selected && selected.status !== "done");
+  const active = pending && !retouchIsDefault(retouch);
+  els.viewer.classList.toggle("draft-retouch", active);
+  if (!active) {
+    els.image.style.removeProperty("--draft-rotation");
+    els.image.style.removeProperty("--draft-brightness");
+    els.image.style.removeProperty("--draft-contrast");
+    els.image.style.removeProperty("--draft-saturation");
+    els.image.style.removeProperty("--draft-sepia");
+    els.image.style.removeProperty("--draft-hue");
+    return;
+  }
+  const exposure = retouch.adjustments.exposure;
+  const highlights = retouch.adjustments.highlights;
+  const shadows = retouch.adjustments.shadows;
+  const whites = retouch.adjustments.whites;
+  const blacks = retouch.adjustments.blacks;
+  const temperature = retouch.adjustments.temperature;
+  const clarity = retouch.adjustments.clarity;
+  const brightness = clamp(
+    1 + exposure * 0.13 + whites * 0.002 - blacks * 0.0015 + shadows * 0.0015 - highlights * 0.0008,
+    0.45,
+    1.85,
+  );
+  const contrast = clamp(1 + clarity * 0.004 + (highlights - shadows) * 0.0008, 0.55, 1.65);
+  const saturation = clamp(1 + clarity * 0.0015 + Math.abs(temperature) * 0.000015, 0.7, 1.3);
+  const sepia = clamp(Math.max(0, temperature) / 2500, 0, 1) * 0.12;
+  const hue = clamp(-temperature / 2500, -1, 1) * 5;
+  els.image.style.setProperty("--draft-rotation", `${retouch.rotation_degrees}deg`);
+  els.image.style.setProperty("--draft-brightness", brightness.toFixed(3));
+  els.image.style.setProperty("--draft-contrast", contrast.toFixed(3));
+  els.image.style.setProperty("--draft-saturation", saturation.toFixed(3));
+  els.image.style.setProperty("--draft-sepia", sepia.toFixed(3));
+  els.image.style.setProperty("--draft-hue", `${hue.toFixed(3)}deg`);
+}
+
+function retouchIsDefault(retouch) {
+  const normalized = normalizedRetouch(retouch);
+  return (
+    normalized.adjustments.exposure === 0 &&
+    normalized.adjustments.highlights === 0 &&
+    normalized.adjustments.shadows === 0 &&
+    normalized.adjustments.whites === 0 &&
+    normalized.adjustments.blacks === 0 &&
+    normalized.adjustments.temperature === 0 &&
+    normalized.adjustments.clarity === 0 &&
+    normalized.rotation_degrees === 0 &&
+    !normalized.crop
+  );
+}
+
+function renderCropOverlay(image) {
+  const retouch = normalizedRetouch(image?.retouch || defaultRetouch());
+  const crop = retouch.crop;
+  const visible = Boolean(image && (state.cropEditing || crop));
+  els.cropOverlay.hidden = !visible;
+  els.cropToggle.classList.toggle("active", state.cropEditing);
+  if (!visible) return;
+  positionCropOverlay();
+  const effective = crop || { x: 0.1, y: 0.1, width: 0.8, height: 0.8 };
+  els.cropBox.style.left = `${effective.x * 100}%`;
+  els.cropBox.style.top = `${effective.y * 100}%`;
+  els.cropBox.style.width = `${effective.width * 100}%`;
+  els.cropBox.style.height = `${effective.height * 100}%`;
+}
+
+function positionCropOverlay() {
+  const imageRect = els.image.getBoundingClientRect();
+  const viewerRect = els.viewer.getBoundingClientRect();
+  if (imageRect.width <= 1 || imageRect.height <= 1) return;
+  els.cropOverlay.style.left = `${imageRect.left - viewerRect.left}px`;
+  els.cropOverlay.style.top = `${imageRect.top - viewerRect.top}px`;
+  els.cropOverlay.style.width = `${imageRect.width}px`;
+  els.cropOverlay.style.height = `${imageRect.height}px`;
+}
+
+function ensureCrop(retouch = retouchFromInputs()) {
+  if (retouch.crop) return retouch;
+  return normalizedRetouch({ ...retouch, crop: { x: 0.1, y: 0.1, width: 0.8, height: 0.8 } });
+}
+
+function startCropDrag(event) {
+  if (!state.cropEditing) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const image = findImage(state.currentId);
+  const retouch = ensureCrop(image?.retouch || retouchFromInputs());
+  const rect = els.cropOverlay.getBoundingClientRect();
+  state.cropDrag = {
+    pointerId: event.pointerId,
+    handle: event.target?.dataset?.cropHandle || "move",
+    startX: event.clientX,
+    startY: event.clientY,
+    rect,
+    crop: retouch.crop,
+  };
+  els.cropBox.setPointerCapture(event.pointerId);
+}
+
+function updateCropDrag(event) {
+  const drag = state.cropDrag;
+  if (!drag || drag.pointerId !== event.pointerId) return;
+  event.preventDefault();
+  const dx = (event.clientX - drag.startX) / Math.max(1, drag.rect.width);
+  const dy = (event.clientY - drag.startY) / Math.max(1, drag.rect.height);
+  let { x, y, width, height } = drag.crop;
+  if (drag.handle === "move") {
+    x += dx;
+    y += dy;
+  } else {
+    if (drag.handle.includes("w")) {
+      x += dx;
+      width -= dx;
+    }
+    if (drag.handle.includes("e")) width += dx;
+    if (drag.handle.includes("n")) {
+      y += dy;
+      height -= dy;
+    }
+    if (drag.handle.includes("s")) height += dy;
+  }
+  applyLocalRetouch(normalizedRetouch({ ...retouchFromInputs(), crop: { x, y, width, height } }));
+}
+
+function endCropDrag(event) {
+  if (!state.cropDrag || state.cropDrag.pointerId !== event.pointerId) return;
+  state.cropDrag = null;
+  scheduleRetouchSave();
+}
+
 async function saveReview(patch = {}) {
   const image = findImage(state.currentId);
   if (!image) return;
+  clearRetouchSaveTimer();
   return saveImageReview(image, patch, { useInputs: true });
 }
 
@@ -675,6 +1035,7 @@ function reviewRequestBody(image, patch = {}, options = {}) {
     label: patch.label ?? image.label,
     tags: patch.tags ?? (options.useInputs ? currentTags() : image.tags || []),
     notes: patch.notes ?? (options.useInputs ? els.notes.value : image.notes || ""),
+    retouch: patch.retouch ?? (options.useInputs ? retouchFromInputs(image) : image.retouch || defaultRetouch()),
     selected_profile_index: patch.selected_profile_index ?? image.selected_profile_index,
     publish_profile_indexes: patch.publish_profile_indexes ?? publishProfileIndexes(image),
     advance_after_update: Boolean(patch.advance_after_update),
@@ -702,6 +1063,7 @@ async function updateSharedUi(patch = {}) {
 
 function saveCurrentIfNeeded() {
   if (state.currentId !== null) {
+    clearRetouchSaveTimer();
     return saveReview().catch((error) => console.error(error));
   }
   return Promise.resolve();
@@ -784,14 +1146,77 @@ els.tags.addEventListener("input", scheduleAutosave);
 els.notes.addEventListener("change", () => saveReview());
 els.notes.addEventListener("blur", () => saveReview());
 els.notes.addEventListener("input", scheduleAutosave);
+els.image.addEventListener("load", () => {
+  scheduleViewerSafeAreaUpdate();
+  renderCropOverlay(findImage(state.currentId));
+});
+[
+  els.retouchExposure,
+  els.retouchHighlights,
+  els.retouchShadows,
+  els.retouchWhites,
+  els.retouchBlacks,
+  els.retouchTemperature,
+  els.retouchClarity,
+  els.retouchRotation,
+].forEach((input) => {
+  input.addEventListener("input", () => {
+    const retouch = retouchFromInputs();
+    updateRetouchReadouts(retouch);
+    applyLocalRetouch(retouch);
+  });
+  input.addEventListener("change", () => scheduleRetouchSave());
+});
+els.retouchReset.addEventListener("click", () => applyLocalRetouch(defaultRetouch()));
+els.cropReset.addEventListener("click", () => {
+  const retouch = normalizedRetouch({ ...retouchFromInputs(), crop: null });
+  state.cropEditing = false;
+  applyLocalRetouch(retouch);
+});
+els.cropToggle.addEventListener("click", () => {
+  state.cropEditing = !state.cropEditing;
+  if (state.cropEditing) {
+    applyLocalRetouch(ensureCrop());
+  } else {
+    renderCropOverlay(findImage(state.currentId));
+  }
+});
+els.rotateLeft.addEventListener("click", () => {
+  const retouch = retouchFromInputs();
+  retouch.rotation_degrees = normalizeRotation(retouch.rotation_degrees - 90);
+  applyLocalRetouch(retouch);
+});
+els.rotateRight.addEventListener("click", () => {
+  const retouch = retouchFromInputs();
+  retouch.rotation_degrees = normalizeRotation(retouch.rotation_degrees + 90);
+  applyLocalRetouch(retouch);
+});
+els.cropBox.addEventListener("pointerdown", startCropDrag);
+els.cropBox.addEventListener("pointermove", updateCropDrag);
+els.cropBox.addEventListener("pointerup", endCropDrag);
+els.cropBox.addEventListener("pointercancel", endCropDrag);
 els.minRating.addEventListener("change", () => {
   updateSharedUi({ current_image_id: state.currentId, min_rating: minRating() }).catch((error) => console.error(error));
 });
 
 let autosaveTimer = null;
+let retouchSaveTimer = null;
 function scheduleAutosave() {
   clearTimeout(autosaveTimer);
   autosaveTimer = setTimeout(() => saveCurrentIfNeeded(), 500);
+}
+
+function scheduleRetouchSave() {
+  clearRetouchSaveTimer();
+  retouchSaveTimer = setTimeout(() => {
+    retouchSaveTimer = null;
+    saveReview({ retouch: retouchFromInputs() }).catch((error) => console.error(error));
+  }, RETOUCH_SAVE_DEBOUNCE_MS);
+}
+
+function clearRetouchSaveTimer() {
+  clearTimeout(retouchSaveTimer);
+  retouchSaveTimer = null;
 }
 
 els.publish.addEventListener("click", () => togglePublishWizard(true));
@@ -859,6 +1284,7 @@ window.addEventListener("keydown", (event) => {
   if (event.target === els.tags) return;
   if (event.target === els.notes) return;
   if (event.target === els.minRating) return;
+  if (event.target.closest(".retouch")) return;
   if (!els.shortcutsOverlay.hidden) {
     if (event.key === "Escape" || event.key === "?" || (event.key === "/" && event.shiftKey)) {
       event.preventDefault();

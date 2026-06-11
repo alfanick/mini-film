@@ -43,6 +43,14 @@
         <section class="viewer">
           <div id="empty" class="empty">Waiting for pictures</div>
           <img id="main-image" alt="" />
+          <div id="crop-overlay" class="crop-overlay" hidden>
+            <div id="crop-box" class="crop-box">
+              <span data-crop-handle="nw"></span>
+              <span data-crop-handle="ne"></span>
+              <span data-crop-handle="sw"></span>
+              <span data-crop-handle="se"></span>
+            </div>
+          </div>
         </section>
 
         <section class="panel">
@@ -84,6 +92,59 @@
               <span>Notes</span>
               <input id="notes" type="text" autocomplete="off" placeholder="optional note" />
             </label>
+
+            <section class="retouch" aria-label="Retouch">
+              <div class="retouch-header">
+                <span>Retouch</span>
+                <button id="retouch-reset" type="button">Reset</button>
+              </div>
+              <label>
+                <span>Exposure</span>
+                <input id="retouch-exposure" type="range" min="-4" max="4" step="0.05" value="0" />
+                <output id="retouch-exposure-value">0</output>
+              </label>
+              <label>
+                <span>Highlights</span>
+                <input id="retouch-highlights" type="range" min="-100" max="100" step="1" value="0" />
+                <output id="retouch-highlights-value">0</output>
+              </label>
+              <label>
+                <span>Shadows</span>
+                <input id="retouch-shadows" type="range" min="-100" max="100" step="1" value="0" />
+                <output id="retouch-shadows-value">0</output>
+              </label>
+              <label>
+                <span>Whites</span>
+                <input id="retouch-whites" type="range" min="-100" max="100" step="1" value="0" />
+                <output id="retouch-whites-value">0</output>
+              </label>
+              <label>
+                <span>Blacks</span>
+                <input id="retouch-blacks" type="range" min="-100" max="100" step="1" value="0" />
+                <output id="retouch-blacks-value">0</output>
+              </label>
+              <label>
+                <span>Temp</span>
+                <input id="retouch-temperature" type="range" min="-2500" max="2500" step="50" value="0" />
+                <output id="retouch-temperature-value">0K</output>
+              </label>
+              <label>
+                <span>Clarity</span>
+                <input id="retouch-clarity" type="range" min="-100" max="100" step="1" value="0" />
+                <output id="retouch-clarity-value">0</output>
+              </label>
+              <label>
+                <span>Rotate</span>
+                <input id="retouch-rotation" type="range" min="-180" max="180" step="0.25" value="0" />
+                <output id="retouch-rotation-value">0</output>
+              </label>
+              <div class="retouch-actions">
+                <button id="rotate-left" type="button">-90</button>
+                <button id="rotate-right" type="button">+90</button>
+                <button id="crop-toggle" type="button">Crop</button>
+                <button id="crop-reset" type="button">Clear</button>
+              </div>
+            </section>
           </div>
         </section>
       </main>

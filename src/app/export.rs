@@ -8,6 +8,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
+use crate::app::retouch::{RetouchSettings, normalize_rotation};
 use crate::app::util::cpu_thread_count;
 use crate::cli::ExportOptions;
 
@@ -23,6 +24,16 @@ pub(crate) fn finalize_output(
     output: &Path,
     export: &ExportOptions,
 ) -> Result<()> {
+    finalize_output_with_retouch(convert, input, output, export, None)
+}
+
+pub(crate) fn finalize_output_with_retouch(
+    convert: &Path,
+    input: &Path,
+    output: &Path,
+    export: &ExportOptions,
+    retouch: Option<&RetouchSettings>,
+) -> Result<()> {
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
@@ -30,6 +41,7 @@ pub(crate) fn finalize_output(
     let mut command = Command::new(convert);
     add_convert_thread_limit(&mut command, convert);
     command.arg(input);
+    add_retouch_geometry_args(&mut command, input, retouch)?;
     add_final_convert_args(&mut command, output, export)?;
 
     let status = command
@@ -41,6 +53,52 @@ pub(crate) fn finalize_output(
     }
 
     Ok(())
+}
+
+fn add_retouch_geometry_args(
+    command: &mut Command,
+    input: &Path,
+    retouch: Option<&RetouchSettings>,
+) -> Result<()> {
+    let Some(retouch) = retouch else {
+        return Ok(());
+    };
+    let retouch = retouch.clone().normalized();
+    let rotation = normalize_rotation(retouch.rotation_degrees);
+    if rotation != 0.0 {
+        command.arg("-background").arg("black");
+        command.arg("-rotate").arg(format_geometry_float(rotation));
+    }
+    if let Some(crop) = retouch.crop {
+        let (mut width, mut height) = image::image_dimensions(input)
+            .with_context(|| format!("reading {}", input.display()))?;
+        if is_quarter_turn(rotation) {
+            std::mem::swap(&mut width, &mut height);
+        }
+        let crop_width = ((crop.width * width as f32).round() as u32).clamp(1, width.max(1));
+        let crop_height = ((crop.height * height as f32).round() as u32).clamp(1, height.max(1));
+        let max_x = width.saturating_sub(crop_width);
+        let max_y = height.saturating_sub(crop_height);
+        let x = ((crop.x * width as f32).round() as u32).min(max_x);
+        let y = ((crop.y * height as f32).round() as u32).min(max_y);
+        command
+            .arg("-crop")
+            .arg(format!("{crop_width}x{crop_height}+{x}+{y}"))
+            .arg("+repage");
+    }
+    Ok(())
+}
+
+fn is_quarter_turn(rotation: f32) -> bool {
+    let normalized = normalize_rotation(rotation).abs();
+    (normalized - 90.0).abs() < 0.001
+}
+
+fn format_geometry_float(value: f32) -> String {
+    format!("{value:.3}")
+        .trim_end_matches('0')
+        .trim_end_matches('.')
+        .to_string()
 }
 
 /// Append final output arguments for JPEG or TIFF export.

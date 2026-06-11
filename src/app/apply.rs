@@ -10,23 +10,23 @@ use mini_film::{GrainSettings, apply_grain, apply_grain_8bit};
 use tempfile::Builder;
 
 use crate::app::export::{
-    finalize_output, output_ext, validate_export_options, validate_output_format,
+    finalize_output_with_retouch, output_ext, validate_export_options, validate_output_format,
 };
 use crate::app::pp3::{
     write_rawtherapee_color_noise_profile, write_rawtherapee_lens_corrections_profile,
 };
-use crate::app::profile::{
-    ResolvedProfile, normalize_name, rawtherapee_profiles_with_hald, resolve_profile,
-};
+use crate::app::profile::{ResolvedProfile, normalize_name, resolve_profile};
 use crate::app::progress::{
     ApplyProgress, file_progress_style, progress_length, progress_stage_adaptive, progress_step,
 };
 use crate::app::raw::{run_raw_develop, run_raw_develop_jpeg};
+use crate::app::retouch::{RetouchSettings, write_rawtherapee_retouch_profile};
 use crate::app::util::{
     extract_capture_iso, remove_temp_file, sync_output_metadata_from_raw,
     sync_output_timestamps_from_exif, time_of_day_seed,
 };
 use crate::cli::{ExportOptions, LensCorrections};
+use mini_film::rawtherapee_hald_clut_profile_text;
 
 pub(crate) struct ApplyArgs {
     pub(crate) raw: PathBuf,
@@ -45,6 +45,7 @@ pub(crate) struct ApplyArgs {
     pub(crate) grain_preset: Option<String>,
     pub(crate) grain_seed: Option<u64>,
     pub(crate) export: ExportOptions,
+    pub(crate) retouch: Option<RetouchSettings>,
 }
 
 pub(crate) struct ApplyJob<'a> {
@@ -59,6 +60,7 @@ pub(crate) struct ApplyJob<'a> {
     pub(crate) export: &'a ExportOptions,
     pub(crate) quiet: bool,
     pub(crate) exif_comment: Option<String>,
+    pub(crate) retouch: Option<&'a RetouchSettings>,
 }
 
 fn exif_comment_for_command(command: &str, profile: &str) -> String {
@@ -110,6 +112,7 @@ pub(crate) fn run_apply(args: ApplyArgs) -> Result<()> {
             export: &args.export,
             quiet: true,
             exif_comment: Some(exif_comment_for_command("apply", &args.profile)),
+            retouch: args.retouch.as_ref(),
         },
         &resolved,
         grain_seed,
@@ -182,7 +185,7 @@ pub(crate) fn apply_resolved(
         });
     let cleanup_intermediate = job.keep_intermediate.is_none();
 
-    let rawtherapee_profiles = rawtherapee_profiles_with_hald(resolved, temp_dir)?;
+    let rawtherapee_profiles = rawtherapee_profiles_for_apply(resolved, temp_dir, job.retouch)?;
     let rawtherapee_profiles = with_optional_color_noise_profile(
         job.raw,
         &rawtherapee_profiles,
@@ -253,7 +256,7 @@ pub(crate) fn apply_resolved(
             "jpeg export",
             estimate_export_duration(true),
         );
-        finalize_output(job.convert, &grained, job.output, job.export)?;
+        finalize_output_with_retouch(job.convert, &grained, job.output, job.export, job.retouch)?;
         export_stage.finish();
         remove_temp_file(&grained)?;
     } else if grain_enabled {
@@ -282,7 +285,7 @@ pub(crate) fn apply_resolved(
             "export",
             estimate_export_duration(false),
         );
-        finalize_output(job.convert, &grained, job.output, job.export)?;
+        finalize_output_with_retouch(job.convert, &grained, job.output, job.export, job.retouch)?;
         export_stage.finish();
         remove_temp_file(&grained)?;
     } else {
@@ -299,7 +302,13 @@ pub(crate) fn apply_resolved(
             "export",
             estimate_export_duration(jpeg_output),
         );
-        finalize_output(job.convert, &intermediate, job.output, job.export)?;
+        finalize_output_with_retouch(
+            job.convert,
+            &intermediate,
+            job.output,
+            job.export,
+            job.retouch,
+        )?;
         export_stage.finish();
     }
 
@@ -333,6 +342,30 @@ pub(crate) fn apply_resolved(
     }
     progress_step(progress, 6, "done");
     Ok(())
+}
+
+fn rawtherapee_profiles_for_apply(
+    resolved: &ResolvedProfile,
+    temp_dir: &Path,
+    retouch: Option<&RetouchSettings>,
+) -> Result<Vec<PathBuf>> {
+    let mut profiles = resolved.rawtherapee_profiles.clone();
+    if let Some(retouch) = retouch
+        && let Some(profile) = write_rawtherapee_retouch_profile(
+            &temp_dir.join("retouch.pp3"),
+            resolved.retouch_base,
+            retouch,
+        )?
+    {
+        profiles.push(profile);
+    }
+    if let Some(hald_path) = &resolved.hald_path {
+        let lut_profile = temp_dir.join("rt-hald-clut.pp3");
+        std::fs::write(&lut_profile, rawtherapee_hald_clut_profile_text(hald_path))
+            .with_context(|| format!("writing {}", lut_profile.display()))?;
+        profiles.push(lut_profile);
+    }
+    Ok(profiles)
 }
 
 fn estimate_rawtherapee_duration(raw: &Path, jpeg_intermediate: bool) -> Duration {
@@ -627,6 +660,7 @@ mod tests {
             grain,
             sharpening_applied: false,
             resolved_stem: "profile".to_string(),
+            retouch_base: Default::default(),
         }
     }
 
@@ -658,6 +692,7 @@ mod tests {
                 export: &test_export_options(),
                 quiet: true,
                 exif_comment: Some("mini-film test".to_string()),
+                retouch: None,
             },
             &resolved,
             0,
@@ -709,6 +744,7 @@ mod tests {
                 export: &test_export_options(),
                 quiet: true,
                 exif_comment: Some("mini-film test".to_string()),
+                retouch: None,
             },
             &resolved,
             1,
@@ -762,6 +798,7 @@ mod tests {
                 export: &export,
                 quiet: true,
                 exif_comment: Some("mini-film test".to_string()),
+                retouch: None,
             },
             &resolved,
             2,

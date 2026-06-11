@@ -145,6 +145,7 @@ fn main() -> Result<()> {
                 strip_metadata,
                 progressive_jpeg,
             },
+            retouch: None,
         }),
         CommandKind::Batch {
             input,

@@ -10,6 +10,7 @@ pub(crate) mod pp3;
 pub(crate) mod profile;
 pub(crate) mod progress;
 pub(crate) mod raw;
+pub(crate) mod retouch;
 pub(crate) mod review;
 pub(crate) mod review_assets;
 pub(crate) mod sampler;

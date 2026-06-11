@@ -350,12 +350,19 @@ the selected profile for publish. `6`, `7`, `8`, `9`, and `0` toggle red,
 yellow, green, blue, and purple labels without advancing.
 
 The review UI stores rating, label, tags, notes, active preview profile, and the
-set of profile variants selected for publish. Publishing opens a wizard that
-acts as a browser frontend for a spawned `mini-film review-publish` job. The
-wizard can filter by rating, color label, and tags; choose a relative album
-folder inside the daemon output directory; select JPG/TIFF output, original
-size or resize options, JPEG quality/subsampling/progressive mode, and an
-optional gallery template.
+set of profile variants selected for publish. It also supports per-picture
+retouch controls for exposure, highlights, shadows, whites, blacks, relative
+color temperature, clarity, rotation, and crop. The browser applies a fast
+draft preview while edits are being made, then queues a high-quality
+RawTherapee/mini-film render and swaps in the finished output when it is ready.
+Crop and rotation are persisted with the review state and are used by publish
+rerenders.
+
+Publishing opens a wizard that acts as a browser frontend for a spawned
+`mini-film review-publish` job. The wizard can filter by rating, color label,
+and tags; choose a relative album folder inside the daemon output directory;
+select JPG/TIFF output, original size or resize options, JPEG
+quality/subsampling/progressive mode, and an optional gallery template.
 Publish jobs run in parallel with the daemon job count, which defaults to half
 the available CPU threads, and stream live progress back to every open review
 browser.
