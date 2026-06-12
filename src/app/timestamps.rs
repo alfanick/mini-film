@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct GalleryExifData {
+    #[serde(default)]
+    pub(crate) capture_timestamp: Option<i64>,
     pub(crate) focal_length: Option<String>,
     pub(crate) aperture: Option<String>,
     pub(crate) shutter_speed: Option<String>,
@@ -23,7 +25,8 @@ pub(crate) struct GalleryExifData {
 
 impl GalleryExifData {
     pub(crate) fn is_empty(&self) -> bool {
-        self.focal_length.is_none()
+        self.capture_timestamp.is_none()
+            && self.focal_length.is_none()
             && self.aperture.is_none()
             && self.shutter_speed.is_none()
             && self.iso.is_none()
@@ -187,8 +190,11 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
     let lens_model = exif_field_value(&exif, Tag::LensModel)
         .or_else(|| exif_field_value(&exif, Tag::LensSpecification));
     let shooting_mode = exif_exposure_program(&exif);
+    let capture_timestamp =
+        extract_capture_time_from_exif(&exif).and_then(system_time_to_unix_seconds);
 
     Ok(GalleryExifData {
+        capture_timestamp,
         focal_length,
         aperture: aperture.map(format_exif_aperture),
         shutter_speed,
@@ -319,6 +325,10 @@ pub(crate) fn extract_capture_time(raw: &Path) -> Result<Option<SystemTime>> {
         Err(_) => return Ok(None),
     };
 
+    Ok(extract_capture_time_from_exif(&exif))
+}
+
+fn extract_capture_time_from_exif(exif: &exif::Exif) -> Option<SystemTime> {
     let datetime_candidates = [
         (Tag::DateTimeOriginal, Some(Tag::OffsetTimeOriginal)),
         (Tag::DateTimeDigitized, Some(Tag::OffsetTimeDigitized)),
@@ -326,18 +336,18 @@ pub(crate) fn extract_capture_time(raw: &Path) -> Result<Option<SystemTime>> {
     ];
 
     for (datetime_tag, offset_tag) in datetime_candidates {
-        let Some(datetime_value) = exif_field_value(&exif, datetime_tag) else {
+        let Some(datetime_value) = exif_field_value(exif, datetime_tag) else {
             continue;
         };
-        let offset_value = offset_tag.and_then(|tag| exif_field_value(&exif, tag));
+        let offset_value = offset_tag.and_then(|tag| exif_field_value(exif, tag));
         if let Some(capture_time) =
             parse_exif_datetime_with_offset(&datetime_value, offset_value.as_deref())
         {
-            return Ok(Some(capture_time));
+            return Some(capture_time);
         }
     }
 
-    Ok(None)
+    None
 }
 
 pub(crate) fn extract_capture_iso(raw: &Path) -> Result<Option<u32>> {
@@ -471,6 +481,13 @@ fn unix_timestamp_to_system_time(timestamp: i64) -> Option<SystemTime> {
     UNIX_EPOCH
         .checked_add(Duration::new(timestamp as u64, 0))
         .filter(|candidate| *candidate >= UNIX_EPOCH)
+}
+
+fn system_time_to_unix_seconds(timestamp: SystemTime) -> Option<i64> {
+    timestamp
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_secs()).ok())
 }
 
 #[cfg(test)]

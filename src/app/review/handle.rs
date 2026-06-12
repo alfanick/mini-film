@@ -21,6 +21,7 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
     let state_path = config.output_root.join("mini-film-review.json");
     let mut store = load_store(&state_path)?.unwrap_or_else(|| ReviewStore::new(Vec::new()));
     store.sync_profiles(config.profiles);
+    store.refresh_missing_exif_data();
     save_store(&state_path, &store)?;
     let history_profiles = store.profiles.clone();
 
@@ -716,7 +717,7 @@ impl ReviewHandle {
         let client_count = self.client_count()?;
         let store = self.lock_store()?;
         let mut images = store.images.clone();
-        images.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+        sort_review_images(&mut images);
         let images = images
             .iter()
             .map(|image| {

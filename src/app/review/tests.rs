@@ -172,6 +172,79 @@ fn review_state_defaults_to_first_profile_and_records_outputs() {
 }
 
 #[test]
+fn review_visible_order_uses_exif_capture_time_before_path() {
+    let mut store = ReviewStore::new(vec![profile(0, "Classic")]);
+    store.images.push(ReviewImage {
+        id: 1,
+        raw_path: PathBuf::from("/in/camera-a/late.NEF"),
+        relative_path: "camera-a/late.NEF".to_string(),
+        file_name: "late.NEF".to_string(),
+        exif: GalleryExifData {
+            capture_timestamp: Some(300),
+            ..GalleryExifData::default()
+        },
+        preview: ReviewPreview::default(),
+        selected_profile_index: 0,
+        rating: 1,
+        label: ReviewLabel::None,
+        labels: Vec::new(),
+        tags: Vec::new(),
+        notes: String::new(),
+        retouch: RetouchSettings::default(),
+        publish_profile_indexes: Some(vec![0]),
+        profiles: vec![profile_render(0, "Classic")],
+        updated_at: now_string(),
+    });
+    store.images.push(ReviewImage {
+        id: 2,
+        raw_path: PathBuf::from("/in/camera-b/early.NEF"),
+        relative_path: "camera-b/early.NEF".to_string(),
+        file_name: "early.NEF".to_string(),
+        exif: GalleryExifData {
+            capture_timestamp: Some(100),
+            ..GalleryExifData::default()
+        },
+        preview: ReviewPreview::default(),
+        selected_profile_index: 0,
+        rating: 1,
+        label: ReviewLabel::None,
+        labels: Vec::new(),
+        tags: Vec::new(),
+        notes: String::new(),
+        retouch: RetouchSettings::default(),
+        publish_profile_indexes: Some(vec![0]),
+        profiles: vec![profile_render(0, "Classic")],
+        updated_at: now_string(),
+    });
+    store.images.push(ReviewImage {
+        id: 3,
+        raw_path: PathBuf::from("/in/camera-c/no-exif.NEF"),
+        relative_path: "camera-c/no-exif.NEF".to_string(),
+        file_name: "no-exif.NEF".to_string(),
+        exif: GalleryExifData::default(),
+        preview: ReviewPreview::default(),
+        selected_profile_index: 0,
+        rating: 1,
+        label: ReviewLabel::None,
+        labels: Vec::new(),
+        tags: Vec::new(),
+        notes: String::new(),
+        retouch: RetouchSettings::default(),
+        publish_profile_indexes: Some(vec![0]),
+        profiles: vec![profile_render(0, "Classic")],
+        updated_at: now_string(),
+    });
+
+    assert_eq!(store.visible_image_ids_at(1), vec![2, 1, 3]);
+    let mut images = store.images.clone();
+    sort_review_images(&mut images);
+    assert_eq!(
+        images.iter().map(|image| image.id).collect::<Vec<_>>(),
+        vec![2, 1, 3]
+    );
+}
+
+#[test]
 fn sync_profiles_drops_stale_renders_when_wizard_profile_changes() {
     let mut store = ReviewStore::new(vec![profile(0, "Old")]);
     store.images.push(ReviewImage {

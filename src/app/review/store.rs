@@ -44,16 +44,20 @@ impl ReviewStore {
         self.normalize_ui();
     }
 
+    pub(super) fn refresh_missing_exif_data(&mut self) {
+        for image in &mut self.images {
+            refresh_image_exif_data(image);
+        }
+        self.normalize_ui();
+    }
+
     pub(super) fn ensure_image(
         &mut self,
         input_root: &Path,
         raw: &Path,
     ) -> Result<&mut ReviewImage> {
         if let Some(index) = self.images.iter().position(|image| image.raw_path == raw) {
-            if self.images[index].exif.is_empty() {
-                self.images[index].exif = extract_gallery_exif(raw).unwrap_or_default();
-            }
-            self.images[index].exif.sanitize_text_fields();
+            refresh_image_exif_data(&mut self.images[index]);
             return Ok(&mut self.images[index]);
         }
 
@@ -155,10 +159,9 @@ impl ReviewStore {
             .images
             .iter()
             .filter(|image| image.rating >= min_rating.min(5))
-            .map(|image| (image.relative_path.as_str(), image.id))
             .collect::<Vec<_>>();
-        images.sort_by(|left, right| left.0.cmp(right.0));
-        images.into_iter().map(|(_, id)| id).collect()
+        sort_review_image_refs(&mut images);
+        images.into_iter().map(|image| image.id).collect()
     }
 }
 
@@ -167,6 +170,45 @@ pub(super) enum ReviewAdvance {
     Image(u64),
     FirstVisible,
     NextPass,
+}
+
+pub(super) fn sort_review_images(images: &mut [ReviewImage]) {
+    images.sort_by(compare_review_images);
+}
+
+fn sort_review_image_refs(images: &mut [&ReviewImage]) {
+    images.sort_by(|left, right| compare_review_images(left, right));
+}
+
+fn compare_review_images(left: &ReviewImage, right: &ReviewImage) -> std::cmp::Ordering {
+    match (left.exif.capture_timestamp, right.exif.capture_timestamp) {
+        (Some(left_time), Some(right_time)) => left_time
+            .cmp(&right_time)
+            .then_with(|| left.relative_path.cmp(&right.relative_path))
+            .then_with(|| left.id.cmp(&right.id)),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => left
+            .relative_path
+            .cmp(&right.relative_path)
+            .then_with(|| left.id.cmp(&right.id)),
+    }
+}
+
+fn refresh_image_exif_data(image: &mut ReviewImage) {
+    if !image.exif.is_empty() && image.exif.capture_timestamp.is_some() {
+        image.exif.sanitize_text_fields();
+        return;
+    }
+
+    let mut refreshed = extract_gallery_exif(&image.raw_path).unwrap_or_default();
+    refreshed.sanitize_text_fields();
+    if image.exif.is_empty() {
+        image.exif = refreshed;
+    } else if image.exif.capture_timestamp.is_none() {
+        image.exif.capture_timestamp = refreshed.capture_timestamp;
+    }
+    image.exif.sanitize_text_fields();
 }
 
 pub(super) fn sync_image_profile_renders(
