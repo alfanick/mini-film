@@ -187,11 +187,11 @@ button:disabled {
   border-radius: 0;
   text-align: left;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 9px;
-  grid-template-rows: auto auto auto;
-  gap: 4px 6px;
-  min-height: 0;
-  padding: 7px 9px 8px;
+  grid-template-columns: 24px minmax(0, 1fr) 9px;
+  grid-template-rows: auto auto;
+  gap: 1px 5px;
+  min-height: 32px;
+  padding: 4px 8px;
   background: transparent;
   align-items: start;
 }
@@ -202,15 +202,14 @@ button:disabled {
 }
 
 .image-row-thumb {
-  grid-column: 1 / -1;
-  grid-row: 2;
-  width: 100%;
-  height: auto;
-  aspect-ratio: 4 / 3;
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  width: 24px;
+  height: 24px;
   align-self: center;
-  border-radius: 4px;
+  border-radius: 3px;
   background: #deded6;
-  object-fit: contain;
+  object-fit: cover;
 }
 
 .image-row-thumb:not([src]) {
@@ -218,7 +217,7 @@ button:disabled {
 }
 
 .image-row-title {
-  grid-column: 1 / -1;
+  grid-column: 2;
   grid-row: 1;
   height: 13px;
   overflow: hidden;
@@ -229,12 +228,12 @@ button:disabled {
 }
 
 .image-row-meta {
-  grid-column: 1;
-  grid-row: 3;
+  grid-column: 2;
+  grid-row: 2;
   height: 11px;
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(24px, max-content) minmax(0, 1fr);
+  grid-template-columns: 56px minmax(0, 1fr);
   align-items: center;
   gap: 4px;
   color: #6e6e65;
@@ -275,8 +274,8 @@ button:disabled {
 }
 
 .image-row-indicator {
-  grid-column: 2;
-  grid-row: 3;
+  grid-column: 3;
+  grid-row: 1 / span 2;
   width: 7px;
   height: 7px;
   margin-top: 2px;
@@ -323,6 +322,42 @@ button:disabled {
 .image-row-indicator.failed {
   background: #b92d24;
   box-shadow: 0 0 0 2px rgba(185, 45, 36, 0.15);
+}
+
+@media (min-width: 901px) and (hover: hover) and (pointer: fine) {
+  .image-row {
+    grid-template-columns: minmax(0, 1fr) 9px;
+    grid-template-rows: auto auto auto;
+    gap: 4px 6px;
+    min-height: 0;
+    padding: 7px 9px 8px;
+  }
+
+  .image-row-thumb {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 4 / 3;
+    border-radius: 4px;
+    object-fit: contain;
+  }
+
+  .image-row-title {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+
+  .image-row-meta {
+    grid-column: 1;
+    grid-row: 3;
+    grid-template-columns: minmax(24px, max-content) minmax(0, 1fr);
+  }
+
+  .image-row-indicator {
+    grid-column: 2;
+    grid-row: 3;
+  }
 }
 
 .workspace {
