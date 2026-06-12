@@ -236,7 +236,7 @@ pub(crate) fn write_rawtherapee_retouch_profile(
         let _ = writeln!(out, "Enabled=true");
         let _ = writeln!(out, "Setting=Camera");
         if effective.temperature != 0.0 {
-            let _ = writeln!(out, "TemperatureBias={}", fmt_f32(effective.temperature));
+            let _ = writeln!(out, "TemperatureBias={}", fmt_i32(effective.temperature));
         }
         if effective.offset != 0.0 {
             let _ = writeln!(
@@ -264,7 +264,15 @@ fn fmt_f32(value: f32) -> String {
 }
 
 fn fmt_slider(value: f32) -> String {
-    fmt_f32(value.clamp(-100.0, 100.0))
+    // RawTherapee accepts fractional values for fields such as exposure
+    // compensation, but PP3 slider fields like Brightness/Black/Contrast
+    // are integer-only. Decimal slider output can make rawtherapee-cli exit
+    // before rendering, so retouch sliders are rounded at the PP3 boundary.
+    fmt_i32(value.clamp(-100.0, 100.0))
+}
+
+fn fmt_i32(value: f32) -> String {
+    (value.round() as i32).to_string()
 }
 
 fn wb_green_from_offset(offset: f32) -> f32 {
@@ -353,11 +361,97 @@ mod tests {
         let text = std::fs::read_to_string(output).unwrap();
         assert!(text.contains("[Exposure]"));
         assert!(text.contains("Compensation=0.5"));
+        assert!(text.contains("Brightness=5"));
+        assert!(text.contains("Black=5"));
         assert!(text.contains("HighlightCompr=20"));
         assert!(text.contains("ShadowCompr=30"));
         assert!(text.contains("[White Balance]"));
         assert!(text.contains("TemperatureBias=450"));
         assert!(text.contains("Green=1.07"));
         assert!(text.contains("Contrast=12"));
+    }
+
+    #[test]
+    fn rawtherapee_retouch_profile_rounds_slider_values_to_integers() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("retouch.pp3");
+        let retouch = RetouchSettings {
+            adjustments: BasicRetouchAdjustments {
+                whites: 33.0,
+                blacks: 21.4,
+                highlights: -20.6,
+                shadows: 30.5,
+                clarity: 15.6,
+                ..BasicRetouchAdjustments::default()
+            },
+            crop: None,
+            rotation_degrees: 0.0,
+        };
+
+        write_rawtherapee_retouch_profile(&output, BasicRetouchAdjustments::default(), &retouch)
+            .unwrap();
+
+        let text = std::fs::read_to_string(output).unwrap();
+        assert!(text.contains("Brightness=17\n"));
+        assert!(text.contains("Black=-21\n"));
+        assert!(text.contains("HighlightCompr=21\n"));
+        assert!(text.contains("ShadowCompr=31\n"));
+        assert!(text.contains("Contrast=16\n"));
+        assert!(!text.contains("Brightness=16.5\n"));
+    }
+
+    #[test]
+    fn rawtherapee_retouch_profile_rounds_fractional_base_and_retouch_adjustments() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("retouch.pp3");
+        let base = BasicRetouchAdjustments {
+            highlights: -10.4,
+            shadows: 10.4,
+            whites: 3.4,
+            blacks: 1.4,
+            temperature: 99.4,
+            clarity: 1.4,
+            ..BasicRetouchAdjustments::default()
+        };
+        let retouch = RetouchSettings {
+            adjustments: BasicRetouchAdjustments {
+                highlights: -10.2,
+                shadows: 20.2,
+                whites: 29.6,
+                blacks: 20.0,
+                temperature: 351.2,
+                clarity: 14.2,
+                ..BasicRetouchAdjustments::default()
+            },
+            crop: None,
+            rotation_degrees: 0.0,
+        };
+
+        write_rawtherapee_retouch_profile(&output, base, &retouch).unwrap();
+
+        let text = std::fs::read_to_string(output).unwrap();
+        for key in [
+            "Brightness",
+            "Black",
+            "HighlightCompr",
+            "ShadowCompr",
+            "Contrast",
+            "TemperatureBias",
+        ] {
+            let line = text
+                .lines()
+                .find(|line| line.starts_with(&format!("{key}=")))
+                .unwrap_or_else(|| panic!("missing {key} in\n{text}"));
+            assert!(
+                !line.contains('.'),
+                "{key} should be integer-only, got {line}"
+            );
+        }
+        assert!(text.contains("Brightness=17\n"));
+        assert!(text.contains("Black=-21\n"));
+        assert!(text.contains("HighlightCompr=21\n"));
+        assert!(text.contains("ShadowCompr=31\n"));
+        assert!(text.contains("Contrast=16\n"));
+        assert!(text.contains("TemperatureBias=451\n"));
     }
 }
