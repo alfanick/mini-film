@@ -21,6 +21,7 @@ const state = {
   zoomLastPoint: null,
   gestureFeedbackTimer: null,
   retouchInputImageId: null,
+  retouchClipboard: null,
   localRetouchDirty: false,
   mobileDrawer: null,
 };
@@ -218,7 +219,13 @@ function ControlsShell() {
         "div",
         { class: "retouch-header" },
         h("span", null, "Retouch"),
-        h("button", { id: "retouch-reset", type: "button" }, "Reset"),
+        h(
+          "div",
+          { class: "retouch-header-actions" },
+          h("button", { id: "retouch-copy", type: "button" }, "Copy"),
+          h("button", { id: "retouch-paste", type: "button" }, "Paste"),
+          h("button", { id: "retouch-reset", type: "button" }, "Reset"),
+        ),
       ),
       h(RetouchSlider, { id: "retouch-exposure", label: "Exposure", min: "-4", max: "4", step: "0.05", value: "0" }),
       h(RetouchSlider, {
@@ -296,8 +303,15 @@ function ShortcutsOverlay() {
       "Labels",
       [
         [["6", "7", "8", "9", "0"], "Toggle red, yellow, green, blue, or purple labels without advancing."],
-        [["r", "y", "g", "b", "v"], "Same label toggles using mnemonic keys."],
+        [["r", "y", "g", "b", "p"], "Same label toggles using mnemonic keys."],
         [["n"], "Clear all color labels."],
+      ],
+    ],
+    [
+      "Adjustments",
+      [
+        [["c"], "Copy the current retouch slider adjustments."],
+        [["v"], "Paste copied retouch slider adjustments to the current picture."],
       ],
     ],
     [
@@ -600,6 +614,8 @@ const els = {
   cropRotationValue: document.getElementById("crop-rotation-value"),
   cropRotateLeft: document.getElementById("crop-rotate-left"),
   cropRotateRight: document.getElementById("crop-rotate-right"),
+  retouchCopy: document.getElementById("retouch-copy"),
+  retouchPaste: document.getElementById("retouch-paste"),
   retouchReset: document.getElementById("retouch-reset"),
   retouchExposure: document.getElementById("retouch-exposure"),
   retouchExposureValue: document.getElementById("retouch-exposure-value"),
@@ -1620,6 +1636,14 @@ function retouchFromInputs(image = findImage(state.currentId)) {
   });
 }
 
+function cloneRetouch(retouch) {
+  return normalizedRetouch(JSON.parse(JSON.stringify(retouch || defaultRetouch())));
+}
+
+function cloneRetouchAdjustments(retouch) {
+  return cloneRetouch(retouch).adjustments;
+}
+
 function setRetouchInputs(retouch) {
   const normalized = normalizedRetouch(retouch);
   els.retouchExposure.value = String(normalized.adjustments.exposure);
@@ -1670,6 +1694,31 @@ function applyLocalRetouch(retouch, options = {}) {
     ? `${selected.profile_stem}: ${profileDisplayState(image, selected).text}`
     : "";
   if (options.save !== false) scheduleRetouchSave();
+}
+
+function copyCurrentRetouch() {
+  const image = findImage(state.currentId);
+  if (!image) return;
+  state.retouchClipboard = cloneRetouchAdjustments(retouchFromInputs(image));
+  syncRetouchClipboardButtons();
+  showGestureFeedback("copied sliders");
+}
+
+function pasteCurrentRetouch() {
+  if (!state.retouchClipboard) return false;
+  const current = retouchFromInputs();
+  const retouch = normalizedRetouch({
+    ...current,
+    adjustments: state.retouchClipboard,
+  });
+  applyLocalRetouch(retouch, { save: false });
+  saveReview({ retouch }).catch((error) => console.error(error));
+  showGestureFeedback("pasted sliders");
+  return true;
+}
+
+function syncRetouchClipboardButtons() {
+  els.retouchPaste.disabled = !state.retouchClipboard;
 }
 
 function applyDraftRetouch(image, selected) {
@@ -2502,6 +2551,9 @@ els.viewer.addEventListener("touchmove", preventNativeViewerAction, { passive: f
   input.addEventListener("change", () => scheduleRetouchSave());
 });
 els.retouchReset.addEventListener("click", () => applyLocalRetouch(defaultRetouch()));
+els.retouchCopy.addEventListener("click", copyCurrentRetouch);
+els.retouchPaste.addEventListener("click", pasteCurrentRetouch);
+syncRetouchClipboardButtons();
 els.cropReset.addEventListener("click", clearCropDraft);
 els.cropToggle.addEventListener("click", beginCropEditing);
 els.cropOk.addEventListener("click", approveCropEditing);
@@ -2663,6 +2715,18 @@ window.addEventListener("keydown", (event) => {
     focusMetadataInput(els.notes);
     return;
   }
+  const shortcutKey = event.key.toLowerCase();
+  const plainShortcut = !event.ctrlKey && !event.metaKey && !event.altKey;
+  if (plainShortcut && shortcutKey === "c") {
+    event.preventDefault();
+    copyCurrentRetouch();
+    return;
+  }
+  if (plainShortcut && shortcutKey === "v") {
+    event.preventDefault();
+    pasteCurrentRetouch();
+    return;
+  }
   if (event.target.closest(".retouch") || event.target.closest(".crop-tools")) return;
   if (event.key === "ArrowRight" || event.key.toLowerCase() === "l" || event.key === "Enter") move(1);
   if (event.key === "ArrowLeft" || event.key.toLowerCase() === "h") move(-1);
@@ -2699,8 +2763,9 @@ window.addEventListener("keydown", (event) => {
     const label = { 6: "red", 7: "yellow", 8: "green", 9: "blue", 0: "purple" }[event.key];
     toggleCurrentLabel(label);
   }
-  if (["r", "y", "g", "b", "v", "n"].includes(event.key.toLowerCase())) {
-    const label = { r: "red", y: "yellow", g: "green", b: "blue", v: "purple", n: "none" }[event.key.toLowerCase()];
+  if (["r", "y", "g", "b", "p", "n"].includes(event.key.toLowerCase())) {
+    event.preventDefault();
+    const label = { r: "red", y: "yellow", g: "green", b: "blue", p: "purple", n: "none" }[event.key.toLowerCase()];
     toggleCurrentLabel(label);
   }
 });

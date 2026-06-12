@@ -409,7 +409,9 @@ shortcuts overlay. `1`-`5` rates and advances, arrow up/down changes the rating
 and advances, left/right or `h`/`l` navigates without rating, PageUp/PageDown
 cycles the profile preview for the current picture, and Space includes or skips
 the selected profile for publish. `6`, `7`, `8`, `9`, and `0` toggle red,
-yellow, green, blue, and purple labels without advancing.
+yellow, green, blue, and purple labels without advancing; `r`, `y`, `g`, `b`,
+and `p` provide the same mnemonic label toggles. `c` copies the current retouch
+slider adjustments, and `v` pastes them onto another picture.
 
 The review UI stores rating, label, tags, notes, active preview profile, and the
 set of profile variants selected for publish. It also supports per-picture

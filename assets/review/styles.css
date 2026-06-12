@@ -872,6 +872,13 @@ button:disabled {
   text-transform: uppercase;
 }
 
+.retouch-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
 .retouch label {
   display: grid;
   grid-template-columns: minmax(44px, 56px) minmax(0, 1fr) 34px;
@@ -911,6 +918,11 @@ button:disabled {
   min-height: 24px;
   padding: 2px 6px;
   font-size: 10px;
+}
+
+.retouch button:disabled {
+  cursor: default;
+  opacity: 0.42;
 }
 
 .shortcuts-overlay {
