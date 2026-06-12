@@ -187,11 +187,11 @@ button:disabled {
   border-radius: 0;
   text-align: left;
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr) 9px;
-  grid-template-rows: auto auto;
-  gap: 1px 5px;
-  min-height: 32px;
-  padding: 4px 8px;
+  grid-template-columns: minmax(0, 1fr) 9px;
+  grid-template-rows: auto auto auto;
+  gap: 4px 6px;
+  min-height: 0;
+  padding: 7px 9px 8px;
   background: transparent;
   align-items: start;
 }
@@ -202,14 +202,15 @@ button:disabled {
 }
 
 .image-row-thumb {
-  grid-column: 1;
-  grid-row: 1 / span 2;
-  width: 24px;
-  height: 24px;
+  grid-column: 1 / -1;
+  grid-row: 2;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 4 / 3;
   align-self: center;
-  border-radius: 3px;
+  border-radius: 4px;
   background: #deded6;
-  object-fit: cover;
+  object-fit: contain;
 }
 
 .image-row-thumb:not([src]) {
@@ -217,7 +218,7 @@ button:disabled {
 }
 
 .image-row-title {
-  grid-column: 2;
+  grid-column: 1 / -1;
   grid-row: 1;
   height: 13px;
   overflow: hidden;
@@ -228,12 +229,12 @@ button:disabled {
 }
 
 .image-row-meta {
-  grid-column: 2;
-  grid-row: 2;
+  grid-column: 1;
+  grid-row: 3;
   height: 11px;
   min-width: 0;
   display: grid;
-  grid-template-columns: 56px minmax(0, 1fr);
+  grid-template-columns: minmax(24px, max-content) minmax(0, 1fr);
   align-items: center;
   gap: 4px;
   color: #6e6e65;
@@ -274,8 +275,8 @@ button:disabled {
 }
 
 .image-row-indicator {
-  grid-column: 3;
-  grid-row: 1 / span 2;
+  grid-column: 2;
+  grid-row: 3;
   width: 7px;
   height: 7px;
   margin-top: 2px;
@@ -1317,6 +1318,40 @@ kbd {
     min-height: auto;
     border-right: 0;
     border-bottom: 1px solid #d8d8d2;
+  }
+
+  .image-row {
+    grid-template-columns: 24px minmax(0, 1fr) 9px;
+    grid-template-rows: auto auto;
+    gap: 1px 5px;
+    min-height: 32px;
+    padding: 4px 8px;
+  }
+
+  .image-row-thumb {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+    width: 24px;
+    height: 24px;
+    aspect-ratio: auto;
+    border-radius: 3px;
+    object-fit: cover;
+  }
+
+  .image-row-title {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .image-row-meta {
+    grid-column: 2;
+    grid-row: 2;
+    grid-template-columns: 56px minmax(0, 1fr);
+  }
+
+  .image-row-indicator {
+    grid-column: 3;
+    grid-row: 1 / span 2;
   }
 
   .workspace {
