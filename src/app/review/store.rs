@@ -12,6 +12,18 @@ impl ReviewStore {
     }
 
     pub(super) fn sync_profiles(&mut self, profiles: Vec<ReviewProfile>) {
+        let profiles_changed = self.profiles != profiles;
+        let old_profiles = self
+            .profiles
+            .iter()
+            .map(|profile| (profile.index, profile.clone()))
+            .collect::<HashMap<_, _>>();
+        let unchanged_profile_indexes = profiles
+            .iter()
+            .filter_map(|profile| {
+                (old_profiles.get(&profile.index) == Some(profile)).then_some(profile.index)
+            })
+            .collect::<HashSet<_>>();
         self.profiles = profiles;
         let profiles = self.profiles.clone();
         for image in &mut self.images {
@@ -22,7 +34,12 @@ impl ReviewStore {
                 image.preview.status = ReviewRenderStatus::Missing;
                 image.preview.updated_at = now_string();
             }
-            sync_image_profile_renders(image, &profiles);
+            sync_image_profile_renders(
+                image,
+                &profiles,
+                profiles_changed,
+                &unchanged_profile_indexes,
+            );
         }
         self.normalize_ui();
     }
@@ -72,7 +89,7 @@ impl ReviewStore {
             profiles: Vec::new(),
             updated_at: now_string(),
         };
-        sync_image_profile_renders(&mut image, &self.profiles);
+        sync_image_profile_renders(&mut image, &self.profiles, false, &HashSet::new());
         self.images.push(image);
         self.normalize_ui();
         let index = self.images.len() - 1;
@@ -152,7 +169,12 @@ pub(super) enum ReviewAdvance {
     NextPass,
 }
 
-pub(super) fn sync_image_profile_renders(image: &mut ReviewImage, profiles: &[ReviewProfile]) {
+pub(super) fn sync_image_profile_renders(
+    image: &mut ReviewImage,
+    profiles: &[ReviewProfile],
+    profiles_changed: bool,
+    unchanged_profile_indexes: &HashSet<usize>,
+) {
     let existing = image
         .profiles
         .iter()
@@ -164,6 +186,10 @@ pub(super) fn sync_image_profile_renders(image: &mut ReviewImage, profiles: &[Re
         .map(|profile| {
             existing
                 .get(&profile.index)
+                .filter(|render| {
+                    render.profile_stem == profile.stem
+                        && (!profiles_changed || unchanged_profile_indexes.contains(&profile.index))
+                })
                 .cloned()
                 .unwrap_or_else(|| ReviewProfileRender {
                     profile_index: profile.index,
@@ -177,14 +203,25 @@ pub(super) fn sync_image_profile_renders(image: &mut ReviewImage, profiles: &[Re
                 })
         })
         .collect();
-    if !image
+    if profiles_changed {
+        image.selected_profile_index = profiles.first().map(|profile| profile.index).unwrap_or(0);
+        image.publish_profile_indexes = Some(
+            image
+                .profiles
+                .iter()
+                .map(|profile| profile.profile_index)
+                .collect(),
+        );
+    } else if !image
         .profiles
         .iter()
         .any(|profile| profile.profile_index == image.selected_profile_index)
     {
         image.selected_profile_index = profiles.first().map(|profile| profile.index).unwrap_or(0);
+        image.publish_profile_indexes = Some(effective_publish_profile_indexes(image));
+    } else {
+        image.publish_profile_indexes = Some(effective_publish_profile_indexes(image));
     }
-    image.publish_profile_indexes = Some(effective_publish_profile_indexes(image));
 }
 
 pub(super) fn effective_publish_profile_indexes(image: &ReviewImage) -> Vec<usize> {

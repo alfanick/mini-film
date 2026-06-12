@@ -172,6 +172,152 @@ fn review_state_defaults_to_first_profile_and_records_outputs() {
 }
 
 #[test]
+fn sync_profiles_drops_stale_renders_when_wizard_profile_changes() {
+    let mut store = ReviewStore::new(vec![profile(0, "Old")]);
+    store.images.push(ReviewImage {
+        id: 1,
+        raw_path: PathBuf::from("/in/frame.NEF"),
+        relative_path: "frame.NEF".to_string(),
+        file_name: "frame.NEF".to_string(),
+        exif: GalleryExifData::default(),
+        preview: ReviewPreview::default(),
+        selected_profile_index: 0,
+        rating: 3,
+        label: ReviewLabel::None,
+        labels: Vec::new(),
+        tags: vec!["keep".to_string()],
+        notes: "preserve review metadata".to_string(),
+        retouch: RetouchSettings::default(),
+        publish_profile_indexes: Some(vec![0]),
+        profiles: vec![ReviewProfileRender {
+            output_path: Some(PathBuf::from("/out/Old/frame.jpg")),
+            ..profile_render(0, "Old")
+        }],
+        updated_at: now_string(),
+    });
+
+    store.sync_profiles(vec![profile(0, "New")]);
+
+    assert_eq!(store.profiles, vec![profile(0, "New")]);
+    assert_eq!(store.images[0].rating, 3);
+    assert_eq!(store.images[0].tags, vec!["keep"]);
+    assert_eq!(store.images[0].notes, "preserve review metadata");
+    assert_eq!(store.images[0].selected_profile_index, 0);
+    assert_eq!(store.images[0].publish_profile_indexes, Some(vec![0]));
+    let render = &store.images[0].profiles[0];
+    assert_eq!(render.profile_stem, "New");
+    assert_eq!(render.status, ReviewRenderStatus::Missing);
+    assert_eq!(render.output_path, None);
+    assert_eq!(render.duration_ms, None);
+}
+
+#[test]
+fn sync_profiles_selects_all_wizard_profiles_when_profile_set_changes() {
+    let mut store = ReviewStore::new(vec![profile(0, "Classic")]);
+    store.images.push(ReviewImage {
+        id: 1,
+        raw_path: PathBuf::from("/in/frame.NEF"),
+        relative_path: "frame.NEF".to_string(),
+        file_name: "frame.NEF".to_string(),
+        exif: GalleryExifData::default(),
+        preview: ReviewPreview::default(),
+        selected_profile_index: 0,
+        rating: 0,
+        label: ReviewLabel::None,
+        labels: Vec::new(),
+        tags: Vec::new(),
+        notes: String::new(),
+        retouch: RetouchSettings::default(),
+        publish_profile_indexes: Some(vec![0]),
+        profiles: vec![ReviewProfileRender {
+            output_path: Some(PathBuf::from("/out/Classic/frame.jpg")),
+            ..profile_render(0, "Classic")
+        }],
+        updated_at: now_string(),
+    });
+
+    store.sync_profiles(vec![profile(0, "Classic"), profile(1, "Fade")]);
+
+    assert_eq!(store.images[0].selected_profile_index, 0);
+    assert_eq!(store.images[0].publish_profile_indexes, Some(vec![0, 1]));
+    assert_eq!(store.images[0].profiles[0].profile_stem, "Classic");
+    assert_eq!(store.images[0].profiles[0].status, ReviewRenderStatus::Done);
+    assert_eq!(store.images[0].profiles[1].profile_stem, "Fade");
+    assert_eq!(
+        store.images[0].profiles[1].status,
+        ReviewRenderStatus::Missing
+    );
+}
+
+#[test]
+fn sync_profiles_drops_same_stem_render_when_profile_identity_changes() {
+    let old_profile = profile(0, "Classic");
+    let mut new_profile = profile(0, "Classic");
+    new_profile.retouch_base.exposure = 0.25;
+    let mut store = ReviewStore::new(vec![old_profile]);
+    store.images.push(ReviewImage {
+        id: 1,
+        raw_path: PathBuf::from("/in/frame.NEF"),
+        relative_path: "frame.NEF".to_string(),
+        file_name: "frame.NEF".to_string(),
+        exif: GalleryExifData::default(),
+        preview: ReviewPreview::default(),
+        selected_profile_index: 0,
+        rating: 0,
+        label: ReviewLabel::None,
+        labels: Vec::new(),
+        tags: Vec::new(),
+        notes: String::new(),
+        retouch: RetouchSettings::default(),
+        publish_profile_indexes: Some(vec![0]),
+        profiles: vec![ReviewProfileRender {
+            output_path: Some(PathBuf::from("/out/Classic/frame.jpg")),
+            ..profile_render(0, "Classic")
+        }],
+        updated_at: now_string(),
+    });
+
+    store.sync_profiles(vec![new_profile]);
+
+    assert_eq!(store.images[0].profiles[0].profile_stem, "Classic");
+    assert_eq!(
+        store.images[0].profiles[0].status,
+        ReviewRenderStatus::Missing
+    );
+    assert_eq!(store.images[0].profiles[0].output_path, None);
+}
+
+#[test]
+fn sync_profiles_preserves_publish_selection_when_profiles_are_unchanged() {
+    let profiles = vec![profile(0, "Classic"), profile(1, "Fade")];
+    let mut store = ReviewStore::new(profiles.clone());
+    store.images.push(ReviewImage {
+        id: 1,
+        raw_path: PathBuf::from("/in/frame.NEF"),
+        relative_path: "frame.NEF".to_string(),
+        file_name: "frame.NEF".to_string(),
+        exif: GalleryExifData::default(),
+        preview: ReviewPreview::default(),
+        selected_profile_index: 1,
+        rating: 0,
+        label: ReviewLabel::None,
+        labels: Vec::new(),
+        tags: Vec::new(),
+        notes: String::new(),
+        retouch: RetouchSettings::default(),
+        publish_profile_indexes: Some(vec![1]),
+        profiles: vec![profile_render(0, "Classic"), profile_render(1, "Fade")],
+        updated_at: now_string(),
+    });
+
+    store.sync_profiles(profiles);
+
+    assert_eq!(store.images[0].selected_profile_index, 1);
+    assert_eq!(store.images[0].publish_profile_indexes, Some(vec![1]));
+    assert_eq!(store.images[0].profiles[1].status, ReviewRenderStatus::Done);
+}
+
+#[test]
 fn base_render_done_triggers_pending_retouch_without_marking_done() {
     let output = PathBuf::from("frame.jpg");
     let mut render = ReviewProfileRender {
