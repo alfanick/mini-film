@@ -9,22 +9,23 @@ final selection with metadata preserved.
 The fastest way in is the desktop app:
 
 ```sh
-mini-film app
+mini-film
 ```
 
-That opens a native wizard for the usual daemon/review settings, profile
-selection, Nikon WTU ingest, lens corrections, output folders, and publishing
-defaults. The app remembers the last successful setup, starts the same daemon
-pipeline used by the CLI, waits for the embedded review server, and then opens
-the review UI in a webview. Terminal output is still kept when launched from a
-shell, so long-running processing stays inspectable.
+With no command, mini-film opens the native app wizard for the usual
+daemon/review settings, profile selection, Nikon WTU ingest, lens corrections,
+output folders, and publishing defaults. The app remembers the last successful
+setup, starts the same daemon pipeline used by the CLI, waits for the embedded
+review server, and then opens the review UI in a webview. Terminal output is
+still kept when launched from a shell, so long-running processing stays
+inspectable. `mini-film app` remains available as the explicit command form.
 
 For scripted use, every part of the workflow is still available as CLI commands:
 `apply`, `batch`, `daemon`, `sampler`, `pp3`, `info`, `nikon`, and `update`.
 
 ## Top Features
 
-- **Single-binary desktop workflow**: `mini-film app` provides a Tauri launcher
+- **Single-binary desktop workflow**: `mini-film` provides a Tauri launcher
   with native directory pickers, a structured profile tree, saved options,
   network sharing toggle, Nikon WTU IP input, and system light/dark theme.
 - **Live review and publish workflow**: run `daemon` on an inbox folder, open the
@@ -93,7 +94,7 @@ the publish wizard to export the final album.
 Run the desktop wizard instead of writing the daemon command manually:
 
 ```sh
-mini-film app
+mini-film
 ```
 
 The app wizard defaults to `~/Pictures/Scratch/Inbox` for input,
@@ -117,8 +118,8 @@ mini-film daemon /path/to/inbox /path/to/output \
 cargo build --release
 ```
 
-The default build includes the Tauri desktop app so `cargo run --release -- app`
-works from the normal binary. On Linux this requires the WebKitGTK development
+The default build includes the Tauri desktop app so `cargo run --release` opens
+the app from the normal binary. On Linux this requires the WebKitGTK development
 packages used by Tauri. On Debian/Ubuntu/Linux Mint:
 
 ```sh

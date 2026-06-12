@@ -37,7 +37,7 @@ use crate::cli::{Cli, CommandKind, ExportOptions};
 fn main() -> Result<()> {
     configure_threads();
 
-    let args = env::args().collect::<Vec<_>>();
+    let args = args_with_default_command(env::args().collect::<Vec<_>>());
     startup_dependency_check(&args)?;
     let cli = Cli::parse_from(&args);
 
@@ -398,6 +398,13 @@ fn main() -> Result<()> {
     }
 }
 
+fn args_with_default_command(mut args: Vec<String>) -> Vec<String> {
+    if args.len() == 1 {
+        args.push("app".to_string());
+    }
+    args
+}
+
 const RAWTHERAPEE_BINARY: &str = "rawtherapee-cli";
 const CONVERT_BINARY: &str = "convert";
 const EXIFTOOL_BINARY: &str = "exiftool";
@@ -550,6 +557,20 @@ mod tests {
             .map(ToString::to_string)
             .collect::<Vec<_>>();
         assert_eq!(active_command_for_dependency_check(&args), Some("batch"));
+    }
+
+    #[test]
+    fn empty_invocation_defaults_to_app_command() {
+        let args = args_with_default_command(vec!["mini-film".to_string()]);
+        assert_eq!(args, vec!["mini-film".to_string(), "app".to_string()]);
+        let cli = Cli::parse_from(args);
+        assert!(matches!(cli.command, CommandKind::App));
+    }
+
+    #[test]
+    fn explicit_flags_are_not_rewritten_to_app_command() {
+        let args = args_with_default_command(vec!["mini-film".to_string(), "--help".to_string()]);
+        assert_eq!(args, vec!["mini-film".to_string(), "--help".to_string()]);
     }
 
     #[test]
