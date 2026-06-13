@@ -55,6 +55,46 @@ body {
   gap: 8px;
 }
 
+.mf-filter {
+  margin: 0 2px 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+}
+
+.mf-filter[hidden] {
+  display: none;
+}
+
+.mf-filter-label,
+.mf-filter-count {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.mf-tag-filter {
+  width: min(44vw, 220px);
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+}
+
+.mf-tag-clear {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: transparent;
+  color: var(--text);
+}
+
 .mf-thumb {
   display: block;
   border: 1px solid var(--line);
@@ -131,6 +171,20 @@ body {
   right: 74px;
   color: #fff;
   font-size: 0.8rem;
+}
+
+#mf-overlay-caption {
+  margin: 0;
+  max-width: min(94vw, 1000px);
+  text-align: center;
+}
+
+#mf-overlay-note {
+  margin: -2px 0 0;
+  color: #d7def3;
+  max-width: min(88vw, 900px);
+  text-align: center;
+  font-size: 0.78rem;
 }
 
 .mf-close {

@@ -545,6 +545,7 @@ fn render_batch_gallery_html(
             .and_then(|name| name.to_str())
             .unwrap_or("image");
         let caption = format!("{raw_name} — {profile_stem}");
+        let tags_json = serde_json::to_string(&entry.exif.tags).unwrap_or_else(|_| "[]".into());
         let item = handlebars
             .render(
                 "item",
@@ -558,6 +559,8 @@ fn render_batch_gallery_html(
                     "shutter": entry.exif.shutter_speed.clone().unwrap_or_default(),
                     "iso": entry.exif.iso.clone().unwrap_or_default(),
                     "camera": entry.exif.camera_model.clone().unwrap_or_default(),
+                    "tags_json": tags_json,
+                    "note": entry.exif.note.clone().unwrap_or_default(),
                 }),
             )
             .with_context(|| format!("rendering batch gallery item for {}", raw_name))?;
@@ -569,6 +572,7 @@ fn render_batch_gallery_html(
         .and_then(|name| name.to_str())
         .unwrap_or("output")
         .to_string();
+    let date_summary = gallery_date_summary(entries);
     handlebars
         .render(
             "page",
@@ -577,12 +581,44 @@ fn render_batch_gallery_html(
                 "script": gallery_html_script(template),
                 "profile": profile_stem,
                 "output": output_name,
+                "title": output_name,
+                "date_summary": date_summary,
                 "columns": columns.max(1),
                 "items": gallery_items,
                 "version": env!("CARGO_PKG_VERSION"),
             }),
         )
         .with_context(|| "rendering batch gallery page".to_string())
+}
+
+fn gallery_date_summary(entries: &[GalleryEntry]) -> String {
+    let mut timestamps = entries
+        .iter()
+        .filter_map(|entry| entry.exif.capture_timestamp)
+        .collect::<Vec<_>>();
+    timestamps.sort_unstable();
+    let Some(first) = timestamps.first().copied() else {
+        return String::new();
+    };
+    let last = timestamps.last().copied().unwrap_or(first);
+    let first = format_gallery_timestamp(first);
+    let last = format_gallery_timestamp(last);
+    if first == last {
+        first
+    } else {
+        format!("{first} - {last}")
+    }
+}
+
+fn format_gallery_timestamp(timestamp: i64) -> String {
+    chrono::DateTime::from_timestamp(timestamp, 0)
+        .map(|timestamp| {
+            timestamp
+                .with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        })
+        .unwrap_or_default()
 }
 
 fn gallery_template_targets(

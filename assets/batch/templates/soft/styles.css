@@ -65,6 +65,46 @@ h1 {
   gap: 14px;
 }
 
+.mf-filter {
+  margin: -4px 0 16px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.mf-filter[hidden] {
+  display: none;
+}
+
+.mf-filter-label,
+.mf-filter-count {
+  font-size: 0.76rem;
+  color: var(--muted);
+}
+
+.mf-tag-filter {
+  width: min(42vw, 260px);
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+}
+
+.mf-tag-clear {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: transparent;
+  color: var(--text);
+}
+
 .mf-thumb {
   border: 1px solid var(--border);
   border-radius: 16px;
@@ -151,6 +191,14 @@ h1 {
   font-size: 0.92rem;
   text-align: center;
   color: #f7f5f0;
+}
+
+#mf-overlay-note {
+  margin: -2px 0 0;
+  color: #f0e8dc;
+  max-width: min(86vw, 1000px);
+  text-align: center;
+  font-size: 0.86rem;
 }
 
 .mf-close {

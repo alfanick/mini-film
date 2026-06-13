@@ -3,11 +3,18 @@ const overlayImage = document.getElementById("mf-overlay-image");
 const overlayCaption = document.getElementById("mf-overlay-caption");
 const overlayDownload = document.getElementById("mf-overlay-download");
 const overlayMeta = document.getElementById("mf-overlay-meta");
+const overlayNote = document.getElementById("mf-overlay-note");
 const closeButton = document.getElementById("mf-overlay-close");
 const nextButton = document.getElementById("mf-overlay-next");
 const prevButton = document.getElementById("mf-overlay-prev");
+const filterBox = document.getElementById("mf-filter");
+const tagFilter = document.getElementById("mf-tag-filter");
+const tagList = document.getElementById("mf-tag-list");
+const tagClear = document.getElementById("mf-tag-clear");
+const filterCount = document.getElementById("mf-filter-count");
 const thumbs = Array.from(document.querySelectorAll(".mf-thumb"));
 let currentIndex = null;
+let visibleThumbs = thumbs;
 
 function currentUrlBase() {
   return `${window.location.pathname}${window.location.search}`;
@@ -34,6 +41,28 @@ function formatExif(button) {
   ];
 
   return fields.join(" · ");
+}
+
+function tagsFor(button) {
+  try {
+    const tags = JSON.parse(button.dataset.tags || "[]");
+    return Array.isArray(tags) ? tags.map(String).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function normalizedTag(value) {
+  return String(value || "")
+    .trim()
+    .toLocaleLowerCase();
+}
+
+function tagMatches(button, query) {
+  if (!query) {
+    return true;
+  }
+  return tagsFor(button).some((tag) => normalizedTag(tag).includes(query));
 }
 
 function setOverlayHash(index) {
@@ -68,12 +97,15 @@ function openOverlayAt(index) {
   const button = thumbs[index];
   const full = button.getAttribute("data-full") || "";
   const caption = button.getAttribute("data-caption") || "";
+  const note = (button.dataset.note || "").trim();
 
   overlayImage.src = full;
   overlayImage.alt = caption;
   overlayDownload.href = full;
   overlayCaption.textContent = caption;
   overlayMeta.textContent = formatExif(button);
+  overlayNote.textContent = note;
+  overlayNote.hidden = note.length === 0;
   currentIndex = index;
   overlay.classList.add("open");
   overlay.setAttribute("aria-hidden", "false");
@@ -85,17 +117,22 @@ function closeOverlay() {
   overlay.setAttribute("aria-hidden", "true");
   overlayImage.removeAttribute("src");
   overlayMeta.textContent = "";
+  overlayNote.textContent = "";
+  overlayNote.hidden = true;
   currentIndex = null;
   setOverlayHash(null);
 }
 
 function moveOverlay(step) {
-  if (currentIndex === null || !overlay.classList.contains("open")) {
+  if (currentIndex === null || !overlay.classList.contains("open") || visibleThumbs.length === 0) {
     return;
   }
 
-  const next = (currentIndex + step + thumbs.length) % thumbs.length;
-  openOverlayAt(next);
+  const currentButton = thumbs[currentIndex];
+  const visibleIndex = visibleThumbs.indexOf(currentButton);
+  const baseIndex = visibleIndex >= 0 ? visibleIndex : 0;
+  const nextVisible = (baseIndex + step + visibleThumbs.length) % visibleThumbs.length;
+  openOverlayAt(thumbs.indexOf(visibleThumbs[nextVisible]));
 }
 
 function openOverlayFromHash() {
@@ -112,12 +149,66 @@ function openOverlayFromHash() {
   openOverlayAt(target);
 }
 
+function setupTagFilter() {
+  const tags = new Map();
+  for (const button of thumbs) {
+    for (const tag of tagsFor(button)) {
+      const key = normalizedTag(tag);
+      if (key && !tags.has(key)) {
+        tags.set(key, tag);
+      }
+    }
+  }
+  if (tags.size === 0 || !filterBox || !tagFilter || !tagList) {
+    return;
+  }
+
+  filterBox.hidden = false;
+  for (const tag of Array.from(tags.values()).sort((a, b) => a.localeCompare(b))) {
+    const option = document.createElement("option");
+    option.value = tag;
+    tagList.appendChild(option);
+  }
+  applyTagFilter();
+}
+
+function applyTagFilter() {
+  const query = normalizedTag(tagFilter?.value || "");
+  visibleThumbs = [];
+  for (const button of thumbs) {
+    const visible = tagMatches(button, query);
+    button.hidden = !visible;
+    if (visible) {
+      visibleThumbs.push(button);
+    }
+  }
+  if (filterCount) {
+    const total = thumbs.length;
+    filterCount.textContent = query ? `${visibleThumbs.length}/${total}` : `${total}`;
+  }
+  if (currentIndex !== null && thumbs[currentIndex]?.hidden) {
+    closeOverlay();
+  }
+}
+
 thumbs.forEach((button, index) => {
   button.addEventListener("click", (event) => {
     event.preventDefault();
     openOverlayAt(index);
   });
 });
+
+if (tagFilter) {
+  tagFilter.addEventListener("input", applyTagFilter);
+}
+
+if (tagClear) {
+  tagClear.addEventListener("click", () => {
+    tagFilter.value = "";
+    applyTagFilter();
+    tagFilter.focus();
+  });
+}
 
 overlay.addEventListener("click", (event) => {
   if (event.target === overlay || event.target === closeButton) {
@@ -162,4 +253,5 @@ document.addEventListener("keydown", (event) => {
 });
 
 window.addEventListener("hashchange", openOverlayFromHash);
+setupTagFilter();
 openOverlayFromHash();

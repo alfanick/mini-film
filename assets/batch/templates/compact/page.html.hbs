@@ -10,9 +10,19 @@
   <main class="mf-main">
     <section class="mf-toolbar">
       <span class="mf-kicker">mini-film</span>
-      <strong>{{profile}}</strong>
+      <strong>{{title}}</strong>
       <span class="mf-divider">•</span>
-      <span>{{output}}</span>
+      <span>{{date_summary}}</span>
+      <span class="mf-divider">•</span>
+      <span>{{profile}}</span>
+    </section>
+
+    <section class="mf-filter" id="mf-filter" hidden>
+      <label class="mf-filter-label" for="mf-tag-filter">Tag</label>
+      <input id="mf-tag-filter" class="mf-tag-filter" type="search" list="mf-tag-list" autocomplete="off" placeholder="all tags" />
+      <datalist id="mf-tag-list"></datalist>
+      <button id="mf-tag-clear" class="mf-tag-clear" type="button">Clear</button>
+      <span id="mf-filter-count" class="mf-filter-count"></span>
     </section>
 
     <section class="mf-grid" style="--columns: {{columns}}">
@@ -28,6 +38,7 @@
     <button class="mf-nav mf-next" id="mf-overlay-next" type="button" aria-label="Next">›</button>
     <img id="mf-overlay-image" src="" alt="" />
     <p id="mf-overlay-caption"></p>
+    <p id="mf-overlay-note"></p>
   </div>
 
   <script>{{{script}}}</script>

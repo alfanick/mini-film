@@ -9,6 +9,7 @@ use chrono::{DateTime, Local, NaiveDateTime, TimeZone, Utc};
 use exif::{Reader, Tag};
 use filetime::{FileTime, set_file_atime, set_file_mtime};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct GalleryExifData {
@@ -21,6 +22,10 @@ pub(crate) struct GalleryExifData {
     pub(crate) camera_model: Option<String>,
     pub(crate) lens_model: Option<String>,
     pub(crate) shooting_mode: Option<String>,
+    #[serde(default)]
+    pub(crate) tags: Vec<String>,
+    #[serde(default)]
+    pub(crate) note: Option<String>,
 }
 
 impl GalleryExifData {
@@ -33,6 +38,8 @@ impl GalleryExifData {
             && self.camera_model.is_none()
             && self.lens_model.is_none()
             && self.shooting_mode.is_none()
+            && self.tags.is_empty()
+            && self.note.is_none()
     }
 
     pub(crate) fn sanitize_text_fields(&mut self) {
@@ -43,6 +50,8 @@ impl GalleryExifData {
         clean_optional_exif_text(&mut self.camera_model);
         clean_optional_exif_text(&mut self.lens_model);
         clean_optional_exif_text(&mut self.shooting_mode);
+        clean_optional_exif_text(&mut self.note);
+        self.tags = normalize_gallery_tags(std::mem::take(&mut self.tags));
     }
 }
 
@@ -173,8 +182,8 @@ fn run_exiftool_minimal(
 }
 
 pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
-    let file = File::open(file).with_context(|| format!("opening file {}", file.display()))?;
-    let mut reader = BufReader::new(file);
+    let opened = File::open(file).with_context(|| format!("opening file {}", file.display()))?;
+    let mut reader = BufReader::new(opened);
     let exif = match Reader::new().read_from_container(&mut reader) {
         Ok(exif) => exif,
         Err(_) => return Ok(GalleryExifData::default()),
@@ -190,10 +199,18 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
     let lens_model = exif_field_value(&exif, Tag::LensModel)
         .or_else(|| exif_field_value(&exif, Tag::LensSpecification));
     let shooting_mode = exif_exposure_program(&exif);
+    let mut note = exif_field_value(&exif, Tag::ImageDescription);
+    let mut tags = Vec::new();
+    if let Some(metadata) = extract_gallery_text_metadata_with_exiftool(file) {
+        tags = metadata.tags;
+        if note.is_none() {
+            note = metadata.note;
+        }
+    }
     let capture_timestamp =
         extract_capture_time_from_exif(&exif).and_then(system_time_to_unix_seconds);
 
-    Ok(GalleryExifData {
+    let mut data = GalleryExifData {
         capture_timestamp,
         focal_length,
         aperture: aperture.map(format_exif_aperture),
@@ -202,7 +219,92 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
         camera_model,
         lens_model,
         shooting_mode,
-    })
+        tags,
+        note,
+    };
+    data.sanitize_text_fields();
+    Ok(data)
+}
+
+#[derive(Debug, Default)]
+struct GalleryTextMetadata {
+    tags: Vec<String>,
+    note: Option<String>,
+}
+
+fn extract_gallery_text_metadata_with_exiftool(file: &Path) -> Option<GalleryTextMetadata> {
+    let output = Command::new("exiftool")
+        .arg("-q")
+        .arg("-q")
+        .arg("-j")
+        .arg("-Subject")
+        .arg("-Keywords")
+        .arg("-Description")
+        .arg("-ImageDescription")
+        .arg(file)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let mut values = serde_json::from_slice::<Vec<Value>>(&output.stdout).ok()?;
+    let object = values.pop()?;
+    let tags = normalize_gallery_tags(
+        json_string_values(object.get("Subject"))
+            .into_iter()
+            .chain(json_string_values(object.get("Keywords")))
+            .collect(),
+    );
+    let note = json_first_string(object.get("Description"))
+        .or_else(|| json_first_string(object.get("ImageDescription")))
+        .map(clean_exif_display_text)
+        .filter(|value| !value.is_empty());
+    Some(GalleryTextMetadata { tags, note })
+}
+
+fn json_string_values(value: Option<&Value>) -> Vec<String> {
+    match value {
+        Some(Value::String(value)) => split_gallery_tag_text(value),
+        Some(Value::Array(values)) => values
+            .iter()
+            .flat_map(|value| json_string_values(Some(value)))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn json_first_string(value: Option<&Value>) -> Option<String> {
+    match value {
+        Some(Value::String(value)) => Some(value.clone()),
+        Some(Value::Array(values)) => values
+            .iter()
+            .find_map(|value| json_first_string(Some(value))),
+        _ => None,
+    }
+}
+
+fn split_gallery_tag_text(value: &str) -> Vec<String> {
+    value
+        .split([',', ';'])
+        .map(|value| clean_exif_display_text(value.to_string()))
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
+fn normalize_gallery_tags(tags: Vec<String>) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for tag in tags {
+        let tag = clean_exif_display_text(tag);
+        let key = tag.to_ascii_lowercase();
+        if tag.is_empty() || !seen.insert(key) {
+            continue;
+        }
+        out.push(tag);
+    }
+    out
 }
 
 fn clean_optional_exif_text(value: &mut Option<String>) {

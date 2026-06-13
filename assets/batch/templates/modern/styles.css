@@ -134,6 +134,46 @@ h1 {
   color: inherit;
 }
 
+.mf-filter {
+  margin: 0 0 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.mf-filter[hidden] {
+  display: none;
+}
+
+.mf-filter-label,
+.mf-filter-count {
+  font-size: 0.76rem;
+  color: var(--muted);
+}
+
+.mf-tag-filter {
+  width: min(42vw, 260px);
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+}
+
+.mf-tag-clear {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: transparent;
+  color: var(--text);
+}
+
 .mf-overlay {
   position: fixed;
   inset: 0;
@@ -181,6 +221,14 @@ h1 {
   overflow: hidden;
   text-overflow: ellipsis;
   text-align: center;
+}
+
+#mf-overlay-note {
+  margin: -2px 0 0;
+  color: #dce4f8;
+  max-width: min(86vw, 1100px);
+  text-align: center;
+  font-size: 0.88rem;
 }
 
 #mf-overlay-download {
