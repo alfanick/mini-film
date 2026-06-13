@@ -87,6 +87,24 @@ body {
   font: inherit;
 }
 
+.mf-tag-pill {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  font: inherit;
+  max-width: 16ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mf-tag-pill::after {
+  content: " ×";
+  color: var(--muted);
+}
+
 .mf-tag-clear {
   border: 1px solid var(--line);
   border-radius: 999px;

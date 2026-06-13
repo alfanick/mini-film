@@ -166,6 +166,24 @@ h1 {
   font: inherit;
 }
 
+.mf-tag-pill {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  font: inherit;
+  max-width: 18ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mf-tag-pill::after {
+  content: " ×";
+  color: var(--muted);
+}
+
 .mf-tag-clear {
   border: 1px solid var(--border);
   border-radius: 999px;

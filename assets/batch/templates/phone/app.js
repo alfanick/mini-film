@@ -15,6 +15,8 @@ const filterCount = document.getElementById("mf-filter-count");
 const thumbs = Array.from(document.querySelectorAll(".mf-thumb"));
 let currentIndex = null;
 let visibleThumbs = thumbs;
+let availableTags = new Map();
+let selectedTags = [];
 
 function currentUrlBase() {
   return `${window.location.pathname}${window.location.search}`;
@@ -58,11 +60,12 @@ function normalizedTag(value) {
     .toLocaleLowerCase();
 }
 
-function tagMatches(button, query) {
-  if (!query) {
+function tagMatches(button, selected) {
+  if (selected.length === 0) {
     return true;
   }
-  return tagsFor(button).some((tag) => normalizedTag(tag).includes(query));
+  const buttonTags = new Set(tagsFor(button).map(normalizedTag));
+  return selected.some((tag) => buttonTags.has(tag));
 }
 
 function setOverlayHash(index) {
@@ -150,21 +153,20 @@ function openOverlayFromHash() {
 }
 
 function setupTagFilter() {
-  const tags = new Map();
   for (const button of thumbs) {
     for (const tag of tagsFor(button)) {
       const key = normalizedTag(tag);
-      if (key && !tags.has(key)) {
-        tags.set(key, tag);
+      if (key && !availableTags.has(key)) {
+        availableTags.set(key, tag);
       }
     }
   }
-  if (tags.size === 0 || !filterBox || !tagFilter || !tagList) {
+  if (availableTags.size === 0 || !filterBox || !tagFilter || !tagList) {
     return;
   }
 
   filterBox.hidden = false;
-  for (const tag of Array.from(tags.values()).sort((a, b) => a.localeCompare(b))) {
+  for (const tag of Array.from(availableTags.values()).sort((a, b) => a.localeCompare(b))) {
     const option = document.createElement("option");
     option.value = tag;
     tagList.appendChild(option);
@@ -172,11 +174,60 @@ function setupTagFilter() {
   applyTagFilter();
 }
 
-function applyTagFilter() {
+function committedTagFromInput() {
   const query = normalizedTag(tagFilter?.value || "");
+  if (!query) {
+    return null;
+  }
+  if (availableTags.has(query)) {
+    return query;
+  }
+  const exact = Array.from(availableTags.keys()).find((tag) => tag === query);
+  if (exact) {
+    return exact;
+  }
+  return Array.from(availableTags.keys()).find((tag) => tag.includes(query)) || null;
+}
+
+function addSelectedTag(tag) {
+  if (!tag || selectedTags.includes(tag)) {
+    return;
+  }
+  selectedTags.push(tag);
+  if (tagFilter) {
+    tagFilter.value = "";
+  }
+  renderSelectedTagPills();
+  applyTagFilter();
+}
+
+function removeSelectedTag(tag) {
+  selectedTags = selectedTags.filter((selected) => selected !== tag);
+  renderSelectedTagPills();
+  applyTagFilter();
+}
+
+function renderSelectedTagPills() {
+  if (!filterBox) {
+    return;
+  }
+  filterBox.querySelectorAll(".mf-tag-pill").forEach((pill) => pill.remove());
+  const anchor = tagFilter || tagClear || filterCount;
+  for (const tag of selectedTags) {
+    const pill = document.createElement("button");
+    pill.type = "button";
+    pill.className = "mf-tag-pill";
+    pill.textContent = availableTags.get(tag) || tag;
+    pill.setAttribute("aria-label", `Remove ${pill.textContent}`);
+    pill.addEventListener("click", () => removeSelectedTag(tag));
+    filterBox.insertBefore(pill, anchor);
+  }
+}
+
+function applyTagFilter() {
   visibleThumbs = [];
   for (const button of thumbs) {
-    const visible = tagMatches(button, query);
+    const visible = tagMatches(button, selectedTags);
     button.hidden = !visible;
     if (visible) {
       visibleThumbs.push(button);
@@ -184,7 +235,7 @@ function applyTagFilter() {
   }
   if (filterCount) {
     const total = thumbs.length;
-    filterCount.textContent = query ? `${visibleThumbs.length}/${total}` : `${total}`;
+    filterCount.textContent = selectedTags.length > 0 ? `${visibleThumbs.length}/${total}` : `${total}`;
   }
   if (currentIndex !== null && thumbs[currentIndex]?.hidden) {
     closeOverlay();
@@ -199,12 +250,27 @@ thumbs.forEach((button, index) => {
 });
 
 if (tagFilter) {
-  tagFilter.addEventListener("input", applyTagFilter);
+  tagFilter.addEventListener("input", () => {
+    const exact = normalizedTag(tagFilter.value);
+    if (availableTags.has(exact)) {
+      addSelectedTag(exact);
+    }
+  });
+  tagFilter.addEventListener("change", () => addSelectedTag(committedTagFromInput()));
+  tagFilter.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") {
+      return;
+    }
+    event.preventDefault();
+    addSelectedTag(committedTagFromInput());
+  });
 }
 
 if (tagClear) {
   tagClear.addEventListener("click", () => {
+    selectedTags = [];
     tagFilter.value = "";
+    renderSelectedTagPills();
     applyTagFilter();
     tagFilter.focus();
   });
