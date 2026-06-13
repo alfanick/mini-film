@@ -1352,7 +1352,7 @@ kbd {
     right: 10px;
     bottom: 10px;
     padding: 8px;
-    max-height: min(42dvh, 360px);
+    max-height: min(48dvh, 380px);
     overflow: auto;
   }
 
@@ -1365,15 +1365,31 @@ kbd {
   }
 
   .controls {
-    grid-template-columns: max-content max-content minmax(200px, 1fr) minmax(180px, 0.9fr);
+    grid-template-columns: max-content max-content minmax(280px, 1fr);
+    gap: 5px 6px;
+  }
+
+  .notes {
+    grid-column: 1 / -1;
+  }
+
+  .notes textarea {
+    height: 28px;
+    min-height: 28px;
+    max-height: 28px;
   }
 
   .retouch {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 4px 7px;
   }
 
   .retouch label {
-    grid-template-columns: minmax(42px, 54px) minmax(0, 1fr) 34px;
+    grid-template-columns: minmax(44px, 58px) minmax(0, 1fr) 30px;
+  }
+
+  .retouch-actions {
+    justify-content: start;
   }
 }
 
