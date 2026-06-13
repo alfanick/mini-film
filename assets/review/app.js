@@ -1183,8 +1183,14 @@ function selectedProfile(image) {
 
 function selectedProfileForImage(image) {
   const profiles = image?.profiles || [];
-  const selected = profiles.find((profile) => profile.profile_index === image.selected_profile_index);
+  const selectedIndex = selectedProfileIndexForImage(image);
+  const selected = profiles.find((profile) => profile.profile_index === selectedIndex);
   return selected || profiles[0] || null;
+}
+
+function selectedProfileIndexForImage(image) {
+  if (!image) return undefined;
+  return state.pendingProfileSelections.get(image.id) ?? image.selected_profile_index;
 }
 
 function isLocalRetouchDraft(image) {
