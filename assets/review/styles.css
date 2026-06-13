@@ -796,7 +796,7 @@ button:disabled {
 
 .controls {
   display: grid;
-  grid-template-columns: max-content max-content minmax(360px, 1.15fr) minmax(260px, 1fr);
+  grid-template-columns: max-content max-content minmax(340px, 1fr) minmax(260px, 0.95fr);
   gap: 6px;
   align-items: stretch;
 }
@@ -807,7 +807,7 @@ button:disabled {
   align-items: center;
   gap: 3px;
   flex-wrap: nowrap;
-  min-height: 36px;
+  min-height: 30px;
 }
 
 .labels button {
@@ -866,21 +866,21 @@ button:disabled {
   gap: 4px;
   align-items: stretch;
   min-width: 0;
-  min-height: 36px;
+  min-height: 30px;
 }
 
 .tags span,
 .notes span {
   color: #66665f;
   font-size: 10px;
-  line-height: 36px;
+  line-height: 30px;
   text-align: right;
 }
 
 .tag-editor,
 .notes textarea {
   width: 100%;
-  min-height: 36px;
+  min-height: 30px;
   border-radius: 5px;
   border: 1px solid #c9c9c1;
   padding: 3px 5px;
@@ -892,7 +892,7 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 3px;
-  height: 36px;
+  height: 30px;
   min-width: 0;
   overflow: hidden;
 }
@@ -906,14 +906,15 @@ button:disabled {
   display: flex;
   align-content: center;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 1px 2px;
   min-width: 0;
   flex: 1 1 auto;
   max-width: none;
-  max-height: 28px;
-  overflow: hidden auto;
+  max-height: 20px;
+  overflow: auto hidden;
   scrollbar-width: thin;
+  scrollbar-gutter: stable;
 }
 
 .tag-pill {
@@ -921,14 +922,14 @@ button:disabled {
   max-width: 16ch;
   border: 1px solid #c0c0b8;
   border-radius: 1px;
-  padding: 1px 3px;
+  padding: 0 2px;
   background: #f4f4ed;
   color: #22221e;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font: inherit;
-  font-size: 10px;
+  font-size: 9px;
   line-height: 1.05;
   cursor: pointer;
 }
@@ -941,7 +942,7 @@ button:disabled {
 
 .tag-editor input {
   min-width: 48px;
-  flex: 1 0 70px;
+  flex: 0 0 64px;
   border: 0;
   outline: 0;
   background: transparent;
@@ -949,9 +950,9 @@ button:disabled {
 }
 
 .notes textarea {
-  height: 36px;
-  min-height: 36px;
-  max-height: 36px;
+  height: 30px;
+  min-height: 30px;
+  max-height: 30px;
   min-width: 0;
   resize: none;
   line-height: 1.15;
