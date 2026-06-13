@@ -71,8 +71,6 @@ pub(crate) fn run_codex_image_analysis(
         .arg("--skip-git-repo-check")
         .arg("--sandbox")
         .arg("read-only")
-        .arg("--ask-for-approval")
-        .arg("never")
         .arg("-m")
         .arg(&options.model)
         .arg("-i")
