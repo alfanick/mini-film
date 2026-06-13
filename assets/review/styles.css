@@ -796,16 +796,18 @@ button:disabled {
 
 .controls {
   display: grid;
-  grid-template-columns: auto minmax(160px, auto) minmax(150px, 0.75fr) minmax(180px, 1fr);
-  gap: 8px;
-  align-items: center;
+  grid-template-columns: max-content max-content minmax(360px, 1.15fr) minmax(260px, 1fr);
+  gap: 6px;
+  align-items: stretch;
 }
 
 .rating,
 .labels {
   display: flex;
+  align-items: center;
   gap: 3px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  min-height: 36px;
 }
 
 .labels button {
@@ -860,24 +862,28 @@ button:disabled {
 .tags,
 .notes {
   display: grid;
-  grid-template-columns: auto minmax(80px, 1fr);
-  gap: 5px;
-  align-items: center;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 4px;
+  align-items: stretch;
+  min-width: 0;
+  min-height: 36px;
 }
 
 .tags span,
 .notes span {
   color: #66665f;
   font-size: 10px;
+  line-height: 36px;
+  text-align: right;
 }
 
 .tag-editor,
 .notes textarea {
   width: 100%;
-  min-height: 30px;
+  min-height: 36px;
   border-radius: 5px;
   border: 1px solid #c9c9c1;
-  padding: 4px 6px;
+  padding: 3px 5px;
   background: #fff;
   font-size: 10px;
 }
@@ -885,8 +891,9 @@ button:disabled {
 .tag-editor {
   display: flex;
   align-items: center;
-  gap: 4px;
-  height: 30px;
+  gap: 3px;
+  height: 36px;
+  min-width: 0;
   overflow: hidden;
 }
 
@@ -904,25 +911,25 @@ button:disabled {
   min-width: 0;
   flex: 1 1 auto;
   max-width: none;
-  max-height: 19px;
+  max-height: 28px;
   overflow: hidden auto;
   scrollbar-width: thin;
 }
 
 .tag-pill {
   flex: 0 0 auto;
-  max-width: 11ch;
+  max-width: 16ch;
   border: 1px solid #c0c0b8;
   border-radius: 1px;
-  padding: 0 1px;
+  padding: 1px 3px;
   background: #f4f4ed;
   color: #22221e;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font: inherit;
-  font-size: 8px;
-  line-height: 0.95;
+  font-size: 10px;
+  line-height: 1.05;
   cursor: pointer;
 }
 
@@ -934,7 +941,7 @@ button:disabled {
 
 .tag-editor input {
   min-width: 48px;
-  flex: 0 0 58px;
+  flex: 1 0 70px;
   border: 0;
   outline: 0;
   background: transparent;
@@ -942,11 +949,13 @@ button:disabled {
 }
 
 .notes textarea {
-  height: 30px;
-  min-height: 30px;
-  max-height: 30px;
+  height: 36px;
+  min-height: 36px;
+  max-height: 36px;
+  min-width: 0;
   resize: none;
   line-height: 1.15;
+  overflow: hidden;
 }
 
 .retouch {
@@ -1355,7 +1364,7 @@ kbd {
   }
 
   .controls {
-    grid-template-columns: auto minmax(150px, auto) minmax(150px, 1fr) minmax(150px, 1fr);
+    grid-template-columns: max-content max-content minmax(200px, 1fr) minmax(180px, 0.9fr);
   }
 
   .retouch {
@@ -1616,7 +1625,7 @@ kbd {
   .controls {
     grid-template-columns: minmax(0, 1fr) minmax(0, auto);
     gap: 5px;
-    align-items: start;
+    align-items: stretch;
   }
 
   .rating,
