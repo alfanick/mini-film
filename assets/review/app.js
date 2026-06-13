@@ -31,7 +31,6 @@ const TOUCH_SWIPE_MIN_PX = 72;
 const TOUCH_SWIPE_RATIO = 1.65;
 const ZOOM_LONG_PRESS_MS = 380;
 const ZOOM_MOVE_CANCEL_PX = 22;
-const ZOOM_SCALE = 2.6;
 const WHEEL_NAV_THRESHOLD_PX = 90;
 const WHEEL_NAV_RESET_MS = 220;
 const WHEEL_NAV_COOLDOWN_MS = 260;
@@ -2479,15 +2478,17 @@ function updateZoomLoupe(clientX, clientY) {
   const top = clamp(clientY - viewerRect.top - loupeHeight / 2, 0, Math.max(0, viewerRect.height - loupeHeight));
   const relX = clamp((clientX - imageRect.left) / imageRect.width, 0, 1);
   const relY = clamp((clientY - imageRect.top) / imageRect.height, 0, 1);
-  const bgX = loupeWidth / 2 - relX * imageRect.width * ZOOM_SCALE;
-  const bgY = loupeHeight / 2 - relY * imageRect.height * ZOOM_SCALE;
+  const sourceWidth = els.image.naturalWidth || imageRect.width;
+  const sourceHeight = els.image.naturalHeight || imageRect.height;
+  const bgX = loupeWidth / 2 - relX * sourceWidth;
+  const bgY = loupeHeight / 2 - relY * sourceHeight;
   const imageUrl = els.image.currentSrc || els.image.src;
   const imageStyle = window.getComputedStyle(els.image);
 
   els.zoomLoupe.style.left = `${left}px`;
   els.zoomLoupe.style.top = `${top}px`;
   els.zoomLoupe.style.backgroundImage = `url("${cssUrl(imageUrl)}")`;
-  els.zoomLoupe.style.backgroundSize = `${imageRect.width * ZOOM_SCALE}px ${imageRect.height * ZOOM_SCALE}px`;
+  els.zoomLoupe.style.backgroundSize = `${sourceWidth}px ${sourceHeight}px`;
   els.zoomLoupe.style.backgroundPosition = `${bgX}px ${bgY}px`;
   els.zoomLoupe.style.filter = imageStyle.filter === "none" ? "" : imageStyle.filter;
 }
