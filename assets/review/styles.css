@@ -886,6 +886,7 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 4px;
+  height: 30px;
   overflow: hidden;
 }
 
@@ -896,27 +897,32 @@ button:disabled {
 
 .tag-pills {
   display: flex;
+  align-content: center;
   align-items: center;
-  gap: 3px;
+  flex-wrap: wrap;
+  gap: 2px;
   min-width: 0;
   flex: 1 1 auto;
   max-width: none;
-  overflow: auto hidden;
+  max-height: 23px;
+  overflow: hidden auto;
   scrollbar-width: thin;
 }
 
 .tag-pill {
   flex: 0 0 auto;
-  max-width: 12ch;
+  max-width: 10ch;
   border: 1px solid #c0c0b8;
   border-radius: 999px;
-  padding: 1px 6px;
+  padding: 0 4px;
   background: #f4f4ed;
   color: #22221e;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font: inherit;
+  font-size: 9px;
+  line-height: 1.1;
   cursor: pointer;
 }
 
