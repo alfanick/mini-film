@@ -900,7 +900,7 @@ button:disabled {
   align-content: center;
   align-items: center;
   flex-wrap: wrap;
-  gap: 2px;
+  gap: 1px 2px;
   min-width: 0;
   flex: 1 1 auto;
   max-width: none;
@@ -911,10 +911,10 @@ button:disabled {
 
 .tag-pill {
   flex: 0 0 auto;
-  max-width: 10ch;
+  max-width: 11ch;
   border: 1px solid #c0c0b8;
-  border-radius: 999px;
-  padding: 0 4px;
+  border-radius: 2px;
+  padding: 0 2px;
   background: #f4f4ed;
   color: #22221e;
   overflow: hidden;
@@ -922,13 +922,14 @@ button:disabled {
   white-space: nowrap;
   font: inherit;
   font-size: 9px;
-  line-height: 1.1;
+  line-height: 1;
   cursor: pointer;
 }
 
 .tag-pill::after {
-  content: " ×";
+  content: "×";
   color: #7a7a70;
+  padding-left: 2px;
 }
 
 .tag-editor input {
