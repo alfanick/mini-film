@@ -1,3 +1,4 @@
+use super::model::{ReviewCodexJobKey, ReviewCodexScheduler, ScheduledCodexJob};
 use super::prelude::*;
 
 const REVIEW_RETOUCH_DEBOUNCE: Duration = Duration::from_secs(2);
@@ -105,6 +106,38 @@ impl ReviewRetouchScheduler {
                 .wait_timeout(state, timeout)
                 .unwrap_or_else(|poison| poison.into_inner());
             state = next_state;
+        }
+    }
+}
+
+impl ReviewCodexScheduler {
+    pub(super) fn schedule(&self, raw: PathBuf, analysis_key: String) {
+        let key = ReviewCodexJobKey { raw: raw.clone() };
+        let job = ScheduledCodexJob { raw, analysis_key };
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        state.pending.insert(key, job);
+        self.changed.notify_one();
+    }
+
+    pub(super) fn next_job(&self) -> ScheduledCodexJob {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        loop {
+            if let Some(key) = state.pending.keys().next().cloned() {
+                return state
+                    .pending
+                    .remove(&key)
+                    .expect("pending Codex job still exists");
+            }
+            state = self
+                .changed
+                .wait(state)
+                .unwrap_or_else(|poison| poison.into_inner());
         }
     }
 }

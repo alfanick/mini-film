@@ -21,6 +21,13 @@ const fields = {
   progressiveJpeg: document.getElementById("progressiveJpeg"),
   noGrain: document.getElementById("noGrain"),
   lensCorrections: document.getElementById("lensCorrections"),
+  codex: document.getElementById("codex"),
+  codexTags: document.getElementById("codexTags"),
+  codexNote: document.getElementById("codexNote"),
+  codexRating: document.getElementById("codexRating"),
+  codexBinary: document.getElementById("codexBinary"),
+  codexModel: document.getElementById("codexModel"),
+  codexTimeout: document.getElementById("codexTimeout"),
 };
 
 const form = document.getElementById("wizard");
@@ -79,6 +86,13 @@ function requestFromForm() {
     progressiveJpeg: fields.progressiveJpeg.checked,
     noGrain: fields.noGrain.checked,
     lensCorrections: fields.lensCorrections.checked,
+    codex: fields.codex.checked,
+    codexTags: fields.codexTags.checked,
+    codexNote: fields.codexNote.checked,
+    codexRating: fields.codexRating.checked,
+    codexBinary: fields.codexBinary.value.trim(),
+    codexModel: fields.codexModel.value.trim(),
+    codexTimeout: numericValue(fields.codexTimeout),
   };
 }
 
@@ -112,6 +126,13 @@ async function loadDefaults() {
   fields.progressiveJpeg.checked = Boolean(defaults.progressiveJpeg);
   fields.noGrain.checked = Boolean(defaults.noGrain);
   fields.lensCorrections.checked = Boolean(defaults.lensCorrections);
+  fields.codex.checked = Boolean(defaults.codex);
+  fields.codexTags.checked = Boolean(defaults.codexTags);
+  fields.codexNote.checked = Boolean(defaults.codexNote);
+  fields.codexRating.checked = Boolean(defaults.codexRating);
+  setIfEmpty(fields.codexBinary, defaults.codexBinary);
+  setIfEmpty(fields.codexModel, defaults.codexModel);
+  setIfEmpty(fields.codexTimeout, String(defaults.codexTimeout));
 }
 
 function directoryTitle(fieldName) {

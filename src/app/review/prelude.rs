@@ -26,9 +26,10 @@ pub(super) use crate::app::review_assets::{
 pub(super) use crate::{
     app::apply::{ApplyArgs, ApplyJob, apply_resolved, resolve_grain_override, run_apply},
     app::batch::{FolderGalleryOptions, render_gallery_for_folder},
+    app::codex::{CodexAnalysisOptions, CodexAnalysisResult, run_codex_image_analysis},
     app::export::validate_export_options,
     app::profile::resolve_profile,
     app::retouch::{BasicRetouchAdjustments, RetouchSettings},
     app::timestamps::{GalleryExifData, extract_gallery_exif},
-    cli::{BatchOutputFormat, ExportOptions, GalleryTemplate, LensCorrections},
+    cli::{BatchOutputFormat, CodexAnalysisFlags, ExportOptions, GalleryTemplate, LensCorrections},
 };

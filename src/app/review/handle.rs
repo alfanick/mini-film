@@ -32,6 +32,15 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
         &config.export,
         gallery_defaults,
     );
+    let codex = config
+        .codex
+        .filter(|flags| flags.is_enabled())
+        .map(|flags| ReviewCodexConfig {
+            flags,
+            codex_binary: config.codex_binary,
+            model: config.codex_model,
+            timeout: config.codex_timeout,
+        });
     let (subscribers, _) = broadcast::channel(256);
     let handle = ReviewHandle {
         state: Arc::new(Mutex::new(store)),
@@ -58,6 +67,8 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
         publish_jobs: Arc::new(Mutex::new(Vec::new())),
         next_publish_job_id: Arc::new(Mutex::new(1)),
         retouch_scheduler: Arc::new(ReviewRetouchScheduler::default()),
+        codex,
+        codex_scheduler: Arc::new(ReviewCodexScheduler::default()),
     };
     handle.append_history(history_server_started(
         &handle.input_root,
@@ -80,6 +91,8 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
         })
         .context("starting daemon review server thread")?;
     handle.start_retouch_scheduler()?;
+    handle.start_codex_scheduler()?;
+    handle.schedule_ready_codex_jobs()?;
 
     Ok(handle)
 }
@@ -178,11 +191,15 @@ impl ReviewHandle {
     }
 
     pub(super) fn record_preview_done(&self, raw: &Path, output: &Path) -> Result<()> {
-        self.update_preview(raw, |preview| {
+        let result = self.update_preview(raw, |preview| {
             preview.status = ReviewRenderStatus::Done;
             preview.path = Some(output.to_path_buf());
             preview.error = None;
-        })
+        });
+        if result.is_ok() {
+            self.maybe_schedule_codex_for_raw(raw)?;
+        }
+        result
     }
 
     pub(super) fn record_preview_failed(&self, raw: &Path, error: &str) -> Result<()> {
@@ -277,6 +294,9 @@ impl ReviewHandle {
                 render_key,
             );
         }
+        if result.is_ok() {
+            self.maybe_schedule_codex_for_raw(raw)?;
+        }
         result
     }
 
@@ -288,7 +308,7 @@ impl ReviewHandle {
         duration: Duration,
         error: &str,
     ) -> Result<()> {
-        self.update_render(raw, profile_index, |render| {
+        let result = self.update_render(raw, profile_index, |render| {
             if render.render_key.is_some()
                 && matches!(
                     render.status,
@@ -303,7 +323,11 @@ impl ReviewHandle {
             }
             render.error = Some(error.to_string());
             render.duration_ms = Some(duration.as_millis() as u64);
-        })
+        });
+        if result.is_ok() {
+            self.maybe_schedule_codex_for_raw(raw)?;
+        }
+        result
     }
 
     pub(super) fn update_render<F>(&self, raw: &Path, profile_index: usize, update: F) -> Result<()>
@@ -428,6 +452,244 @@ impl ReviewHandle {
             })
             .context("starting review retouch scheduler thread")?;
         Ok(())
+    }
+
+    pub(super) fn start_codex_scheduler(&self) -> Result<()> {
+        if self.codex.is_none() {
+            return Ok(());
+        }
+        let handle = self.clone();
+        thread::Builder::new()
+            .name("mini-film-review-codex".to_string())
+            .spawn(move || {
+                loop {
+                    let job = handle.codex_scheduler.next_job();
+                    handle.run_scheduled_codex_job(job);
+                }
+            })
+            .context("starting review Codex scheduler thread")?;
+        Ok(())
+    }
+
+    pub(super) fn schedule_ready_codex_jobs(&self) -> Result<()> {
+        let Some(config) = &self.codex else {
+            return Ok(());
+        };
+        let raws = {
+            let store = self.lock_store()?;
+            store
+                .images
+                .iter()
+                .filter_map(|image| {
+                    codex_analysis_key_for_image(image, config)
+                        .map(|key| (image.raw_path.clone(), key))
+                })
+                .collect::<Vec<_>>()
+        };
+        for (raw, key) in raws {
+            self.queue_codex_job(raw, key)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn maybe_schedule_codex_for_raw(&self, raw: &Path) -> Result<()> {
+        let Some(config) = &self.codex else {
+            return Ok(());
+        };
+        let key = {
+            let store = self.lock_store()?;
+            let Some(image) = store.images.iter().find(|image| image.raw_path == raw) else {
+                return Ok(());
+            };
+            codex_analysis_key_for_image_with_config(image, config)
+        };
+        if let Some(key) = key {
+            self.queue_codex_job(raw.to_path_buf(), key)?;
+        }
+        Ok(())
+    }
+
+    fn queue_codex_job(&self, raw: PathBuf, analysis_key: String) -> Result<()> {
+        let Some(config) = &self.codex else {
+            return Ok(());
+        };
+        let mut history_entry = None;
+        let mut should_schedule = false;
+        let mut store = self.lock_store()?;
+        if let Some(image) = store.images.iter_mut().find(|image| image.raw_path == raw) {
+            if image.codex.analysis_key.as_deref() == Some(&analysis_key)
+                && matches!(
+                    image.codex.status,
+                    ReviewCodexStatus::Queued
+                        | ReviewCodexStatus::Processing
+                        | ReviewCodexStatus::Done
+                )
+            {
+                return Ok(());
+            }
+            let before = image.codex.clone();
+            image.codex.status = ReviewCodexStatus::Queued;
+            image.codex.flags = config.flags;
+            image.codex.model = config.model.clone();
+            image.codex.analysis_key = Some(analysis_key.clone());
+            image.codex.error = None;
+            image.codex.updated_at = now_string();
+            image.updated_at = now_string();
+            history_entry = history_codex_changed(image, &before, &image.codex);
+            should_schedule = true;
+            save_store(&self.state_path, &store)?;
+        }
+        drop(store);
+        if let Some(entry) = history_entry {
+            self.append_history(entry)?;
+        }
+        if should_schedule {
+            self.broadcast_state()?;
+            self.codex_scheduler.schedule(raw, analysis_key);
+        }
+        Ok(())
+    }
+
+    pub(super) fn run_scheduled_codex_job(&self, job: ScheduledCodexJob) {
+        let Some(config) = self.codex.clone() else {
+            return;
+        };
+        let snapshot = self.codex_task_snapshot(&job.raw, &job.analysis_key);
+        let Ok(Some((preview, options))) = snapshot else {
+            return;
+        };
+        if self
+            .record_codex_processing(&job.raw, &job.analysis_key)
+            .is_err()
+        {
+            return;
+        }
+        let result = run_codex_image_analysis(&preview, &options);
+        match result {
+            Ok(result) => {
+                let _ = self.record_codex_done(&job.raw, &job.analysis_key, result, &config);
+            }
+            Err(error) => {
+                let _ =
+                    self.record_codex_failed(&job.raw, &job.analysis_key, &format!("{error:#}"));
+            }
+        }
+    }
+
+    fn codex_task_snapshot(
+        &self,
+        raw: &Path,
+        analysis_key: &str,
+    ) -> Result<Option<(PathBuf, CodexAnalysisOptions)>> {
+        let Some(config) = &self.codex else {
+            return Ok(None);
+        };
+        let store = self.lock_store()?;
+        let Some(image) = store.images.iter().find(|image| image.raw_path == raw) else {
+            return Ok(None);
+        };
+        if image.codex.analysis_key.as_deref() != Some(analysis_key) {
+            return Ok(None);
+        }
+        if !matches!(
+            image.codex.status,
+            ReviewCodexStatus::Queued | ReviewCodexStatus::Processing
+        ) {
+            return Ok(None);
+        }
+        if image.preview.status != ReviewRenderStatus::Done {
+            return Ok(None);
+        }
+        let Some(preview) = image.preview.path.clone().filter(|path| path.is_file()) else {
+            return Ok(None);
+        };
+        Ok(Some((
+            preview,
+            CodexAnalysisOptions {
+                codex_binary: config.codex_binary.clone(),
+                model: config.model.clone(),
+                timeout: config.timeout,
+                flags: config.flags,
+            },
+        )))
+    }
+
+    fn record_codex_processing(&self, raw: &Path, analysis_key: &str) -> Result<()> {
+        self.update_codex_if_key(raw, analysis_key, |codex, _image| {
+            codex.status = ReviewCodexStatus::Processing;
+            codex.error = None;
+        })
+    }
+
+    fn record_codex_done(
+        &self,
+        raw: &Path,
+        analysis_key: &str,
+        result: CodexAnalysisResult,
+        config: &ReviewCodexConfig,
+    ) -> Result<()> {
+        self.update_codex_if_key(raw, analysis_key, |codex, image| {
+            if config.flags.tags && image.tags_source != ReviewMetadataSource::Manual {
+                image.tags = normalize_tags(result.tags.clone());
+                image.tags_source = ReviewMetadataSource::Codex;
+            }
+            if config.flags.note
+                && image.notes_source != ReviewMetadataSource::Manual
+                && let Some(note) = result.note.clone()
+            {
+                image.notes = note;
+                image.notes_source = ReviewMetadataSource::Codex;
+            }
+            if config.flags.rating
+                && image.rating_source != ReviewMetadataSource::Manual
+                && let Some(rating) = result.rating
+            {
+                image.rating = rating.min(5);
+                image.rating_source = ReviewMetadataSource::Codex;
+            }
+            codex.status = ReviewCodexStatus::Done;
+            codex.error = None;
+        })
+    }
+
+    fn record_codex_failed(&self, raw: &Path, analysis_key: &str, error: &str) -> Result<()> {
+        self.update_codex_if_key(raw, analysis_key, |codex, _image| {
+            codex.status = ReviewCodexStatus::Failed;
+            codex.error = Some(error.to_string());
+        })
+    }
+
+    fn update_codex_if_key<F>(&self, raw: &Path, analysis_key: &str, update: F) -> Result<()>
+    where
+        F: FnOnce(&mut ReviewCodexAnalysis, &mut ReviewImage),
+    {
+        let mut history_entries = Vec::new();
+        let mut store = self.lock_store()?;
+        let Some(image) = store.images.iter_mut().find(|image| image.raw_path == raw) else {
+            return Ok(());
+        };
+        if image.codex.analysis_key.as_deref() != Some(analysis_key) {
+            return Ok(());
+        }
+        let before_image = image.clone();
+        let before_codex = image.codex.clone();
+        let mut codex = std::mem::take(&mut image.codex);
+        update(&mut codex, image);
+        codex.updated_at = now_string();
+        image.codex = codex;
+        image.updated_at = now_string();
+        if let Some(entry) = history_codex_changed(image, &before_codex, &image.codex) {
+            history_entries.push(entry);
+        }
+        if let Some(entry) = history_review_changed(&before_image, image) {
+            history_entries.push(entry);
+        }
+        save_store(&self.state_path, &store)?;
+        drop(store);
+        for entry in history_entries {
+            self.append_history(entry)?;
+        }
+        self.broadcast_state()
     }
 
     pub(super) fn run_scheduled_retouch_job(&self, job: ScheduledRetouchJob) {
@@ -614,6 +876,9 @@ impl ReviewHandle {
                 );
             }
             let before_image = image.clone();
+            let before_rating = image.rating;
+            let before_tags = image.tags.clone();
+            let before_notes = image.notes.clone();
             image.rating = update.rating.min(5);
             image.labels = if update.labels.is_empty() {
                 normalize_review_labels([update.label])
@@ -623,6 +888,15 @@ impl ReviewHandle {
             image.label = first_review_label(&image.labels);
             image.tags = normalize_tags(update.tags);
             image.notes = update.notes.trim().to_string();
+            if image.rating != before_rating {
+                image.rating_source = ReviewMetadataSource::Manual;
+            }
+            if image.tags != before_tags {
+                image.tags_source = ReviewMetadataSource::Manual;
+            }
+            if image.notes != before_notes {
+                image.notes_source = ReviewMetadataSource::Manual;
+            }
             let retouch_changed = update
                 .retouch
                 .as_ref()
@@ -718,6 +992,7 @@ impl ReviewHandle {
         let store = self.lock_store()?;
         let mut images = store.images.clone();
         sort_review_images(&mut images);
+        let codex_summary = review_codex_summary(&images);
         let images = images
             .iter()
             .map(|image| {
@@ -762,6 +1037,16 @@ impl ReviewHandle {
                     "labels": image_review_labels(image),
                     "tags": image.tags,
                     "notes": image.notes,
+                    "rating_source": image.rating_source,
+                    "tags_source": image.tags_source,
+                    "notes_source": image.notes_source,
+                    "codex": {
+                        "status": image.codex.status,
+                        "flags": image.codex.flags,
+                        "model": image.codex.model,
+                        "error": image.codex.error,
+                        "updated_at": image.codex.updated_at,
+                    },
                     "retouch": image.retouch,
                     "publish_profile_indexes": effective_publish_profile_indexes(image),
                     "profiles": profiles,
@@ -774,6 +1059,15 @@ impl ReviewHandle {
             "version": env!("CARGO_PKG_VERSION"),
             "profiles": store.profiles,
             "client_count": client_count,
+            "codex": {
+                "enabled": self.codex.is_some(),
+                "flags": self.codex.as_ref().map(|config| config.flags),
+                "model": self.codex.as_ref().map(|config| config.model.clone()),
+                "queued": codex_summary.queued,
+                "processing": codex_summary.processing,
+                "done": codex_summary.done,
+                "failed": codex_summary.failed,
+            },
             "publish_defaults": self.publish_defaults,
             "publish_jobs": self.publish_jobs_snapshot()?,
             "ui": {
@@ -1097,6 +1391,72 @@ impl ReviewHandle {
             .lock()
             .map_err(|_| anyhow!("review state lock poisoned"))
     }
+}
+
+fn codex_analysis_key_for_image(image: &ReviewImage, config: &ReviewCodexConfig) -> Option<String> {
+    codex_analysis_key_for_image_with_config(image, config)
+}
+
+fn codex_analysis_key_for_image_with_config(
+    image: &ReviewImage,
+    config: &ReviewCodexConfig,
+) -> Option<String> {
+    if !config.flags.is_enabled() || image.preview.status != ReviewRenderStatus::Done {
+        return None;
+    }
+    let preview = image.preview.path.as_ref()?;
+    if !preview.is_file() || !review_image_renders_terminal(image) {
+        return None;
+    }
+
+    let mut hasher = Sha1::new();
+    hasher.update(image.raw_path.to_string_lossy().as_bytes());
+    hasher.update(b"\0");
+    hasher.update(preview.to_string_lossy().as_bytes());
+    hasher.update(b"\0");
+    hasher.update(image.preview.updated_at.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(config.flags.key().as_bytes());
+    hasher.update(b"\0");
+    hasher.update(config.model.as_bytes());
+    let digest = hasher.finalize();
+    let hex = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Some(format!("codex-v1-{hex}"))
+}
+
+fn review_image_renders_terminal(image: &ReviewImage) -> bool {
+    !image.profiles.is_empty()
+        && image.profiles.iter().all(|render| {
+            matches!(
+                render.status,
+                ReviewRenderStatus::Done | ReviewRenderStatus::Failed
+            ) && render.render_key.is_none()
+        })
+}
+
+#[derive(Default)]
+struct ReviewCodexSummary {
+    queued: u64,
+    processing: u64,
+    done: u64,
+    failed: u64,
+}
+
+fn review_codex_summary(images: &[ReviewImage]) -> ReviewCodexSummary {
+    let mut summary = ReviewCodexSummary::default();
+    for image in images {
+        match image.codex.status {
+            ReviewCodexStatus::Queued => summary.queued += 1,
+            ReviewCodexStatus::Processing => summary.processing += 1,
+            ReviewCodexStatus::Done => summary.done += 1,
+            ReviewCodexStatus::Failed => summary.failed += 1,
+            ReviewCodexStatus::Missing | ReviewCodexStatus::Skipped => {}
+        }
+    }
+    summary
 }
 
 pub(super) fn handle_gallery_defaults(

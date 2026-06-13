@@ -230,6 +230,10 @@ fn main() -> Result<()> {
             nikon_wtu_name,
             nikon_wtu_guid,
             review_address,
+            codex,
+            codex_binary,
+            codex_model,
+            codex_timeout,
             gallery,
             gallery_thumbnail_long_edge,
             gallery_columns,
@@ -265,6 +269,10 @@ fn main() -> Result<()> {
             nikon_wtu_name,
             nikon_wtu_guid,
             review_address,
+            codex: codex.filter(|flags| flags.is_enabled()),
+            codex_binary,
+            codex_model,
+            codex_timeout,
             gallery,
             gallery_thumbnail_long_edge,
             gallery_columns,
@@ -409,6 +417,7 @@ const RAWTHERAPEE_BINARY: &str = "rawtherapee-cli";
 const CONVERT_BINARY: &str = "convert";
 const EXIFTOOL_BINARY: &str = "exiftool";
 const CURL_BINARY: &str = "curl";
+const CODEX_BINARY: &str = "codex";
 
 fn startup_dependency_check(args: &[String]) -> Result<()> {
     let command = active_command_for_dependency_check(args);
@@ -424,14 +433,19 @@ fn startup_dependency_check(args: &[String]) -> Result<()> {
     };
     let needs_update_externals =
         matches!(command, Some("update")) || (help_mode && command.is_none());
+    let needs_codex = matches!(command, Some("daemon"))
+        && args
+            .iter()
+            .any(|arg| arg == "--codex" || arg.starts_with("--codex="));
 
-    if !needs_image_externals && !needs_update_externals {
+    if !needs_image_externals && !needs_update_externals && !needs_codex {
         return Ok(());
     }
 
     let rawtherapee = resolve_dependency_path(args, "--rawtherapee", RAWTHERAPEE_BINARY);
     let convert = resolve_dependency_path(args, "--convert", CONVERT_BINARY);
     let exiftool = resolve_dependency_path(args, "--exiftool", EXIFTOOL_BINARY);
+    let codex = resolve_dependency_path(args, "--codex-binary", CODEX_BINARY);
     let curl = PathBuf::from(CURL_BINARY);
 
     let mut failures = Vec::new();
@@ -447,6 +461,9 @@ fn startup_dependency_check(args: &[String]) -> Result<()> {
         }
     }
     if needs_update_externals && let Err(error) = verify_dependency_binary("curl", &curl) {
+        failures.push(error.to_string());
+    }
+    if needs_codex && let Err(error) = verify_dependency_binary("codex", &codex) {
         failures.push(error.to_string());
     }
     if failures.is_empty() {
@@ -654,6 +671,34 @@ mod tests {
             convert.display().to_string(),
             "--exiftool".to_string(),
             exiftool.display().to_string(),
+        ];
+        assert!(startup_dependency_check(&args).is_ok());
+    }
+
+    #[test]
+    fn startup_dependency_check_requires_codex_only_when_enabled() {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let root = tempfile::tempdir_in(cwd).unwrap();
+        let rawtherapee = write_helper_binary(&root.path().join("rawtherapee-cli"), 0);
+        let convert = write_helper_binary(&root.path().join("convert"), 0);
+        let exiftool = write_helper_binary(&root.path().join("exiftool"), 0);
+        let codex = write_helper_binary(&root.path().join("codex"), 0);
+        let args = vec![
+            "mini-film".to_string(),
+            "daemon".to_string(),
+            "in".to_string(),
+            "out".to_string(),
+            "--profile".to_string(),
+            "profile".to_string(),
+            "--rawtherapee".to_string(),
+            rawtherapee.display().to_string(),
+            "--convert".to_string(),
+            convert.display().to_string(),
+            "--exiftool".to_string(),
+            exiftool.display().to_string(),
+            "--codex".to_string(),
+            "--codex-binary".to_string(),
+            codex.display().to_string(),
         ];
         assert!(startup_dependency_check(&args).is_ok());
     }

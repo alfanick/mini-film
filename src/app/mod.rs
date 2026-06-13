@@ -2,6 +2,7 @@ pub(crate) mod apply;
 pub(crate) mod batch;
 pub(crate) mod batch_assets;
 pub(crate) mod batch_daemon;
+pub(crate) mod codex;
 pub(crate) mod desktop;
 pub(crate) mod export;
 pub(crate) mod info;

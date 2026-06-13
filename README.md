@@ -32,6 +32,9 @@ For scripted use, every part of the workflow is still available as CLI commands:
   browser UI, review new pictures as they arrive, rate/tag/label them in
   multiple passes, compare profile variants, and publish the final selection
   with live job progress.
+- **Optional Codex review assist**: let Codex analyze small embedded RAW
+  previews after rendering finishes and fill tags, notes, or initial ratings
+  while the live review UI shows the same queued/processing status indicators.
 - **Film emulation from user-supplied profiles**: apply XMP emulation presets,
   Hald CLUT PNGs, or RawTherapee `.pp3` files; convert Adobe Camera Raw /
   Lightroom `crs:RGBTable` profile XMPs into cached 16-bit Hald PNGs.
@@ -98,9 +101,9 @@ mini-film
 ```
 
 The app wizard defaults to `~/Pictures/Scratch/Inbox` for input,
-`~/Pictures/mini-film` for output, and `~/Pictures/RNI` as the profile-library
-root unless `MINI_FILM_PROFILES_ROOT` is set. It remembers the last successful
-setup in `~/.cache/mini-film/app-settings.json`.
+`~/Pictures/mini-film` for output, and `MINI_FILM_PROFILES_ROOT` or the selected
+profiles root for profile lookup. It remembers the last successful setup in
+`~/.cache/mini-film/app-settings.json`.
 
 Use Nikon WTU ingest with the same daemon:
 
@@ -148,6 +151,7 @@ Required external dependencies at startup for image-generation commands:
 - `rawtherapee-cli`
 - `convert` (ImageMagick/GraphicsMagick)
 - `exiftool`
+- `codex` only when daemon review analysis is enabled with `--codex`
 
 The `update` command also requires `curl` for downloading the Lensfun database.
 
@@ -421,6 +425,37 @@ draft preview while edits are being made, then queues a high-quality
 RawTherapee/mini-film render and swaps in the finished output when it is ready.
 Crop and rotation are persisted with the review state and are used by publish
 rerenders.
+
+Optional Codex analysis can run after each RAW has a camera preview and its
+configured profile renders have finished:
+
+```sh
+mini-film daemon \
+  /path/to/inbox \
+  /path/to/output \
+  --profile 'Classic Film' \
+  --profiles-root /path/to/profile-library \
+  --review-address 0.0.0.0:8090 \
+  --codex tags,note
+```
+
+`--codex` without a value defaults to tags only. Explicit values are
+comma-separated: `tags`, `note`, `rating`, or `all`. Tags are normalized into the
+same tag field used by manual review. Notes are one-sentence descriptions.
+Ratings use a conservative `0` to `3` scale where `0` means technically
+unusable, `1` technically correct, `2` interesting, and `3` truly good. Manual
+edits always win: once a user changes tags, notes, or rating, later Codex
+results do not overwrite that field. While analysis is queued or running, the
+existing review sidebar status dot/text and the main profile status line show
+the Codex state.
+
+The default model is `gpt-5.4-mini`; override it or the binary path with:
+
+```sh
+--codex-model gpt-5.4-mini
+--codex-binary codex
+--codex-timeout 45
+```
 
 Publishing opens a wizard that acts as a browser frontend for a spawned
 `mini-film review-publish` job. The wizard can filter by rating, color label,

@@ -24,6 +24,10 @@ pub(crate) struct ReviewConfig {
     pub(crate) grain: Option<String>,
     pub(crate) grain_preset: Option<String>,
     pub(crate) grain_seed: Option<u64>,
+    pub(crate) codex: Option<CodexAnalysisFlags>,
+    pub(crate) codex_binary: PathBuf,
+    pub(crate) codex_model: String,
+    pub(crate) codex_timeout: Duration,
 }
 
 #[derive(Clone, Debug)]
@@ -68,6 +72,8 @@ pub(crate) struct ReviewHandle {
     pub(super) publish_jobs: Arc<Mutex<Vec<ReviewPublishJob>>>,
     pub(super) next_publish_job_id: Arc<Mutex<u64>>,
     pub(super) retouch_scheduler: Arc<ReviewRetouchScheduler>,
+    pub(super) codex: Option<ReviewCodexConfig>,
+    pub(super) codex_scheduler: Arc<ReviewCodexScheduler>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -107,11 +113,97 @@ pub(super) struct ReviewImage {
     #[serde(default)]
     pub(super) notes: String,
     #[serde(default)]
+    pub(super) rating_source: ReviewMetadataSource,
+    #[serde(default)]
+    pub(super) tags_source: ReviewMetadataSource,
+    #[serde(default)]
+    pub(super) notes_source: ReviewMetadataSource,
+    #[serde(default)]
+    pub(super) codex: ReviewCodexAnalysis,
+    #[serde(default)]
     pub(super) retouch: RetouchSettings,
     #[serde(default)]
     pub(super) publish_profile_indexes: Option<Vec<usize>>,
     pub(super) profiles: Vec<ReviewProfileRender>,
     pub(super) updated_at: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(super) enum ReviewMetadataSource {
+    #[default]
+    Default,
+    Codex,
+    Manual,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct ReviewCodexAnalysis {
+    pub(super) status: ReviewCodexStatus,
+    #[serde(default)]
+    pub(super) flags: CodexAnalysisFlags,
+    #[serde(default)]
+    pub(super) model: String,
+    #[serde(default)]
+    pub(super) analysis_key: Option<String>,
+    #[serde(default)]
+    pub(super) error: Option<String>,
+    pub(super) updated_at: String,
+}
+
+impl Default for ReviewCodexAnalysis {
+    fn default() -> Self {
+        Self {
+            status: ReviewCodexStatus::Missing,
+            flags: CodexAnalysisFlags::none(),
+            model: String::new(),
+            analysis_key: None,
+            error: None,
+            updated_at: now_string(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(super) enum ReviewCodexStatus {
+    #[default]
+    Missing,
+    Queued,
+    Processing,
+    Done,
+    Failed,
+    Skipped,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct ReviewCodexConfig {
+    pub(super) flags: CodexAnalysisFlags,
+    pub(super) codex_binary: PathBuf,
+    pub(super) model: String,
+    pub(super) timeout: Duration,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) struct ReviewCodexJobKey {
+    pub(super) raw: PathBuf,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct ScheduledCodexJob {
+    pub(super) raw: PathBuf,
+    pub(super) analysis_key: String,
+}
+
+#[derive(Default)]
+pub(super) struct ReviewCodexScheduler {
+    pub(super) state: Mutex<ReviewCodexSchedulerState>,
+    pub(super) changed: Condvar,
+}
+
+#[derive(Default)]
+pub(super) struct ReviewCodexSchedulerState {
+    pub(super) pending: HashMap<ReviewCodexJobKey, ScheduledCodexJob>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]

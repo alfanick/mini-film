@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
+use serde::{Deserialize, Serialize};
 
 const DEFAULT_HALD_LEVEL: u32 = 16;
 
@@ -512,6 +513,30 @@ pub(crate) enum CommandKind {
         #[arg(long)]
         review_address: Option<String>,
 
+        /// Analyze rendered pictures with Codex using embedded RAW previews.
+        ///
+        /// Without an explicit value, generates tags only. Optionally pass a
+        /// comma-separated list of: `tags`, `note`, `rating`, or `all`.
+        ///
+        /// Examples:
+        /// - `--codex`
+        /// - `--codex tags,note`
+        /// - `--codex all`
+        #[arg(long, num_args = 0..=1, value_parser = parse_codex_analysis_arg, default_missing_value = "tags")]
+        codex: Option<CodexAnalysisFlags>,
+
+        /// Path to codex CLI binary for --codex review analysis.
+        #[arg(long, default_value = "codex")]
+        codex_binary: PathBuf,
+
+        /// Codex model used for --codex review analysis.
+        #[arg(long, default_value = "gpt-5.4-mini")]
+        codex_model: String,
+
+        /// Timeout in seconds for each --codex image analysis.
+        #[arg(long, default_value_t = 45)]
+        codex_timeout: u64,
+
         /// Default gallery template for review publish jobs.
         #[arg(long = "gallery", value_enum)]
         gallery: Option<GalleryTemplate>,
@@ -713,6 +738,61 @@ pub(crate) enum JpegSubsampling {
     S420,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct CodexAnalysisFlags {
+    pub(crate) tags: bool,
+    pub(crate) note: bool,
+    pub(crate) rating: bool,
+}
+
+impl CodexAnalysisFlags {
+    pub(crate) const fn tags_only() -> Self {
+        Self {
+            tags: true,
+            note: false,
+            rating: false,
+        }
+    }
+
+    pub(crate) const fn all() -> Self {
+        Self {
+            tags: true,
+            note: true,
+            rating: true,
+        }
+    }
+
+    pub(crate) const fn none() -> Self {
+        Self {
+            tags: false,
+            note: false,
+            rating: false,
+        }
+    }
+
+    pub(crate) const fn is_enabled(self) -> bool {
+        self.tags || self.note || self.rating
+    }
+
+    pub(crate) fn key(self) -> String {
+        let mut parts = Vec::new();
+        if self.tags {
+            parts.push("tags");
+        }
+        if self.note {
+            parts.push("note");
+        }
+        if self.rating {
+            parts.push("rating");
+        }
+        if parts.is_empty() {
+            "none".to_string()
+        } else {
+            parts.join("+")
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct LensCorrections {
     pub(crate) distortion: bool,
@@ -791,6 +871,69 @@ impl GalleryTemplate {
     pub(crate) fn is_all(self) -> bool {
         matches!(self, GalleryTemplate::All)
     }
+}
+
+fn parse_codex_analysis_arg(raw: &str) -> Result<CodexAnalysisFlags, String> {
+    parse_codex_analysis(raw)
+}
+
+fn parse_codex_analysis(raw: &str) -> Result<CodexAnalysisFlags, String> {
+    if raw.trim().is_empty() {
+        return Err("--codex value cannot be empty".to_string());
+    }
+    let trimmed = raw.trim().to_ascii_lowercase();
+    if matches!(trimmed.as_str(), "tags" | "tag") {
+        return Ok(CodexAnalysisFlags::tags_only());
+    }
+
+    let mut flags = CodexAnalysisFlags::none();
+    let mut saw_token = false;
+    let mut seen_disabled = false;
+    let mut seen_enabled = false;
+    for token in raw.split(',') {
+        let token = token.trim().to_ascii_lowercase();
+        if token.is_empty() {
+            return Err("--codex contains an empty token".to_string());
+        }
+        saw_token = true;
+        match token.as_str() {
+            "all" => {
+                flags = CodexAnalysisFlags::all();
+                seen_enabled = true;
+            }
+            "tags" | "tag" => {
+                flags.tags = true;
+                seen_enabled = true;
+            }
+            "note" | "notes" | "description" => {
+                flags.note = true;
+                seen_enabled = true;
+            }
+            "rating" | "rate" => {
+                flags.rating = true;
+                seen_enabled = true;
+            }
+            "none" | "off" => {
+                seen_disabled = true;
+            }
+            _ => {
+                return Err(format!(
+                    "unsupported --codex token {token:?}; expected tags,note,rating,all"
+                ));
+            }
+        }
+    }
+
+    if saw_token && seen_disabled && seen_enabled {
+        return Err("--codex cannot mix disabled and enabled values".to_string());
+    }
+    if seen_disabled {
+        return Ok(CodexAnalysisFlags::none());
+    }
+    if !saw_token {
+        return Err("--codex requires at least one token".to_string());
+    }
+    Ok(flags)
 }
 
 fn parse_lens_corrections_arg(raw: &str) -> Result<LensCorrections, String> {
@@ -1220,6 +1363,71 @@ mod tests {
             }
             _ => panic!("wrong command"),
         }
+    }
+
+    #[test]
+    fn cli_codex_defaults_to_tags_and_accepts_explicit_fields() {
+        let cli = Cli::parse_from([
+            "mini-film",
+            "daemon",
+            "input-dir",
+            "output-dir",
+            "--profile",
+            "profile",
+            "--review-address",
+            "127.0.0.1:8090",
+            "--codex",
+        ]);
+        match cli.command {
+            CommandKind::BatchDaemon {
+                codex: Some(flags), ..
+            } => {
+                assert!(flags.tags);
+                assert!(!flags.note);
+                assert!(!flags.rating);
+            }
+            _ => panic!("wrong command"),
+        }
+
+        let cli = Cli::parse_from([
+            "mini-film",
+            "daemon",
+            "input-dir",
+            "output-dir",
+            "--profile",
+            "profile",
+            "--review-address",
+            "127.0.0.1:8090",
+            "--codex=tags,note,rating",
+        ]);
+        match cli.command {
+            CommandKind::BatchDaemon {
+                codex: Some(flags), ..
+            } => {
+                assert!(flags.tags);
+                assert!(flags.note);
+                assert!(flags.rating);
+            }
+            _ => panic!("wrong command"),
+        }
+    }
+
+    #[test]
+    fn cli_codex_rejects_unknown_tokens() {
+        let error = Cli::try_parse_from([
+            "mini-film",
+            "daemon",
+            "input-dir",
+            "output-dir",
+            "--profile",
+            "profile",
+            "--codex",
+            "faces",
+        ])
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("unsupported --codex token \"faces\""));
     }
 
     #[test]

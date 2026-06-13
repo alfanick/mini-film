@@ -170,6 +170,26 @@ pub(super) fn history_render_changed(
     (!entry.is_empty()).then_some(entry)
 }
 
+pub(super) fn history_codex_changed(
+    image: &ReviewImage,
+    before: &ReviewCodexAnalysis,
+    after: &ReviewCodexAnalysis,
+) -> Option<HistoryEntry> {
+    let mut entry = HistoryEntry::new(format!(
+        "review Codex changed {} #{}",
+        image.relative_path, image.id
+    ));
+    entry.change(
+        "status",
+        codex_status_text(before.status),
+        codex_status_text(after.status),
+    );
+    entry.change("flags", before.flags.key(), after.flags.key());
+    entry.change("model", quoted(&before.model), quoted(&after.model));
+    entry.optional_change("error", before.error.as_deref(), after.error.as_deref());
+    (!entry.is_empty()).then_some(entry)
+}
+
 pub(super) fn history_review_changed(
     before: &ReviewImage,
     after: &ReviewImage,
@@ -318,6 +338,17 @@ fn render_status_text(status: ReviewRenderStatus) -> &'static str {
         ReviewRenderStatus::Processing => "processing",
         ReviewRenderStatus::Done => "done",
         ReviewRenderStatus::Failed => "failed",
+    }
+}
+
+fn codex_status_text(status: ReviewCodexStatus) -> &'static str {
+    match status {
+        ReviewCodexStatus::Missing => "missing",
+        ReviewCodexStatus::Queued => "queued",
+        ReviewCodexStatus::Processing => "processing",
+        ReviewCodexStatus::Done => "done",
+        ReviewCodexStatus::Failed => "failed",
+        ReviewCodexStatus::Skipped => "skipped",
     }
 }
 

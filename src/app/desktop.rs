@@ -27,7 +27,8 @@ mod enabled {
             util::{default_hald_dir, half_cpu_thread_count},
         },
         cli::{
-            BatchOutputFormat, ExportOptions, GalleryTemplate, JpegSubsampling, LensCorrections,
+            BatchOutputFormat, CodexAnalysisFlags, ExportOptions, GalleryTemplate, JpegSubsampling,
+            LensCorrections,
         },
     };
 
@@ -64,6 +65,13 @@ mod enabled {
         progressive_jpeg: bool,
         no_grain: bool,
         lens_corrections: bool,
+        codex: bool,
+        codex_tags: bool,
+        codex_note: bool,
+        codex_rating: bool,
+        codex_binary: String,
+        codex_model: String,
+        codex_timeout: u64,
     }
 
     #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -90,6 +98,13 @@ mod enabled {
         progressive_jpeg: bool,
         no_grain: bool,
         lens_corrections: bool,
+        codex: bool,
+        codex_tags: bool,
+        codex_note: bool,
+        codex_rating: bool,
+        codex_binary: String,
+        codex_model: String,
+        codex_timeout: Option<u64>,
     }
 
     #[derive(Clone, Debug, Serialize)]
@@ -158,6 +173,13 @@ mod enabled {
                 progressive_jpeg: false,
                 no_grain: false,
                 lens_corrections: true,
+                codex: false,
+                codex_tags: true,
+                codex_note: false,
+                codex_rating: false,
+                codex_binary: "codex".to_string(),
+                codex_model: "gpt-5.4-mini".to_string(),
+                codex_timeout: 45,
             }
         }
 
@@ -184,6 +206,13 @@ mod enabled {
             self.progressive_jpeg = saved.progressive_jpeg;
             self.no_grain = saved.no_grain;
             self.lens_corrections = saved.lens_corrections;
+            self.codex = saved.codex;
+            self.codex_tags = saved.codex_tags;
+            self.codex_note = saved.codex_note;
+            self.codex_rating = saved.codex_rating;
+            self.codex_binary = saved_string(saved.codex_binary, self.codex_binary);
+            self.codex_model = saved_string(saved.codex_model, self.codex_model);
+            self.codex_timeout = saved.codex_timeout.unwrap_or(self.codex_timeout);
             self
         }
     }
@@ -330,6 +359,29 @@ mod enabled {
                 self.publish_album.trim().to_string()
             };
             let grain_preset = optional_string(&self.grain_preset);
+            let codex_flags = if self.codex {
+                let mut flags = CodexAnalysisFlags {
+                    tags: self.codex_tags,
+                    note: self.codex_note,
+                    rating: self.codex_rating,
+                };
+                if !flags.is_enabled() {
+                    flags = CodexAnalysisFlags::tags_only();
+                }
+                Some(flags)
+            } else {
+                None
+            };
+            let codex_binary = if codex_flags.is_some() {
+                required_path("Codex binary", &self.codex_binary)?
+            } else {
+                optional_path(&self.codex_binary).unwrap_or_else(|| PathBuf::from("codex"))
+            };
+            let codex_model = if self.codex_model.trim().is_empty() {
+                "gpt-5.4-mini".to_string()
+            } else {
+                self.codex_model.trim().to_string()
+            };
 
             Ok(BatchDaemonArgs {
                 input,
@@ -357,6 +409,10 @@ mod enabled {
                 nikon_wtu_name: None,
                 nikon_wtu_guid: None,
                 review_address: Some(review_address),
+                codex: codex_flags,
+                codex_binary,
+                codex_model,
+                codex_timeout: self.codex_timeout.unwrap_or(45),
                 gallery,
                 gallery_thumbnail_long_edge: 1024,
                 gallery_columns: 4,
@@ -386,6 +442,9 @@ mod enabled {
         verify_dependency_binary("rawtherapee-cli", &args.rawtherapee)?;
         verify_dependency_binary("convert", &args.convert)?;
         verify_dependency_binary("exiftool", Path::new("exiftool"))?;
+        if args.codex.is_some() {
+            verify_dependency_binary("codex", &args.codex_binary)?;
+        }
 
         for profile in &args.profile {
             profile_info_text_for_selector(
@@ -469,7 +528,7 @@ mod enabled {
             }
         }
 
-        if let Some(default) = default_user_path(&["Pictures", "RNI"]) {
+        if let Some(default) = default_user_path(&["Pictures", "profile-library"]) {
             return default;
         }
 

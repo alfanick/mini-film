@@ -724,8 +724,9 @@ function render() {
   const profileCount = state.data?.profiles?.length || 0;
   const clientCount = state.data?.client_count || 0;
   const publishSummary = latestPublishJobSummary();
+  const codexSummary = codexSummaryText();
   els.appVersion.textContent = `mini-film ${state.data?.version || ""}`.trim();
-  els.status.textContent = `${images.length}/${total} pictures | ${profileCount} ${plural(profileCount, "profile")} | ${clientCount} ${plural(clientCount, "client")}${publishSummary ? ` | ${publishSummary}` : ""}`;
+  els.status.textContent = `${images.length}/${total} pictures | ${profileCount} ${plural(profileCount, "profile")} | ${clientCount} ${plural(clientCount, "client")}${codexSummary ? ` | ${codexSummary}` : ""}${publishSummary ? ` | ${publishSummary}` : ""}`;
   updatePublishStatus();
   renderList(images);
   let current = findImage(state.currentId);
@@ -757,6 +758,18 @@ function latestPublishJobSummary() {
   }
   if (job.status === "done") return `published ${job.linked} files`;
   return `publish failed`;
+}
+
+function codexSummaryText() {
+  const codex = state.data?.codex;
+  if (!codex?.enabled) return "";
+  const processing = Number(codex.processing || 0);
+  const queued = Number(codex.queued || 0);
+  const failed = Number(codex.failed || 0);
+  if (processing > 0) return `codex analyzing ${processing}${queued > 0 ? ` queued ${queued}` : ""}`;
+  if (queued > 0) return `codex queued ${queued}`;
+  if (failed > 0) return `codex failed ${failed}`;
+  return "";
 }
 
 function publishProgressPercent(job) {
@@ -959,6 +972,8 @@ function renderProgressSummary(image) {
       title: "retouch draft preview is local; server render will queue after edits settle",
     };
   }
+  const codexState = codexProgressState(image);
+  if (codexState) return codexState;
   if (total === 0) {
     return {
       state: "waiting",
@@ -1022,6 +1037,32 @@ function renderProgressSummary(image) {
   };
 }
 
+function codexProgressState(image) {
+  const status = image?.codex?.status;
+  if (status === "processing") {
+    return {
+      state: "processing",
+      text: "codex",
+      title: "Codex image analysis is running",
+    };
+  }
+  if (status === "queued") {
+    return {
+      state: "queued",
+      text: "codex",
+      title: "Codex image analysis is queued",
+    };
+  }
+  if (status === "failed") {
+    return {
+      state: "failed",
+      text: "codex",
+      title: `Codex image analysis failed${image.codex.error ? `: ${image.codex.error}` : ""}`,
+    };
+  }
+  return null;
+}
+
 function renderCurrent(image) {
   if (!image) {
     stopZoom();
@@ -1045,13 +1086,16 @@ function renderCurrent(image) {
   const mainUrl = selected?.url || image.preview_url;
   const previewNote = selected?.url ? "" : image.preview_url ? " | camera preview" : "";
   const selectedState = profileDisplayState(image, selected);
+  const codexState = currentCodexStateText(image);
   if (state.cropDraftImageId !== null && state.cropDraftImageId !== image.id) {
     clearCropDraftState();
   }
   els.title.textContent = image.file_name;
   els.subtitle.textContent = `${image.relative_path} | rating ${image.rating}`;
   renderImageExif(image);
-  els.profileState.textContent = selected ? `${selected.profile_stem}: ${selectedState.text}${previewNote}` : "";
+  els.profileState.textContent = selected
+    ? `${selected.profile_stem}: ${selectedState.text}${previewNote}${codexState ? ` | ${codexState}` : ""}`
+    : codexState;
   const imageChanged = state.lastInputImageId !== image.id;
   if (imageChanged || document.activeElement !== els.tags) {
     els.tags.value = image.tags.join(", ");
@@ -1084,6 +1128,14 @@ function renderCurrent(image) {
   renderProfiles(image);
   updateMobileActionLabels(image);
   preloadNearbyImages(image);
+}
+
+function currentCodexStateText(image) {
+  const status = image?.codex?.status;
+  if (status === "processing") return "Codex analyzing";
+  if (status === "queued") return "Codex queued";
+  if (status === "failed") return "Codex failed";
+  return "";
 }
 
 function renderImageExif(image) {

@@ -34,7 +34,9 @@ use crate::app::review::{
 };
 use crate::app::system_stats::{ResourceUsageSummary, sample_usage_block};
 use crate::app::util::{half_cpu_thread_count, is_supported_raw_file, time_of_day_seed};
-use crate::cli::{BatchOutputFormat, ExportOptions, GalleryTemplate, LensCorrections};
+use crate::cli::{
+    BatchOutputFormat, CodexAnalysisFlags, ExportOptions, GalleryTemplate, LensCorrections,
+};
 use indicatif::{MultiProgress, ProgressBar};
 
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(75);
@@ -62,6 +64,10 @@ pub(crate) struct BatchDaemonArgs {
     pub(crate) nikon_wtu_name: Option<String>,
     pub(crate) nikon_wtu_guid: Option<String>,
     pub(crate) review_address: Option<String>,
+    pub(crate) codex: Option<CodexAnalysisFlags>,
+    pub(crate) codex_binary: PathBuf,
+    pub(crate) codex_model: String,
+    pub(crate) codex_timeout: u64,
     pub(crate) gallery: Option<GalleryTemplate>,
     pub(crate) gallery_thumbnail_long_edge: u32,
     pub(crate) gallery_columns: u32,
@@ -250,6 +256,11 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
     }
     fs::create_dir_all(&args.output)
         .with_context(|| format!("creating {}", args.output.display()))?;
+    if args.codex.is_some() && args.review_address.is_none() {
+        bail!(
+            "--codex requires --review-address so generated ratings, tags, and notes can be stored in review state"
+        );
+    }
 
     let debounce = Duration::from_secs(args.debounce_seconds);
     let temp_dir = Builder::new().prefix("mini-film-daemon-").tempdir()?;
@@ -314,6 +325,10 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
             grain: args.grain.clone(),
             grain_preset: args.grain_preset.clone(),
             grain_seed: Some(base_seed),
+            codex: args.codex,
+            codex_binary: args.codex_binary.clone(),
+            codex_model: args.codex_model.clone(),
+            codex_timeout: Duration::from_secs(args.codex_timeout),
         })?)
     } else {
         None
@@ -1389,6 +1404,10 @@ mod tests {
             nikon_wtu_name: None,
             nikon_wtu_guid: None,
             review_address: None,
+            codex: None,
+            codex_binary: PathBuf::from("codex"),
+            codex_model: "gpt-5.4-mini".to_string(),
+            codex_timeout: 45,
             gallery: None,
             gallery_thumbnail_long_edge: 1024,
             gallery_columns: 4,
@@ -1506,6 +1525,10 @@ mod tests {
             nikon_wtu_name: None,
             nikon_wtu_guid: None,
             review_address: None,
+            codex: None,
+            codex_binary: PathBuf::from("codex"),
+            codex_model: "gpt-5.4-mini".to_string(),
+            codex_timeout: 45,
             gallery: None,
             gallery_thumbnail_long_edge: 1024,
             gallery_columns: 4,

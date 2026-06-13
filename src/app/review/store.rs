@@ -27,6 +27,7 @@ impl ReviewStore {
         self.profiles = profiles;
         let profiles = self.profiles.clone();
         for image in &mut self.images {
+            normalize_review_metadata_sources(image);
             if matches!(
                 image.preview.status,
                 ReviewRenderStatus::Queued | ReviewRenderStatus::Processing
@@ -47,6 +48,7 @@ impl ReviewStore {
     pub(super) fn refresh_missing_exif_data(&mut self) {
         for image in &mut self.images {
             refresh_image_exif_data(image);
+            normalize_review_metadata_sources(image);
         }
         self.normalize_ui();
     }
@@ -88,6 +90,10 @@ impl ReviewStore {
             labels: Vec::new(),
             tags: Vec::new(),
             notes: String::new(),
+            rating_source: ReviewMetadataSource::Default,
+            tags_source: ReviewMetadataSource::Default,
+            notes_source: ReviewMetadataSource::Default,
+            codex: ReviewCodexAnalysis::default(),
             retouch: RetouchSettings::default(),
             publish_profile_indexes: None,
             profiles: Vec::new(),
@@ -162,6 +168,18 @@ impl ReviewStore {
             .collect::<Vec<_>>();
         sort_review_image_refs(&mut images);
         images.into_iter().map(|image| image.id).collect()
+    }
+}
+
+fn normalize_review_metadata_sources(image: &mut ReviewImage) {
+    if image.rating_source == ReviewMetadataSource::Default && image.rating > 0 {
+        image.rating_source = ReviewMetadataSource::Manual;
+    }
+    if image.tags_source == ReviewMetadataSource::Default && !image.tags.is_empty() {
+        image.tags_source = ReviewMetadataSource::Manual;
+    }
+    if image.notes_source == ReviewMetadataSource::Default && !image.notes.trim().is_empty() {
+        image.notes_source = ReviewMetadataSource::Manual;
     }
 }
 
