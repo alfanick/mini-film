@@ -384,50 +384,6 @@ pub(super) fn normalize_tags(tags: Vec<String>) -> Vec<String> {
     normalized
 }
 
-pub(super) fn review_tags_from_store(store: &ReviewStore) -> Vec<String> {
-    normalize_tags(
-        store
-            .images
-            .iter()
-            .flat_map(|image| image.tags.iter().cloned())
-            .collect(),
-    )
-}
-
-pub(super) fn merged_review_tag_cache(tags: Vec<String>) -> Vec<String> {
-    let mut merged = load_review_tag_cache().unwrap_or_default();
-    merged.extend(tags);
-    normalize_tags(merged)
-}
-
-pub(super) fn merge_review_tag_cache(tags: Vec<String>) -> Result<()> {
-    let merged = merged_review_tag_cache(tags);
-    let path = review_tag_cache_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-    }
-    let text = serde_json::to_string_pretty(&merged).context("serializing review tag cache")?;
-    let temp = path.with_extension("json.tmp");
-    fs::write(&temp, text).with_context(|| format!("writing {}", temp.display()))?;
-    fs::rename(&temp, &path)
-        .with_context(|| format!("renaming {} to {}", temp.display(), path.display()))
-}
-
-fn load_review_tag_cache() -> Result<Vec<String>> {
-    let path = review_tag_cache_path();
-    if !path.is_file() {
-        return Ok(Vec::new());
-    }
-    let text = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    let tags = serde_json::from_str::<Vec<String>>(&text)
-        .with_context(|| format!("parsing {}", path.display()))?;
-    Ok(normalize_tags(tags))
-}
-
-fn review_tag_cache_path() -> PathBuf {
-    default_mini_film_cache_dir().join("review-tags.json")
-}
-
 pub(super) fn review_label_name(label: ReviewLabel) -> &'static str {
     match label {
         ReviewLabel::None => "none",

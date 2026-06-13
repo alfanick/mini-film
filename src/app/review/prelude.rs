@@ -32,5 +32,4 @@ pub(super) use crate::{
     app::retouch::{BasicRetouchAdjustments, RetouchSettings},
     app::timestamps::{GalleryExifData, extract_gallery_exif},
     cli::{BatchOutputFormat, CodexAnalysisFlags, ExportOptions, GalleryTemplate, LensCorrections},
-    util::default_mini_film_cache_dir,
 };

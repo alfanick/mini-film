@@ -22,7 +22,6 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
     let mut store = load_store(&state_path)?.unwrap_or_else(|| ReviewStore::new(Vec::new()));
     store.sync_profiles(config.profiles);
     store.refresh_missing_exif_data();
-    merge_review_tag_cache(review_tags_from_store(&store))?;
     save_store(&state_path, &store)?;
     let history_profiles = store.profiles.clone();
 
@@ -852,7 +851,6 @@ impl ReviewHandle {
     pub(super) fn apply_review_update(&self, update: ReviewUpdateRequest) -> Result<()> {
         let mut retouch_jobs = Vec::new();
         let mut history_entries = Vec::new();
-        let mut tag_cache_update = None;
         let mut store = self.lock_store()?;
         let before_ui = store.ui.clone();
         let advance = update
@@ -895,7 +893,6 @@ impl ReviewHandle {
             }
             if image.tags != before_tags {
                 image.tags_source = ReviewMetadataSource::Manual;
-                tag_cache_update = Some(image.tags.clone());
             }
             if image.notes != before_notes {
                 image.notes_source = ReviewMetadataSource::Manual;
@@ -967,9 +964,6 @@ impl ReviewHandle {
         }
         save_store(&self.state_path, &store)?;
         drop(store);
-        if let Some(tags) = tag_cache_update {
-            merge_review_tag_cache(tags)?;
-        }
         for entry in history_entries {
             self.append_history(entry)?;
         }
@@ -1064,7 +1058,6 @@ impl ReviewHandle {
         serde_json::to_string(&json!({
             "version": env!("CARGO_PKG_VERSION"),
             "profiles": store.profiles,
-            "tag_cache": merged_review_tag_cache(review_tags_from_store(&store)),
             "client_count": client_count,
             "codex": {
                 "enabled": self.codex.is_some(),

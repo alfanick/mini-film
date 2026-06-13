@@ -56,15 +56,12 @@ pub fn half_cpu_thread_count() -> usize {
 }
 
 pub fn default_hald_dir() -> PathBuf {
-    default_mini_film_cache_dir().join("hald")
-}
-
-pub fn default_mini_film_cache_dir() -> PathBuf {
     env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".cache")
         .join("mini-film")
+        .join("hald")
 }
 
 #[cfg(test)]

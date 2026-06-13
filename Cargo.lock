@@ -2660,7 +2660,7 @@ dependencies = [
 
 [[package]]
 name = "mini-film"
-version = "10.2.11"
+version = "11.0.0"
 dependencies = [
  "anyhow",
  "async-stream",

@@ -22,7 +22,6 @@ const state = {
   gestureFeedbackTimer: null,
   retouchInputImageId: null,
   retouchClipboard: null,
-  selectedTags: [],
   localRetouchDirty: false,
   mobileDrawer: null,
 };
@@ -205,20 +204,13 @@ function ControlsShell() {
       "label",
       { class: "tags" },
       h("span", null, "Tags"),
-      h(
-        "div",
-        { id: "tag-editor", class: "tag-editor" },
-        h("div", { id: "tag-pills", class: "tag-pills" }),
-        h("input", { id: "tag-entry", type: "text", list: "tag-cache", autocomplete: "off", placeholder: "add tag" }),
-        h("datalist", { id: "tag-cache" }),
-        h("input", { id: "tags", type: "hidden" }),
-      ),
+      h("input", { id: "tags", type: "text", inputMode: "numeric", autocomplete: "off", placeholder: "12, 42, 108" }),
     ),
     h(
       "label",
       { class: "notes" },
       h("span", null, "Notes"),
-      h("textarea", { id: "notes", rows: "2", autocomplete: "off", placeholder: "optional note" }),
+      h("input", { id: "notes", type: "text", autocomplete: "off", placeholder: "optional note" }),
     ),
     h(
       "section",
@@ -613,9 +605,6 @@ const els = {
   controls: document.querySelector(".controls"),
   imageExif: document.getElementById("image-exif"),
   tags: document.getElementById("tags"),
-  tagEntry: document.getElementById("tag-entry"),
-  tagPills: document.getElementById("tag-pills"),
-  tagCache: document.getElementById("tag-cache"),
   notes: document.getElementById("notes"),
   retouchGrid: document.getElementById("retouch-grid"),
   cropOverlay: document.getElementById("crop-overlay"),
@@ -1085,7 +1074,7 @@ function renderCurrent(image) {
     els.profileState.textContent = "";
     els.imageExif.replaceChildren();
     preactRender(null, els.profiles);
-    setTagEditorTags([]);
+    els.tags.value = "";
     els.notes.value = "";
     state.lastInputImageId = null;
     setActiveReviewButtons(null);
@@ -1108,8 +1097,8 @@ function renderCurrent(image) {
     ? `${selected.profile_stem}: ${selectedState.text}${previewNote}${codexState ? ` | ${codexState}` : ""}`
     : codexState;
   const imageChanged = state.lastInputImageId !== image.id;
-  if (imageChanged || !tagEditorHasFocus()) {
-    setTagEditorTags(image.tags || []);
+  if (imageChanged || document.activeElement !== els.tags) {
+    els.tags.value = image.tags.join(", ");
   }
   if (imageChanged || document.activeElement !== els.notes) {
     els.notes.value = image.notes || "";
@@ -1138,7 +1127,6 @@ function renderCurrent(image) {
   renderCropOverlay(image);
   renderProfiles(image);
   updateMobileActionLabels(image);
-  renderTagCacheOptions();
   preloadNearbyImages(image);
 }
 
@@ -1617,108 +1605,11 @@ function LabelBadges({ labels }) {
   );
 }
 
-function tagEditorHasFocus() {
-  return document.activeElement === els.tagEntry || document.activeElement?.closest?.(".tag-editor");
-}
-
-function tagKey(tag) {
-  return String(tag || "")
-    .trim()
-    .toLocaleLowerCase();
-}
-
-function normalizedTagList(tags) {
-  const seen = new Set();
-  const out = [];
-  for (const tag of tags || []) {
-    const value = String(tag || "").trim();
-    const key = tagKey(value);
-    if (!value || seen.has(key)) continue;
-    seen.add(key);
-    out.push(value);
-  }
-  return out;
-}
-
-function tagSuggestions() {
-  const tags = new Map();
-  for (const tag of state.data?.tag_cache || []) {
-    const key = tagKey(tag);
-    if (key && !tags.has(key)) tags.set(key, String(tag).trim());
-  }
-  for (const image of state.data?.images || []) {
-    for (const tag of image.tags || []) {
-      const key = tagKey(tag);
-      if (key && !tags.has(key)) tags.set(key, String(tag).trim());
-    }
-  }
-  return Array.from(tags.values()).sort((a, b) => a.localeCompare(b));
-}
-
-function renderTagCacheOptions() {
-  if (!els.tagCache) return;
-  els.tagCache.replaceChildren(
-    ...tagSuggestions().map((tag) => {
-      const option = document.createElement("option");
-      option.value = tag;
-      return option;
-    }),
-  );
-}
-
-function setTagEditorTags(tags) {
-  state.selectedTags = normalizedTagList(tags);
-  els.tags.value = state.selectedTags.join(", ");
-  renderTagPills();
-}
-
-function renderTagPills() {
-  if (!els.tagPills) return;
-  els.tagPills.replaceChildren(
-    ...state.selectedTags.map((tag) => {
-      const pill = document.createElement("button");
-      pill.type = "button";
-      pill.className = "tag-pill";
-      pill.textContent = tag;
-      pill.title = `Remove ${tag}`;
-      pill.setAttribute("aria-label", `Remove tag ${tag}`);
-      pill.addEventListener("click", () => {
-        setTagEditorTags(state.selectedTags.filter((selected) => selected !== tag));
-        scheduleAutosave();
-        els.tagEntry.focus();
-      });
-      return pill;
-    }),
-  );
-  els.tagPills.scrollLeft = els.tagPills.scrollWidth;
-}
-
-function tagTokensFromText(raw) {
-  return normalizedTagList(String(raw || "").split(/[,\s]+/));
-}
-
-function commitTagEntry(options = {}) {
-  const raw = els.tagEntry.value.trim();
-  if (!raw) {
-    if (options.removeLastWhenEmpty && state.selectedTags.length > 0) {
-      setTagEditorTags(state.selectedTags.slice(0, -1));
-      return true;
-    }
-    return false;
-  }
-  const suggestions = tagSuggestions();
-  const nextTags = tagTokensFromText(raw).map((tag) => {
-    const key = tagKey(tag);
-    return suggestions.find((suggestion) => tagKey(suggestion) === key) || tag;
-  });
-  setTagEditorTags([...state.selectedTags, ...nextTags]);
-  els.tagEntry.value = "";
-  return true;
-}
-
 function currentTags() {
-  commitTagEntry();
-  return tagTokensFromText(els.tags.value);
+  return els.tags.value
+    .split(/[,\s]+/)
+    .map((tag) => tag.trim())
+    .filter(Boolean);
 }
 
 function defaultRetouch() {
@@ -2663,31 +2554,10 @@ document.querySelectorAll(".labels button[data-label]").forEach((button) => {
   });
 });
 
-els.tagEntry.addEventListener("change", () => {
-  if (commitTagEntry()) saveReview();
-});
-els.tagEntry.addEventListener("input", () => {
-  if (/[,\s]$/.test(els.tagEntry.value)) {
-    if (commitTagEntry()) scheduleAutosave();
-    return;
-  }
-  const key = tagKey(els.tagEntry.value);
-  const exact = tagSuggestions().find((tag) => tagKey(tag) === key);
-  if (exact) {
-    setTagEditorTags([...state.selectedTags, exact]);
-    els.tagEntry.value = "";
-    scheduleAutosave();
-  }
-});
-els.tagEntry.addEventListener("paste", () => {
-  requestAnimationFrame(() => {
-    if (commitTagEntry()) scheduleAutosave();
-  });
-});
-els.tagEntry.addEventListener("blur", () => {
-  if (commitTagEntry()) saveReview();
-});
-els.tagEntry.addEventListener("keydown", confirmTagsInput);
+els.tags.addEventListener("change", () => saveReview());
+els.tags.addEventListener("blur", () => saveReview());
+els.tags.addEventListener("input", scheduleAutosave);
+els.tags.addEventListener("keydown", confirmTagsInput);
 els.notes.addEventListener("change", () => saveReview());
 els.notes.addEventListener("blur", () => saveReview());
 els.notes.addEventListener("input", scheduleAutosave);
@@ -2779,22 +2649,8 @@ function confirmMetadataInput(event) {
 }
 
 function confirmTagsInput(event) {
-  if (event.key === "Backspace" && els.tagEntry.value.length === 0) {
-    if (commitTagEntry({ removeLastWhenEmpty: true })) {
-      event.preventDefault();
-      scheduleAutosave();
-    }
-    return;
-  }
-  if (event.key === "," || event.key === "Tab") {
-    if (!els.tagEntry.value.trim()) return;
-    event.preventDefault();
-    if (commitTagEntry()) scheduleAutosave();
-    return;
-  }
   if (event.key !== "Enter") return;
   event.preventDefault();
-  commitTagEntry();
   clearTimeout(autosaveTimer);
   event.currentTarget.blur();
   move(1).catch((error) => console.error(error));
@@ -2888,7 +2744,7 @@ window.addEventListener("keydown", (event) => {
     }
     return;
   }
-  if (event.target === els.tagEntry) return;
+  if (event.target === els.tags) return;
   if (event.target === els.notes) return;
   if (event.target === els.minRating) return;
   if (event.key === "Escape" && state.mobileDrawer) {
@@ -2903,7 +2759,7 @@ window.addEventListener("keydown", (event) => {
   }
   if (event.key === ",") {
     event.preventDefault();
-    focusMetadataInput(els.tagEntry);
+    focusMetadataInput(els.tags);
     return;
   }
   if (event.key === "/") {
