@@ -843,13 +843,8 @@ function updateViewerSafeArea() {
   const workspaceRect = els.workspace.getBoundingClientRect();
   const panelRect = els.panel.getBoundingClientRect();
   const panelSafe = Math.max(0, Math.ceil(workspaceRect.bottom - panelRect.top));
-  const profileSafe =
-    els.profiles.parentElement === els.workspace
-      ? Math.max(0, Math.ceil(workspaceRect.right - els.profiles.getBoundingClientRect().left))
-      : 0;
 
   els.workspace.style.setProperty("--review-panel-safe", `${panelSafe}px`);
-  els.workspace.style.setProperty("--review-profile-safe", `${profileSafe}px`);
   if (!els.retouchGrid.hidden) positionRetouchGrid();
   if (!els.cropOverlay.hidden) positionCropOverlay();
   if (!els.gestureFeedback.hidden) positionGestureFeedback();

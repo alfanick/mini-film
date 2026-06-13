@@ -362,7 +362,6 @@ button:disabled {
 
 .workspace {
   --review-panel-safe: 0px;
-  --review-profile-safe: 0px;
   --review-viewer-edge: 12px;
 
   min-width: 0;
@@ -380,7 +379,7 @@ button:disabled {
   position: relative;
   display: grid;
   place-items: center;
-  padding: var(--review-viewer-edge) calc(var(--review-profile-safe) + var(--review-viewer-edge))
+  padding: var(--review-viewer-edge) var(--review-viewer-edge)
     calc(var(--review-panel-safe) + var(--review-viewer-edge)) var(--review-viewer-edge);
   background: #20201f;
   overflow: hidden;
@@ -1300,16 +1299,12 @@ kbd {
 }
 
 @media (min-width: 901px) and (min-height: 620px) {
-  .panel {
-    right: calc(clamp(160px, 14vw, 240px) + 24px);
-  }
-
   .profiles {
     position: fixed;
     top: 12px;
     right: 12px;
-    bottom: 12px;
-    z-index: 6;
+    bottom: calc(var(--review-panel-safe) + 12px);
+    z-index: 4;
     width: clamp(160px, 14vw, 240px);
     grid-template-columns: 1fr;
     align-content: start;
