@@ -573,7 +573,7 @@ fn review_update_advances_shared_server_ui_state() {
             tags: vec!["keep".to_string()],
             notes: String::new(),
             retouch: None,
-            selected_profile_index: 0,
+            selected_profile_index: Some(0),
             publish_profile_indexes: Some(vec![0, 1]),
             advance_after_update: true,
         })
@@ -593,7 +593,7 @@ fn review_update_advances_shared_server_ui_state() {
             tags: Vec::new(),
             notes: String::new(),
             retouch: None,
-            selected_profile_index: 0,
+            selected_profile_index: Some(0),
             publish_profile_indexes: Some(vec![0, 1]),
             advance_after_update: true,
         })
@@ -603,6 +603,59 @@ fn review_update_advances_shared_server_ui_state() {
         serde_json::from_str::<serde_json::Value>(&handle.api_state_json().unwrap()).unwrap();
     assert_eq!(state["ui"]["current_image_id"], 1);
     assert_eq!(state["ui"]["min_rating"], 1);
+}
+
+#[test]
+fn review_update_without_profile_selection_preserves_current_profile() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(input.join("day")).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let raw = input.join("day").join("frame-1.NEF");
+    fs::write(&raw, b"raw").unwrap();
+
+    let handle = test_handle(
+        input,
+        output,
+        vec![profile(0, "Classic"), profile(1, "Fade")],
+    );
+    handle.record_discovered_raw(&raw).unwrap();
+    handle
+        .apply_review_update(ReviewUpdateRequest {
+            image_id: 1,
+            rating: 3,
+            label: ReviewLabel::Red,
+            labels: vec![ReviewLabel::Red],
+            tags: vec!["keep".to_string()],
+            notes: String::new(),
+            retouch: None,
+            selected_profile_index: Some(1),
+            publish_profile_indexes: Some(vec![0, 1]),
+            advance_after_update: false,
+        })
+        .unwrap();
+
+    handle
+        .apply_review_update(ReviewUpdateRequest {
+            image_id: 1,
+            rating: 4,
+            label: ReviewLabel::Green,
+            labels: vec![ReviewLabel::Green],
+            tags: vec!["keep".to_string(), "edit".to_string()],
+            notes: String::new(),
+            retouch: None,
+            selected_profile_index: None,
+            publish_profile_indexes: Some(vec![0, 1]),
+            advance_after_update: false,
+        })
+        .unwrap();
+
+    let state =
+        serde_json::from_str::<serde_json::Value>(&handle.api_state_json().unwrap()).unwrap();
+    assert_eq!(state["images"][0]["selected_profile_index"], 1);
+    assert_eq!(state["images"][0]["rating"], 4);
+    assert_eq!(state["images"][0]["labels"], serde_json::json!(["green"]));
 }
 
 #[test]
@@ -631,7 +684,7 @@ fn review_history_records_review_and_publish_state_changes() {
             tags: vec!["keep".to_string()],
             notes: "publish candidate".to_string(),
             retouch: None,
-            selected_profile_index: 1,
+            selected_profile_index: Some(1),
             publish_profile_indexes: Some(vec![1]),
             advance_after_update: false,
         })

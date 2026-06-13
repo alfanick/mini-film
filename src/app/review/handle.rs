@@ -864,14 +864,15 @@ impl ReviewHandle {
             else {
                 bail!("review image {} does not exist", update.image_id);
             };
-            if !image
-                .profiles
-                .iter()
-                .any(|profile| profile.profile_index == update.selected_profile_index)
+            if let Some(selected_profile_index) = update.selected_profile_index
+                && !image
+                    .profiles
+                    .iter()
+                    .any(|profile| profile.profile_index == selected_profile_index)
             {
                 bail!(
                     "selected profile index {} is not available for image {}",
-                    update.selected_profile_index,
+                    selected_profile_index,
                     update.image_id
                 );
             }
@@ -904,7 +905,9 @@ impl ReviewHandle {
             if let Some(retouch) = update.retouch {
                 image.retouch = retouch.normalized();
             }
-            image.selected_profile_index = update.selected_profile_index;
+            if let Some(selected_profile_index) = update.selected_profile_index {
+                image.selected_profile_index = selected_profile_index;
+            }
             if let Some(indexes) = update.publish_profile_indexes {
                 validate_publish_profile_indexes(&indexes, &image.profiles)?;
                 image.publish_profile_indexes =

@@ -101,6 +101,7 @@ pub(super) struct ReviewImage {
     pub(super) exif: GalleryExifData,
     #[serde(default)]
     pub(super) preview: ReviewPreview,
+    #[serde(default)]
     pub(super) selected_profile_index: usize,
     #[serde(default)]
     pub(super) rating: u8,
@@ -273,7 +274,8 @@ pub(super) struct ReviewUpdateRequest {
     pub(super) notes: String,
     #[serde(default)]
     pub(super) retouch: Option<RetouchSettings>,
-    pub(super) selected_profile_index: usize,
+    #[serde(default)]
+    pub(super) selected_profile_index: Option<usize>,
     #[serde(default)]
     pub(super) publish_profile_indexes: Option<Vec<usize>>,
     #[serde(default)]

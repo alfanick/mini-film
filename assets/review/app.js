@@ -2241,7 +2241,7 @@ function reviewRequestBody(image, patch = {}, options = {}) {
     tags: patch.tags ?? (options.useInputs ? currentTags() : image.tags || []),
     notes: patch.notes ?? (options.useInputs ? els.notes.value : image.notes || ""),
     retouch: patch.retouch ?? (options.useInputs ? retouchFromInputs(image) : image.retouch || defaultRetouch()),
-    selected_profile_index: patch.selected_profile_index ?? image.selected_profile_index,
+    selected_profile_index: patch.selected_profile_index,
     publish_profile_indexes: patch.publish_profile_indexes ?? publishProfileIndexes(image),
     advance_after_update: Boolean(patch.advance_after_update),
   };
