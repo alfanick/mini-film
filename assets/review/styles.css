@@ -871,14 +871,67 @@ button:disabled {
   font-size: 10px;
 }
 
-.tags input,
-.notes input {
+.tag-editor,
+.notes textarea {
   width: 100%;
   min-height: 30px;
   border-radius: 5px;
   border: 1px solid #c9c9c1;
   padding: 4px 6px;
   background: #fff;
+  font-size: 10px;
+}
+
+.tag-editor {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+}
+
+.tag-pills {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  max-width: 65%;
+  overflow: hidden;
+}
+
+.tag-pill {
+  flex: 0 1 auto;
+  max-width: 12ch;
+  border: 1px solid #c0c0b8;
+  border-radius: 999px;
+  padding: 1px 6px;
+  background: #f4f4ed;
+  color: #22221e;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: inherit;
+}
+
+.tag-pill::after {
+  content: " ×";
+  color: #7a7a70;
+}
+
+.tag-editor input {
+  min-width: 48px;
+  flex: 1 1 52px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  font: inherit;
+}
+
+.notes textarea {
+  height: 30px;
+  min-height: 30px;
+  max-height: 30px;
+  resize: none;
+  line-height: 1.15;
 }
 
 .retouch {
@@ -1591,6 +1644,10 @@ kbd {
   .app.mobile-drawer-metadata .notes {
     display: grid;
     grid-column: 1 / -1;
+  }
+
+  .app.mobile-drawer-metadata .tag-pills {
+    max-width: 70%;
   }
 
   .app.mobile-drawer-retouch .retouch {
