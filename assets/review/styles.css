@@ -904,7 +904,7 @@ button:disabled {
   min-width: 0;
   flex: 1 1 auto;
   max-width: none;
-  max-height: 23px;
+  max-height: 19px;
   overflow: hidden auto;
   scrollbar-width: thin;
 }
@@ -913,23 +913,23 @@ button:disabled {
   flex: 0 0 auto;
   max-width: 11ch;
   border: 1px solid #c0c0b8;
-  border-radius: 2px;
-  padding: 0 2px;
+  border-radius: 1px;
+  padding: 0 1px;
   background: #f4f4ed;
   color: #22221e;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font: inherit;
-  font-size: 9px;
-  line-height: 1;
+  font-size: 8px;
+  line-height: 0.95;
   cursor: pointer;
 }
 
 .tag-pill::after {
   content: "×";
   color: #7a7a70;
-  padding-left: 2px;
+  padding-left: 1px;
 }
 
 .tag-editor input {
