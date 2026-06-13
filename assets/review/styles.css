@@ -894,12 +894,14 @@ button:disabled {
   align-items: center;
   gap: 3px;
   min-width: 0;
-  max-width: 65%;
-  overflow: hidden;
+  flex: 1 1 auto;
+  max-width: none;
+  overflow: auto hidden;
+  scrollbar-width: thin;
 }
 
 .tag-pill {
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   max-width: 12ch;
   border: 1px solid #c0c0b8;
   border-radius: 999px;
@@ -919,7 +921,7 @@ button:disabled {
 
 .tag-editor input {
   min-width: 48px;
-  flex: 1 1 52px;
+  flex: 0 0 58px;
   border: 0;
   outline: 0;
   background: transparent;
@@ -1644,10 +1646,6 @@ kbd {
   .app.mobile-drawer-metadata .notes {
     display: grid;
     grid-column: 1 / -1;
-  }
-
-  .app.mobile-drawer-metadata .tag-pills {
-    max-width: 70%;
   }
 
   .app.mobile-drawer-retouch .retouch {
