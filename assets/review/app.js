@@ -24,6 +24,7 @@ const state = {
   retouchClipboard: null,
   localRetouchDirty: false,
   mobileDrawer: null,
+  pendingProfileSelections: new Map(),
 };
 
 const RETOUCH_SAVE_DEBOUNCE_MS = 1200;
@@ -688,10 +689,24 @@ function applyState(data) {
     window.location.reload();
     return;
   }
+  mergePendingProfileSelections(data);
   state.data = data;
   state.localRetouchDirty = false;
   applyServerUi(data);
   render();
+}
+
+function mergePendingProfileSelections(data) {
+  if (state.pendingProfileSelections.size === 0) return;
+  for (const image of data?.images || []) {
+    const pending = state.pendingProfileSelections.get(image.id);
+    if (pending === undefined) continue;
+    if (image.selected_profile_index === pending) {
+      state.pendingProfileSelections.delete(image.id);
+    } else {
+      image.selected_profile_index = pending;
+    }
+  }
 }
 
 function applyServerUi(data) {
@@ -2171,6 +2186,12 @@ async function saveReview(patch = {}) {
 
 async function saveImageReview(image, patch = {}, options = {}) {
   const body = reviewRequestBody(image, patch, options);
+  const pendingProfileIndex = patch.selected_profile_index;
+  if (pendingProfileIndex !== undefined) {
+    state.pendingProfileSelections.set(image.id, pendingProfileIndex);
+    image.selected_profile_index = pendingProfileIndex;
+    render();
+  }
   state.saveQueue = state.saveQueue
     .catch(() => {})
     .then(async () => {
@@ -2181,6 +2202,12 @@ async function saveImageReview(image, patch = {}, options = {}) {
       });
       if (!response.ok) throw new Error(`review ${response.status}`);
       applyState(await response.json());
+    })
+    .catch((error) => {
+      if (pendingProfileIndex !== undefined) {
+        state.pendingProfileSelections.delete(image.id);
+      }
+      throw error;
     });
   return state.saveQueue;
 }
