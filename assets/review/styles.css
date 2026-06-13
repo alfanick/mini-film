@@ -906,31 +906,29 @@ button:disabled {
   display: flex;
   align-content: center;
   align-items: center;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   gap: 1px 2px;
   min-width: 0;
   flex: 1 1 auto;
   max-width: none;
-  max-height: 20px;
-  overflow: auto hidden;
-  scrollbar-width: thin;
-  scrollbar-gutter: stable;
+  max-height: 21px;
+  overflow: hidden;
 }
 
 .tag-pill {
   flex: 0 0 auto;
-  max-width: 16ch;
+  max-width: 12ch;
   border: 1px solid #c0c0b8;
   border-radius: 1px;
-  padding: 0 2px;
+  padding: 0 1px;
   background: #f4f4ed;
   color: #22221e;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font: inherit;
-  font-size: 9px;
-  line-height: 1.05;
+  font-size: 8px;
+  line-height: 1;
   cursor: pointer;
 }
 
@@ -942,7 +940,7 @@ button:disabled {
 
 .tag-editor input {
   min-width: 48px;
-  flex: 0 0 64px;
+  flex: 0 0 54px;
   border: 0;
   outline: 0;
   background: transparent;
@@ -1380,20 +1378,32 @@ kbd {
   }
 
   .retouch {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 4px 7px;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 4px 6px;
   }
 
   .retouch label {
-    grid-template-columns: minmax(44px, 58px) minmax(0, 1fr) 30px;
+    grid-template-columns: minmax(38px, 48px) minmax(34px, 1fr) 24px;
+    gap: 3px;
+    font-size: 9px;
   }
 
+  .retouch output {
+    font-size: 9px;
+  }
+
+  .retouch-header,
   .retouch-actions {
-    justify-content: start;
+    gap: 3px;
+  }
+
+  .retouch button {
+    padding: 2px 5px;
+    font-size: 9px;
   }
 }
 
-@media (min-width: 901px) and (min-height: 620px) {
+@media (min-width: 1280px) and (min-height: 620px) {
   .panel {
     right: calc(clamp(160px, 14vw, 240px) + 24px);
   }
