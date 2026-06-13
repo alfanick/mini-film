@@ -889,6 +889,11 @@ button:disabled {
   overflow: hidden;
 }
 
+.tag-editor:focus-within {
+  border-color: #9d9d91;
+  box-shadow: 0 0 0 1px rgba(80, 80, 72, 0.14);
+}
+
 .tag-pills {
   display: flex;
   align-items: center;
@@ -912,6 +917,7 @@ button:disabled {
   text-overflow: ellipsis;
   white-space: nowrap;
   font: inherit;
+  cursor: pointer;
 }
 
 .tag-pill::after {

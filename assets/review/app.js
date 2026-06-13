@@ -1681,29 +1681,44 @@ function renderTagPills() {
       pill.className = "tag-pill";
       pill.textContent = tag;
       pill.title = `Remove ${tag}`;
+      pill.setAttribute("aria-label", `Remove tag ${tag}`);
       pill.addEventListener("click", () => {
         setTagEditorTags(state.selectedTags.filter((selected) => selected !== tag));
         scheduleAutosave();
+        els.tagEntry.focus();
       });
       return pill;
     }),
   );
+  els.tagPills.scrollLeft = els.tagPills.scrollWidth;
 }
 
-function commitTagEntry() {
+function tagTokensFromText(raw) {
+  return normalizedTagList(String(raw || "").split(/[,\s]+/));
+}
+
+function commitTagEntry(options = {}) {
   const raw = els.tagEntry.value.trim();
-  if (!raw) return false;
+  if (!raw) {
+    if (options.removeLastWhenEmpty && state.selectedTags.length > 0) {
+      setTagEditorTags(state.selectedTags.slice(0, -1));
+      return true;
+    }
+    return false;
+  }
   const suggestions = tagSuggestions();
-  const key = tagKey(raw);
-  const exact = suggestions.find((tag) => tagKey(tag) === key);
-  setTagEditorTags([...state.selectedTags, exact || raw]);
+  const nextTags = tagTokensFromText(raw).map((tag) => {
+    const key = tagKey(tag);
+    return suggestions.find((suggestion) => tagKey(suggestion) === key) || tag;
+  });
+  setTagEditorTags([...state.selectedTags, ...nextTags]);
   els.tagEntry.value = "";
   return true;
 }
 
 function currentTags() {
   commitTagEntry();
-  return normalizedTagList(els.tags.value.split(/[,\s]+/));
+  return tagTokensFromText(els.tags.value);
 }
 
 function defaultRetouch() {
@@ -2652,6 +2667,10 @@ els.tagEntry.addEventListener("change", () => {
   if (commitTagEntry()) saveReview();
 });
 els.tagEntry.addEventListener("input", () => {
+  if (/[,\s]$/.test(els.tagEntry.value)) {
+    if (commitTagEntry()) scheduleAutosave();
+    return;
+  }
   const key = tagKey(els.tagEntry.value);
   const exact = tagSuggestions().find((tag) => tagKey(tag) === key);
   if (exact) {
@@ -2659,6 +2678,11 @@ els.tagEntry.addEventListener("input", () => {
     els.tagEntry.value = "";
     scheduleAutosave();
   }
+});
+els.tagEntry.addEventListener("paste", () => {
+  requestAnimationFrame(() => {
+    if (commitTagEntry()) scheduleAutosave();
+  });
 });
 els.tagEntry.addEventListener("blur", () => {
   if (commitTagEntry()) saveReview();
@@ -2755,6 +2779,19 @@ function confirmMetadataInput(event) {
 }
 
 function confirmTagsInput(event) {
+  if (event.key === "Backspace" && els.tagEntry.value.length === 0) {
+    if (commitTagEntry({ removeLastWhenEmpty: true })) {
+      event.preventDefault();
+      scheduleAutosave();
+    }
+    return;
+  }
+  if (event.key === "," || event.key === "Tab") {
+    if (!els.tagEntry.value.trim()) return;
+    event.preventDefault();
+    if (commitTagEntry()) scheduleAutosave();
+    return;
+  }
   if (event.key !== "Enter") return;
   event.preventDefault();
   commitTagEntry();
