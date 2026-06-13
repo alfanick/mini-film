@@ -68,7 +68,7 @@ pub(super) async fn route_request(
 ) -> Response {
     match (method, path) {
         (Method::GET, "/") | (Method::GET, "/review") => {
-            text_response(200, "text/html; charset=utf-8", review_index_html()).into_response()
+            text_response(200, "text/html; charset=utf-8", &review_index_html()).into_response()
         }
         (Method::GET, "/assets/styles.css") => {
             text_response(200, "text/css; charset=utf-8", review_styles()).into_response()
@@ -285,7 +285,10 @@ impl IntoResponse for HttpResponse {
         let status = StatusCode::from_u16(self.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
         (
             status,
-            [(header::CONTENT_TYPE, self.content_type)],
+            [
+                (header::CONTENT_TYPE, self.content_type),
+                (header::CACHE_CONTROL, "no-store, max-age=0"),
+            ],
             self.body,
         )
             .into_response()

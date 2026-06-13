@@ -7,8 +7,16 @@ use include_dir::{Dir, include_dir};
 
 static REVIEW_ASSETS: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/assets/review");
 
-pub(crate) fn review_index_html() -> &'static str {
+pub(crate) fn review_index_html() -> String {
     read_text_asset("index.html")
+        .replace(
+            "assets/styles.css",
+            concat!("assets/styles.css?v=", env!("CARGO_PKG_VERSION")),
+        )
+        .replace(
+            "assets/app.js",
+            concat!("assets/app.js?v=", env!("CARGO_PKG_VERSION")),
+        )
 }
 
 pub(crate) fn review_styles() -> &'static str {
