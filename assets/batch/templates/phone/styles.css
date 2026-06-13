@@ -125,6 +125,10 @@ body {
   color: #fff;
 }
 
+.mf-thumb[hidden] {
+  display: none !important;
+}
+
 .mf-thumb img {
   width: 100%;
   aspect-ratio: 1 / 1;

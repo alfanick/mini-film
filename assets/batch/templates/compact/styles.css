@@ -122,6 +122,10 @@ body {
   transition: transform 0.13s ease;
 }
 
+.mf-thumb[hidden] {
+  display: none !important;
+}
+
 .mf-thumb:hover {
   transform: translateY(-1px);
 }

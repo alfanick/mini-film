@@ -123,6 +123,10 @@ h1 {
   padding: 11px;
 }
 
+.mf-thumb[hidden] {
+  display: none !important;
+}
+
 .mf-grid .mf-thumb:first-child {
   grid-column: 1 / -1;
 }

@@ -130,6 +130,10 @@ h1 {
   padding: 10px;
 }
 
+.mf-thumb[hidden] {
+  display: none !important;
+}
+
 .mf-thumb:nth-child(even) {
   transform: translateY(6px);
 }
