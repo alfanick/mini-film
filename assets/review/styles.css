@@ -892,7 +892,7 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 3px;
-  height: 30px;
+  height: 32px;
   min-width: 0;
   overflow: hidden;
 }
@@ -911,7 +911,7 @@ button:disabled {
   min-width: 0;
   flex: 1 1 auto;
   max-width: none;
-  max-height: 21px;
+  max-height: 24px;
   overflow: hidden;
 }
 
@@ -952,6 +952,7 @@ button:disabled {
   min-height: 30px;
   max-height: 30px;
   min-width: 0;
+  max-width: 100%;
   resize: none;
   line-height: 1.15;
   overflow: hidden;
@@ -1340,7 +1341,7 @@ kbd {
   }
 }
 
-@media (min-width: 901px) and (max-width: 1279px) {
+@media (min-width: 901px) and (max-width: 1499px) {
   .app {
     grid-template-columns: clamp(162px, 16vw, 220px) minmax(0, 1fr);
   }
@@ -1363,7 +1364,7 @@ kbd {
   }
 
   .controls {
-    grid-template-columns: max-content max-content minmax(280px, 1fr);
+    grid-template-columns: max-content max-content minmax(320px, 1fr);
     gap: 5px 6px;
   }
 
@@ -1372,9 +1373,10 @@ kbd {
   }
 
   .notes textarea {
-    height: 28px;
-    min-height: 28px;
-    max-height: 28px;
+    height: 30px;
+    min-height: 30px;
+    max-height: 30px;
+    white-space: normal;
   }
 
   .retouch {
@@ -1403,7 +1405,7 @@ kbd {
   }
 }
 
-@media (min-width: 1280px) and (min-height: 620px) {
+@media (min-width: 1500px) and (min-height: 620px) {
   .panel {
     right: calc(clamp(160px, 14vw, 240px) + 24px);
   }
