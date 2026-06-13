@@ -718,10 +718,9 @@ function mergeIncomingProfileSelections(data) {
 }
 
 function incomingImageIsOlder(incoming, current) {
-  const incomingTime = Date.parse(incoming?.updated_at || "");
-  const currentTime = Date.parse(current?.updated_at || "");
-  if (Number.isFinite(incomingTime) && Number.isFinite(currentTime)) return incomingTime < currentTime;
-  return false;
+  const incomingTime = String(incoming?.updated_at || "");
+  const currentTime = String(current?.updated_at || "");
+  return incomingTime.length > 0 && currentTime.length > 0 && incomingTime < currentTime;
 }
 
 function applyServerUi(data) {
