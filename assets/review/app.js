@@ -689,24 +689,39 @@ function applyState(data) {
     window.location.reload();
     return;
   }
-  mergePendingProfileSelections(data);
+  mergeIncomingProfileSelections(data);
   state.data = data;
   state.localRetouchDirty = false;
   applyServerUi(data);
   render();
 }
 
-function mergePendingProfileSelections(data) {
-  if (state.pendingProfileSelections.size === 0) return;
+function mergeIncomingProfileSelections(data) {
   for (const image of data?.images || []) {
+    const current = findImage(image.id);
     const pending = state.pendingProfileSelections.get(image.id);
-    if (pending === undefined) continue;
-    if (image.selected_profile_index === pending) {
-      state.pendingProfileSelections.delete(image.id);
-    } else {
-      image.selected_profile_index = pending;
+    if (pending !== undefined) {
+      if (image.selected_profile_index === pending) {
+        state.pendingProfileSelections.delete(image.id);
+      } else {
+        image.selected_profile_index = pending;
+      }
+      continue;
     }
+    if (
+      current &&
+      current.selected_profile_index !== image.selected_profile_index &&
+      incomingImageIsOlder(image, current)
+    )
+      image.selected_profile_index = current.selected_profile_index;
   }
+}
+
+function incomingImageIsOlder(incoming, current) {
+  const incomingTime = Date.parse(incoming?.updated_at || "");
+  const currentTime = Date.parse(current?.updated_at || "");
+  if (Number.isFinite(incomingTime) && Number.isFinite(currentTime)) return incomingTime < currentTime;
+  return false;
 }
 
 function applyServerUi(data) {
