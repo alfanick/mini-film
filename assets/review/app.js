@@ -105,7 +105,7 @@ function ReviewShell() {
           "section",
           { class: "viewer" },
           h("div", { id: "empty", class: "empty" }, "Waiting for pictures"),
-          h("img", { id: "main-image", alt: "", draggable: false }),
+          h("img", { id: "main-image", alt: "", draggable: false, decoding: "async", fetchpriority: "high" }),
           h("div", { id: "gesture-feedback", class: "gesture-feedback", hidden: true }),
           h("div", { id: "zoom-loupe", class: "zoom-loupe", hidden: true }),
           h("div", { id: "retouch-grid", class: "retouch-grid", hidden: true }),
@@ -945,6 +945,9 @@ function ImageList({ images, currentId, onSelect }) {
         class: "image-row-thumb",
         alt: "",
         src: image.preview_url || undefined,
+        loading: "lazy",
+        decoding: "async",
+        fetchpriority: "low",
       }),
       h(
         "div",
@@ -1307,6 +1310,9 @@ function ProfileList({ image, onSelect, onTogglePublish }) {
         ? h("img", {
             src: versionedUrl(cardUrl, profile.url ? profile.updated_at : image.preview_updated_at),
             alt: profile.profile_stem,
+            loading: profile.profile_index === previewProfile?.profile_index ? "eager" : "lazy",
+            decoding: "async",
+            fetchpriority: profile.profile_index === previewProfile?.profile_index ? "high" : "low",
             onLoad: (event) => {
               event.currentTarget
                 .closest(".profile-card")
@@ -1380,10 +1386,6 @@ function updateMobileActionLabels(image) {
 
 function preloadNearbyImages(image) {
   const urls = new Set();
-  for (const profile of image.profiles || []) {
-    if (profile.url) urls.add(versionedUrl(profile.url, profile.updated_at));
-  }
-  if (image.preview_url) urls.add(versionedUrl(image.preview_url, image.preview_updated_at));
 
   for (const nearby of nearbyImages(image.id)) {
     const selected = selectedProfile(nearby);
@@ -1394,7 +1396,7 @@ function preloadNearbyImages(image) {
     }
   }
 
-  for (const url of urls) preloadImage(url);
+  scheduleIdlePreloads(urls);
 }
 
 function nearbyImages(imageId) {
@@ -1414,9 +1416,22 @@ function preloadImage(url) {
   const image = new Image();
   image.decoding = "async";
   image.loading = "eager";
+  image.fetchPriority = "low";
   image.src = url;
   if (state.preloaded.size > 96) {
     state.preloaded = new Set(Array.from(state.preloaded).slice(-64));
+  }
+}
+
+function scheduleIdlePreloads(urls) {
+  if (urls.size === 0) return;
+  const run = () => {
+    for (const url of urls) preloadImage(url);
+  };
+  if ("requestIdleCallback" in window) {
+    window.requestIdleCallback(run, { timeout: 1200 });
+  } else {
+    window.setTimeout(run, 350);
   }
 }
 
