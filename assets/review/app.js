@@ -1155,12 +1155,7 @@ function selectedProfile(image) {
 function selectedProfileForImage(image) {
   const profiles = image?.profiles || [];
   const selected = profiles.find((profile) => profile.profile_index === image.selected_profile_index);
-  const fallback = selected || profiles[0] || null;
-  const publishIndexes = new Set(publishProfileIndexes(image));
-  if (fallback && publishIndexes.size > 0 && !publishIndexes.has(fallback.profile_index)) {
-    return profiles.find((profile) => publishIndexes.has(profile.profile_index)) || fallback;
-  }
-  return fallback;
+  return selected || profiles[0] || null;
 }
 
 function isLocalRetouchDraft(image) {

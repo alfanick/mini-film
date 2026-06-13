@@ -104,7 +104,7 @@ fn profile_render(index: usize, stem: &str) -> ReviewProfileRender {
 }
 
 #[test]
-fn preferred_preview_profile_prefers_checked_profile_when_visible_is_unchecked() {
+fn preferred_preview_profile_keeps_selected_profile_even_when_publish_unchecked() {
     let image = ReviewImage {
         id: 1,
         raw_path: PathBuf::from("/in/frame.NEF"),
@@ -135,7 +135,7 @@ fn preferred_preview_profile_prefers_checked_profile_when_visible_is_unchecked()
     let publish_indexes = effective_publish_profile_indexes(&image);
     assert_eq!(
         preferred_preview_profile_index(&image, &publish_indexes),
-        Some(1)
+        Some(2)
     );
 
     let mut no_checked = image;

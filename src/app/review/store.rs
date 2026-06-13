@@ -297,23 +297,14 @@ pub(super) fn effective_publish_profile_indexes(image: &ReviewImage) -> Vec<usiz
 
 pub(super) fn preferred_preview_profile_index(
     image: &ReviewImage,
-    publish_indexes: &[usize],
+    _publish_indexes: &[usize],
 ) -> Option<usize> {
-    let fallback = image
+    image
         .profiles
         .iter()
         .find(|profile| profile.profile_index == image.selected_profile_index)
         .or_else(|| image.profiles.first())
-        .map(|profile| profile.profile_index)?;
-    if !publish_indexes.is_empty() && !publish_indexes.contains(&fallback) {
-        return image
-            .profiles
-            .iter()
-            .find(|profile| publish_indexes.contains(&profile.profile_index))
-            .map(|profile| profile.profile_index)
-            .or(Some(fallback));
-    }
-    Some(fallback)
+        .map(|profile| profile.profile_index)
 }
 
 pub(super) fn normalize_publish_profile_indexes(
