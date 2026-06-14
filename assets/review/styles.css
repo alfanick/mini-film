@@ -641,6 +641,11 @@ button:disabled {
   overflow: visible;
 }
 
+.app.crop-mode .profiles,
+.app.crop-mode .app.mobile-drawer-profiles .profiles {
+  display: none;
+}
+
 .meta {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

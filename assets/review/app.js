@@ -1910,6 +1910,7 @@ function renderCropOverlay(image) {
   els.cropOverlay.hidden = !visible;
   els.cropBox.hidden = !visible;
   els.cropTools.hidden = !cropDraftIsFor(image);
+  els.app.classList.toggle("crop-mode", cropDraftIsFor(image));
   updateCropButtons(image);
   updateCropRotationControls();
   if (!visible) {
