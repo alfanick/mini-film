@@ -248,10 +248,6 @@ fn write_color_management_section(out: &mut String) {
     let _ = writeln!(out, "ApplyBaselineExposureOffset=true");
     let _ = writeln!(out, "ApplyHueSatMap=true");
     let _ = writeln!(out, "DCPIlluminant=0");
-    let _ = writeln!(out, "WorkingProfile=ProPhoto");
-    let _ = writeln!(out, "OutputProfile=RT_sRGB");
-    let _ = writeln!(out, "OutputProfileIntent=Relative");
-    let _ = writeln!(out, "OutputBPC=true");
     let _ = writeln!(out);
 }
 

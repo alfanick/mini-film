@@ -177,8 +177,6 @@ pub(crate) fn add_final_convert_args(
             command.arg("-interlace").arg("Line");
         }
         command
-            .arg("-colorspace")
-            .arg("sRGB")
             .arg("-depth")
             .arg("8")
             .arg("-sampling-factor")
