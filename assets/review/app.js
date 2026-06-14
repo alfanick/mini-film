@@ -1279,16 +1279,29 @@ function renderProfiles(image) {
       onTogglePublish: async (profile) => {
         await saveReview({ publish_profile_indexes: togglePublishProfile(image, profile.profile_index) });
       },
+      onSoloPublish: async (profile) => {
+        await saveReview({
+          selected_profile_index: profile.profile_index,
+          publish_profile_indexes: [profile.profile_index],
+        });
+      },
     }),
     els.profiles,
   );
 }
 
-function ProfileList({ image, onSelect, onTogglePublish }) {
+const profileDoubleTap = {
+  profileIndex: null,
+  at: 0,
+};
+
+function ProfileList({ image, onSelect, onTogglePublish, onSoloPublish }) {
   if (!image) return null;
   const publishIndexes = new Set(publishProfileIndexes(image));
   const previewProfile = selectedProfile(image);
-  return (image.profiles || []).map((profile) => {
+  const profiles = image.profiles || [];
+  const canSoloPublish = profiles.length > 1;
+  return profiles.map((profile) => {
     const cardUrl = profile.url || image.preview_url;
     const publishSelected = publishIndexes.has(profile.profile_index);
     const display = profileDisplayState(image, profile);
@@ -1309,6 +1322,22 @@ function ProfileList({ image, onSelect, onTogglePublish }) {
         type: "button",
         class: classes,
         onClick: () => onSelect(profile).catch((error) => console.error(error)),
+        onDblClick: (event) => {
+          if (!canSoloPublish) return;
+          event.preventDefault();
+          onSoloPublish(profile).catch((error) => console.error(error));
+        },
+        onPointerUp: (event) => {
+          if (!canSoloPublish || event.pointerType === "mouse") return;
+          const now = Date.now();
+          const sameProfile = profileDoubleTap.profileIndex === profile.profile_index;
+          const isDoubleTap = sameProfile && now - profileDoubleTap.at < 450;
+          profileDoubleTap.profileIndex = profile.profile_index;
+          profileDoubleTap.at = now;
+          if (!isDoubleTap) return;
+          event.preventDefault();
+          onSoloPublish(profile).catch((error) => console.error(error));
+        },
       },
       h("input", {
         type: "checkbox",
