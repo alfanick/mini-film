@@ -37,8 +37,8 @@ use crate::app::sampler_assets::{
     html_section_template, html_styles, html_tile_template,
 };
 use crate::app::util::{
-    extract_capture_iso, half_cpu_thread_count, remove_temp_file, sync_output_metadata_from_raw,
-    sync_output_timestamps_from_exif, time_of_day_seed,
+    OutputEditMetadata, extract_capture_iso, half_cpu_thread_count, remove_temp_file,
+    sync_output_metadata_from_raw, sync_output_timestamps_from_exif, time_of_day_seed,
 };
 use crate::cli::{ExportOptions, JpegSubsampling, LensCorrections};
 
@@ -568,7 +568,16 @@ fn render_profile_thumbnail(
     )?;
     raw_stage.finish();
 
-    let source = if !context.args.no_grain && resolved.grain.is_enabled() {
+    let grain_enabled = !context.args.no_grain && resolved.grain.is_enabled();
+    let metadata_grain = if grain_enabled {
+        scale_sampler_grain(resolved.grain, context.args.thumbnail_long_edge)
+    } else {
+        GrainSettings::default()
+    };
+    let metadata_grain_seed =
+        grain_enabled.then(|| sample_seed(context.base_seed, context.index, profile));
+
+    let source = if grain_enabled {
         let grain_stage = progress_stage_adaptive(
             Some(&apply_progress),
             3,
@@ -578,12 +587,11 @@ fn render_profile_thumbnail(
             estimate_sampler_grain_duration(context.args.thumbnail_long_edge),
         );
         let grained = profile_temp.join("grained-8.ppm");
-        let grain = scale_sampler_grain(resolved.grain, context.args.thumbnail_long_edge);
         apply_grain_8bit(
             &developed,
             &grained,
-            grain,
-            sample_seed(context.base_seed, context.index, profile),
+            metadata_grain,
+            metadata_grain_seed.unwrap_or_default(),
         )?;
         grain_stage.finish();
         remove_temp_file(&developed)?;
@@ -628,11 +636,16 @@ fn render_profile_thumbnail(
         sync_output_metadata_from_raw(
             &context.args.raw,
             &thumb,
-            Some(&format!(
-                "mini-film {} usage=sampler profile={}",
-                env!("CARGO_PKG_VERSION"),
-                resolved.resolved_stem
-            )),
+            OutputEditMetadata {
+                comment: Some(&format!(
+                    "mini-film {} usage=sampler profile={}",
+                    env!("CARGO_PKG_VERSION"),
+                    resolved.resolved_stem
+                )),
+                profile: &resolved.metadata,
+                grain: metadata_grain,
+                grain_seed: metadata_grain_seed,
+            },
         )?;
         sync_output_timestamps_from_exif(&context.args.raw, &thumb)?;
         metadata_stage.finish();

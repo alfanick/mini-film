@@ -262,6 +262,13 @@ Output metadata behavior for `apply`, `batch`, `daemon`, and `sampler`:
 
 - source EXIF/IPTC fields are copied from the input RAW to the output file using
   `exiftool` (unless `--strip-metadata` is set)
+- generated outputs are annotated with Adobe-style XMP Camera Raw settings
+  (`XMP-crs`) for resolved mini-film profile adjustments, sharpening, HSL,
+  calibration, tone-curve, and grain values where mini-film has real structured
+  data for the render
+- the XMP packet also records mini-film as the creator/converter and adds a
+  high-level `xmpMM` history entry with the raw file, profile, linked profile,
+  Hald or PP3 source, grain state, and grain seed
 - an EXIF comment is written as  
   `mini-film <version> usage=<command> profile=<profile-or-emulation>`
 
@@ -487,8 +494,8 @@ album folder using the same templates as batch. Supported templates are
 
 Published JPGs are annotated with review metadata through `exiftool`: rating,
 label, tags, published profile, notes, and a mini-film version/comment marker.
-The source RAW metadata copied during normal output generation is preserved
-unless `--strip-metadata` is used.
+The source RAW metadata and mini-film XMP edit metadata copied during normal
+output generation are preserved unless `--strip-metadata` is used.
 
 The same publish operation can be run directly from the CLI:
 

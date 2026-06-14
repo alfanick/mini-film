@@ -22,7 +22,7 @@ use crate::app::progress::{
 use crate::app::raw::{run_raw_develop, run_raw_develop_jpeg};
 use crate::app::retouch::{RetouchSettings, write_rawtherapee_retouch_profile};
 use crate::app::util::{
-    extract_capture_iso, remove_temp_file, sync_output_metadata_from_raw,
+    OutputEditMetadata, extract_capture_iso, remove_temp_file, sync_output_metadata_from_raw,
     sync_output_timestamps_from_exif, time_of_day_seed,
 };
 use crate::cli::{ExportOptions, LensCorrections};
@@ -325,7 +325,21 @@ pub(crate) fn apply_resolved(
             "exif",
             estimate_exif_duration(job.raw),
         );
-        sync_output_metadata_from_raw(job.raw, job.output, job.exif_comment.as_deref())?;
+        let actual_grain = if grain_enabled {
+            resolved.grain
+        } else {
+            GrainSettings::default()
+        };
+        sync_output_metadata_from_raw(
+            job.raw,
+            job.output,
+            OutputEditMetadata {
+                comment: job.exif_comment.as_deref(),
+                profile: &resolved.metadata,
+                grain: actual_grain,
+                grain_seed: grain_enabled.then_some(grain_seed),
+            },
+        )?;
         sync_output_timestamps_from_exif(job.raw, job.output)?;
         exif_stage.finish();
     } else {
@@ -669,6 +683,21 @@ mod tests {
             sharpening_applied: false,
             resolved_stem: "profile".to_string(),
             retouch_base: Default::default(),
+            metadata: crate::app::profile::ResolvedProfileMetadata {
+                profile_name: "profile".to_string(),
+                profile_uuid: None,
+                look_name: None,
+                look_uuid: None,
+                source_profile_name: None,
+                source_profile_uuid: None,
+                hald_path: None,
+                pp3_path: None,
+                source_adjustments: Default::default(),
+                source_sharpening: Default::default(),
+                emulation_adjustments: Default::default(),
+                emulation_sharpening: Default::default(),
+                has_camera_raw_settings: false,
+            },
         }
     }
 

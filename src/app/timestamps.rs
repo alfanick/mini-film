@@ -8,8 +8,18 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Local, NaiveDateTime, TimeZone, Utc};
 use exif::{Reader, Tag};
 use filetime::{FileTime, set_file_atime, set_file_mtime};
+use mini_film::{GrainSettings, ProfileAdjustments, SharpeningSettings, ToneCurves};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use crate::app::profile::ResolvedProfileMetadata;
+
+pub(crate) struct OutputEditMetadata<'a> {
+    pub(crate) comment: Option<&'a str>,
+    pub(crate) profile: &'a ResolvedProfileMetadata,
+    pub(crate) grain: GrainSettings,
+    pub(crate) grain_seed: Option<u64>,
+}
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct GalleryExifData {
@@ -75,14 +85,14 @@ pub(crate) fn sync_output_timestamps_from_exif(raw: &Path, output: &Path) -> Res
 pub(crate) fn sync_output_metadata_from_raw(
     raw: &Path,
     output: &Path,
-    exif_comment: Option<&str>,
+    edit: OutputEditMetadata<'_>,
 ) -> Result<()> {
     let is_tiff = matches!(
         output.extension().and_then(|ext| ext.to_str()),
         Some(ext) if ext.eq_ignore_ascii_case("tiff") || ext.eq_ignore_ascii_case("tif")
     );
 
-    let status = run_exiftool_copy_all(raw, output, exif_comment)
+    let status = run_exiftool_copy_all(raw, output, &edit)
         .with_context(|| format!("running exiftool on {}", output.display()))?;
 
     if status.success() {
@@ -95,8 +105,8 @@ pub(crate) fn sync_output_metadata_from_raw(
         ));
     }
 
-    if !run_exiftool_fallback(raw, output, exif_comment)?.success()
-        && !run_exiftool_minimal(output, exif_comment)?.success()
+    if !run_exiftool_fallback(raw, output, &edit)?.success()
+        && !run_exiftool_minimal(output, &edit)?.success()
     {
         // TIFF metadata writing is known to be tool- and tag-dependent.
         // Never hard-fail batch/apply here because this step is cosmetic versus
@@ -110,7 +120,7 @@ pub(crate) fn sync_output_metadata_from_raw(
 fn run_exiftool_copy_all(
     raw: &Path,
     output: &Path,
-    exif_comment: Option<&str>,
+    edit: &OutputEditMetadata<'_>,
 ) -> Result<std::process::ExitStatus> {
     let mut command = Command::new("exiftool");
     command
@@ -123,9 +133,7 @@ fn run_exiftool_copy_all(
         .arg("-all:all")
         .arg("-icc_profile")
         .arg("-Orientation#=1");
-    if let Some(comment) = exif_comment {
-        command.arg(format!("-Comment={comment}"));
-    }
+    add_edit_metadata_args(&mut command, raw, edit);
     command.arg(output);
     command.stdout(Stdio::null()).stderr(Stdio::null());
 
@@ -135,7 +143,7 @@ fn run_exiftool_copy_all(
 fn run_exiftool_fallback(
     raw: &Path,
     output: &Path,
-    exif_comment: Option<&str>,
+    edit: &OutputEditMetadata<'_>,
 ) -> Result<std::process::ExitStatus> {
     // Some TIFF writers reject the full `-all:all` copy even when the same tags are
     // acceptable on JPEG; keep a strict-but-smaller set for a second attempt.
@@ -151,9 +159,7 @@ fn run_exiftool_fallback(
         .arg("-xmp:all")
         .arg("-icc_profile")
         .arg("-Orientation#=1");
-    if let Some(comment) = exif_comment {
-        command.arg(format!("-Comment={comment}"));
-    }
+    add_edit_metadata_args(&mut command, raw, edit);
     command.arg(output);
     command.stdout(Stdio::null()).stderr(Stdio::null());
 
@@ -162,7 +168,7 @@ fn run_exiftool_fallback(
 
 fn run_exiftool_minimal(
     output: &Path,
-    exif_comment: Option<&str>,
+    edit: &OutputEditMetadata<'_>,
 ) -> Result<std::process::ExitStatus> {
     // Final TIFF fallback: write only a tiny amount of metadata that is
     // widely supported (best-effort so failures still only degrade metadata).
@@ -172,13 +178,356 @@ fn run_exiftool_minimal(
         .arg("-quiet")
         .arg("-overwrite_original")
         .arg("-m");
-    if let Some(comment) = exif_comment {
-        command.arg(format!("-Comment={comment}"));
-    }
+    add_edit_metadata_args(&mut command, Path::new(""), edit);
     command.arg(output);
     command.stdout(Stdio::null()).stderr(Stdio::null());
 
     Ok(command.status()?)
+}
+
+fn add_edit_metadata_args(command: &mut Command, raw: &Path, edit: &OutputEditMetadata<'_>) {
+    let agent = format!("mini-film {}", env!("CARGO_PKG_VERSION"));
+    let timestamp = exiftool_timestamp(Local::now());
+    let profile = edit.profile;
+
+    if let Some(comment) = edit.comment {
+        command.arg(format!("-Comment={comment}"));
+        command.arg(format!("-UserComment={comment}"));
+    }
+
+    command
+        .arg(format!("-XMP-xmp:CreatorTool={agent}"))
+        .arg(format!("-XMP-xmp:MetadataDate={timestamp}"))
+        .arg(format!("-XMP-xmp:ModifyDate={timestamp}"))
+        .arg("-XMP-crs:HasSettings=True")
+        .arg("-XMP-crs:AlreadyApplied=True")
+        .arg(format!("-XMP-crs:Converter={agent}"))
+        .arg("-XMP-crs:ProcessVersion=6.7")
+        .arg(format!(
+            "-XMP-crs:CameraProfile={}",
+            metadata_text(&profile.profile_name)
+        ))
+        .arg(format!(
+            "-XMP-crs:Name={}",
+            metadata_text(&profile.profile_name)
+        ))
+        .arg("-XMP-xmpMM:HistoryAction=converted")
+        .arg(format!("-XMP-xmpMM:HistorySoftwareAgent={agent}"))
+        .arg(format!("-XMP-xmpMM:HistoryWhen={timestamp}"))
+        .arg(format!(
+            "-XMP-xmpMM:HistoryParameters={}",
+            metadata_text(&history_parameters(raw, edit))
+        ));
+
+    if let Some(file_name) = raw.file_name().and_then(|name| name.to_str()) {
+        command.arg(format!("-XMP-crs:RawFileName={}", metadata_text(file_name)));
+    }
+    if let Some(uuid) = &profile.profile_uuid {
+        command.arg(format!("-XMP-crs:UUID={}", metadata_text(uuid)));
+    }
+
+    if profile.has_camera_raw_settings {
+        let adjustments = combined_adjustments(profile);
+        let sharpening = combined_sharpening(profile);
+        add_profile_adjustment_args(command, &adjustments);
+        add_sharpening_args(command, sharpening);
+    }
+
+    command
+        .arg(format!("-XMP-crs:GrainAmount={}", edit.grain.amount))
+        .arg(format!("-XMP-crs:GrainSize={}", edit.grain.size))
+        .arg(format!("-XMP-crs:GrainFrequency={}", edit.grain.frequency));
+}
+
+fn exiftool_timestamp(timestamp: DateTime<Local>) -> String {
+    timestamp.format("%Y:%m:%d %H:%M:%S%:z").to_string()
+}
+
+fn metadata_text(value: &str) -> String {
+    value.replace(['\n', '\r'], " ").trim().to_string()
+}
+
+fn history_parameters(raw: &Path, edit: &OutputEditMetadata<'_>) -> String {
+    let profile = edit.profile;
+    let mut parts = vec![format!("profile={}", profile.profile_name)];
+    if let Some(source) = &profile.source_profile_name {
+        parts.push(format!("source_profile={source}"));
+    }
+    if let Some(uuid) = &profile.source_profile_uuid {
+        parts.push(format!("source_uuid={uuid}"));
+    }
+    if let Some(look) = &profile.look_name {
+        parts.push(format!("look={look}"));
+    }
+    if let Some(uuid) = &profile.look_uuid {
+        parts.push(format!("look_uuid={uuid}"));
+    }
+    if let Some(hald) = &profile.hald_path {
+        parts.push(format!("hald={}", hald.display()));
+    }
+    if let Some(pp3) = &profile.pp3_path {
+        parts.push(format!("pp3={}", pp3.display()));
+    }
+    if edit.grain.is_enabled() {
+        parts.push(format!(
+            "grain={},{},{}",
+            edit.grain.amount, edit.grain.size, edit.grain.frequency
+        ));
+    } else {
+        parts.push("grain=off".to_string());
+    }
+    if let Some(seed) = edit.grain_seed {
+        parts.push(format!("grain_seed={seed}"));
+    }
+    if let Some(name) = raw.file_name().and_then(|name| name.to_str()) {
+        parts.push(format!("raw={name}"));
+    }
+    parts.join("; ")
+}
+
+fn combined_adjustments(profile: &ResolvedProfileMetadata) -> ProfileAdjustments {
+    let mut combined = profile.source_adjustments.clone();
+    add_adjustments(&mut combined, &profile.emulation_adjustments);
+    combined
+}
+
+fn add_adjustments(target: &mut ProfileAdjustments, source: &ProfileAdjustments) {
+    target.exposure += source.exposure;
+    target.contrast += source.contrast;
+    target.highlights += source.highlights;
+    target.shadows += source.shadows;
+    target.whites += source.whites;
+    target.blacks += source.blacks;
+    target.saturation += source.saturation;
+    target.vibrance += source.vibrance;
+    target.clarity += source.clarity;
+    target.parametric.shadows += source.parametric.shadows;
+    target.parametric.darks += source.parametric.darks;
+    target.parametric.lights += source.parametric.lights;
+    target.parametric.highlights += source.parametric.highlights;
+    target.parametric.shadow_split = source.parametric.shadow_split;
+    target.parametric.midtone_split = source.parametric.midtone_split;
+    target.parametric.highlight_split = source.parametric.highlight_split;
+    add_array(&mut target.hsl.hue, &source.hsl.hue);
+    add_array(&mut target.hsl.saturation, &source.hsl.saturation);
+    add_array(&mut target.hsl.luminance, &source.hsl.luminance);
+    target.calibration.red_hue += source.calibration.red_hue;
+    target.calibration.red_saturation += source.calibration.red_saturation;
+    target.calibration.green_hue += source.calibration.green_hue;
+    target.calibration.green_saturation += source.calibration.green_saturation;
+    target.calibration.blue_hue += source.calibration.blue_hue;
+    target.calibration.blue_saturation += source.calibration.blue_saturation;
+    append_curves(&mut target.tone_curve, &source.tone_curve);
+}
+
+fn add_array<const N: usize>(target: &mut [f32; N], source: &[f32; N]) {
+    for (target, source) in target.iter_mut().zip(source) {
+        *target += *source;
+    }
+}
+
+fn append_curves(target: &mut ToneCurves, source: &ToneCurves) {
+    if !curve_is_identity(&source.composite) {
+        target.composite = source.composite.clone();
+    }
+    if !curve_is_identity(&source.red) {
+        target.red = source.red.clone();
+    }
+    if !curve_is_identity(&source.green) {
+        target.green = source.green.clone();
+    }
+    if !curve_is_identity(&source.blue) {
+        target.blue = source.blue.clone();
+    }
+}
+
+fn combined_sharpening(profile: &ResolvedProfileMetadata) -> SharpeningSettings {
+    if profile.emulation_sharpening.present {
+        profile.emulation_sharpening
+    } else {
+        profile.source_sharpening
+    }
+}
+
+fn add_profile_adjustment_args(command: &mut Command, adjustments: &ProfileAdjustments) {
+    command
+        .arg(format!(
+            "-XMP-crs:Exposure2012={}",
+            fmt_real(adjustments.exposure)
+        ))
+        .arg(format!(
+            "-XMP-crs:Contrast2012={}",
+            fmt_integer(adjustments.contrast)
+        ))
+        .arg(format!(
+            "-XMP-crs:Highlights2012={}",
+            fmt_integer(adjustments.highlights)
+        ))
+        .arg(format!(
+            "-XMP-crs:Shadows2012={}",
+            fmt_integer(adjustments.shadows)
+        ))
+        .arg(format!(
+            "-XMP-crs:Whites2012={}",
+            fmt_integer(adjustments.whites)
+        ))
+        .arg(format!(
+            "-XMP-crs:Blacks2012={}",
+            fmt_integer(adjustments.blacks)
+        ))
+        .arg(format!(
+            "-XMP-crs:Saturation={}",
+            fmt_integer(adjustments.saturation)
+        ))
+        .arg(format!(
+            "-XMP-crs:Vibrance={}",
+            fmt_integer(adjustments.vibrance)
+        ))
+        .arg(format!(
+            "-XMP-crs:Clarity2012={}",
+            fmt_integer(adjustments.clarity)
+        ))
+        .arg(format!(
+            "-XMP-crs:ParametricShadows={}",
+            fmt_integer(adjustments.parametric.shadows)
+        ))
+        .arg(format!(
+            "-XMP-crs:ParametricDarks={}",
+            fmt_integer(adjustments.parametric.darks)
+        ))
+        .arg(format!(
+            "-XMP-crs:ParametricLights={}",
+            fmt_integer(adjustments.parametric.lights)
+        ))
+        .arg(format!(
+            "-XMP-crs:ParametricHighlights={}",
+            fmt_integer(adjustments.parametric.highlights)
+        ))
+        .arg(format!(
+            "-XMP-crs:ParametricShadowSplit={}",
+            fmt_integer(adjustments.parametric.shadow_split)
+        ))
+        .arg(format!(
+            "-XMP-crs:ParametricMidtoneSplit={}",
+            fmt_integer(adjustments.parametric.midtone_split)
+        ))
+        .arg(format!(
+            "-XMP-crs:ParametricHighlightSplit={}",
+            fmt_integer(adjustments.parametric.highlight_split)
+        ))
+        .arg(format!(
+            "-XMP-crs:RedHue={}",
+            fmt_integer(adjustments.calibration.red_hue)
+        ))
+        .arg(format!(
+            "-XMP-crs:RedSaturation={}",
+            fmt_integer(adjustments.calibration.red_saturation)
+        ))
+        .arg(format!(
+            "-XMP-crs:GreenHue={}",
+            fmt_integer(adjustments.calibration.green_hue)
+        ))
+        .arg(format!(
+            "-XMP-crs:GreenSaturation={}",
+            fmt_integer(adjustments.calibration.green_saturation)
+        ))
+        .arg(format!(
+            "-XMP-crs:BlueHue={}",
+            fmt_integer(adjustments.calibration.blue_hue)
+        ))
+        .arg(format!(
+            "-XMP-crs:BlueSaturation={}",
+            fmt_integer(adjustments.calibration.blue_saturation)
+        ));
+
+    add_hsl_args(command, "HueAdjustment", &adjustments.hsl.hue);
+    add_hsl_args(command, "SaturationAdjustment", &adjustments.hsl.saturation);
+    add_hsl_args(command, "LuminanceAdjustment", &adjustments.hsl.luminance);
+    add_curve_args(
+        command,
+        "ToneCurvePV2012",
+        &adjustments.tone_curve.composite,
+    );
+    add_curve_args(command, "ToneCurvePV2012Red", &adjustments.tone_curve.red);
+    add_curve_args(
+        command,
+        "ToneCurvePV2012Green",
+        &adjustments.tone_curve.green,
+    );
+    add_curve_args(command, "ToneCurvePV2012Blue", &adjustments.tone_curve.blue);
+    if !all_curves_identity(&adjustments.tone_curve) {
+        command.arg("-XMP-crs:ToneCurveName2012=Custom");
+    }
+}
+
+fn add_sharpening_args(command: &mut Command, sharpening: SharpeningSettings) {
+    if !sharpening.present {
+        return;
+    }
+    command
+        .arg(format!(
+            "-XMP-crs:Sharpness={}",
+            fmt_integer(sharpening.amount)
+        ))
+        .arg(format!(
+            "-XMP-crs:SharpenRadius={}",
+            fmt_real(sharpening.radius)
+        ))
+        .arg(format!(
+            "-XMP-crs:SharpenDetail={}",
+            fmt_integer(sharpening.detail)
+        ))
+        .arg(format!(
+            "-XMP-crs:SharpenEdgeMasking={}",
+            fmt_integer(sharpening.masking)
+        ));
+}
+
+fn add_hsl_args(command: &mut Command, prefix: &str, values: &[f32; 8]) {
+    let names = [
+        "Red", "Orange", "Yellow", "Green", "Aqua", "Blue", "Purple", "Magenta",
+    ];
+    for (name, value) in names.iter().zip(values) {
+        command.arg(format!("-XMP-crs:{prefix}{name}={}", fmt_integer(*value)));
+    }
+}
+
+fn add_curve_args(command: &mut Command, name: &str, points: &[(f32, f32)]) {
+    if curve_is_identity(points) {
+        return;
+    }
+    for (index, (x, y)) in points.iter().enumerate() {
+        let operator = if index == 0 { "=" } else { "+=" };
+        command.arg(format!(
+            "-XMP-crs:{name}{operator}{}, {}",
+            fmt_integer(*x),
+            fmt_integer(*y)
+        ));
+    }
+}
+
+fn all_curves_identity(curves: &ToneCurves) -> bool {
+    curve_is_identity(&curves.composite)
+        && curve_is_identity(&curves.red)
+        && curve_is_identity(&curves.green)
+        && curve_is_identity(&curves.blue)
+}
+
+fn curve_is_identity(points: &[(f32, f32)]) -> bool {
+    points.is_empty() || points.iter().all(|(x, y)| (*x - *y).abs() < f32::EPSILON)
+}
+
+fn fmt_integer(value: f32) -> String {
+    format!("{:.0}", value.round())
+}
+
+fn fmt_real(value: f32) -> String {
+    let rounded = (value * 100.0).round() / 100.0;
+    if rounded == 0.0 {
+        "0".to_string()
+    } else {
+        format!("{rounded:.2}")
+    }
 }
 
 pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {

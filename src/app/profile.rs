@@ -8,9 +8,9 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use mini_film::{
-    ConvertedProfile, GrainSettings, HaldOptions, XmpFilmRecipe, convert_xmp_to_hald,
-    extract_film_recipe, profile_info_line, rawtherapee_hald_clut_profile_text,
-    write_rawtherapee_profile,
+    ConvertedProfile, GrainSettings, HaldOptions, ProfileAdjustments, SharpeningSettings,
+    XmpFilmRecipe, convert_xmp_to_hald, extract_film_recipe, profile_info_line,
+    rawtherapee_hald_clut_profile_text, write_rawtherapee_profile,
 };
 use walkdir::WalkDir;
 
@@ -24,6 +24,44 @@ pub(crate) struct ResolvedProfile {
     pub(crate) sharpening_applied: bool,
     pub(crate) resolved_stem: String,
     pub(crate) retouch_base: BasicRetouchAdjustments,
+    pub(crate) metadata: ResolvedProfileMetadata,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ResolvedProfileMetadata {
+    pub(crate) profile_name: String,
+    pub(crate) profile_uuid: Option<String>,
+    pub(crate) look_name: Option<String>,
+    pub(crate) look_uuid: Option<String>,
+    pub(crate) source_profile_name: Option<String>,
+    pub(crate) source_profile_uuid: Option<String>,
+    pub(crate) hald_path: Option<PathBuf>,
+    pub(crate) pp3_path: Option<PathBuf>,
+    pub(crate) source_adjustments: ProfileAdjustments,
+    pub(crate) source_sharpening: SharpeningSettings,
+    pub(crate) emulation_adjustments: ProfileAdjustments,
+    pub(crate) emulation_sharpening: SharpeningSettings,
+    pub(crate) has_camera_raw_settings: bool,
+}
+
+impl ResolvedProfileMetadata {
+    fn basic(profile_name: String, hald_path: Option<PathBuf>, pp3_path: Option<PathBuf>) -> Self {
+        Self {
+            profile_name,
+            profile_uuid: None,
+            look_name: None,
+            look_uuid: None,
+            source_profile_name: None,
+            source_profile_uuid: None,
+            hald_path,
+            pp3_path,
+            source_adjustments: ProfileAdjustments::default(),
+            source_sharpening: SharpeningSettings::default(),
+            emulation_adjustments: ProfileAdjustments::default(),
+            emulation_sharpening: SharpeningSettings::default(),
+            has_camera_raw_settings: false,
+        }
+    }
 }
 
 pub(crate) enum ProfileInfo {
@@ -152,12 +190,13 @@ pub(crate) fn resolve_profile(args: &ApplyArgs, temp_dir: &Path) -> Result<Resol
     if let Some(path) = find_hald_by_name(&args.hald_dir, &args.profile)? {
         let resolved_stem = profile_stem_for_output(&path);
         return Ok(ResolvedProfile {
-            hald_path: Some(path),
+            hald_path: Some(path.clone()),
             rawtherapee_profiles: Vec::new(),
             grain: GrainSettings::default(),
             sharpening_applied: false,
-            resolved_stem,
+            resolved_stem: resolved_stem.clone(),
             retouch_base: BasicRetouchAdjustments::default(),
+            metadata: ResolvedProfileMetadata::basic(resolved_stem, Some(path), None),
         });
     }
 
@@ -254,8 +293,9 @@ fn profile_from_path(
             rawtherapee_profiles: Vec::new(),
             grain: GrainSettings::default(),
             sharpening_applied: false,
-            resolved_stem,
+            resolved_stem: resolved_stem.clone(),
             retouch_base: BasicRetouchAdjustments::default(),
+            metadata: ResolvedProfileMetadata::basic(resolved_stem, Some(path.to_path_buf()), None),
         }),
         Some(ext) if ext.eq_ignore_ascii_case("xmp") => {
             profile_from_xmp(path, hald_level, profiles_root, hald_dir, temp_dir)
@@ -265,8 +305,9 @@ fn profile_from_path(
             rawtherapee_profiles: vec![path.to_path_buf()],
             grain: GrainSettings::default(),
             sharpening_applied: false,
-            resolved_stem,
+            resolved_stem: resolved_stem.clone(),
             retouch_base: BasicRetouchAdjustments::default(),
+            metadata: ResolvedProfileMetadata::basic(resolved_stem, None, Some(path.to_path_buf())),
         }),
         Some(ext) => {
             bail!("unsupported profile path extension .{ext}; expected .png, .xmp, or .pp3")
@@ -436,7 +477,7 @@ fn profile_from_xmp_inner(
         rawtherapee_profiles.push(path);
     }
     Ok(ResolvedProfile {
-        hald_path: Some(output),
+        hald_path: Some(output.clone()),
         rawtherapee_profiles,
         grain: recipe.grain,
         sharpening_applied: converted.sharpening.is_enabled() || recipe.sharpening.is_enabled(),
@@ -445,6 +486,25 @@ fn profile_from_xmp_inner(
             .add(BasicRetouchAdjustments::from_profile_adjustments(
                 &recipe.adjustments,
             )),
+        metadata: ResolvedProfileMetadata {
+            profile_name: recipe
+                .name
+                .clone()
+                .or_else(|| recipe.look_name.clone())
+                .unwrap_or_else(|| profile_stem_for_output(path)),
+            profile_uuid: recipe.uuid.clone(),
+            look_name: recipe.look_name.clone(),
+            look_uuid: recipe.look_uuid.clone(),
+            source_profile_name: converted.profile.name.clone(),
+            source_profile_uuid: converted.profile.uuid.clone(),
+            hald_path: Some(output),
+            pp3_path: None,
+            source_adjustments: converted.adjustments.clone(),
+            source_sharpening: converted.sharpening,
+            emulation_adjustments: recipe.adjustments.clone(),
+            emulation_sharpening: recipe.sharpening,
+            has_camera_raw_settings: true,
+        },
     })
 }
 
