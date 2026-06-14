@@ -39,7 +39,7 @@ use crate::cli::{BatchOutputFormat, ExportOptions, GalleryTemplate, LensCorrecti
 pub(crate) struct BatchArgs {
     pub(crate) input: PathBuf,
     pub(crate) output: PathBuf,
-    pub(crate) profile: String,
+    pub(crate) profile: Option<String>,
     pub(crate) hald_dir: PathBuf,
     pub(crate) profiles_root: PathBuf,
     pub(crate) hald_level: u32,
@@ -170,12 +170,21 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
     {
         resolved.grain = grain;
     }
-    let profile_report = profile_info_text_for_selector(
-        &args.profile,
-        &args.profiles_root,
-        &args.hald_dir,
-        args.hald_level,
-    )?;
+    let profile_selector = args
+        .profile
+        .as_deref()
+        .map(str::trim)
+        .filter(|profile| !profile.is_empty());
+    let profile_report = if let Some(profile) = profile_selector {
+        profile_info_text_for_selector(
+            profile,
+            &args.profiles_root,
+            &args.hald_dir,
+            args.hald_level,
+        )?
+    } else {
+        "No profile configured; RawTherapee defaults are used.".to_string()
+    };
     let base_seed = args.grain_seed.unwrap_or_else(time_of_day_seed);
 
     let multi = MultiProgress::new();
@@ -742,7 +751,11 @@ fn process_batch_file_inner(
             exif_comment: Some(format!(
                 "mini-film {} usage=batch profile={}",
                 env!("CARGO_PKG_VERSION"),
-                context.resolved.resolved_stem
+                if context.resolved.resolved_stem.trim().is_empty() {
+                    "none"
+                } else {
+                    &context.resolved.resolved_stem
+                }
             )),
             retouch: None,
         },
@@ -830,8 +843,28 @@ fn write_batch_report(context: &BatchReportContext<'_>) -> String {
     writeln!(out, "Mini-film version: {}", env!("CARGO_PKG_VERSION")).ok();
     writeln!(out, "Input directory: {}", context.args.input.display()).ok();
     writeln!(out, "Output directory: {}", context.args.output.display()).ok();
-    writeln!(out, "Profile selector: {}", context.args.profile).ok();
-    writeln!(out, "Resolved profile: {}", context.resolved_profile_stem).ok();
+    writeln!(
+        out,
+        "Profile selector: {}",
+        context
+            .args
+            .profile
+            .as_deref()
+            .map(str::trim)
+            .filter(|profile| !profile.is_empty())
+            .unwrap_or("none (RawTherapee defaults)")
+    )
+    .ok();
+    writeln!(
+        out,
+        "Resolved profile: {}",
+        if context.resolved_profile_stem.trim().is_empty() {
+            "RawTherapee defaults"
+        } else {
+            context.resolved_profile_stem
+        }
+    )
+    .ok();
     writeln!(out, "Output format: {:?}", context.args.output_format).ok();
     writeln!(out, "Detected files: {}", context.raw_count).ok();
     writeln!(out, "Completed: {}", context.successes.len()).ok();

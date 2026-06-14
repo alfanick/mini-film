@@ -749,7 +749,7 @@ function render() {
   syncProfilesPlacement();
   const images = filteredImages();
   const total = state.data?.images?.length || 0;
-  const profileCount = state.data?.profiles?.length || 0;
+  const profileCount = visibleProfileCount();
   const clientCount = state.data?.client_count || 0;
   const publishSummary = latestPublishJobSummary();
   const codexSummary = codexSummaryText();
@@ -1004,7 +1004,7 @@ function renderProgressSummary(image) {
     return {
       state: "waiting",
       text: "none",
-      title: "no profiles selected for publish",
+      title: profilesAreImplicitOnly() ? "RawTherapee default render pending" : "no profiles selected for publish",
     };
   }
   if (failed > 0 && done + failed === total) {
@@ -1109,6 +1109,7 @@ function renderCurrent(image) {
   }
 
   const selected = selectedProfile(image);
+  const hideProfiles = profilesAreImplicitOnly();
   const mainUrl = selected?.url || image.preview_url;
   const previewNote = selected?.url ? "" : image.preview_url ? " | camera preview" : "";
   const selectedState = profileDisplayState(image, selected);
@@ -1119,9 +1120,10 @@ function renderCurrent(image) {
   els.title.textContent = image.file_name;
   els.subtitle.textContent = `${image.relative_path} | rating ${image.rating}`;
   renderImageExif(image);
-  els.profileState.textContent = selected
-    ? `${selected.profile_stem}: ${selectedState.text}${previewNote}${codexState ? ` | ${codexState}` : ""}`
-    : codexState;
+  els.profileState.textContent =
+    !hideProfiles && selected
+      ? `${selected.profile_stem}: ${selectedState.text}${previewNote}${codexState ? ` | ${codexState}` : ""}`
+      : codexState;
   const imageChanged = state.lastInputImageId !== image.id;
   if (imageChanged || document.activeElement !== els.tags) {
     els.tags.value = image.tags.join(", ");
@@ -1241,6 +1243,16 @@ function publishProfileIndexes(image) {
   return (image.profiles || []).map((profile) => profile.profile_index);
 }
 
+function profilesAreImplicitOnly() {
+  const profiles = state.data?.profiles || [];
+  return profiles.length === 1 && !String(profiles[0].selector || "").trim();
+}
+
+function visibleProfileCount(image = null) {
+  if (profilesAreImplicitOnly()) return 0;
+  return image ? image.profiles?.length || 0 : state.data?.profiles?.length || 0;
+}
+
 function togglePublishProfile(image, profileIndex) {
   const selected = new Set(publishProfileIndexes(image));
   if (selected.has(profileIndex)) {
@@ -1254,6 +1266,10 @@ function togglePublishProfile(image, profileIndex) {
 }
 
 function renderProfiles(image) {
+  if (profilesAreImplicitOnly()) {
+    preactRender(null, els.profiles);
+    return;
+  }
   preactRender(
     h(ProfileList, {
       image,
@@ -1365,16 +1381,18 @@ function syncMobileReviewLayout() {
 }
 
 function updateMobileActionLabels(image) {
-  const profileCount = image?.profiles?.length || 0;
+  const profileCount = visibleProfileCount(image);
   const tagsCount = image?.tags?.length || 0;
   const hasNotes = Boolean(image?.notes);
   const retouchActive = image ? !retouchIsDefault(image.retouch || defaultRetouch()) : false;
   els.mobileDrawerButtons.forEach((button) => {
     const drawer = button.dataset.mobileDrawer;
     if (drawer === "profiles") {
+      button.hidden = profilesAreImplicitOnly();
       button.textContent = profileCount > 0 ? `Profiles ${profileCount}` : "Profiles";
       button.title = `${profileCount} profile ${profileCount === 1 ? "render" : "renders"}`;
     } else if (drawer === "retouch") {
+      button.hidden = false;
       button.textContent = retouchActive ? "Retouch *" : "Retouch";
       button.title = retouchActive ? "Retouch adjustments are active" : "Retouch";
     } else if (drawer === "metadata") {
@@ -1781,9 +1799,10 @@ function applyLocalRetouch(retouch, options = {}) {
   renderList(filteredImages());
   renderProfiles(image);
   const selected = selectedProfile(image);
-  els.profileState.textContent = selected
-    ? `${selected.profile_stem}: ${profileDisplayState(image, selected).text}`
-    : "";
+  els.profileState.textContent =
+    !profilesAreImplicitOnly() && selected
+      ? `${selected.profile_stem}: ${profileDisplayState(image, selected).text}`
+      : "";
   if (options.save !== false) scheduleRetouchSave();
 }
 
@@ -2319,6 +2338,7 @@ async function carrySelectedProfileToImage(imageId, profileIndex) {
 }
 
 async function selectProfileRelative(delta) {
+  if (profilesAreImplicitOnly()) return;
   const image = findImage(state.currentId);
   const profiles = image?.profiles || [];
   if (profiles.length === 0) return;
@@ -2328,6 +2348,7 @@ async function selectProfileRelative(delta) {
 }
 
 async function toggleSelectedProfilePublish() {
+  if (profilesAreImplicitOnly()) return;
   const image = findImage(state.currentId);
   const profile = selectedProfile(image);
   if (!image || !profile) return;

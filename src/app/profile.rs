@@ -155,6 +155,18 @@ pub(crate) fn rawtherapee_profiles_with_hald(
     Ok(profiles)
 }
 
+pub(crate) fn neutral_profile() -> ResolvedProfile {
+    ResolvedProfile {
+        hald_path: None,
+        rawtherapee_profiles: Vec::new(),
+        grain: GrainSettings::default(),
+        sharpening_applied: false,
+        resolved_stem: String::new(),
+        retouch_base: BasicRetouchAdjustments::default(),
+        metadata: ResolvedProfileMetadata::basic("RawTherapee defaults".to_string(), None, None),
+    }
+}
+
 /// Resolve a CLI profile selector into a concrete Hald file plus recipe metadata.
 ///
 /// The selector can be a real path, an emulation XMP name under `emulations/`,
@@ -164,7 +176,16 @@ pub(crate) fn rawtherapee_profiles_with_hald(
 /// tone/color/sharpening metadata; raw PNG Hald and PP3 inputs have no attached
 /// mini-film grain metadata, so they resolve with defaults.
 pub(crate) fn resolve_profile(args: &ApplyArgs, temp_dir: &Path) -> Result<ResolvedProfile> {
-    let selector_path = profile_selector_path(&args.profile)?;
+    let Some(profile) = args
+        .profile
+        .as_deref()
+        .map(str::trim)
+        .filter(|profile| !profile.is_empty())
+    else {
+        return Ok(neutral_profile());
+    };
+
+    let selector_path = profile_selector_path(profile)?;
     if selector_path.exists() {
         return profile_from_path(
             &selector_path,
@@ -176,7 +197,7 @@ pub(crate) fn resolve_profile(args: &ApplyArgs, temp_dir: &Path) -> Result<Resol
     }
 
     for root in emulation_selector_roots(&args.profiles_root) {
-        if let Some(path) = find_xmp_by_name(&root, &args.profile)? {
+        if let Some(path) = find_xmp_by_name(&root, profile)? {
             return profile_from_path(
                 &path,
                 args.hald_level,
@@ -187,7 +208,7 @@ pub(crate) fn resolve_profile(args: &ApplyArgs, temp_dir: &Path) -> Result<Resol
         }
     }
 
-    if let Some(path) = find_hald_by_name(&args.hald_dir, &args.profile)? {
+    if let Some(path) = find_hald_by_name(&args.hald_dir, profile)? {
         let resolved_stem = profile_stem_for_output(&path);
         return Ok(ResolvedProfile {
             hald_path: Some(path.clone()),
@@ -202,7 +223,7 @@ pub(crate) fn resolve_profile(args: &ApplyArgs, temp_dir: &Path) -> Result<Resol
 
     bail!(
         "could not resolve profile {:?} as a file, emulation XMP name under {}, Hald name under {}, or PP3 path",
-        args.profile,
+        profile,
         args.profiles_root.display(),
         args.hald_dir.display()
     );
@@ -965,7 +986,7 @@ mod tests {
         ApplyArgs {
             raw: PathBuf::from("input.dng"),
             output: PathBuf::from("output.jpg"),
-            profile,
+            profile: Some(profile),
             hald_dir,
             profiles_root,
             hald_level: 16,

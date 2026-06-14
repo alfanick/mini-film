@@ -24,7 +24,7 @@ use crate::app::apply::{
 use crate::app::export::validate_export_options;
 use crate::app::info::profile_info_text_for_selector;
 use crate::app::nikon_wtu::{NikonWtuConfig, NikonWtuReceiver, start_nikon_wtu_receiver};
-use crate::app::profile::{ResolvedProfile, resolve_profile};
+use crate::app::profile::{ResolvedProfile, neutral_profile, resolve_profile};
 use crate::app::progress::{
     ApplyProgress, StageEstimates, batch_progress_style, file_progress_style, format_duration,
     progress_length,
@@ -845,7 +845,12 @@ fn profile_daemon_info(
     writeln!(out, "Input directory: {}", args.input.display()).ok();
     writeln!(out, "Output directory: {}", args.output.display()).ok();
     writeln!(out, "Profile: {}", profile.selector).ok();
-    writeln!(out, "Resolved profile: {}", profile.stem).ok();
+    writeln!(
+        out,
+        "Resolved profile: {}",
+        daemon_profile_label(&profile.stem)
+    )
+    .ok();
     writeln!(out, "Output format: {:?}", args.output_format).ok();
     if let Some(address) = &args.review_address {
         writeln!(out, "Review server: http://{address}").ok();
@@ -913,7 +918,16 @@ fn profile_daemon_info(
 }
 
 fn resolve_daemon_profiles(args: &BatchDaemonArgs, temp_dir: &Path) -> Result<Vec<DaemonProfile>> {
-    args.profile
+    let selectors = args
+        .profile
+        .iter()
+        .filter_map(|selector| {
+            let selector = selector.trim();
+            (!selector.is_empty()).then(|| selector.to_string())
+        })
+        .collect::<Vec<_>>();
+
+    selectors
         .iter()
         .enumerate()
         .map(|(index, selector)| {
@@ -927,7 +941,7 @@ fn resolve_daemon_profiles(args: &BatchDaemonArgs, temp_dir: &Path) -> Result<Ve
             let apply_args = ApplyArgs {
                 raw: PathBuf::new(),
                 output: PathBuf::new(),
-                profile: selector.clone(),
+                profile: Some(selector.clone()),
                 hald_dir: args.hald_dir.clone(),
                 profiles_root: args.profiles_root.clone(),
                 hald_level: args.hald_level,
@@ -964,7 +978,20 @@ fn resolve_daemon_profiles(args: &BatchDaemonArgs, temp_dir: &Path) -> Result<Ve
                 profile_report,
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>>>()
+        .map(|profiles| {
+            if profiles.is_empty() {
+                vec![DaemonProfile {
+                    selector: String::new(),
+                    stem: String::new(),
+                    resolved: neutral_profile(),
+                    profile_report: "No profile configured; RawTherapee defaults are used."
+                        .to_string(),
+                }]
+            } else {
+                profiles
+            }
+        })
 }
 
 fn event_stability_delay(kind: &EventKind, debounce: Duration) -> Duration {
@@ -1166,7 +1193,8 @@ fn process_single_profile(
     };
 
     file.set_position(0);
-    file.set_message(format!("{} -> {}: queued", raw_name, profile.stem));
+    let profile_label = daemon_profile_label(&profile.stem);
+    file.set_message(format!("{} -> {}: queued", raw_name, profile_label));
 
     let file_start = Instant::now();
     let progress = ApplyProgress {
@@ -1190,7 +1218,11 @@ fn process_single_profile(
             exif_comment: Some(format!(
                 "mini-film {} usage=daemon profile={}",
                 env!("CARGO_PKG_VERSION"),
-                profile_stem
+                if profile_stem.trim().is_empty() {
+                    "none"
+                } else {
+                    profile_stem
+                }
             )),
             retouch: None,
         },
@@ -1217,7 +1249,7 @@ fn process_single_profile(
     file.set_message(format!(
         "{} -> {}: done in {}",
         raw_name,
-        profile.stem,
+        profile_label,
         format_duration(file_start.elapsed())
     ));
 
@@ -1288,7 +1320,19 @@ fn daemon_output_dir(
         .strip_prefix(input_root)
         .with_context(|| format!("mapping {} under {}", raw.display(), input_root.display()))?;
     let parent = relative.parent().unwrap_or_else(|| Path::new(""));
-    Ok(output_root.join(parent).join(profile_stem))
+    if profile_stem.trim().is_empty() {
+        Ok(output_root.join(parent))
+    } else {
+        Ok(output_root.join(parent).join(profile_stem))
+    }
+}
+
+fn daemon_profile_label(profile_stem: &str) -> &str {
+    if profile_stem.trim().is_empty() {
+        "RawTherapee defaults"
+    } else {
+        profile_stem
+    }
 }
 
 fn relative_raw_stem(raw: &Path) -> Result<&str> {

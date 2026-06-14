@@ -31,7 +31,7 @@ use mini_film::rawtherapee_hald_clut_profile_text;
 pub(crate) struct ApplyArgs {
     pub(crate) raw: PathBuf,
     pub(crate) output: PathBuf,
-    pub(crate) profile: String,
+    pub(crate) profile: Option<String>,
     pub(crate) hald_dir: PathBuf,
     pub(crate) profiles_root: PathBuf,
     pub(crate) hald_level: u32,
@@ -63,7 +63,11 @@ pub(crate) struct ApplyJob<'a> {
     pub(crate) retouch: Option<&'a RetouchSettings>,
 }
 
-fn exif_comment_for_command(command: &str, profile: &str) -> String {
+fn exif_comment_for_command(command: &str, profile: Option<&str>) -> String {
+    let profile = profile
+        .map(str::trim)
+        .filter(|profile| !profile.is_empty())
+        .unwrap_or("none");
     format!(
         "mini-film {} usage={command} profile={profile}",
         env!("CARGO_PKG_VERSION")
@@ -111,7 +115,7 @@ pub(crate) fn run_apply(args: ApplyArgs) -> Result<()> {
             lens_corrections: args.lens_corrections,
             export: &args.export,
             quiet: true,
-            exif_comment: Some(exif_comment_for_command("apply", &args.profile)),
+            exif_comment: Some(exif_comment_for_command("apply", args.profile.as_deref())),
             retouch: args.retouch.as_ref(),
         },
         &resolved,
@@ -125,7 +129,9 @@ pub(crate) fn run_apply(args: ApplyArgs) -> Result<()> {
     }
     result?;
 
-    if let Some(hald_path) = &resolved.hald_path {
+    if args.profile.is_none() {
+        eprintln!("wrote {} using RawTherapee defaults", args.output.display());
+    } else if let Some(hald_path) = &resolved.hald_path {
         eprintln!(
             "wrote {} using {}",
             args.output.display(),

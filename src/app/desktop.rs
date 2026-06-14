@@ -494,14 +494,10 @@ mod enabled {
     }
 
     fn normalize_profiles(profiles: Vec<String>) -> Result<Vec<String>> {
-        let profiles = profiles
+        Ok(profiles
             .into_iter()
             .filter_map(|profile| optional_string(&profile))
-            .collect::<Vec<_>>();
-        if profiles.is_empty() {
-            bail!("at least one profile is required");
-        }
-        Ok(profiles)
+            .collect::<Vec<_>>())
     }
 
     fn parse_gallery(raw: &str) -> Result<Option<GalleryTemplate>> {

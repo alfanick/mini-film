@@ -281,6 +281,7 @@ Output metadata behavior for `apply`, `batch`, `daemon`, and `sampler`:
   Hald or PP3 source, grain state, and grain seed
 - an EXIF comment is written as  
   `mini-film <version> usage=<command> profile=<profile-or-emulation>`
+  or `profile=none` when no profile was configured
 
 ## Batch Apply
 
@@ -349,8 +350,9 @@ or regenerate thumbnails.
 
 ## Daemon
 
-Run a long-lived watcher that applies one or more profiles whenever new RAW files
-arrive in an input folder.
+Run a long-lived watcher that applies optional profiles whenever new RAW files
+arrive in an input folder. If no `--profile` is provided, each RAW is developed
+once with RawTherapee defaults.
 
 ```sh
 mini-film daemon \
@@ -364,14 +366,20 @@ mini-film daemon \
   --output-format jpg
 ```
 
-The command validates all profiles on startup, so mistyped `--profile` values fail
-immediately. It watches the input directory recursively, waits for the file to
+The command validates configured profiles on startup, so mistyped `--profile`
+values fail immediately. It watches the input directory recursively, waits for the file to
 be reported as completed by the watcher (or a short fallback window when that
 signal is not available), and writes each
 result into:
 
 ```text
 <raw relative structure>/<profile stem>/<raw stem>.<ext>
+```
+
+Without `--profile`, daemon output uses the raw-relative structure directly:
+
+```text
+<raw relative structure>/<raw stem>.<ext>
 ```
 
 For example, `/in/2026/05/03/DSC_1864-14.dng` with profiles `Foil` and `Classic`
@@ -405,8 +413,9 @@ The review server assets are compiled into the binary, so a release executable
 does not need HTML/CSS/JS files next to it. The UI is live: the daemon records
 new RAW files immediately, extracts an embedded camera preview when available,
 then updates the browser over server-sent events as each profile render moves
-from queued to processing to done. The first `--profile` is the default selected
-look. All configured profile variants are selected for publish by default; use
+from queued to processing to done. When no profiles are configured, the review UI
+shows the developed RawTherapee-default output without a profile rail. The first
+`--profile` is the default selected look when profiles are configured. All configured profile variants are selected for publish by default; use
 the checkbox on each profile thumbnail to exclude or re-include a variant while
 reviewing.
 
@@ -498,7 +507,8 @@ Published outputs are flat under the chosen album folder:
 <output>/<album>/<raw stem>-<profile stem>.<ext>
 ```
 
-The first daemon `--profile` is treated as the default profile and does not add a
+With no daemon `--profile`, published files use `<raw stem>.<ext>`. Otherwise,
+the first daemon `--profile` is treated as the default profile and does not add a
 profile suffix. Additional selected profiles add `-<profile stem>`. If a gallery
 template is chosen in the wizard, publish renders an `index.html` gallery in the
 album folder using the same templates as batch. Supported templates are
@@ -603,7 +613,10 @@ JPEG subsampling values:
 
 ## Profile Selection
 
-`--profile` accepts:
+`--profile` is optional for `apply`, `batch`, `daemon`, and the desktop app. If
+it is omitted entirely, mini-film asks RawTherapee to develop the RAW with its
+default settings and does not apply Hald, PP3, profile adjustments, or
+profile-derived grain. When provided, `--profile` accepts:
 
 - a Hald PNG path
 - a RawTherapee `.pp3` path

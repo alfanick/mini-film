@@ -112,7 +112,7 @@ pub(crate) enum CommandKind {
         hald_level: u32,
     },
 
-    /// Develop a RAW file with RawTherapee, profile Film Simulation, grain, and final export.
+    /// Develop a RAW file with RawTherapee, optional profile Film Simulation, grain, and final export.
     Apply {
         /// RAW file to develop (supports common camera RAW formats such as `.dng`,
         /// `.nef`, `.cr2`, `.cr3`, `.arw`, `.raf`, `.orf`, `.rw2`).
@@ -122,9 +122,10 @@ pub(crate) enum CommandKind {
         #[arg(short, long)]
         output: PathBuf,
 
-        /// Profile selector: Hald PNG path/name, emulation XMP path/name, or RawTherapee PP3 path.
+        /// Optional profile selector: Hald PNG path/name, emulation XMP path/name, or RawTherapee PP3 path.
+        /// If omitted, RawTherapee develops the RAW with its default settings.
         #[arg(short, long)]
-        profile: String,
+        profile: Option<String>,
 
         /// Directory containing generated cached Hald PNGs. Defaults to $HOME/.cache/mini-film/hald.
         #[arg(long)]
@@ -217,7 +218,7 @@ pub(crate) enum CommandKind {
         progressive_jpeg: bool,
     },
 
-    /// Apply a profile to every supported RAW file in an input folder.
+    /// Apply an optional profile to every supported RAW file in an input folder.
     Batch {
         /// Input folder scanned recursively for supported RAW files (case-insensitive), e.g.
         /// `.dng`, `.nef`, `.cr2`, `.cr3`, `.arw`, `.raf`, `.orf`, `.rw2`, ...
@@ -226,9 +227,10 @@ pub(crate) enum CommandKind {
         /// Output folder. It is created if it does not exist.
         output: PathBuf,
 
-        /// Profile selector: Hald PNG path/name, emulation XMP path/name, or RawTherapee PP3 path.
+        /// Optional profile selector: Hald PNG path/name, emulation XMP path/name, or RawTherapee PP3 path.
+        /// If omitted, RawTherapee develops each RAW with its default settings.
         #[arg(short, long)]
-        profile: String,
+        profile: Option<String>,
 
         /// Directory containing generated cached Hald PNGs. Defaults to $HOME/.cache/mini-film/hald.
         #[arg(long)]
@@ -421,7 +423,7 @@ pub(crate) enum CommandKind {
         progressive_jpeg: bool,
     },
 
-    /// Watch an input inbox folder and apply one or more profiles as files arrive.
+    /// Watch an input inbox folder and apply optional profiles as files arrive.
     #[command(name = "daemon")]
     BatchDaemon {
         /// Input folder to watch recursively for new RAW files.
@@ -431,8 +433,8 @@ pub(crate) enum CommandKind {
         output: PathBuf,
 
         /// Profile selectors to apply to each incoming RAW. Repeat this option for each profile.
-        /// Profiles are rendered to output files using their profile stems.
-        #[arg(short = 'p', long = "profile", required = true)]
+        /// If omitted, each RAW is developed once with RawTherapee defaults.
+        #[arg(short = 'p', long = "profile")]
         profile: Vec<String>,
 
         /// Directory containing generated cached Hald PNGs. Defaults to $HOME/.cache/mini-film/hald.

@@ -795,7 +795,7 @@ impl ReviewHandle {
         let apply_args = ApplyArgs {
             raw: raw.clone(),
             output: output.to_path_buf(),
-            profile: profile.selector.clone(),
+            profile: optional_profile_selector(&profile.selector),
             hald_dir: self.hald_dir.clone(),
             profiles_root: self.profiles_root.clone(),
             hald_level: self.hald_level,
@@ -836,7 +836,11 @@ impl ReviewHandle {
                 exif_comment: Some(format!(
                     "mini-film {} usage=review profile={} {}",
                     env!("CARGO_PKG_VERSION"),
-                    profile.stem,
+                    if profile.stem.trim().is_empty() {
+                        "none"
+                    } else {
+                        &profile.stem
+                    },
                     retouch.summary()
                 )),
                 retouch: Some(retouch),

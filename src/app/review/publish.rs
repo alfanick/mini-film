@@ -592,7 +592,7 @@ pub(super) fn rerender_review_output(
     run_apply(ApplyArgs {
         raw,
         output: destination.to_path_buf(),
-        profile: profile.selector.clone(),
+        profile: optional_profile_selector(&profile.selector),
         hald_dir: options.hald_dir.clone(),
         profiles_root: options.profiles_root.clone(),
         hald_level: options.hald_level,
@@ -610,6 +610,11 @@ pub(super) fn rerender_review_output(
         export: options.export.clone(),
         retouch: Some(image.retouch.clone()),
     })
+}
+
+pub(super) fn optional_profile_selector(selector: &str) -> Option<String> {
+    let selector = selector.trim();
+    (!selector.is_empty()).then(|| selector.to_string())
 }
 
 pub(super) fn canonical_existing_dir(path: &Path) -> Result<PathBuf> {
@@ -780,7 +785,11 @@ pub(super) fn write_review_metadata(
         .arg(format!(
             "-UserComment=mini-film {} review profile={} rating={} labels={} {} notes={}",
             env!("CARGO_PKG_VERSION"),
-            render.profile_stem,
+            if render.profile_stem.trim().is_empty() {
+                "none"
+            } else {
+                &render.profile_stem
+            },
             image.rating,
             labels_text,
             image.retouch.summary(),
