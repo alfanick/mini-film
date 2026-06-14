@@ -23,6 +23,16 @@ inspectable. `mini-film app` remains available as the explicit command form.
 For scripted use, every part of the workflow is still available as CLI commands:
 `apply`, `batch`, `daemon`, `sampler`, `pp3`, `info`, `nikon`, and `update`.
 
+## Screenshots
+
+Main review view:
+
+![mini-film main review view](https://sam.nakarmamana.ch/mini-film-ss-main.png)
+
+Publishing workflow:
+
+![mini-film publishing workflow](https://sam.nakarmamana.ch/mini-film-ss-publish.png)
+
 ## Top Features
 
 - **Single-binary desktop workflow**: `mini-film` provides a Tauri launcher
@@ -46,16 +56,6 @@ For scripted use, every part of the workflow is still available as CLI commands:
 - **RAW pipeline extras**: deterministic film grain, optional high-ISO color
   denoise, optional RawTherapee lens corrections, metadata copyback with
   `exiftool`, 8-bit JPEG output, and 16-bit Zip-compressed TIFF output.
-
-## Screenshots
-
-Main review view:
-
-![mini-film main review view](https://sam.nakarmamana.ch/mini-film-ss-main.png)
-
-Publishing workflow:
-
-![mini-film publishing workflow](https://sam.nakarmamana.ch/mini-film-ss-publish.png)
 
 ## Profile Library
 
