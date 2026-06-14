@@ -33,6 +33,10 @@ Publishing workflow:
 
 ![mini-film publishing workflow](https://sam.nakarmamana.ch/mini-film-ss-publish.png)
 
+Available shortcuts:
+
+![mini-film shortcuts overlay](https://sam.nakarmamana.ch/mini-film-ss-shortcuts.png)
+
 ## Top Features
 
 - **Single-binary desktop workflow**: `mini-film` provides a Tauri launcher
@@ -41,7 +45,8 @@ Publishing workflow:
 - **Live review and publish workflow**: run `daemon` on an inbox folder, open the
   browser UI, review new pictures as they arrive, rate/tag/label them in
   multiple passes, compare profile variants, and publish the final selection
-  with live job progress.
+  with live job progress. The review workflow is optimized for fast keyboard
+  operation, while still supporting mouse, touch, and tablet use.
 - **Optional Codex review assist**: let Codex analyze small embedded RAW
   previews after rendering finishes and fill tags, notes, or initial ratings
   while the live review UI shows the same queued/processing status indicators.
@@ -434,14 +439,16 @@ the multi-pass culling flow where it stopped. A typical pass is to rate
 everything `0` or `1`, filter to `>= 1`, rate the
 survivors higher, and repeat until the final subset is ready.
 
-Keyboard shortcuts are available in the browser UI; press `?` to show the
-shortcuts overlay. `1`-`5` rates and advances, arrow up/down changes the rating
-and advances, left/right or `h`/`l` navigates without rating, PageUp/PageDown
-cycles the profile preview for the current picture, and Space includes or skips
-the selected profile for publish. `6`, `7`, `8`, `9`, and `0` toggle red,
-yellow, green, blue, and purple labels without advancing; `r`, `y`, `g`, `b`,
-and `p` provide the same mnemonic label toggles. `c` copies the current retouch
-slider adjustments, and `v` pastes them onto another picture.
+The review workflow is optimized for keyboard operation. Press `?` in the
+browser UI to show the shortcuts overlay. `1`-`5` rates and advances, arrow
+up/down changes the rating and advances, left/right or `h`/`l` navigates without
+rating, PageUp/PageDown cycles the profile preview for the current picture, and
+Space includes or skips the selected profile for publish. Double-click or
+double-tap a profile thumbnail to publish only that profile and exclude the
+others. `6`, `7`, `8`, `9`, and `0` toggle red, yellow, green, blue, and purple
+labels without advancing; `r`, `y`, `g`, `b`, and `p` provide the same mnemonic
+label toggles. `c` copies the current retouch slider adjustments, and `v` pastes
+them onto another picture.
 
 The review UI stores rating, label, tags, notes, active preview profile, and the
 set of profile variants selected for publish. It also supports per-picture

@@ -289,7 +289,10 @@ function ShortcutsOverlay() {
         [["Wheel ←/→"], "Move between visible pictures after a short scroll threshold."],
         [["Wheel ↑/↓"], "Preview the previous or next profile after a short scroll threshold."],
         [["Hold"], "Zoom into the picture under the cursor or finger until released."],
-        [["Profile"], "Click a profile thumbnail to preview it; use its checkbox to include it in publishing."],
+        [
+          ["Profile"],
+          "Click a profile thumbnail to preview it; use its checkbox to include it in publishing. Double-click or double-tap a profile to publish only that profile.",
+        ],
       ],
     ],
     [
@@ -319,6 +322,7 @@ function ShortcutsOverlay() {
       [
         [["PgUp", "PgDn"], "Preview the previous or next profile for the current picture."],
         [["Space"], "Include or skip the selected profile when publishing."],
+        [["Double-click"], "Publish only that profile thumbnail and exclude the other profiles."],
       ],
     ],
     [
