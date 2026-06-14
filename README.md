@@ -47,6 +47,16 @@ For scripted use, every part of the workflow is still available as CLI commands:
   denoise, optional RawTherapee lens corrections, metadata copyback with
   `exiftool`, 8-bit JPEG output, and 16-bit Zip-compressed TIFF output.
 
+## Screenshots
+
+Main review view:
+
+![mini-film main review view](https://sam.nakarmamana.ch/mini-film-ss-main.png)
+
+Publishing workflow:
+
+![mini-film publishing workflow](https://sam.nakarmamana.ch/mini-film-ss-publish.png)
+
 ## Profile Library
 
 mini-film does not include film profiles or emulations. It works with XMP, Hald,
