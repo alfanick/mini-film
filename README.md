@@ -667,7 +667,7 @@ mini-film internally handles:
 
 ImageMagick/GraphicsMagick `convert` handles:
 
-- final resize, bit depth, metadata stripping, JPEG quality/subsampling, progressive JPEG, TIFF Zip compression, and TIFF/JPEG encoding
+- final resize, sRGB JPEG colorspace enforcement, bit depth, metadata stripping, JPEG quality/subsampling, progressive JPEG, TIFF Zip compression, and TIFF/JPEG encoding
 - structured sampler contact sheet rendering from mini-film's generated SVG layout
 
 ## RAW Development
@@ -683,6 +683,11 @@ JPEG-bound `apply`, `batch`, and `sampler` runs ask RawTherapee for an 8-bit JPE
 ```sh
 rawtherapee-cli -q -Y [-p generated.pp3 ...] -o intermediate.jpg -j95 -js3 -c input.RAW
 ```
+
+Generated RawTherapee profiles explicitly request `RT_sRGB` output for rendered
+JPEG intermediates. The final JPEG export also asks `convert` for sRGB output,
+and metadata copyback excludes the source RAW ICC profile so camera/input color
+profiles do not incorrectly tag the rendered JPEG.
 
 Sampler also adds a temporary RawTherapee resize profile so each RAW development produces a thumbnail-sized JPEG instead of a full-size TIFF.
 

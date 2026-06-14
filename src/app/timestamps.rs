@@ -134,7 +134,7 @@ fn run_exiftool_copy_all(
         .arg("-TagsFromFile")
         .arg(raw)
         .arg("-all:all")
-        .arg("-icc_profile")
+        .arg("--ICC_Profile:all")
         .arg("-Orientation#=1");
     add_edit_metadata_args(&mut command, raw, edit);
     command.arg(output);
@@ -160,7 +160,7 @@ fn run_exiftool_fallback(
         .arg(raw)
         .arg("-exif:all")
         .arg("-xmp:all")
-        .arg("-icc_profile")
+        .arg("--ICC_Profile:all")
         .arg("-Orientation#=1");
     add_edit_metadata_args(&mut command, raw, edit);
     command.arg(output);
