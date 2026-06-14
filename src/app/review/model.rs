@@ -134,6 +134,7 @@ pub(super) struct ReviewImage {
 pub(super) enum ReviewMetadataSource {
     #[default]
     Default,
+    Camera,
     Codex,
     Manual,
 }

@@ -77,6 +77,7 @@ impl ReviewStore {
             .to_string();
         let mut exif = extract_gallery_exif(raw).unwrap_or_default();
         exif.sanitize_text_fields();
+        let imported_rating = exif.rating.unwrap_or_default().min(5);
         let mut image = ReviewImage {
             id,
             raw_path: raw.to_path_buf(),
@@ -85,12 +86,16 @@ impl ReviewStore {
             exif,
             preview: ReviewPreview::default(),
             selected_profile_index: 0,
-            rating: 0,
+            rating: imported_rating,
             label: ReviewLabel::None,
             labels: Vec::new(),
             tags: Vec::new(),
             notes: String::new(),
-            rating_source: ReviewMetadataSource::Default,
+            rating_source: if imported_rating > 0 {
+                ReviewMetadataSource::Camera
+            } else {
+                ReviewMetadataSource::Default
+            },
             tags_source: ReviewMetadataSource::Default,
             notes_source: ReviewMetadataSource::Default,
             codex: ReviewCodexAnalysis::default(),
@@ -214,7 +219,10 @@ fn compare_review_images(left: &ReviewImage, right: &ReviewImage) -> std::cmp::O
 }
 
 fn refresh_image_exif_data(image: &mut ReviewImage) {
-    if !image.exif.is_empty() && image.exif.capture_timestamp.is_some() {
+    if !image.exif.is_empty()
+        && image.exif.capture_timestamp.is_some()
+        && (image.exif.rating.is_some() || image.rating_source != ReviewMetadataSource::Default)
+    {
         image.exif.sanitize_text_fields();
         return;
     }
@@ -223,8 +231,18 @@ fn refresh_image_exif_data(image: &mut ReviewImage) {
     refreshed.sanitize_text_fields();
     if image.exif.is_empty() {
         image.exif = refreshed;
-    } else if image.exif.capture_timestamp.is_none() {
-        image.exif.capture_timestamp = refreshed.capture_timestamp;
+    } else {
+        if image.exif.capture_timestamp.is_none() {
+            image.exif.capture_timestamp = refreshed.capture_timestamp;
+        }
+        image.exif.rating = image.exif.rating.or(refreshed.rating);
+    }
+    if image.rating_source == ReviewMetadataSource::Default
+        && let Some(rating) = image.exif.rating
+        && rating > 0
+    {
+        image.rating = rating.min(5);
+        image.rating_source = ReviewMetadataSource::Camera;
     }
     image.exif.sanitize_text_fields();
 }

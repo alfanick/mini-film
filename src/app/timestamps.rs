@@ -25,6 +25,8 @@ pub(crate) struct OutputEditMetadata<'a> {
 pub(crate) struct GalleryExifData {
     #[serde(default)]
     pub(crate) capture_timestamp: Option<i64>,
+    #[serde(default)]
+    pub(crate) rating: Option<u8>,
     pub(crate) focal_length: Option<String>,
     pub(crate) aperture: Option<String>,
     pub(crate) shutter_speed: Option<String>,
@@ -41,6 +43,7 @@ pub(crate) struct GalleryExifData {
 impl GalleryExifData {
     pub(crate) fn is_empty(&self) -> bool {
         self.capture_timestamp.is_none()
+            && self.rating.is_none()
             && self.focal_length.is_none()
             && self.aperture.is_none()
             && self.shutter_speed.is_none()
@@ -535,7 +538,16 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
     let mut reader = BufReader::new(opened);
     let exif = match Reader::new().read_from_container(&mut reader) {
         Ok(exif) => exif,
-        Err(_) => return Ok(GalleryExifData::default()),
+        Err(_) => {
+            let mut data = GalleryExifData::default();
+            if let Some(metadata) = extract_gallery_text_metadata_with_exiftool(file) {
+                data.tags = metadata.tags;
+                data.note = metadata.note;
+                data.rating = metadata.rating;
+            }
+            data.sanitize_text_fields();
+            return Ok(data);
+        }
     };
 
     let focal_length = exif_field_value(&exif, Tag::FocalLength);
@@ -550,8 +562,10 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
     let shooting_mode = exif_exposure_program(&exif);
     let mut note = exif_field_value(&exif, Tag::ImageDescription);
     let mut tags = Vec::new();
+    let mut rating = None;
     if let Some(metadata) = extract_gallery_text_metadata_with_exiftool(file) {
         tags = metadata.tags;
+        rating = metadata.rating;
         if note.is_none() {
             note = metadata.note;
         }
@@ -561,6 +575,7 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
 
     let mut data = GalleryExifData {
         capture_timestamp,
+        rating,
         focal_length,
         aperture: aperture.map(format_exif_aperture),
         shutter_speed,
@@ -579,6 +594,7 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
 struct GalleryTextMetadata {
     tags: Vec<String>,
     note: Option<String>,
+    rating: Option<u8>,
 }
 
 fn extract_gallery_text_metadata_with_exiftool(file: &Path) -> Option<GalleryTextMetadata> {
@@ -590,6 +606,10 @@ fn extract_gallery_text_metadata_with_exiftool(file: &Path) -> Option<GalleryTex
         .arg("-Keywords")
         .arg("-Description")
         .arg("-ImageDescription")
+        .arg("-Rating")
+        .arg("-XMP-xmp:Rating")
+        .arg("-XMP-nine:Rating")
+        .arg("-EXIF:Rating")
         .arg(file)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -610,7 +630,12 @@ fn extract_gallery_text_metadata_with_exiftool(file: &Path) -> Option<GalleryTex
         .or_else(|| json_first_string(object.get("ImageDescription")))
         .map(clean_exif_display_text)
         .filter(|value| !value.is_empty());
-    Some(GalleryTextMetadata { tags, note })
+    let rating = json_rating_value(object.get("Rating"))
+        .or_else(|| json_rating_value(object.get("XMP:Rating")))
+        .or_else(|| json_rating_value(object.get("XMP-xmp:Rating")))
+        .or_else(|| json_rating_value(object.get("XMP-nine:Rating")))
+        .or_else(|| json_rating_value(object.get("EXIF:Rating")));
+    Some(GalleryTextMetadata { tags, note, rating })
 }
 
 fn json_string_values(value: Option<&Value>) -> Vec<String> {
@@ -631,6 +656,29 @@ fn json_first_string(value: Option<&Value>) -> Option<String> {
             .iter()
             .find_map(|value| json_first_string(Some(value))),
         _ => None,
+    }
+}
+
+fn json_rating_value(value: Option<&Value>) -> Option<u8> {
+    match value {
+        Some(Value::Number(value)) => value.as_f64().and_then(normalize_rating_value),
+        Some(Value::String(value)) => value
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .and_then(normalize_rating_value),
+        Some(Value::Array(values)) => values
+            .iter()
+            .find_map(|value| json_rating_value(Some(value))),
+        _ => None,
+    }
+}
+
+fn normalize_rating_value(value: f64) -> Option<u8> {
+    if value.is_finite() && value > 0.0 {
+        Some(value.round().clamp(1.0, 5.0) as u8)
+    } else {
+        None
     }
 }
 

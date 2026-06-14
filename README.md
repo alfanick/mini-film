@@ -452,9 +452,11 @@ same tag field used by manual review. Notes are one-sentence descriptions.
 Ratings use a conservative `0` to `3` scale where `0` means technically
 unusable, `1` technically correct, `2` interesting, and `3` truly good. Manual
 edits always win: once a user changes tags, notes, or rating, later Codex
-results do not overwrite that field. While analysis is queued or running, the
-existing review sidebar status dot/text and the main profile status line show
-the Codex state.
+results do not overwrite that field. Camera ratings imported from RAW metadata,
+including Nikon in-camera star ratings exposed by ExifTool as `Rating` or
+Nikon/XMP rating tags, are protected from Codex rating updates too. While
+analysis is queued or running, the existing review sidebar status dot/text and
+the main profile status line show the Codex state.
 
 The default model is `gpt-5.4-mini`; override it or the binary path with:
 

@@ -641,7 +641,7 @@ impl ReviewHandle {
                 image.notes_source = ReviewMetadataSource::Codex;
             }
             if config.flags.rating
-                && image.rating_source != ReviewMetadataSource::Manual
+                && image.rating_source == ReviewMetadataSource::Default
                 && let Some(rating) = result.rating
             {
                 image.rating = rating.min(5);
