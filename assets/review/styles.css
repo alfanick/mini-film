@@ -1418,7 +1418,9 @@ kbd {
     align-content: start;
     gap: 7px;
     margin-bottom: 0;
-    overflow: auto;
+    min-height: 0;
+    overflow: hidden auto;
+    overscroll-behavior: contain;
     scrollbar-gutter: stable;
   }
 
