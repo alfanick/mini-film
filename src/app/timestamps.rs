@@ -34,6 +34,7 @@ pub(crate) struct GalleryExifData {
     pub(crate) camera_model: Option<String>,
     pub(crate) lens_model: Option<String>,
     pub(crate) shooting_mode: Option<String>,
+    pub(crate) flash: Option<String>,
     #[serde(default)]
     pub(crate) tags: Vec<String>,
     #[serde(default)]
@@ -51,6 +52,7 @@ impl GalleryExifData {
             && self.camera_model.is_none()
             && self.lens_model.is_none()
             && self.shooting_mode.is_none()
+            && self.flash.is_none()
             && self.tags.is_empty()
             && self.note.is_none()
     }
@@ -63,6 +65,7 @@ impl GalleryExifData {
         clean_optional_exif_text(&mut self.camera_model);
         clean_optional_exif_text(&mut self.lens_model);
         clean_optional_exif_text(&mut self.shooting_mode);
+        clean_optional_exif_text(&mut self.flash);
         clean_optional_exif_text(&mut self.note);
         self.tags = normalize_gallery_tags(std::mem::take(&mut self.tags));
     }
@@ -587,6 +590,7 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
                 data.tags = metadata.tags;
                 data.note = metadata.note;
                 data.rating = metadata.rating;
+                data.flash = metadata.flash;
             }
             data.sanitize_text_fields();
             return Ok(data);
@@ -606,9 +610,15 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
     let mut note = exif_field_value(&exif, Tag::ImageDescription);
     let mut tags = Vec::new();
     let mut rating = None;
+    let mut flash = extract_firing_flash_details(&exif);
     if let Some(metadata) = extract_gallery_text_metadata_with_exiftool(file) {
         tags = metadata.tags;
         rating = metadata.rating;
+        if flash.is_none() {
+            flash = metadata
+                .flash
+                .and_then(|value| filter_fired_flash_detail(&value).map(|value| value.to_string()));
+        }
         if note.is_none() {
             note = metadata.note;
         }
@@ -626,6 +636,7 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
         camera_model,
         lens_model,
         shooting_mode,
+        flash,
         tags,
         note,
     };
@@ -638,6 +649,7 @@ struct GalleryTextMetadata {
     tags: Vec<String>,
     note: Option<String>,
     rating: Option<u8>,
+    flash: Option<String>,
 }
 
 fn extract_gallery_text_metadata_with_exiftool(file: &Path) -> Option<GalleryTextMetadata> {
@@ -649,6 +661,7 @@ fn extract_gallery_text_metadata_with_exiftool(file: &Path) -> Option<GalleryTex
         .arg("-Keywords")
         .arg("-Description")
         .arg("-ImageDescription")
+        .arg("-Flash")
         .arg("-Rating")
         .arg("-XMP-xmp:Rating")
         .arg("-XMP-nine:Rating")
@@ -673,12 +686,15 @@ fn extract_gallery_text_metadata_with_exiftool(file: &Path) -> Option<GalleryTex
         .or_else(|| json_first_string(object.get("ImageDescription")))
         .map(clean_exif_display_text)
         .filter(|value| !value.is_empty());
+    let flash = json_first_string(object.get("Flash"))
+        .map(clean_exif_display_text)
+        .filter(|value| !value.is_empty());
     let rating = json_rating_value(object.get("Rating"))
         .or_else(|| json_rating_value(object.get("XMP:Rating")))
         .or_else(|| json_rating_value(object.get("XMP-xmp:Rating")))
         .or_else(|| json_rating_value(object.get("XMP-nine:Rating")))
         .or_else(|| json_rating_value(object.get("EXIF:Rating")));
-    Some(GalleryTextMetadata { tags, note, rating })
+    Some(GalleryTextMetadata { tags, note, rating, flash })
 }
 
 fn json_string_values(value: Option<&Value>) -> Vec<String> {
@@ -745,6 +761,26 @@ fn normalize_gallery_tags(tags: Vec<String>) -> Vec<String> {
         out.push(tag);
     }
     out
+}
+
+fn extract_firing_flash_details(exif: &exif::Exif) -> Option<String> {
+    let fired = exif_uint_value(exif, Tag::Flash).map(|value| value & 1 != 0)?;
+    if !fired {
+        return None;
+    }
+    exif_field_value(exif, Tag::Flash)
+}
+
+fn filter_fired_flash_detail(value: &str) -> Option<&str> {
+    let normalized = value.to_ascii_lowercase();
+    if normalized.contains("did not fire") || normalized.contains("not fired") {
+        return None;
+    }
+    if normalized.contains("fired") {
+        Some(value)
+    } else {
+        None
+    }
 }
 
 fn clean_optional_exif_text(value: &mut Option<String>) {

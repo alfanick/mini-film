@@ -86,6 +86,8 @@ pub(super) struct ReviewStore {
     pub(super) images: Vec<ReviewImage>,
     #[serde(default)]
     pub(super) ui: ReviewUiState,
+    #[serde(default)]
+    pub(super) exif_schema_version: u32,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

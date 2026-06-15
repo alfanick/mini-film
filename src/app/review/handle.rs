@@ -20,8 +20,14 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
         .with_context(|| format!("creating {}", config.output_root.display()))?;
     let state_path = config.output_root.join("mini-film-review.json");
     let mut store = load_store(&state_path)?.unwrap_or_else(|| ReviewStore::new(Vec::new()));
+    let needs_exif_schema_refresh = store.needs_exif_schema_refresh();
     store.sync_profiles(config.profiles);
-    store.refresh_missing_exif_data();
+    if needs_exif_schema_refresh {
+        store.refresh_missing_exif_data_for_schema();
+        store.mark_exif_schema_refreshed();
+    } else {
+        store.refresh_missing_exif_data();
+    }
     save_store(&state_path, &store)?;
     let history_profiles = store.profiles.clone();
 

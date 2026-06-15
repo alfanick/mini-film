@@ -2,12 +2,15 @@ use super::model::*;
 use super::prelude::*;
 
 impl ReviewStore {
+    const EXIF_SCHEMA_VERSION: u32 = 2;
+
     pub(super) fn new(profiles: Vec<ReviewProfile>) -> Self {
         Self {
             next_id: 1,
             profiles,
             images: Vec::new(),
             ui: ReviewUiState::default(),
+            exif_schema_version: Self::EXIF_SCHEMA_VERSION,
         }
     }
 
@@ -45,9 +48,25 @@ impl ReviewStore {
         self.normalize_ui();
     }
 
+    pub(super) fn needs_exif_schema_refresh(&self) -> bool {
+        self.exif_schema_version < Self::EXIF_SCHEMA_VERSION
+    }
+
+    pub(super) fn mark_exif_schema_refreshed(&mut self) {
+        self.exif_schema_version = Self::EXIF_SCHEMA_VERSION;
+    }
+
     pub(super) fn refresh_missing_exif_data(&mut self) {
+        self.refresh_missing_exif_data_with_force(false);
+    }
+
+    pub(super) fn refresh_missing_exif_data_for_schema(&mut self) {
+        self.refresh_missing_exif_data_with_force(true);
+    }
+
+    fn refresh_missing_exif_data_with_force(&mut self, force: bool) {
         for image in &mut self.images {
-            refresh_image_exif_data(image);
+            refresh_image_exif_data(image, force);
             normalize_review_metadata_sources(image);
         }
         self.normalize_ui();
@@ -59,7 +78,7 @@ impl ReviewStore {
         raw: &Path,
     ) -> Result<&mut ReviewImage> {
         if let Some(index) = self.images.iter().position(|image| image.raw_path == raw) {
-            refresh_image_exif_data(&mut self.images[index]);
+            refresh_image_exif_data(&mut self.images[index], false);
             return Ok(&mut self.images[index]);
         }
 
@@ -218,8 +237,9 @@ fn compare_review_images(left: &ReviewImage, right: &ReviewImage) -> std::cmp::O
     }
 }
 
-fn refresh_image_exif_data(image: &mut ReviewImage) {
-    if !image.exif.is_empty()
+fn refresh_image_exif_data(image: &mut ReviewImage, force: bool) {
+    if !force
+        && !image.exif.is_empty()
         && image.exif.capture_timestamp.is_some()
         && (image.exif.rating.is_some() || image.rating_source != ReviewMetadataSource::Default)
     {
@@ -232,9 +252,31 @@ fn refresh_image_exif_data(image: &mut ReviewImage) {
     if image.exif.is_empty() {
         image.exif = refreshed;
     } else {
-        if image.exif.capture_timestamp.is_none() {
-            image.exif.capture_timestamp = refreshed.capture_timestamp;
+        if image.exif.focal_length.is_none() {
+            image.exif.focal_length = refreshed.focal_length;
         }
+        if image.exif.aperture.is_none() {
+            image.exif.aperture = refreshed.aperture;
+        }
+        if image.exif.shutter_speed.is_none() {
+            image.exif.shutter_speed = refreshed.shutter_speed;
+        }
+        if image.exif.iso.is_none() {
+            image.exif.iso = refreshed.iso;
+        }
+        if image.exif.camera_model.is_none() {
+            image.exif.camera_model = refreshed.camera_model;
+        }
+        if image.exif.lens_model.is_none() {
+            image.exif.lens_model = refreshed.lens_model;
+        }
+        if image.exif.shooting_mode.is_none() {
+            image.exif.shooting_mode = refreshed.shooting_mode;
+        }
+        if image.exif.flash.is_none() {
+            image.exif.flash = refreshed.flash;
+        }
+        image.exif.capture_timestamp = image.exif.capture_timestamp.or(refreshed.capture_timestamp);
         image.exif.rating = image.exif.rating.or(refreshed.rating);
     }
     if image.rating_source == ReviewMetadataSource::Default

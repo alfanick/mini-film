@@ -1216,6 +1216,7 @@ function renderImageExif(image) {
     exif.iso ? `ISO ${exif.iso}` : "",
     exif.aperture || "",
     exif.shutter_speed || "",
+    exif.flash ? `Flash ${exif.flash}` : "",
   ].filter(Boolean);
   const text = parts.join(" · ");
   els.imageExif.textContent = text;
