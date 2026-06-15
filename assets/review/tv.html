@@ -45,6 +45,20 @@
         display: none;
       }
 
+      #screen.landscape {
+        width: 100%;
+        height: 100%;
+        max-width: none;
+        max-height: none;
+        left: 0;
+        right: 0;
+        top: 0;
+        bottom: 0;
+        margin: auto;
+        object-fit: cover;
+        object-position: center center;
+      }
+
       #label {
         position: absolute;
         left: 50%;
@@ -295,7 +309,24 @@
           if (imageEl.getAttribute("data-current") !== target) {
             imageEl.setAttribute("data-current", target);
             imageEl.src = target;
+            imageEl.className = "";
           }
+        }
+
+        function applyImageClassByAspect() {
+          var isLandscape = false;
+          if (imageEl.naturalWidth && imageEl.naturalHeight) {
+            isLandscape = imageEl.naturalWidth > imageEl.naturalHeight;
+          } else if (imageEl.width && imageEl.height) {
+            isLandscape = imageEl.width > imageEl.height;
+          }
+
+          var cls = imageEl.className || "";
+          cls = (" " + cls + " ").replace(/\blandscape\b/g, " ");
+          if (isLandscape) {
+            cls += " landscape";
+          }
+          imageEl.className = cls.replace(/\s+/g, " ").replace(/^\s+|\s+$/g, "");
         }
 
         function render() {
@@ -338,6 +369,7 @@
           };
           imageEl.onload = function () {
             showMessage("");
+            applyImageClassByAspect();
           };
           labelEl.innerText = caption;
           if (!imageEl.style.display || imageEl.style.display === "none") {
