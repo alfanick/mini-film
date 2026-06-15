@@ -14,7 +14,10 @@ use std::time::Duration;
 use tar::Archive;
 use walkdir::WalkDir;
 
-const LENSFUN_ARCHIVE_URL: &str = "https://codeload.github.com/lensfun/lensfun/tar.gz/master";
+// Lensfun data format v2 is not yet supported by RawTherapee integration here.
+// The latest known v1-compatible Lensfun archive is pinned to keep profile
+// correction lookups stable.
+const LENSFUN_ARCHIVE_URL: &str = "https://codeload.github.com/lensfun/lensfun/tar.gz/v0.3.2";
 
 const LENSFUN_DB_SUBDIR: &str = "data/db";
 
