@@ -22,7 +22,7 @@ pub(super) use tempfile::Builder;
 pub(super) use tokio::sync::broadcast;
 
 pub(super) use crate::app::review_assets::{
-    review_index_html, review_script, review_styles, review_text_asset,
+    review_index_html, review_script, review_styles, review_text_asset, review_tv_html,
 };
 pub(super) use crate::{
     app::apply::{ApplyArgs, ApplyJob, apply_resolved, resolve_grain_override, run_apply},

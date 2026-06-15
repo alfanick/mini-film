@@ -1,0 +1,744 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>mini-film TV</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #000;
+        color: #fff;
+      }
+
+      body {
+        display: block;
+        font:
+          16px/1.2 Arial,
+          Helvetica,
+          sans-serif;
+      }
+
+      #status {
+        position: fixed;
+        right: 12px;
+        top: 8px;
+        font-size: 14px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        opacity: 0.75;
+        z-index: 3;
+      }
+
+      #container {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #000;
+        text-align: center;
+      }
+
+      #screen {
+        position: absolute;
+        left: 0;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        max-width: 100%;
+        max-height: 100%;
+        margin: auto;
+        display: none;
+      }
+
+      #label {
+        position: absolute;
+        left: 12px;
+        bottom: 10px;
+        z-index: 2;
+        font-size: 18px;
+        text-shadow: 0 2px 10px rgba(0, 0, 0, 0.8);
+      }
+
+      #message {
+        position: absolute;
+        inset: 0;
+        z-index: 1;
+        display: block;
+        font-size: 64px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        font-weight: 700;
+        text-align: center;
+        padding-top: 24%;
+      }
+
+      #message span {
+        display: block;
+        position: relative;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="status">connecting...</div>
+    <div id="container">
+      <img id="screen" alt="" />
+      <div id="label"></div>
+      <div id="message"><span>mini-film</span></div>
+    </div>
+
+    <script>
+      (function () {
+        var statusEl = document.getElementById("status");
+        var imageEl = document.getElementById("screen");
+        var labelEl = document.getElementById("label");
+        var messageEl = document.getElementById("message");
+
+        var state = {
+          images: [],
+          ui: {},
+          image_ids: [],
+        };
+
+        var eventSource = null;
+        var stopNow = false;
+        var reconnectDelay = 500;
+        var reconnectTimer = null;
+        var reconnecting = false;
+        var isConnecting = false;
+        var pollTimer = null;
+        var renderQueued = false;
+
+        var splashMs = 1500;
+        var splashStart = new Date().getTime();
+        var splashDone = false;
+
+        var pathParts = window.location.pathname.split("/");
+        var i = 0;
+        for (i = pathParts.length - 1; i >= 0; i -= 1) {
+          if (pathParts[i]) {
+            break;
+          }
+        }
+        if (i >= 0 && (pathParts[i] === "tv" || pathParts[i] === "review")) {
+          pathParts.length = i;
+        }
+        if (pathParts.length > 1 && pathParts[pathParts.length - 1] === "") {
+          pathParts.pop();
+        }
+
+        var routeBase = "/";
+        if (pathParts.length > 1) {
+          routeBase = pathParts.join("/") + "/";
+        }
+
+        var isArray = function (value) {
+          return Object.prototype.toString.call(value) === "[object Array]";
+        };
+
+        function routePath(path) {
+          if (path === undefined || path === null) {
+            return routeBase;
+          }
+          path = String(path);
+          while (path.charAt(0) === "/") {
+            path = path.substring(1);
+          }
+          return routeBase + path;
+        }
+
+        function nowMs() {
+          return new Date().getTime();
+        }
+
+        function sanitize(value) {
+          value = value || "";
+          value = String(value);
+          return value.replace(/\u0000/g, "").replace(/^\s+|\s+$/g, "");
+        }
+
+        function formatImageMeta(image) {
+          var parts = [];
+          var i;
+
+          if (image && typeof image.rating === "number" && image.rating > 0) {
+            parts.push("rating " + image.rating);
+          }
+
+          var labels = [];
+          if (isArray(image && image.labels)) {
+            labels = image.labels;
+          } else if (typeof (image && image.label) === "string" && image.label && image.label !== "none") {
+            labels.push(image.label);
+          }
+
+          if (labels.length) {
+            for (i = 0; i < labels.length; i += 1) {
+              if (typeof labels[i] === "string") {
+                var labelValue = labels[i].replace(/^\s+|\s+$/g, "");
+                if (labelValue) {
+                  parts.push("label " + labelValue);
+                }
+              }
+            }
+          }
+
+          if (!parts.length) {
+            return "";
+          }
+          return " • " + sanitize(parts.join(" / "));
+        }
+
+        function showMessage(text) {
+          if (!splashDone) {
+            return;
+          }
+          if (text) {
+            messageEl.innerHTML = "<span>" + sanitize(text) + "</span>";
+            messageEl.style.display = "block";
+          } else {
+            messageEl.style.display = "none";
+          }
+        }
+
+        function orderedImages() {
+          var list = [];
+          var i;
+          for (i = 0; i < state.images.length; i += 1) {
+            list.push(state.images[i]);
+          }
+          if (!state.image_ids || !state.image_ids.length) {
+            list.sort(function (a, b) {
+              var left = a && a.id ? a.id : 0;
+              var right = b && b.id ? b.id : 0;
+              return left - right;
+            });
+            return list;
+          }
+
+          var indexById = {};
+          for (i = 0; i < state.image_ids.length; i += 1) {
+            var imageId = parseInt(state.image_ids[i], 10);
+            if (!isNaN(imageId)) {
+              indexById[imageId] = i;
+            }
+          }
+
+          list.sort(function (left, right) {
+            var leftId = left && left.id !== undefined ? parseInt(left.id, 10) : 0;
+            var rightId = right && right.id !== undefined ? parseInt(right.id, 10) : 0;
+            var leftIndex = leftId in indexById ? indexById[leftId] : 9007199254740991;
+            var rightIndex = rightId in indexById ? indexById[rightId] : 9007199254740991;
+            return leftIndex - rightIndex;
+          });
+          return list;
+        }
+
+        function chooseImage() {
+          var images = state.images || [];
+          if (!images.length) {
+            return null;
+          }
+
+          var currentImageId = state.ui && state.ui.current_image_id;
+          if (typeof currentImageId === "number" || (typeof currentImageId === "string" && currentImageId !== "")) {
+            var currentId = parseInt(currentImageId, 10);
+            var idx;
+            for (idx = 0; idx < images.length; idx += 1) {
+              if (images[idx] && images[idx].id === currentId) {
+                return images[idx];
+              }
+            }
+          }
+
+          var ordered = orderedImages();
+          if (ordered.length) {
+            return ordered[ordered.length - 1];
+          }
+          return images[images.length - 1] || null;
+        }
+
+        function chooseProfile(image) {
+          var i;
+          var profiles = image && image.profiles;
+          if (isArray(profiles)) {
+            for (i = 0; i < profiles.length; i += 1) {
+              if (profiles[i] && profiles[i].profile_index === image.selected_profile_index && profiles[i].url) {
+                return profiles[i];
+              }
+            }
+            for (i = 0; i < profiles.length; i += 1) {
+              if (profiles[i] && profiles[i].status === "done" && profiles[i].url) {
+                return profiles[i];
+              }
+            }
+            for (i = 0; i < profiles.length; i += 1) {
+              if (profiles[i] && profiles[i].url) {
+                return profiles[i];
+              }
+            }
+          }
+
+          if (image && image.preview_url) {
+            return {
+              url: image.preview_url,
+              profile_stem: "preview",
+            };
+          }
+
+          return null;
+        }
+
+        function applyImage(url) {
+          var target = routePath(url);
+          if (imageEl.getAttribute("data-current") !== target) {
+            imageEl.setAttribute("data-current", target);
+            imageEl.src = target;
+          }
+        }
+
+        function render() {
+          if (!splashDone) {
+            renderQueued = true;
+            return;
+          }
+          renderQueued = false;
+
+          var currentImage = chooseImage();
+          var captionMeta = formatImageMeta(currentImage);
+          if (!currentImage) {
+            imageEl.style.display = "none";
+            imageEl.removeAttribute("src");
+            imageEl.removeAttribute("data-current");
+            labelEl.innerText = "";
+            showMessage("Waiting for images");
+            return;
+          }
+
+          var profile = chooseProfile(currentImage);
+          var profileUrl = profile && profile.url ? profile.url : "";
+          var captionStem = profile && profile.profile_stem ? profile.profile_stem : "preview";
+          var caption = sanitize(currentImage.file_name || "image") + " • " + sanitize(captionStem) + captionMeta;
+
+          if (!profileUrl) {
+            imageEl.style.display = "none";
+            imageEl.removeAttribute("src");
+            imageEl.removeAttribute("data-current");
+            labelEl.innerText = caption;
+            showMessage("Waiting for render: " + sanitize(currentImage.file_name || "image"));
+            return;
+          }
+
+          applyImage(profileUrl);
+          imageEl.style.display = "block";
+          imageEl.onerror = function () {
+            imageEl.style.display = "none";
+            showMessage("Failed to load image");
+          };
+          imageEl.onload = function () {
+            showMessage("");
+            statusEl.innerText = "connected";
+          };
+          labelEl.innerText = caption;
+          if (!imageEl.style.display || imageEl.style.display === "none") {
+            imageEl.style.display = "block";
+          }
+        }
+
+        function parseJsonSafely(text) {
+          if (window.JSON && window.JSON.parse) {
+            try {
+              return window.JSON.parse(text);
+            } catch (first) {
+              // continue with fallback
+            }
+          }
+          try {
+            return new Function("return (" + text + ")")();
+          } catch (second) {
+            return null;
+          }
+        }
+
+        function createRequest() {
+          if (window.XMLHttpRequest) {
+            return new XMLHttpRequest();
+          }
+          try {
+            return new ActiveXObject("Msxml2.XMLHTTP.6.0");
+          } catch (first) {
+            try {
+              return new ActiveXObject("Msxml2.XMLHTTP");
+            } catch (second) {
+              try {
+                return new ActiveXObject("Microsoft.XMLHTTP");
+              } catch (third) {
+                return null;
+              }
+            }
+          }
+        }
+
+        function requestJson(path, onSuccess, onError) {
+          var req = createRequest();
+          if (!req) {
+            onError("No XHR available");
+            return;
+          }
+
+          var url = routePath(path);
+          try {
+            req.onreadystatechange = function () {
+              if (req.readyState !== 4) {
+                return;
+              }
+              if (req.status >= 200 && req.status < 300) {
+                var payload = parseJsonSafely(req.responseText || "");
+                if (!payload) {
+                  onError("Invalid JSON");
+                  return;
+                }
+                onSuccess(payload);
+                return;
+              }
+              onError("HTTP " + req.status);
+            };
+
+            req.open("GET", url + "?t=" + encodeURIComponent(String(nowMs())), true);
+            req.setRequestHeader("Cache-Control", "no-store");
+            req.send(null);
+          } catch (error) {
+            onError(error.message || String(error));
+          }
+        }
+
+        function applyFullState(payload) {
+          if (!payload || typeof payload !== "object") {
+            return;
+          }
+          if (payload.ui && typeof payload.ui === "object") {
+            state.ui = payload.ui;
+          } else {
+            state.ui = {};
+          }
+          state.images = isArray(payload.images) ? payload.images : [];
+
+          state.image_ids = [];
+          if (isArray(payload.image_ids)) {
+            var i;
+            for (i = 0; i < payload.image_ids.length; i += 1) {
+              var maybeId = parseInt(payload.image_ids[i], 10);
+              if (!isNaN(maybeId)) {
+                state.image_ids.push(maybeId);
+              }
+            }
+          }
+          render();
+        }
+
+        function applyPatch(payload) {
+          if (!payload || typeof payload !== "object") {
+            return;
+          }
+
+          if (payload.image_ids && isArray(payload.image_ids)) {
+            var imageIds = [];
+            var i;
+            for (i = 0; i < payload.image_ids.length; i += 1) {
+              var maybeId = parseInt(payload.image_ids[i], 10);
+              if (!isNaN(maybeId)) {
+                imageIds.push(maybeId);
+              }
+            }
+            state.image_ids = imageIds;
+          }
+
+          if (payload.ui && typeof payload.ui === "object") {
+            var k;
+            for (k in payload.ui) {
+              if (Object.prototype.hasOwnProperty.call(payload.ui, k)) {
+                state.ui[k] = payload.ui[k];
+              }
+            }
+          }
+
+          if (isArray(payload.images)) {
+            var newById = {};
+            for (i = 0; i < state.images.length; i += 1) {
+              var existing = state.images[i];
+              if (existing && existing.id !== undefined) {
+                newById[existing.id] = existing;
+              }
+            }
+
+            for (i = 0; i < payload.images.length; i += 1) {
+              var image = payload.images[i];
+              if (!image || image.id === undefined) {
+                continue;
+              }
+              var existingImage = newById[image.id] || {};
+              var merged = {};
+              var key;
+              for (key in existingImage) {
+                if (Object.prototype.hasOwnProperty.call(existingImage, key)) {
+                  merged[key] = existingImage[key];
+                }
+              }
+              for (key in image) {
+                if (Object.prototype.hasOwnProperty.call(image, key)) {
+                  merged[key] = image[key];
+                }
+              }
+              newById[image.id] = merged;
+            }
+
+            var updated = [];
+            for (i = 0; i < state.images.length; i += 1) {
+              var itemId = state.images[i] ? state.images[i].id : undefined;
+              if (itemId !== undefined) {
+                updated.push(newById[itemId]);
+                delete newById[itemId];
+              }
+            }
+            for (i = 0; i < payload.images.length; i += 1) {
+              if (payload.images[i] && payload.images[i].id !== undefined && newById[payload.images[i].id]) {
+                updated.push(newById[payload.images[i].id]);
+                delete newById[payload.images[i].id];
+              }
+            }
+            state.images = updated;
+          }
+
+          if (isArray(payload.removed_image_ids)) {
+            var toRemove = {};
+            for (i = 0; i < payload.removed_image_ids.length; i += 1) {
+              var rid = parseInt(payload.removed_image_ids[i], 10);
+              if (!isNaN(rid)) {
+                toRemove[rid] = true;
+              }
+            }
+            var filtered = [];
+            for (i = 0; i < state.images.length; i += 1) {
+              var row = state.images[i];
+              if (!row || row.id === undefined || !toRemove[row.id]) {
+                filtered.push(row);
+              }
+            }
+            state.images = filtered;
+
+            if (state.image_ids.length) {
+              var cleaned = [];
+              for (i = 0; i < state.image_ids.length; i += 1) {
+                if (!toRemove[state.image_ids[i]]) {
+                  cleaned.push(state.image_ids[i]);
+                }
+              }
+              state.image_ids = cleaned;
+            }
+          }
+
+          render();
+        }
+
+        function stopPoll() {
+          if (pollTimer) {
+            clearTimeout(pollTimer);
+            pollTimer = null;
+          }
+        }
+
+        function pollState() {
+          if (stopNow) {
+            return;
+          }
+          requestJson(
+            "api/state",
+            function (payload) {
+              applyFullState(payload);
+              if (!stopNow) {
+                pollTimer = setTimeout(pollState, 1500);
+              }
+            },
+            function () {
+              if (!stopNow) {
+                pollTimer = setTimeout(pollState, 3000);
+              }
+            },
+          );
+        }
+
+        function startPollingFallback() {
+          stopPoll();
+          pollState();
+        }
+
+        function stopSource() {
+          if (!eventSource) {
+            return;
+          }
+          eventSource.close();
+          eventSource = null;
+        }
+
+        function clearReconnect() {
+          if (reconnectTimer) {
+            clearTimeout(reconnectTimer);
+            reconnectTimer = null;
+          }
+        }
+
+        function handleMessage(raw) {
+          if (!raw) {
+            return;
+          }
+          var payload = parseJsonSafely(raw);
+          if (!payload || typeof payload !== "object") {
+            return;
+          }
+
+          if (payload.type === "keepalive") {
+            if (payload.version) {
+              state.version = payload.version;
+            }
+            if (!payload.datetime || !payload.datetime.substring) {
+              statusEl.innerText = "connected • v" + sanitize(state.version || "");
+            } else {
+              statusEl.innerText = "connected • v" + sanitize(state.version || "") + " • " + sanitize(payload.datetime);
+            }
+            return;
+          }
+
+          if (payload.type === "patch") {
+            applyPatch(payload);
+            return;
+          }
+
+          applyFullState(payload);
+        }
+
+        function connect() {
+          if (isConnecting || stopNow) {
+            return;
+          }
+          isConnecting = true;
+          reconnecting = false;
+          clearReconnect();
+          stopPoll();
+          stopSource();
+          statusEl.innerText = "connecting...";
+
+          requestJson(
+            "api/state",
+            function (payload) {
+              applyFullState(payload);
+              isConnecting = false;
+              if (!window.EventSource) {
+                startPollingFallback();
+                statusEl.innerText = "connected";
+                return;
+              }
+
+              try {
+                eventSource = new EventSource(routePath("api/events"));
+              } catch (error) {
+                eventSource = null;
+                startPollingFallback();
+                statusEl.innerText = "connected";
+                return;
+              }
+
+              eventSource.onopen = function () {
+                reconnectDelay = 500;
+                statusEl.innerText = "connected • v" + sanitize(state.version || "");
+              };
+
+              eventSource.onmessage = function (event) {
+                handleMessage(event && event.data ? event.data : null);
+              };
+
+              eventSource.onerror = function () {
+                if (stopNow) {
+                  return;
+                }
+                stopSource();
+                startPollingFallback();
+                statusEl.innerText = "disconnected";
+                if (!reconnecting) {
+                  reconnecting = true;
+                  reconnectTimer = setTimeout(function () {
+                    reconnectDelay = 500;
+                    reconnecting = false;
+                    connect();
+                  }, 500);
+                }
+              };
+
+              try {
+                eventSource.addEventListener(
+                  "keepalive",
+                  function (event) {
+                    handleMessage(event && event.data ? event.data : null);
+                  },
+                  false,
+                );
+              } catch (ignore) {
+                // addEventListener not supported in very old browsers
+              }
+            },
+            function () {
+              isConnecting = false;
+              if (!stopNow) {
+                statusEl.innerText = "disconnected";
+                startPollingFallback();
+              }
+            },
+          );
+        }
+
+        function ensureSplashDone() {
+          var now = nowMs();
+          if (splashDone || now - splashStart >= splashMs) {
+            splashDone = true;
+            if (renderQueued) {
+              render();
+            } else {
+              render();
+            }
+            messageEl.style.display = "none";
+            return;
+          }
+          setTimeout(ensureSplashDone, 50);
+        }
+
+        ensureSplashDone();
+
+        connect();
+
+        if (window.addEventListener) {
+          window.addEventListener(
+            "beforeunload",
+            function () {
+              stopNow = true;
+              stopSource();
+              stopPoll();
+              clearReconnect();
+            },
+            false,
+          );
+        } else if (window.attachEvent) {
+          window.attachEvent("onbeforeunload", function () {
+            stopNow = true;
+            stopSource();
+            stopPoll();
+            clearReconnect();
+          });
+        }
+      })();
+    </script>
+  </body>
+</html>

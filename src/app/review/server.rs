@@ -70,6 +70,9 @@ pub(super) async fn route_request(
         (Method::GET, "/") | (Method::GET, "/review") => {
             text_response(200, "text/html; charset=utf-8", &review_index_html()).into_response()
         }
+        (Method::GET, "/tv") => {
+            text_response(200, "text/html; charset=utf-8", &review_tv_html()).into_response()
+        }
         (Method::GET, "/assets/styles.css") => {
             text_response(200, "text/css; charset=utf-8", review_styles()).into_response()
         }
@@ -169,6 +172,9 @@ pub(super) fn review_route_path(path: &str) -> String {
     }
     if trimmed.ends_with("/review") {
         return "/review".to_string();
+    }
+    if trimmed.ends_with("/tv") {
+        return "/tv".to_string();
     }
     if !trimmed
         .rsplit('/')

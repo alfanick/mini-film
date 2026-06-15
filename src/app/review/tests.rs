@@ -806,6 +806,7 @@ fn review_route_path_accepts_reverse_proxy_prefixes() {
     assert_eq!(review_route_path("/mini-film/media/1/0"), "/media/1/0");
     assert_eq!(review_route_path("/mini-film/preview/1"), "/preview/1");
     assert_eq!(review_route_path("/mini-film/review"), "/review");
+    assert_eq!(review_route_path("/mini-film/tv"), "/tv");
     assert_eq!(review_route_path("/mini-film/"), "/");
 }
 

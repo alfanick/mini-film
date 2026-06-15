@@ -27,6 +27,10 @@ pub(crate) fn review_script() -> &'static str {
     read_text_asset("app.js")
 }
 
+pub(crate) fn review_tv_html() -> String {
+    read_text_asset("tv.html").to_string()
+}
+
 pub(crate) fn review_text_asset(path: &str) -> Option<&'static str> {
     REVIEW_ASSETS
         .get_file(path)
