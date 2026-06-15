@@ -3063,3 +3063,24 @@ loadState()
     els.status.textContent = `Disconnected: ${error.message}`;
     setTimeout(() => window.location.reload(), 1500);
   });
+
+const tuckedProfileRailQuery = window.matchMedia(
+  "(min-width: 901px) and (min-height: 620px) and (max-width: 1499.98px)",
+);
+
+function setProfileRailOpen(open) {
+  if (!els.profiles || !tuckedProfileRailQuery.matches) return;
+  els.profiles.classList.toggle("peek-open", open);
+}
+
+els.profiles?.addEventListener("pointerdown", (event) => {
+  if (!tuckedProfileRailQuery.matches || event.pointerType === "mouse") return;
+  if (els.profiles.classList.contains("peek-open")) return;
+  setProfileRailOpen(true);
+  event.preventDefault();
+  event.stopPropagation();
+});
+
+els.image?.addEventListener("pointerdown", () => setProfileRailOpen(false));
+
+tuckedProfileRailQuery.addEventListener("change", () => els.profiles?.classList.remove("peek-open"));

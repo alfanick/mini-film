@@ -1412,7 +1412,7 @@ kbd {
     top: 12px;
     right: 12px;
     bottom: calc(var(--review-panel-safe) + 12px);
-    z-index: 4;
+    z-index: 2;
     width: clamp(160px, 14vw, 240px);
     grid-template-columns: 1fr;
     align-content: start;
@@ -1422,6 +1422,19 @@ kbd {
     overflow: hidden auto;
     overscroll-behavior: contain;
     scrollbar-gutter: stable;
+    opacity: 0.28;
+    transform: translateX(calc(100% - 20px));
+    transition:
+      transform 160ms ease,
+      opacity 160ms ease;
+  }
+
+  .profiles:hover,
+  .profiles:focus-within,
+  .profiles.peek-open {
+    z-index: 7;
+    opacity: 1;
+    transform: translateX(0);
   }
 
   .profile-card {
@@ -1443,6 +1456,14 @@ kbd {
 
   .profile-status {
     display: block;
+  }
+}
+
+@media (min-width: 1500px) and (min-height: 620px) {
+  .profiles {
+    z-index: 4;
+    opacity: 1;
+    transform: none;
   }
 }
 
