@@ -43,8 +43,9 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
         });
     let (subscribers, _) = broadcast::channel(256);
     let handle = ReviewHandle {
-        state: Arc::new(Mutex::new(store)),
+        state: Arc::new(ArcSwap::from_pointee(store)),
         subscribers: Arc::new(subscribers),
+        state_cache: Arc::new(ArcSwapOption::empty()),
         state_path,
         input_root: config.input_root,
         output_root: config.output_root,
@@ -64,12 +65,13 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
         grain_preset: config.grain_preset,
         grain_seed: config.grain_seed,
         publish_defaults,
-        publish_jobs: Arc::new(Mutex::new(Vec::new())),
-        next_publish_job_id: Arc::new(Mutex::new(1)),
+        publish_jobs: Arc::new(ArcSwap::from_pointee(Vec::new())),
+        next_publish_job_id: Arc::new(AtomicU64::new(1)),
         retouch_scheduler: Arc::new(ReviewRetouchScheduler::default()),
         codex,
         codex_scheduler: Arc::new(ReviewCodexScheduler::default()),
     };
+    handle.refresh_state_cache()?;
     handle.append_history(history_server_started(
         &handle.input_root,
         &handle.output_root,
@@ -120,32 +122,32 @@ impl ReviewHandle {
     }
 
     pub(crate) fn record_discovered_raw(&self, raw: &Path) -> Result<()> {
-        let mut preview_job = None;
-        let mut history_entry = None;
-        let mut store = self.lock_store()?;
-        let discovered = !store.images.iter().any(|image| image.raw_path == raw);
-        let image = store.ensure_image(&self.input_root, raw)?;
-        let preview_path = self.preview_path_for(raw, image.id);
-        let mut preview_queued = false;
-        if !preview_path.is_file()
-            && !matches!(
-                image.preview.status,
-                ReviewRenderStatus::Queued | ReviewRenderStatus::Processing
-            )
-        {
-            image.preview.status = ReviewRenderStatus::Queued;
-            image.preview.path = Some(preview_path.clone());
-            image.preview.error = None;
-            image.preview.updated_at = now_string();
-            image.updated_at = now_string();
-            preview_job = Some((raw.to_path_buf(), preview_path));
-            preview_queued = true;
-        }
-        if discovered || preview_queued {
-            history_entry = Some(history_image_discovered(image, discovered, preview_queued));
-        }
-        save_store(&self.state_path, &store)?;
-        drop(store);
+        let (history_entry, preview_job) = self.update_store(|store| {
+            let mut preview_job = None;
+            let mut history_entry = None;
+            let discovered = !store.images.iter().any(|image| image.raw_path == raw);
+            let image = store.ensure_image(&self.input_root, raw)?;
+            let preview_path = self.preview_path_for(raw, image.id);
+            let mut preview_queued = false;
+            if !preview_path.is_file()
+                && !matches!(
+                    image.preview.status,
+                    ReviewRenderStatus::Queued | ReviewRenderStatus::Processing
+                )
+            {
+                image.preview.status = ReviewRenderStatus::Queued;
+                image.preview.path = Some(preview_path.clone());
+                image.preview.error = None;
+                image.preview.updated_at = now_string();
+                image.updated_at = now_string();
+                preview_job = Some((raw.to_path_buf(), preview_path));
+                preview_queued = true;
+            }
+            if discovered || preview_queued {
+                history_entry = Some(history_image_discovered(image, discovered, preview_queued));
+            }
+            Ok((history_entry, preview_job))
+        })?;
         if let Some(entry) = history_entry {
             self.append_history(entry)?;
         }
@@ -211,17 +213,16 @@ impl ReviewHandle {
 
     pub(super) fn update_preview<F>(&self, raw: &Path, update: F) -> Result<()>
     where
-        F: FnOnce(&mut ReviewPreview),
+        F: Fn(&mut ReviewPreview),
     {
-        let mut store = self.lock_store()?;
-        let image = store.ensure_image(&self.input_root, raw)?;
-        let before = image.preview.clone();
-        update(&mut image.preview);
-        image.preview.updated_at = now_string();
-        image.updated_at = now_string();
-        let history_entry = history_preview_changed(image, &before, &image.preview);
-        save_store(&self.state_path, &store)?;
-        drop(store);
+        let history_entry = self.update_store(|store| {
+            let image = store.ensure_image(&self.input_root, raw)?;
+            let before = image.preview.clone();
+            update(&mut image.preview);
+            image.preview.updated_at = now_string();
+            image.updated_at = now_string();
+            Ok(history_preview_changed(image, &before, &image.preview))
+        })?;
         if let Some(entry) = history_entry {
             self.append_history(entry)?;
         }
@@ -234,28 +235,27 @@ impl ReviewHandle {
         profile_index: usize,
         expected_output: &Path,
     ) -> Result<()> {
-        let mut store = self.lock_store()?;
-        let image = store.ensure_image(&self.input_root, raw)?;
-        let render_key = retouch_render_key(&image.retouch);
-        let Some(render) = image
-            .profiles
-            .iter_mut()
-            .find(|render| render.profile_index == profile_index)
-        else {
-            bail!("review profile index {profile_index} is not configured");
-        };
-        let before = render.clone();
-        render.status = ReviewRenderStatus::Queued;
-        render.output_path = Some(expected_output.to_path_buf());
-        render.error = None;
-        render.duration_ms = None;
-        render.render_key = render_key;
-        render.updated_at = now_string();
-        let after = render.clone();
-        image.updated_at = now_string();
-        let history_entry = history_render_changed(image, &before, &after);
-        save_store(&self.state_path, &store)?;
-        drop(store);
+        let history_entry = self.update_store(|store| {
+            let image = store.ensure_image(&self.input_root, raw)?;
+            let render_key = retouch_render_key(&image.retouch);
+            let Some(render) = image
+                .profiles
+                .iter_mut()
+                .find(|render| render.profile_index == profile_index)
+            else {
+                bail!("review profile index {profile_index} is not configured");
+            };
+            let before = render.clone();
+            render.status = ReviewRenderStatus::Queued;
+            render.output_path = Some(expected_output.to_path_buf());
+            render.error = None;
+            render.duration_ms = None;
+            render.render_key = render_key;
+            render.updated_at = now_string();
+            let after = render.clone();
+            image.updated_at = now_string();
+            Ok(history_render_changed(image, &before, &after))
+        })?;
         if let Some(entry) = history_entry {
             self.append_history(entry)?;
         }
@@ -330,27 +330,31 @@ impl ReviewHandle {
         result
     }
 
-    pub(super) fn update_render<F>(&self, raw: &Path, profile_index: usize, update: F) -> Result<()>
+    pub(super) fn update_render<F>(
+        &self,
+        raw: &Path,
+        profile_index: usize,
+        mut update: F,
+    ) -> Result<()>
     where
-        F: FnOnce(&mut ReviewProfileRender),
+        F: FnMut(&mut ReviewProfileRender),
     {
-        let mut store = self.lock_store()?;
-        let image = store.ensure_image(&self.input_root, raw)?;
-        let Some(render) = image
-            .profiles
-            .iter_mut()
-            .find(|render| render.profile_index == profile_index)
-        else {
-            bail!("review profile index {profile_index} is not configured");
-        };
-        let before = render.clone();
-        update(render);
-        render.updated_at = now_string();
-        let after = render.clone();
-        image.updated_at = now_string();
-        let history_entry = history_render_changed(image, &before, &after);
-        save_store(&self.state_path, &store)?;
-        drop(store);
+        let history_entry = self.update_store(|store| {
+            let image = store.ensure_image(&self.input_root, raw)?;
+            let Some(render) = image
+                .profiles
+                .iter_mut()
+                .find(|render| render.profile_index == profile_index)
+            else {
+                bail!("review profile index {profile_index} is not configured");
+            };
+            let before = render.clone();
+            update(render);
+            render.updated_at = now_string();
+            let after = render.clone();
+            image.updated_at = now_string();
+            Ok(history_render_changed(image, &before, &after))
+        })?;
         if let Some(entry) = history_entry {
             self.append_history(entry)?;
         }
@@ -362,33 +366,33 @@ impl ReviewHandle {
         raw: &Path,
         profile_index: usize,
         render_key: &str,
-        update: F,
+        mut update: F,
     ) -> Result<bool>
     where
-        F: FnOnce(&mut ReviewProfileRender),
+        F: FnMut(&mut ReviewProfileRender),
     {
-        let mut updated = false;
-        let mut history_entry = None;
-        let mut store = self.lock_store()?;
-        let image = store.ensure_image(&self.input_root, raw)?;
-        let Some(render) = image
-            .profiles
-            .iter_mut()
-            .find(|render| render.profile_index == profile_index)
-        else {
-            bail!("review profile index {profile_index} is not configured");
-        };
-        if render.render_key.as_deref() == Some(render_key) {
-            let before = render.clone();
-            update(render);
-            render.updated_at = now_string();
-            let after = render.clone();
-            image.updated_at = now_string();
-            history_entry = history_render_changed(image, &before, &after);
-            updated = true;
-            save_store(&self.state_path, &store)?;
-        }
-        drop(store);
+        let (updated, history_entry) = self.update_store(|store| {
+            let mut updated = false;
+            let mut history_entry = None;
+            let image = store.ensure_image(&self.input_root, raw)?;
+            let Some(render) = image
+                .profiles
+                .iter_mut()
+                .find(|render| render.profile_index == profile_index)
+            else {
+                bail!("review profile index {profile_index} is not configured");
+            };
+            if render.render_key.as_deref() == Some(render_key) {
+                let before = render.clone();
+                update(render);
+                render.updated_at = now_string();
+                let after = render.clone();
+                image.updated_at = now_string();
+                history_entry = history_render_changed(image, &before, &after);
+                updated = true;
+            }
+            Ok((updated, history_entry))
+        })?;
         if updated {
             if let Some(entry) = history_entry {
                 self.append_history(entry)?;
@@ -404,7 +408,7 @@ impl ReviewHandle {
         profile_index: usize,
         render_key: &str,
     ) -> Result<Option<(ReviewProfile, RetouchSettings)>> {
-        let store = self.lock_store()?;
+        let store = self.store_snapshot();
         let Some(image) = store.images.iter().find(|image| image.raw_path == raw) else {
             return Ok(None);
         };
@@ -476,7 +480,7 @@ impl ReviewHandle {
             return Ok(());
         };
         let raws = {
-            let store = self.lock_store()?;
+            let store = self.store_snapshot();
             store
                 .images
                 .iter()
@@ -497,7 +501,7 @@ impl ReviewHandle {
             return Ok(());
         };
         let key = {
-            let store = self.lock_store()?;
+            let store = self.store_snapshot();
             let Some(image) = store.images.iter().find(|image| image.raw_path == raw) else {
                 return Ok(());
             };
@@ -513,33 +517,33 @@ impl ReviewHandle {
         let Some(config) = &self.codex else {
             return Ok(());
         };
-        let mut history_entry = None;
-        let mut should_schedule = false;
-        let mut store = self.lock_store()?;
-        if let Some(image) = store.images.iter_mut().find(|image| image.raw_path == raw) {
-            if image.codex.analysis_key.as_deref() == Some(&analysis_key)
-                && matches!(
-                    image.codex.status,
-                    ReviewCodexStatus::Queued
-                        | ReviewCodexStatus::Processing
-                        | ReviewCodexStatus::Done
-                )
-            {
-                return Ok(());
+        let (history_entry, should_schedule) = self.update_store(|store| {
+            let mut history_entry = None;
+            let mut should_schedule = false;
+            if let Some(image) = store.images.iter_mut().find(|image| image.raw_path == raw) {
+                if image.codex.analysis_key.as_deref() == Some(&analysis_key)
+                    && matches!(
+                        image.codex.status,
+                        ReviewCodexStatus::Queued
+                            | ReviewCodexStatus::Processing
+                            | ReviewCodexStatus::Done
+                    )
+                {
+                    return Ok((None, false));
+                }
+                let before = image.codex.clone();
+                image.codex.status = ReviewCodexStatus::Queued;
+                image.codex.flags = config.flags;
+                image.codex.model = config.model.clone();
+                image.codex.analysis_key = Some(analysis_key.clone());
+                image.codex.error = None;
+                image.codex.updated_at = now_string();
+                image.updated_at = now_string();
+                history_entry = history_codex_changed(image, &before, &image.codex);
+                should_schedule = true;
             }
-            let before = image.codex.clone();
-            image.codex.status = ReviewCodexStatus::Queued;
-            image.codex.flags = config.flags;
-            image.codex.model = config.model.clone();
-            image.codex.analysis_key = Some(analysis_key.clone());
-            image.codex.error = None;
-            image.codex.updated_at = now_string();
-            image.updated_at = now_string();
-            history_entry = history_codex_changed(image, &before, &image.codex);
-            should_schedule = true;
-            save_store(&self.state_path, &store)?;
-        }
-        drop(store);
+            Ok((history_entry, should_schedule))
+        })?;
         if let Some(entry) = history_entry {
             self.append_history(entry)?;
         }
@@ -584,17 +588,14 @@ impl ReviewHandle {
         let Some(config) = &self.codex else {
             return Ok(None);
         };
-        let store = self.lock_store()?;
+        let store = self.store_snapshot();
         let Some(image) = store.images.iter().find(|image| image.raw_path == raw) else {
             return Ok(None);
         };
         if image.codex.analysis_key.as_deref() != Some(analysis_key) {
             return Ok(None);
         }
-        if !matches!(
-            image.codex.status,
-            ReviewCodexStatus::Queued | ReviewCodexStatus::Processing
-        ) {
+        if image.codex.status != ReviewCodexStatus::Queued {
             return Ok(None);
         }
         if image.preview.status != ReviewRenderStatus::Done {
@@ -661,31 +662,31 @@ impl ReviewHandle {
 
     fn update_codex_if_key<F>(&self, raw: &Path, analysis_key: &str, update: F) -> Result<()>
     where
-        F: FnOnce(&mut ReviewCodexAnalysis, &mut ReviewImage),
+        F: Fn(&mut ReviewCodexAnalysis, &mut ReviewImage),
     {
-        let mut history_entries = Vec::new();
-        let mut store = self.lock_store()?;
-        let Some(image) = store.images.iter_mut().find(|image| image.raw_path == raw) else {
-            return Ok(());
-        };
-        if image.codex.analysis_key.as_deref() != Some(analysis_key) {
-            return Ok(());
-        }
-        let before_image = image.clone();
-        let before_codex = image.codex.clone();
-        let mut codex = std::mem::take(&mut image.codex);
-        update(&mut codex, image);
-        codex.updated_at = now_string();
-        image.codex = codex;
-        image.updated_at = now_string();
-        if let Some(entry) = history_codex_changed(image, &before_codex, &image.codex) {
-            history_entries.push(entry);
-        }
-        if let Some(entry) = history_review_changed(&before_image, image) {
-            history_entries.push(entry);
-        }
-        save_store(&self.state_path, &store)?;
-        drop(store);
+        let history_entries = self.update_store(|store| {
+            let mut history_entries = Vec::new();
+            let Some(image) = store.images.iter_mut().find(|image| image.raw_path == raw) else {
+                return Ok(history_entries);
+            };
+            if image.codex.analysis_key.as_deref() != Some(analysis_key) {
+                return Ok(history_entries);
+            }
+            let before_image = image.clone();
+            let before_codex = image.codex.clone();
+            let mut codex = std::mem::take(&mut image.codex);
+            update(&mut codex, image);
+            codex.updated_at = now_string();
+            image.codex = codex;
+            image.updated_at = now_string();
+            if let Some(entry) = history_codex_changed(image, &before_codex, &image.codex) {
+                history_entries.push(entry);
+            }
+            if let Some(entry) = history_review_changed(&before_image, image) {
+                history_entries.push(entry);
+            }
+            Ok(history_entries)
+        })?;
         for entry in history_entries {
             self.append_history(entry)?;
         }
@@ -774,7 +775,7 @@ impl ReviewHandle {
         let _ = self.update_render_if_key(&job.raw, job.profile_index, &job.render_key, |render| {
             render.status = ReviewRenderStatus::Failed;
             render.render_key = None;
-            render.error = Some(message);
+            render.error = Some(message.clone());
             render.duration_ms = Some(started.elapsed().as_millis() as u64);
         });
         let _ = fs::remove_file(temp_output);
@@ -853,124 +854,124 @@ impl ReviewHandle {
     }
 
     pub(super) fn apply_review_update(&self, update: ReviewUpdateRequest) -> Result<()> {
-        let mut retouch_jobs = Vec::new();
-        let mut history_entries = Vec::new();
-        let mut store = self.lock_store()?;
-        let before_ui = store.ui.clone();
-        let advance = update
-            .advance_after_update
-            .then(|| store.planned_advance_after(update.image_id));
-        {
-            let Some(image) = store
-                .images
-                .iter_mut()
-                .find(|image| image.id == update.image_id)
-            else {
-                bail!("review image {} does not exist", update.image_id);
-            };
-            if let Some(selected_profile_index) = update.selected_profile_index
-                && !image
-                    .profiles
-                    .iter()
-                    .any(|profile| profile.profile_index == selected_profile_index)
+        let (history_entries, retouch_jobs) = self.update_store(|store| {
+            let mut retouch_jobs = Vec::new();
+            let mut history_entries = Vec::new();
+            let before_ui = store.ui.clone();
+            let advance = update
+                .advance_after_update
+                .then(|| store.planned_advance_after(update.image_id));
             {
-                bail!(
-                    "selected profile index {} is not available for image {}",
-                    selected_profile_index,
-                    update.image_id
-                );
-            }
-            let before_image = image.clone();
-            let before_rating = image.rating;
-            let before_tags = image.tags.clone();
-            let before_notes = image.notes.clone();
-            image.rating = update.rating.min(5);
-            image.labels = if update.labels.is_empty() {
-                normalize_review_labels([update.label])
-            } else {
-                normalize_review_labels(update.labels)
-            };
-            image.label = first_review_label(&image.labels);
-            image.tags = normalize_tags(update.tags);
-            image.notes = update.notes.trim().to_string();
-            if image.rating != before_rating {
-                image.rating_source = ReviewMetadataSource::Manual;
-            }
-            if image.tags != before_tags {
-                image.tags_source = ReviewMetadataSource::Manual;
-            }
-            if image.notes != before_notes {
-                image.notes_source = ReviewMetadataSource::Manual;
-            }
-            let retouch_changed = update
-                .retouch
-                .as_ref()
-                .is_some_and(|retouch| retouch.clone().normalized() != image.retouch);
-            if let Some(retouch) = update.retouch {
-                image.retouch = retouch.normalized();
-            }
-            if let Some(selected_profile_index) = update.selected_profile_index {
-                image.selected_profile_index = selected_profile_index;
-            }
-            if let Some(indexes) = update.publish_profile_indexes {
-                validate_publish_profile_indexes(&indexes, &image.profiles)?;
-                image.publish_profile_indexes =
-                    Some(normalize_publish_profile_indexes(&indexes, &image.profiles));
-            }
-            if retouch_changed {
-                let render_key = image.retouch.render_key();
-                let publish_indexes = effective_publish_profile_indexes(image);
-                let visible_profile_index =
-                    preferred_preview_profile_index(image, &publish_indexes);
-                let publish_index_set = publish_indexes.iter().copied().collect::<HashSet<_>>();
-                let mut render_order = image
-                    .profiles
-                    .iter()
-                    .enumerate()
-                    .map(|(index, render)| {
-                        let priority = if Some(render.profile_index) == visible_profile_index {
-                            0
-                        } else if publish_index_set.contains(&render.profile_index) {
-                            1
-                        } else {
-                            2
-                        };
-                        (priority, index)
-                    })
-                    .collect::<Vec<_>>();
-                render_order.sort_by_key(|(priority, index)| (*priority, *index));
-                for (_, index) in render_order {
-                    let render = &mut image.profiles[index];
-                    render.status = ReviewRenderStatus::Queued;
-                    render.error = None;
-                    render.duration_ms = None;
-                    render.render_key = Some(render_key.clone());
-                    render.updated_at = now_string();
-                    if let Some(output) = &render.output_path {
-                        retouch_jobs.push((
-                            image.raw_path.clone(),
-                            render.profile_index,
-                            output.clone(),
-                            render_key.clone(),
-                        ));
+                let Some(image) = store
+                    .images
+                    .iter_mut()
+                    .find(|image| image.id == update.image_id)
+                else {
+                    bail!("review image {} does not exist", update.image_id);
+                };
+                if let Some(selected_profile_index) = update.selected_profile_index
+                    && !image
+                        .profiles
+                        .iter()
+                        .any(|profile| profile.profile_index == selected_profile_index)
+                {
+                    bail!(
+                        "selected profile index {} is not available for image {}",
+                        selected_profile_index,
+                        update.image_id
+                    );
+                }
+                let before_image = image.clone();
+                let before_rating = image.rating;
+                let before_tags = image.tags.clone();
+                let before_notes = image.notes.clone();
+                image.rating = update.rating.min(5);
+                image.labels = if update.labels.is_empty() {
+                    normalize_review_labels([update.label])
+                } else {
+                    normalize_review_labels(update.labels.clone())
+                };
+                image.label = first_review_label(&image.labels);
+                image.tags = normalize_tags(update.tags.clone());
+                image.notes = update.notes.trim().to_string();
+                if image.rating != before_rating {
+                    image.rating_source = ReviewMetadataSource::Manual;
+                }
+                if image.tags != before_tags {
+                    image.tags_source = ReviewMetadataSource::Manual;
+                }
+                if image.notes != before_notes {
+                    image.notes_source = ReviewMetadataSource::Manual;
+                }
+                let retouch_changed = update
+                    .retouch
+                    .as_ref()
+                    .is_some_and(|retouch| retouch.clone().normalized() != image.retouch);
+                if let Some(retouch) = update.retouch.clone() {
+                    image.retouch = retouch.normalized();
+                }
+                if let Some(selected_profile_index) = update.selected_profile_index {
+                    image.selected_profile_index = selected_profile_index;
+                }
+                if let Some(indexes) = update.publish_profile_indexes.clone() {
+                    validate_publish_profile_indexes(&indexes, &image.profiles)?;
+                    image.publish_profile_indexes =
+                        Some(normalize_publish_profile_indexes(&indexes, &image.profiles));
+                }
+                if retouch_changed {
+                    let render_key = image.retouch.render_key();
+                    let publish_indexes = effective_publish_profile_indexes(image);
+                    let visible_profile_index =
+                        preferred_preview_profile_index(image, &publish_indexes);
+                    let publish_index_set = publish_indexes.iter().copied().collect::<HashSet<_>>();
+                    let mut render_order = image
+                        .profiles
+                        .iter()
+                        .enumerate()
+                        .map(|(index, render)| {
+                            let priority = if Some(render.profile_index) == visible_profile_index {
+                                0
+                            } else if publish_index_set.contains(&render.profile_index) {
+                                1
+                            } else {
+                                2
+                            };
+                            (priority, index)
+                        })
+                        .collect::<Vec<_>>();
+                    render_order.sort_by_key(|(priority, index)| (*priority, *index));
+                    for (_, index) in render_order {
+                        let render = &mut image.profiles[index];
+                        render.status = ReviewRenderStatus::Queued;
+                        render.error = None;
+                        render.duration_ms = None;
+                        render.render_key = Some(render_key.clone());
+                        render.updated_at = now_string();
+                        if let Some(output) = &render.output_path {
+                            retouch_jobs.push((
+                                image.raw_path.clone(),
+                                render.profile_index,
+                                output.clone(),
+                                render_key.clone(),
+                            ));
+                        }
                     }
                 }
+                image.updated_at = now_string();
+                if let Some(entry) = history_review_changed(&before_image, image) {
+                    history_entries.push(entry);
+                }
             }
-            image.updated_at = now_string();
-            if let Some(entry) = history_review_changed(&before_image, image) {
+            if let Some(advance) = advance {
+                store.apply_advance(advance);
+            } else {
+                store.normalize_ui();
+            }
+            if let Some(entry) = history_ui_changed(store, &before_ui, &store.ui) {
                 history_entries.push(entry);
             }
-        }
-        if let Some(advance) = advance {
-            store.apply_advance(advance);
-        } else {
-            store.normalize_ui();
-        }
-        if let Some(entry) = history_ui_changed(&store, &before_ui, &store.ui) {
-            history_entries.push(entry);
-        }
-        save_store(&self.state_path, &store)?;
-        drop(store);
+            Ok((history_entries, retouch_jobs))
+        })?;
         for entry in history_entries {
             self.append_history(entry)?;
         }
@@ -982,12 +983,11 @@ impl ReviewHandle {
     }
 
     pub(super) fn apply_ui_update(&self, update: ReviewUiUpdateRequest) -> Result<()> {
-        let mut store = self.lock_store()?;
-        let before_ui = store.ui.clone();
-        store.set_ui(update)?;
-        let history_entry = history_ui_changed(&store, &before_ui, &store.ui);
-        save_store(&self.state_path, &store)?;
-        drop(store);
+        let history_entry = self.update_store(|store| {
+            let before_ui = store.ui.clone();
+            store.set_ui(update)?;
+            Ok(history_ui_changed(store, &before_ui, &store.ui))
+        })?;
         if let Some(entry) = history_entry {
             self.append_history(entry)?;
         }
@@ -995,8 +995,12 @@ impl ReviewHandle {
     }
 
     pub(super) fn api_state_json(&self) -> Result<String> {
+        serde_json::to_string(&self.api_state_value()?).context("serializing review API state")
+    }
+
+    pub(super) fn api_state_value(&self) -> Result<serde_json::Value> {
         let client_count = self.client_count()?;
-        let store = self.lock_store()?;
+        let store = self.store_snapshot();
         let mut images = store.images.clone();
         sort_review_images(&mut images);
         let codex_summary = review_codex_summary(&images);
@@ -1062,7 +1066,7 @@ impl ReviewHandle {
             })
             .collect::<Vec<_>>();
 
-        serde_json::to_string(&json!({
+        Ok(json!({
             "version": env!("CARGO_PKG_VERSION"),
             "profiles": store.profiles,
             "client_count": client_count,
@@ -1084,11 +1088,19 @@ impl ReviewHandle {
             "images": images,
             "publish_root": self.publish_root().to_string_lossy(),
         }))
-        .context("serializing review API state")
+    }
+
+    pub(super) fn api_state_patch_json_since(
+        &self,
+        previous: &serde_json::Value,
+    ) -> Result<String> {
+        let current = self.api_state_value()?;
+        serde_json::to_string(&review_state_patch_value(previous, &current))
+            .context("serializing review API patch")
     }
 
     pub(super) fn media_path(&self, image_id: u64, profile_index: usize) -> Result<PathBuf> {
-        let store = self.lock_store()?;
+        let store = self.store_snapshot();
         let image = store
             .images
             .iter()
@@ -1113,7 +1125,7 @@ impl ReviewHandle {
     }
 
     pub(super) fn preview_media_path(&self, image_id: u64) -> Result<PathBuf> {
-        let store = self.lock_store()?;
+        let store = self.store_snapshot();
         let image = store
             .images
             .iter()
@@ -1135,12 +1147,9 @@ impl ReviewHandle {
 
     pub(super) fn start_publish_job(&self, request: PublishRequest) -> Result<ReviewPublishJob> {
         let args = self.publish_args_from_request(&request)?;
-        let mut id = self
-            .next_publish_job_id
-            .lock()
-            .map_err(|_| anyhow!("review publish job id lock poisoned"))?;
+        let id = self.next_publish_job_id.fetch_add(1, Ordering::Relaxed);
         let job = ReviewPublishJob {
-            id: *id,
+            id,
             album: args.album.clone(),
             status: ReviewPublishJobStatus::Running,
             started_at: now_string(),
@@ -1154,13 +1163,11 @@ impl ReviewHandle {
             galleries: 0,
             error: None,
         };
-        *id += 1;
-        drop(id);
 
-        self.publish_jobs
-            .lock()
-            .map_err(|_| anyhow!("review publish jobs lock poisoned"))?
-            .push(job.clone());
+        self.update_publish_jobs(|jobs| {
+            jobs.push(job.clone());
+            Ok(())
+        })?;
         self.append_history(history_publish_started(&job, &args))?;
         self.broadcast_state()?;
 
@@ -1347,24 +1354,22 @@ impl ReviewHandle {
 
     pub(super) fn update_publish_job<F>(&self, job_id: u64, update: F) -> Result<()>
     where
-        F: FnOnce(&mut ReviewPublishJob),
+        F: Fn(&mut ReviewPublishJob),
     {
-        let mut jobs = self
-            .publish_jobs
-            .lock()
-            .map_err(|_| anyhow!("review publish jobs lock poisoned"))?;
-        let Some(job) = jobs.iter_mut().find(|job| job.id == job_id) else {
-            bail!("review publish job {job_id} does not exist");
-        };
-        let before = job.clone();
-        update(job);
-        let after = job.clone();
-        let history_entry = history_publish_changed(&before, &after);
-        if jobs.len() > 20 {
-            let remove = jobs.len() - 20;
-            jobs.drain(0..remove);
-        }
-        drop(jobs);
+        let history_entry = self.update_publish_jobs(|jobs| {
+            let Some(job) = jobs.iter_mut().find(|job| job.id == job_id) else {
+                bail!("review publish job {job_id} does not exist");
+            };
+            let before = job.clone();
+            update(job);
+            let after = job.clone();
+            let history_entry = history_publish_changed(&before, &after);
+            if jobs.len() > 20 {
+                let remove = jobs.len() - 20;
+                jobs.drain(0..remove);
+            }
+            Ok(history_entry)
+        })?;
         if let Some(entry) = history_entry {
             self.append_history(entry)?;
         }
@@ -1372,11 +1377,25 @@ impl ReviewHandle {
     }
 
     pub(super) fn publish_jobs_snapshot(&self) -> Result<Vec<ReviewPublishJob>> {
-        Ok(self
-            .publish_jobs
-            .lock()
-            .map_err(|_| anyhow!("review publish jobs lock poisoned"))?
-            .clone())
+        Ok((**self.publish_jobs.load()).clone())
+    }
+
+    pub(super) fn update_publish_jobs<R, F>(&self, mut update: F) -> Result<R>
+    where
+        F: FnMut(&mut Vec<ReviewPublishJob>) -> Result<R>,
+    {
+        loop {
+            let current = self.publish_jobs.load_full();
+            let mut next = (*current).clone();
+            let result = update(&mut next)?;
+            let next = Arc::new(next);
+            let previous = self
+                .publish_jobs
+                .compare_and_swap(&current, Arc::clone(&next));
+            if Arc::ptr_eq(&previous, &current) {
+                return Ok(result);
+            }
+        }
     }
 
     pub(super) fn subscribe(&self) -> broadcast::Receiver<String> {
@@ -1384,8 +1403,22 @@ impl ReviewHandle {
     }
 
     pub(super) fn broadcast_state(&self) -> Result<()> {
-        let state = self.api_state_json()?;
-        let _ = self.subscribers.send(state);
+        let current = self.api_state_value()?;
+        let previous = self.state_cache.load_full();
+        let message = previous
+            .as_deref()
+            .map(|previous| review_state_patch_value(previous, &current))
+            .unwrap_or_else(|| review_state_patch_value(&current, &current));
+        self.state_cache.store(Some(Arc::new(current)));
+        let message =
+            serde_json::to_string(&message).context("serializing review broadcast patch")?;
+        let _ = self.subscribers.send(message);
+        Ok(())
+    }
+
+    pub(super) fn refresh_state_cache(&self) -> Result<()> {
+        let state = self.api_state_value()?;
+        self.state_cache.store(Some(Arc::new(state)));
         Ok(())
     }
 
@@ -1393,11 +1426,126 @@ impl ReviewHandle {
         Ok(self.subscribers.receiver_count())
     }
 
-    pub(super) fn lock_store(&self) -> Result<std::sync::MutexGuard<'_, ReviewStore>> {
-        self.state
-            .lock()
-            .map_err(|_| anyhow!("review state lock poisoned"))
+    pub(super) fn store_snapshot(&self) -> Arc<ReviewStore> {
+        self.state.load_full()
     }
+
+    pub(super) fn update_store<R, F>(&self, mut update: F) -> Result<R>
+    where
+        F: FnMut(&mut ReviewStore) -> Result<R>,
+    {
+        loop {
+            let current = self.state.load_full();
+            let mut next = (*current).clone();
+            let result = update(&mut next)?;
+            let next = Arc::new(next);
+            let previous = self.state.compare_and_swap(&current, Arc::clone(&next));
+            if Arc::ptr_eq(&previous, &current) {
+                save_store(&self.state_path, &next)?;
+                return Ok(result);
+            }
+        }
+    }
+}
+
+fn review_state_patch_value(
+    previous: &serde_json::Value,
+    current: &serde_json::Value,
+) -> serde_json::Value {
+    let mut patch = serde_json::Map::new();
+    patch.insert("type".to_string(), json!("patch"));
+    patch.insert(
+        "version".to_string(),
+        current
+            .get("version")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+    );
+
+    for key in [
+        "profiles",
+        "client_count",
+        "codex",
+        "publish_defaults",
+        "publish_jobs",
+        "ui",
+        "publish_root",
+    ] {
+        if previous.get(key) != current.get(key)
+            && let Some(value) = current.get(key)
+        {
+            patch.insert(key.to_string(), value.clone());
+        }
+    }
+
+    let previous_images = image_map(previous);
+    let current_images = image_map(current);
+    let changed_images = current
+        .get("images")
+        .and_then(|images| images.as_array())
+        .into_iter()
+        .flatten()
+        .filter(|image| {
+            image.get("id").and_then(|id| id.as_u64()).is_none_or(|id| {
+                previous_images
+                    .get(&id)
+                    .is_none_or(|previous| *previous != *image)
+            })
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let removed_image_ids = previous_images
+        .keys()
+        .filter(|id| !current_images.contains_key(id))
+        .map(|id| json!(id))
+        .collect::<Vec<_>>();
+
+    if !changed_images.is_empty() || !removed_image_ids.is_empty() {
+        patch.insert(
+            "image_ids".to_string(),
+            current
+                .get("images")
+                .and_then(|images| images.as_array())
+                .map(|images| {
+                    images
+                        .iter()
+                        .filter_map(|image| image.get("id").and_then(|id| id.as_u64()))
+                        .map(|id| json!(id))
+                        .collect::<Vec<_>>()
+                })
+                .map(serde_json::Value::Array)
+                .unwrap_or_else(|| json!([])),
+        );
+    }
+    if !changed_images.is_empty() {
+        patch.insert(
+            "images".to_string(),
+            serde_json::Value::Array(changed_images),
+        );
+    }
+    if !removed_image_ids.is_empty() {
+        patch.insert(
+            "removed_image_ids".to_string(),
+            serde_json::Value::Array(removed_image_ids),
+        );
+    }
+
+    serde_json::Value::Object(patch)
+}
+
+fn image_map(state: &serde_json::Value) -> HashMap<u64, &serde_json::Value> {
+    state
+        .get("images")
+        .and_then(|images| images.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|image| {
+            image
+                .get("id")
+                .and_then(|id| id.as_u64())
+                .map(|id| (id, image))
+        })
+        .collect()
 }
 
 fn codex_analysis_key_for_image(image: &ReviewImage, config: &ReviewCodexConfig) -> Option<String> {

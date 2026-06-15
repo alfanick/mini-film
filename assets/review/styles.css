@@ -150,6 +150,27 @@ button:disabled {
   box-shadow: 0 0 0 4px rgba(25, 135, 84, 0.12);
 }
 
+.live-dot.keepalive-pulse {
+  animation: keepalive-pulse 900ms ease-out;
+}
+
+@keyframes keepalive-pulse {
+  0% {
+    transform: scale(1);
+    box-shadow: 0 0 0 4px rgba(25, 135, 84, 0.16);
+  }
+
+  35% {
+    transform: scale(1.55);
+    box-shadow: 0 0 0 9px rgba(25, 135, 84, 0.2);
+  }
+
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 4px rgba(25, 135, 84, 0.12);
+  }
+}
+
 .filter {
   padding: 5px 9px;
   border-bottom: 1px solid #ecece7;

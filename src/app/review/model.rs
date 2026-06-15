@@ -48,8 +48,9 @@ pub(crate) struct ReviewProfile {
 
 #[derive(Clone)]
 pub(crate) struct ReviewHandle {
-    pub(super) state: Arc<Mutex<ReviewStore>>,
+    pub(super) state: Arc<ArcSwap<ReviewStore>>,
     pub(super) subscribers: Arc<broadcast::Sender<String>>,
+    pub(super) state_cache: Arc<ArcSwapOption<serde_json::Value>>,
     pub(super) state_path: PathBuf,
     pub(super) input_root: PathBuf,
     pub(super) output_root: PathBuf,
@@ -69,8 +70,8 @@ pub(crate) struct ReviewHandle {
     pub(super) grain_preset: Option<String>,
     pub(super) grain_seed: Option<u64>,
     pub(super) publish_defaults: ReviewPublishDefaults,
-    pub(super) publish_jobs: Arc<Mutex<Vec<ReviewPublishJob>>>,
-    pub(super) next_publish_job_id: Arc<Mutex<u64>>,
+    pub(super) publish_jobs: Arc<ArcSwap<Vec<ReviewPublishJob>>>,
+    pub(super) next_publish_job_id: Arc<AtomicU64>,
     pub(super) retouch_scheduler: Arc<ReviewRetouchScheduler>,
     pub(super) codex: Option<ReviewCodexConfig>,
     pub(super) codex_scheduler: Arc<ReviewCodexScheduler>,
@@ -197,15 +198,16 @@ pub(super) struct ScheduledCodexJob {
     pub(super) analysis_key: String,
 }
 
-#[derive(Default)]
 pub(super) struct ReviewCodexScheduler {
-    pub(super) state: Mutex<ReviewCodexSchedulerState>,
-    pub(super) changed: Condvar,
+    pub(super) pending: ArcSwap<HashMap<ReviewCodexJobKey, ScheduledCodexJob>>,
 }
 
-#[derive(Default)]
-pub(super) struct ReviewCodexSchedulerState {
-    pub(super) pending: HashMap<ReviewCodexJobKey, ScheduledCodexJob>,
+impl Default for ReviewCodexScheduler {
+    fn default() -> Self {
+        Self {
+            pending: ArcSwap::from_pointee(HashMap::new()),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -262,7 +264,7 @@ pub(super) enum ReviewRenderStatus {
     Failed,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub(super) struct ReviewUpdateRequest {
     pub(super) image_id: u64,
     pub(super) rating: u8,
@@ -283,7 +285,7 @@ pub(super) struct ReviewUpdateRequest {
     pub(super) advance_after_update: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize)]
 pub(super) struct ReviewUiUpdateRequest {
     #[serde(default)]
     pub(super) current_image_id: Option<u64>,

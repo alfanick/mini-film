@@ -18,15 +18,16 @@ pub(super) struct ScheduledRetouchJob {
     pub(super) due_at: Instant,
 }
 
-#[derive(Default)]
 pub(super) struct ReviewRetouchScheduler {
-    pub(super) state: Mutex<ReviewRetouchSchedulerState>,
-    pub(super) changed: Condvar,
+    pub(super) pending: ArcSwap<HashMap<ReviewRetouchJobKey, ScheduledRetouchJob>>,
 }
 
-#[derive(Default)]
-pub(super) struct ReviewRetouchSchedulerState {
-    pub(super) pending: HashMap<ReviewRetouchJobKey, ScheduledRetouchJob>,
+impl Default for ReviewRetouchScheduler {
+    fn default() -> Self {
+        Self {
+            pending: ArcSwap::from_pointee(HashMap::new()),
+        }
+    }
 }
 
 impl ReviewRetouchScheduler {
@@ -65,47 +66,39 @@ impl ReviewRetouchScheduler {
             render_key,
             due_at: Instant::now() + delay,
         };
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        state.pending.insert(key, job);
-        self.changed.notify_one();
+        self.pending.rcu(|pending| {
+            let mut pending = (**pending).clone();
+            pending.insert(key.clone(), job.clone());
+            pending
+        });
     }
 
     pub(super) fn next_job(&self) -> ScheduledRetouchJob {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
         loop {
-            if state.pending.is_empty() {
-                state = self
-                    .changed
-                    .wait(state)
-                    .unwrap_or_else(|poison| poison.into_inner());
-                continue;
-            }
-
-            let (next_key, next_due) = state
-                .pending
+            let pending = self.pending.load_full();
+            let Some((next_key, next_due)) = pending
                 .iter()
                 .min_by_key(|(_, job)| job.due_at)
                 .map(|(key, job)| (key.clone(), job.due_at))
-                .expect("pending retouch job exists");
+            else {
+                thread::sleep(Duration::from_millis(25));
+                continue;
+            };
             let now = Instant::now();
             if next_due <= now {
-                return state
-                    .pending
-                    .remove(&next_key)
-                    .expect("pending retouch job still exists");
+                let mut selected = None;
+                self.pending.rcu(|pending| {
+                    let mut pending = (**pending).clone();
+                    selected = pending.remove(&next_key);
+                    pending
+                });
+                if let Some(job) = selected {
+                    return job;
+                }
+                continue;
             }
-            let timeout = next_due.saturating_duration_since(now);
-            let (next_state, _) = self
-                .changed
-                .wait_timeout(state, timeout)
-                .unwrap_or_else(|poison| poison.into_inner());
-            state = next_state;
+            let delay = next_due.saturating_duration_since(now);
+            thread::sleep(delay.min(Duration::from_millis(25)));
         }
     }
 }
@@ -114,30 +107,29 @@ impl ReviewCodexScheduler {
     pub(super) fn schedule(&self, raw: PathBuf, analysis_key: String) {
         let key = ReviewCodexJobKey { raw: raw.clone() };
         let job = ScheduledCodexJob { raw, analysis_key };
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        state.pending.insert(key, job);
-        self.changed.notify_one();
+        self.pending.rcu(|pending| {
+            let mut pending = (**pending).clone();
+            pending.insert(key.clone(), job.clone());
+            pending
+        });
     }
 
     pub(super) fn next_job(&self) -> ScheduledCodexJob {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
         loop {
-            if let Some(key) = state.pending.keys().next().cloned() {
-                return state
-                    .pending
-                    .remove(&key)
-                    .expect("pending Codex job still exists");
+            let pending = self.pending.load_full();
+            let Some(key) = pending.keys().next().cloned() else {
+                thread::sleep(Duration::from_millis(25));
+                continue;
+            };
+            let mut selected = None;
+            self.pending.rcu(|pending| {
+                let mut pending = (**pending).clone();
+                selected = pending.remove(&key);
+                pending
+            });
+            if let Some(job) = selected {
+                return job;
             }
-            state = self
-                .changed
-                .wait(state)
-                .unwrap_or_else(|poison| poison.into_inner());
         }
     }
 }

@@ -97,10 +97,14 @@ pub(super) async fn route_request(
             Err(error) => json_error(500, error).into_response(),
         },
         (Method::POST, "/api/review") => {
+            let previous = match handle.api_state_value() {
+                Ok(state) => state,
+                Err(error) => return json_error(500, error).into_response(),
+            };
             match serde_json::from_slice::<ReviewUpdateRequest>(&body)
                 .context("parsing review update")
                 .and_then(|update| handle.apply_review_update(update))
-                .and_then(|()| handle.api_state_json())
+                .and_then(|()| handle.api_state_patch_json_since(&previous))
             {
                 Ok(body) => {
                     text_response(200, "application/json; charset=utf-8", &body).into_response()
@@ -108,25 +112,37 @@ pub(super) async fn route_request(
                 Err(error) => json_error(400, error).into_response(),
             }
         }
-        (Method::POST, "/api/ui") => match serde_json::from_slice::<ReviewUiUpdateRequest>(&body)
-            .context("parsing review UI update")
-            .and_then(|update| handle.apply_ui_update(update))
-            .and_then(|()| handle.api_state_json())
-        {
-            Ok(body) => {
-                text_response(200, "application/json; charset=utf-8", &body).into_response()
+        (Method::POST, "/api/ui") => {
+            let previous = match handle.api_state_value() {
+                Ok(state) => state,
+                Err(error) => return json_error(500, error).into_response(),
+            };
+            match serde_json::from_slice::<ReviewUiUpdateRequest>(&body)
+                .context("parsing review UI update")
+                .and_then(|update| handle.apply_ui_update(update))
+                .and_then(|()| handle.api_state_patch_json_since(&previous))
+            {
+                Ok(body) => {
+                    text_response(200, "application/json; charset=utf-8", &body).into_response()
+                }
+                Err(error) => json_error(400, error).into_response(),
             }
-            Err(error) => json_error(400, error).into_response(),
-        },
-        (Method::POST, "/api/publish") => match parse_publish_request(&body)
-            .and_then(|request| handle.start_publish_job(request))
-            .and_then(|_| handle.api_state_json())
-        {
-            Ok(body) => {
-                text_response(200, "application/json; charset=utf-8", &body).into_response()
+        }
+        (Method::POST, "/api/publish") => {
+            let previous = match handle.api_state_value() {
+                Ok(state) => state,
+                Err(error) => return json_error(500, error).into_response(),
+            };
+            match parse_publish_request(&body)
+                .and_then(|request| handle.start_publish_job(request))
+                .and_then(|_| handle.api_state_patch_json_since(&previous))
+            {
+                Ok(body) => {
+                    text_response(200, "application/json; charset=utf-8", &body).into_response()
+                }
+                Err(error) => json_error(500, error).into_response(),
             }
-            Err(error) => json_error(500, error).into_response(),
-        },
+        }
         (Method::GET, _) if path.starts_with("/media/") => media_response(path, handle).await,
         (Method::GET, _) if path.starts_with("/preview/") => preview_response(path, handle).await,
         _ => text_response(404, "text/plain; charset=utf-8", "not found").into_response(),
@@ -241,6 +257,7 @@ pub(super) fn parse_publish_request(body: &[u8]) -> Result<PublishRequest> {
 
 fn event_stream_response(handle: ReviewHandle) -> Response {
     let mut receiver = handle.subscribe();
+    let mut keepalive = tokio::time::interval(Duration::from_secs(5));
     let initial_state = handle.api_state_json();
     let stream = stream! {
         match initial_state {
@@ -248,14 +265,26 @@ fn event_stream_response(handle: ReviewHandle) -> Response {
             Err(error) => yield Ok(Event::default().event("error").data(error.to_string())),
         }
         loop {
-            match receiver.recv().await {
-                Ok(state) => yield Ok(Event::default().data(state)),
-                Err(broadcast::error::RecvError::Lagged(_)) => {
-                    if let Ok(state) = handle.api_state_json() {
-                        yield Ok(Event::default().data(state));
+            tokio::select! {
+                received = receiver.recv() => {
+                    match received {
+                        Ok(state) => yield Ok(Event::default().data(state)),
+                        Err(broadcast::error::RecvError::Lagged(_)) => {
+                            if let Ok(state) = handle.api_state_json() {
+                                yield Ok(Event::default().data(state));
+                            }
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
                     }
                 }
-                Err(broadcast::error::RecvError::Closed) => break,
+                _ = keepalive.tick() => {
+                    let data = json!({
+                        "type": "keepalive",
+                        "datetime": chrono::Utc::now().to_rfc3339(),
+                        "version": env!("CARGO_PKG_VERSION"),
+                    });
+                    yield Ok(Event::default().event("keepalive").data(data.to_string()));
+                }
             }
         }
     };

@@ -1,5 +1,6 @@
 use super::prelude::*;
 use super::{handle::*, model::*, preview::*, publish::*, scheduler::*, server::*, store::*};
+use std::sync::Mutex;
 
 fn profile(index: usize, stem: &str) -> ReviewProfile {
     ReviewProfile {
@@ -27,8 +28,9 @@ fn test_handle(input: PathBuf, output: PathBuf, profiles: Vec<ReviewProfile>) ->
     let export = test_export_options();
     let (subscribers, _) = broadcast::channel(256);
     ReviewHandle {
-        state: Arc::new(Mutex::new(ReviewStore::new(profiles))),
+        state: Arc::new(ArcSwap::from_pointee(ReviewStore::new(profiles))),
         subscribers: Arc::new(subscribers),
+        state_cache: Arc::new(ArcSwapOption::empty()),
         state_path: output.join("mini-film-review.json"),
         input_root: input.clone(),
         output_root: output.clone(),
@@ -57,8 +59,8 @@ fn test_handle(input: PathBuf, output: PathBuf, profiles: Vec<ReviewProfile>) ->
                 columns: 4,
             },
         ),
-        publish_jobs: Arc::new(Mutex::new(Vec::new())),
-        next_publish_job_id: Arc::new(Mutex::new(1)),
+        publish_jobs: Arc::new(ArcSwap::from_pointee(Vec::new())),
+        next_publish_job_id: Arc::new(AtomicU64::new(1)),
         retouch_scheduler: Arc::new(ReviewRetouchScheduler::default()),
         codex: None,
         codex_scheduler: Arc::new(ReviewCodexScheduler::default()),
@@ -477,18 +479,22 @@ fn queued_missing_output_reuses_saved_retouch_settings() {
     .normalized();
     let expected_key = saved_retouch.render_key();
     {
-        let mut store = handle.lock_store().unwrap();
-        let image = store
-            .images
-            .iter_mut()
-            .find(|image| image.raw_path == raw)
+        handle
+            .update_store(|store| {
+                let image = store
+                    .images
+                    .iter_mut()
+                    .find(|image| image.raw_path == raw)
+                    .unwrap();
+                image.retouch = saved_retouch.clone();
+                Ok(())
+            })
             .unwrap();
-        image.retouch = saved_retouch;
     }
 
     handle.record_profile_queued(&raw, 0, &rendered).unwrap();
     {
-        let store = handle.lock_store().unwrap();
+        let store = handle.store_snapshot();
         let render = &store.images[0].profiles[0];
         assert_eq!(render.status, ReviewRenderStatus::Queued);
         assert_eq!(render.output_path.as_deref(), Some(rendered.as_path()));
@@ -696,21 +702,26 @@ fn review_history_records_review_and_publish_state_changes() {
         })
         .unwrap();
 
-    handle.publish_jobs.lock().unwrap().push(ReviewPublishJob {
-        id: 1,
-        album: "finals".to_string(),
-        status: ReviewPublishJobStatus::Running,
-        started_at: now_string(),
-        finished_at: None,
-        processed: 0,
-        total: 0,
-        step: "starting".to_string(),
-        current: None,
-        linked: 0,
-        skipped: 0,
-        galleries: 0,
-        error: None,
-    });
+    handle
+        .update_publish_jobs(|jobs| {
+            jobs.push(ReviewPublishJob {
+                id: 1,
+                album: "finals".to_string(),
+                status: ReviewPublishJobStatus::Running,
+                started_at: now_string(),
+                finished_at: None,
+                processed: 0,
+                total: 0,
+                step: "starting".to_string(),
+                current: None,
+                linked: 0,
+                skipped: 0,
+                galleries: 0,
+                error: None,
+            });
+            Ok(())
+        })
+        .unwrap();
     handle
         .record_publish_job_progress(
             1,

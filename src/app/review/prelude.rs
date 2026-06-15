@@ -5,7 +5,7 @@ pub(super) use std::{
     path::{Component, Path, PathBuf},
     process::{Command, Stdio},
     sync::{
-        Arc, Condvar, Mutex,
+        Arc,
         atomic::{AtomicU64, Ordering},
     },
     thread,
@@ -13,6 +13,7 @@ pub(super) use std::{
 };
 
 pub(super) use anyhow::{Context, Result, anyhow, bail};
+pub(super) use arc_swap::{ArcSwap, ArcSwapOption};
 pub(super) use rayon::prelude::*;
 pub(super) use serde::{Deserialize, Serialize};
 pub(super) use serde_json::json;

@@ -688,6 +688,14 @@ async function loadState() {
   applyState(await response.json());
 }
 
+function applyStateMessage(message) {
+  if (message?.type === "patch") {
+    applyStatePatch(message);
+  } else {
+    applyState(message);
+  }
+}
+
 function applyState(data) {
   if (state.data?.version && data?.version && state.data.version !== data.version) {
     window.location.reload();
@@ -698,6 +706,34 @@ function applyState(data) {
   state.localRetouchDirty = false;
   applyServerUi(data);
   render();
+}
+
+function applyStatePatch(patch) {
+  if (!state.data) {
+    loadState().catch((error) => {
+      els.status.textContent = `Disconnected: ${error.message}`;
+    });
+    return;
+  }
+  if (state.data?.version && patch?.version && state.data.version !== patch.version) {
+    window.location.reload();
+    return;
+  }
+  const data = { ...state.data };
+  for (const key of ["profiles", "client_count", "codex", "publish_defaults", "publish_jobs", "ui", "publish_root"]) {
+    if (Object.prototype.hasOwnProperty.call(patch, key)) data[key] = patch[key];
+  }
+  if (Array.isArray(patch.images) || Array.isArray(patch.removed_image_ids)) {
+    const byId = new Map((data.images || []).map((image) => [image.id, image]));
+    for (const id of patch.removed_image_ids || []) byId.delete(id);
+    for (const image of patch.images || []) byId.set(image.id, image);
+    if (Array.isArray(patch.image_ids)) {
+      data.images = patch.image_ids.map((id) => byId.get(id)).filter(Boolean);
+    } else {
+      data.images = Array.from(byId.values());
+    }
+  }
+  applyState(data);
 }
 
 function mergeIncomingProfileSelections(data) {
@@ -2289,7 +2325,7 @@ async function saveImageReview(image, patch = {}, options = {}) {
         body: JSON.stringify(body),
       });
       if (!response.ok) throw new Error(`review ${response.status}`);
-      applyState(await response.json());
+      applyStateMessage(await response.json());
     })
     .catch((error) => {
       if (pendingProfileIndex !== undefined) {
@@ -2329,7 +2365,7 @@ async function updateSharedUi(patch = {}) {
         body: JSON.stringify(body),
       });
       if (!response.ok) throw new Error(`review UI ${response.status}`);
-      applyState(await response.json());
+      applyStateMessage(await response.json());
     });
   return state.saveQueue;
 }
@@ -2819,7 +2855,7 @@ els.publishForm.addEventListener("submit", async (event) => {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || `publish ${response.status}`);
     started = true;
-    applyState(data);
+    applyStateMessage(data);
   } catch (error) {
     els.publishStatus.textContent = `Publish failed: ${error.message}`;
   } finally {
@@ -2961,10 +2997,23 @@ function connectEvents() {
   };
   events.onmessage = (event) => {
     els.liveDot.classList.add("connected");
-    applyState(JSON.parse(event.data));
+    applyStateMessage(JSON.parse(event.data));
   };
+  events.addEventListener("keepalive", (event) => {
+    els.liveDot.classList.add("connected");
+    els.liveDot.classList.remove("keepalive-pulse");
+    void els.liveDot.offsetWidth;
+    els.liveDot.classList.add("keepalive-pulse");
+    try {
+      const data = JSON.parse(event.data);
+      els.liveDot.title = `Connected · ${data.datetime || "keepalive"} · mini-film ${data.version || ""}`.trim();
+    } catch {
+      els.liveDot.title = "Connected";
+    }
+  });
   events.onerror = () => {
-    els.liveDot.classList.remove("connected");
+    els.liveDot.classList.remove("connected", "keepalive-pulse");
+    els.liveDot.title = "Reconnecting";
     els.status.textContent = "Reconnecting...";
   };
 }
