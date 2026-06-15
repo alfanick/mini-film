@@ -996,6 +996,7 @@ mod tests {
             no_grain: false,
             color_noise_iso_threshold: 1600,
             lens_corrections: LensCorrections::default(),
+            lcp_root: None,
             grain: None,
             grain_preset: None,
             grain_seed: None,

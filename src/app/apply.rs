@@ -42,6 +42,7 @@ pub(crate) struct ApplyArgs {
     pub(crate) no_grain: bool,
     pub(crate) color_noise_iso_threshold: u32,
     pub(crate) lens_corrections: LensCorrections,
+    pub(crate) lcp_root: Option<PathBuf>,
     pub(crate) grain: Option<String>,
     pub(crate) grain_preset: Option<String>,
     pub(crate) grain_seed: Option<u64>,
@@ -58,6 +59,7 @@ pub(crate) struct ApplyJob<'a> {
     pub(crate) no_grain: bool,
     pub(crate) color_noise_iso_threshold: u32,
     pub(crate) lens_corrections: LensCorrections,
+    pub(crate) lcp_root: Option<&'a Path>,
     pub(crate) export: &'a ExportOptions,
     pub(crate) quiet: bool,
     pub(crate) exif_comment: Option<String>,
@@ -114,6 +116,7 @@ pub(crate) fn run_apply(args: ApplyArgs) -> Result<()> {
             no_grain: args.no_grain,
             color_noise_iso_threshold: args.color_noise_iso_threshold,
             lens_corrections: args.lens_corrections,
+            lcp_root: args.lcp_root.as_deref(),
             export: &args.export,
             quiet: true,
             exif_comment: Some(exif_comment_for_command("apply", args.profile.as_deref())),
@@ -216,6 +219,12 @@ pub(crate) fn apply_resolved(
         "rawtherapee",
         estimate_rawtherapee_duration(job.raw, jpeg_intermediate),
     );
+    let effective_lcp_root = if job.lens_corrections.is_enabled() {
+        job.lcp_root
+    } else {
+        None
+    };
+
     if jpeg_intermediate {
         run_raw_develop_jpeg(
             job.rawtherapee,
@@ -224,6 +233,7 @@ pub(crate) fn apply_resolved(
             &intermediate,
             job.export.jpg_quality,
             job.export.jpeg_subsampling,
+            effective_lcp_root,
             job.quiet,
         )?;
     } else {
@@ -232,6 +242,7 @@ pub(crate) fn apply_resolved(
             &rawtherapee_profiles,
             job.raw,
             &intermediate,
+            effective_lcp_root,
             job.quiet,
         )?;
     }
@@ -733,6 +744,7 @@ mod tests {
                 no_grain: true,
                 color_noise_iso_threshold: 0,
                 lens_corrections: LensCorrections::default(),
+                lcp_root: None,
                 export: &test_export_options(),
                 quiet: true,
                 exif_comment: Some("mini-film test".to_string()),
@@ -785,6 +797,7 @@ mod tests {
                 no_grain: false,
                 color_noise_iso_threshold: 0,
                 lens_corrections: LensCorrections::default(),
+                lcp_root: None,
                 export: &test_export_options(),
                 quiet: true,
                 exif_comment: Some("mini-film test".to_string()),
@@ -839,6 +852,7 @@ mod tests {
                 no_grain: false,
                 color_noise_iso_threshold: 0,
                 lens_corrections: LensCorrections::default(),
+                lcp_root: None,
                 export: &export,
                 quiet: true,
                 exif_comment: Some("mini-film test".to_string()),

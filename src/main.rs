@@ -110,6 +110,7 @@ fn main() -> Result<()> {
             no_grain,
             color_noise_iso_threshold,
             lens_corrections,
+            lcp_root,
             grain,
             grain_preset,
             grain_seed,
@@ -133,6 +134,7 @@ fn main() -> Result<()> {
             keep_intermediate,
             no_grain,
             lens_corrections: lens_corrections.unwrap_or_default(),
+            lcp_root: resolve_lcp_root(lcp_root),
             color_noise_iso_threshold,
             grain,
             grain_preset,
@@ -161,6 +163,7 @@ fn main() -> Result<()> {
             no_grain,
             color_noise_iso_threshold,
             lens_corrections,
+            lcp_root,
             grain,
             grain_preset,
             grain_seed,
@@ -188,6 +191,7 @@ fn main() -> Result<()> {
             convert,
             no_grain,
             lens_corrections: lens_corrections.unwrap_or_default(),
+            lcp_root: resolve_lcp_root(lcp_root),
             color_noise_iso_threshold,
             grain,
             grain_preset,
@@ -220,6 +224,7 @@ fn main() -> Result<()> {
             no_grain,
             color_noise_iso_threshold,
             lens_corrections,
+            lcp_root,
             grain,
             grain_preset,
             grain_seed,
@@ -258,6 +263,7 @@ fn main() -> Result<()> {
             convert,
             no_grain,
             lens_corrections: lens_corrections.unwrap_or_default(),
+            lcp_root: resolve_lcp_root(lcp_root),
             color_noise_iso_threshold,
             grain,
             grain_preset,
@@ -301,6 +307,7 @@ fn main() -> Result<()> {
             no_grain,
             color_noise_iso_threshold,
             lens_corrections,
+            lcp_root,
             grain_seed,
             no_cache,
             jobs,
@@ -320,6 +327,7 @@ fn main() -> Result<()> {
             convert,
             no_grain,
             lens_corrections: lens_corrections.unwrap_or_default(),
+            lcp_root: resolve_lcp_root(lcp_root),
             color_noise_iso_threshold,
             grain_seed,
             no_cache,
@@ -361,6 +369,7 @@ fn main() -> Result<()> {
             no_grain,
             color_noise_iso_threshold,
             lens_corrections,
+            lcp_root,
             grain,
             grain_preset,
             grain_seed,
@@ -379,6 +388,7 @@ fn main() -> Result<()> {
             hald_level,
             rawtherapee,
             convert,
+            lcp_root: resolve_lcp_root(lcp_root),
             jobs: jobs.unwrap_or_else(half_cpu_thread_count),
             gallery,
             gallery_thumbnail_long_edge,
@@ -517,6 +527,16 @@ fn resolve_profiles_root(explicit: Option<PathBuf>) -> PathBuf {
     }
 
     PathBuf::from(".")
+}
+
+fn resolve_lcp_root(explicit: Option<PathBuf>) -> Option<PathBuf> {
+    explicit.or_else(|| {
+        env::var("MINI_FILM_LCP_ROOT")
+            .ok()
+            .map(|root| root.trim().to_string())
+            .filter(|root| !root.is_empty())
+            .map(PathBuf::from)
+    })
 }
 
 fn verify_dependency_binary(name: &str, path: &Path) -> Result<()> {

@@ -21,6 +21,7 @@ pub(crate) fn run_raw_develop(
     profiles: &[PathBuf],
     raw: &Path,
     output_tiff: &Path,
+    lcp_root: Option<&Path>,
     quiet: bool,
 ) -> Result<()> {
     run_rawtherapee(
@@ -29,10 +30,12 @@ pub(crate) fn run_raw_develop(
         raw,
         output_tiff,
         RawOutput::Tiff16,
+        lcp_root,
         quiet,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_raw_develop_jpeg(
     rawtherapee: &Path,
     profiles: &[PathBuf],
@@ -40,6 +43,7 @@ pub(crate) fn run_raw_develop_jpeg(
     output_jpeg: &Path,
     quality: u8,
     subsampling: JpegSubsampling,
+    lcp_root: Option<&Path>,
     quiet: bool,
 ) -> Result<()> {
     run_rawtherapee(
@@ -51,6 +55,7 @@ pub(crate) fn run_raw_develop_jpeg(
             quality,
             subsampling,
         },
+        lcp_root,
         quiet,
     )
 }
@@ -77,14 +82,28 @@ fn run_rawtherapee(
     raw: &Path,
     output: &Path,
     output_format: RawOutput,
+    lcp_root: Option<&Path>,
     quiet: bool,
 ) -> Result<()> {
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
 
-    let status =
-        rawtherapee_status_with_retry(rawtherapee, profiles, raw, output, output_format, quiet)?;
+    let lcp_home = if let Some(lcp_root) = lcp_root {
+        Some(configure_rawtherapee_lcp_root(lcp_root)?)
+    } else {
+        None
+    };
+
+    let status = rawtherapee_status_with_retry(
+        rawtherapee,
+        profiles,
+        raw,
+        output,
+        output_format,
+        lcp_home.as_ref().map(|home| home.path()),
+        quiet,
+    )?;
 
     if !status.success() {
         bail!("rawtherapee failed with status {status}");
@@ -102,12 +121,20 @@ fn rawtherapee_status_with_retry(
     raw: &Path,
     output: &Path,
     output_format: RawOutput,
+    lcp_config_home: Option<&Path>,
     quiet: bool,
 ) -> Result<std::process::ExitStatus> {
     const MAX_ATTEMPTS: usize = 6;
     for attempt in 1..=MAX_ATTEMPTS {
-        let mut command =
-            rawtherapee_command(rawtherapee, profiles, raw, output, output_format, quiet);
+        let mut command = rawtherapee_command(
+            rawtherapee,
+            profiles,
+            raw,
+            output,
+            output_format,
+            lcp_config_home,
+            quiet,
+        );
         match command.status() {
             Ok(status) => return Ok(status),
             Err(error) if is_executable_busy(&error) && attempt < MAX_ATTEMPTS => {
@@ -127,6 +154,7 @@ fn rawtherapee_command(
     raw: &Path,
     output: &Path,
     output_format: RawOutput,
+    lcp_config_home: Option<&Path>,
     quiet: bool,
 ) -> Command {
     let mut command = Command::new(rawtherapee);
@@ -152,7 +180,33 @@ fn rawtherapee_command(
     if quiet {
         command.stdout(Stdio::null()).stderr(Stdio::null());
     }
+    if let Some(lcp_home) = lcp_config_home {
+        let xdg_config_home = lcp_home.join(".config");
+        command
+            .env("HOME", lcp_home)
+            .env("XDG_CONFIG_HOME", xdg_config_home);
+    }
     command
+}
+
+fn configure_rawtherapee_lcp_root(lcp_root: &Path) -> Result<tempfile::TempDir> {
+    let home = tempfile::Builder::new()
+        .prefix("mini-film-rawtherapee-lcp-")
+        .tempdir()
+        .context("creating temporary RawTherapee config directory")?;
+    let options_path = home
+        .path()
+        .join(".config")
+        .join("RawTherapee")
+        .join("options");
+    if let Some(parent) = options_path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+    fs::write(
+        options_path,
+        format!("[General]\nLensProfilesPath={}\n", lcp_root.display()),
+    )?;
+    Ok(home)
 }
 
 fn is_executable_busy(error: &io::Error) -> bool {
@@ -218,7 +272,15 @@ mod tests {
         fs::write(&raw, b"raw").unwrap();
         let raw_log = write_helper_script(&temp.path().join("rawtherapee"), true, None, 0).unwrap();
         let out = temp.path().join("out.tif");
-        run_raw_develop(&temp.path().join("rawtherapee"), &[], &raw, &out, true).unwrap();
+        run_raw_develop(
+            &temp.path().join("rawtherapee"),
+            &[],
+            &raw,
+            &out,
+            None,
+            true,
+        )
+        .unwrap();
 
         let log = fs::read_to_string(raw_log).unwrap();
         assert!(log.contains("-q"));
@@ -246,6 +308,7 @@ mod tests {
             &out,
             86,
             JpegSubsampling::S422,
+            None,
             false,
         )
         .unwrap();
@@ -274,6 +337,7 @@ mod tests {
             &[],
             &raw,
             &temp.path().join("out.tif"),
+            None,
             true,
         );
         assert!(result.is_err());
@@ -291,6 +355,7 @@ mod tests {
             &[],
             &raw,
             &temp.path().join("out.tif"),
+            None,
             true,
         );
         assert!(result.is_err());

@@ -173,6 +173,12 @@ pub(crate) enum CommandKind {
         #[arg(long, num_args = 0..=1, value_parser = parse_lens_corrections_arg, default_missing_value = "all")]
         lens_corrections: Option<LensCorrections>,
 
+        /// Optional Lensfun profile root for RawTherapee LCP profiles.
+        ///
+        /// If omitted, mini-film resolves from `MINI_FILM_LCP_ROOT` when set.
+        #[arg(long)]
+        lcp_root: Option<PathBuf>,
+
         /// Override grain as amount,size,frequency, each 0..100. Example: --grain 30,45,45
         #[arg(long)]
         grain: Option<String>,
@@ -268,6 +274,12 @@ pub(crate) enum CommandKind {
         /// `distortion`, `ca`, `vignetting`.
         #[arg(long, num_args = 0..=1, value_parser = parse_lens_corrections_arg, default_missing_value = "all")]
         lens_corrections: Option<LensCorrections>,
+
+        /// Optional Lensfun profile root for RawTherapee LCP profiles.
+        ///
+        /// If omitted, mini-film resolves from `MINI_FILM_LCP_ROOT` when set.
+        #[arg(long)]
+        lcp_root: Option<PathBuf>,
 
         /// Override grain as amount,size,frequency, each 0..100. Example: --grain 30,45,45
         #[arg(long)]
@@ -386,6 +398,12 @@ pub(crate) enum CommandKind {
         #[arg(long, num_args = 0..=1, value_parser = parse_lens_corrections_arg, default_missing_value = "all")]
         lens_corrections: Option<LensCorrections>,
 
+        /// Optional Lensfun profile root for RawTherapee LCP profiles.
+        ///
+        /// If omitted, mini-film resolves from `MINI_FILM_LCP_ROOT` when set.
+        #[arg(long)]
+        lcp_root: Option<PathBuf>,
+
         /// Base seed for deterministic generated grain. Defaults to current time of day.
         #[arg(long)]
         grain_seed: Option<u64>,
@@ -473,6 +491,12 @@ pub(crate) enum CommandKind {
         /// `distortion`, `ca`, `vignetting`.
         #[arg(long, num_args = 0..=1, value_parser = parse_lens_corrections_arg, default_missing_value = "all")]
         lens_corrections: Option<LensCorrections>,
+
+        /// Optional Lensfun profile root for RawTherapee LCP profiles.
+        ///
+        /// If omitted, mini-film resolves from `MINI_FILM_LCP_ROOT` when set.
+        #[arg(long)]
+        lcp_root: Option<PathBuf>,
 
         /// Override grain as amount,size,frequency, for example 30,45,45.
         #[arg(long)]
@@ -711,6 +735,12 @@ pub(crate) enum CommandKind {
         /// Enable RawTherapee lens corrections for rerendered RAWs.
         #[arg(long, num_args = 0..=1, value_parser = parse_lens_corrections_arg, default_missing_value = "all")]
         lens_corrections: Option<LensCorrections>,
+
+        /// Optional Lensfun profile root for RawTherapee LCP profiles.
+        ///
+        /// If omitted, mini-film resolves from `MINI_FILM_LCP_ROOT` when set.
+        #[arg(long)]
+        lcp_root: Option<PathBuf>,
 
         /// Override grain as amount,size,frequency, for example 30,45,45.
         #[arg(long)]

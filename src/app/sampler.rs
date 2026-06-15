@@ -51,6 +51,7 @@ pub(crate) struct SamplerArgs {
     pub(crate) hald_level: u32,
     pub(crate) rawtherapee: PathBuf,
     pub(crate) convert: PathBuf,
+    pub(crate) lcp_root: Option<PathBuf>,
     pub(crate) no_grain: bool,
     pub(crate) color_noise_iso_threshold: u32,
     pub(crate) lens_corrections: LensCorrections,
@@ -565,6 +566,7 @@ fn render_profile_thumbnail(
         &developed,
         context.args.jpg_quality,
         context.args.jpeg_subsampling,
+        context.args.lcp_root.as_deref(),
         true,
     )?;
     raw_stage.finish();
@@ -999,6 +1001,7 @@ fn write_html_baseline_thumbnail(
         &raw_source,
         jpg_quality,
         jpeg_subsampling,
+        None,
         true,
     )?;
     write_cached_progressive_html_thumbnail(
@@ -2010,6 +2013,7 @@ mod tests {
             hald_level: 16,
             rawtherapee: PathBuf::from("rawtherapee-cli"),
             convert: PathBuf::from("convert"),
+            lcp_root: None,
             no_grain: false,
             grain_seed: Some(123),
             lens_corrections: crate::cli::LensCorrections::default(),

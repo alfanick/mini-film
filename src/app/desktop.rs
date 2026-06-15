@@ -413,6 +413,7 @@ mod enabled {
                 codex_binary,
                 codex_model,
                 codex_timeout: self.codex_timeout.unwrap_or(45),
+                lcp_root: lcp_root_from_env(),
                 gallery,
                 gallery_thumbnail_long_edge: 1024,
                 gallery_columns: 4,
@@ -529,6 +530,17 @@ mod enabled {
         }
 
         PathBuf::from(".")
+    }
+
+    fn lcp_root_from_env() -> Option<PathBuf> {
+        env::var("MINI_FILM_LCP_ROOT").ok().and_then(|raw| {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(expand_user_path(trimmed))
+            }
+        })
     }
 
     fn resolve_review_address(allow_others: bool, preferred_port: u16) -> Result<String> {

@@ -163,9 +163,11 @@ where
         .arg("--jpg-quality")
         .arg(args.export.jpg_quality.to_string())
         .arg("--jpeg-subsampling")
-        .arg(args.export.jpeg_subsampling.to_string())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .arg(args.export.jpeg_subsampling.to_string());
+    if let Some(lcp_root) = args.lcp_root.as_ref() {
+        command.arg("--lcp-root").arg(lcp_root);
+    }
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
     if let Some(gallery) = args.gallery {
         command.arg("--gallery").arg(gallery.to_string());
     }
@@ -304,6 +306,7 @@ pub(super) fn publish_review_state(
         profiles_root: args.profiles_root.clone(),
         hald_level: args.hald_level,
         rawtherapee: args.rawtherapee.clone(),
+        lcp_root: args.lcp_root.clone(),
         convert: args.convert.clone(),
         jobs: args.jobs,
         export: args.export.clone(),
@@ -604,6 +607,7 @@ pub(super) fn rerender_review_output(
         lens_corrections: options.lens_corrections,
         grain: options.grain.clone(),
         grain_preset: options.grain_preset.clone(),
+        lcp_root: options.lcp_root.clone(),
         grain_seed: options
             .grain_seed
             .map(|seed| review_publish_seed(seed, &image.raw_path, profile.index)),
