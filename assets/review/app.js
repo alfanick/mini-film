@@ -1356,66 +1356,105 @@ function ProfileList({ image, onSelect, onTogglePublish, onSoloPublish }) {
       .filter(Boolean)
       .join(" ");
     return h(
-      "button",
+      "div",
       {
         key: profile.profile_index,
-        type: "button",
-        class: classes,
-        onClick: () => onSelect(profile).catch((error) => console.error(error)),
-        onDblClick: (event) => {
-          if (!canSoloPublish) return;
-          event.preventDefault();
-          onSoloPublish(profile).catch((error) => console.error(error));
-        },
-        onPointerUp: (event) => {
-          if (!canSoloPublish || event.pointerType === "mouse") return;
-          const now = Date.now();
-          const sameProfile = profileDoubleTap.profileIndex === profile.profile_index;
-          const isDoubleTap = sameProfile && now - profileDoubleTap.at < 450;
-          profileDoubleTap.profileIndex = profile.profile_index;
-          profileDoubleTap.at = now;
-          if (!isDoubleTap) return;
-          event.preventDefault();
-          onSoloPublish(profile).catch((error) => console.error(error));
-        },
+        class: "profile-entry",
       },
-      h("input", {
-        type: "checkbox",
-        class: "profile-publish",
-        checked: publishSelected,
-        title: publishSelected ? "Included in publish" : "Skipped by publish",
-        "aria-label": `Publish ${profile.profile_stem}`,
-        onClick: (event) => event.stopPropagation(),
-        onChange: (event) => {
-          event.stopPropagation();
-          onTogglePublish(profile).catch((error) => console.error(error));
-        },
-      }),
-      cardUrl
-        ? h("img", {
-            src: versionedUrl(cardUrl, profile.url ? profile.updated_at : image.preview_updated_at),
-            alt: profile.profile_stem,
-            loading: profile.profile_index === previewProfile?.profile_index ? "eager" : "lazy",
-            decoding: "async",
-            fetchpriority: profile.profile_index === previewProfile?.profile_index ? "high" : "low",
-            onLoad: (event) => {
-              event.currentTarget
-                .closest(".profile-card")
-                ?.classList.toggle("portrait", event.currentTarget.naturalHeight > event.currentTarget.naturalWidth);
-            },
-          })
-        : null,
-      h("div", { class: "profile-name" }, profile.profile_stem),
       h(
-        "div",
+        "button",
         {
-          class: "profile-status",
-          title: display.title,
+          type: "button",
+          class: classes,
+          onClick: () => onSelect(profile).catch((error) => console.error(error)),
+          onDblClick: (event) => {
+            if (!canSoloPublish) return;
+            event.preventDefault();
+            onSoloPublish(profile).catch((error) => console.error(error));
+          },
+          onPointerUp: (event) => {
+            if (!canSoloPublish || event.pointerType === "mouse") return;
+            const now = Date.now();
+            const sameProfile = profileDoubleTap.profileIndex === profile.profile_index;
+            const isDoubleTap = sameProfile && now - profileDoubleTap.at < 450;
+            profileDoubleTap.profileIndex = profile.profile_index;
+            profileDoubleTap.at = now;
+            if (!isDoubleTap) return;
+            event.preventDefault();
+            onSoloPublish(profile).catch((error) => console.error(error));
+          },
         },
-        `${sourceStatus} | ${publishSelected ? "publish" : "skip"}`,
+        h("input", {
+          type: "checkbox",
+          class: "profile-publish",
+          checked: publishSelected,
+          title: publishSelected ? "Included in publish" : "Skipped by publish",
+          "aria-label": `Publish ${profile.profile_stem}`,
+          onClick: (event) => event.stopPropagation(),
+          onChange: (event) => {
+            event.stopPropagation();
+            onTogglePublish(profile).catch((error) => console.error(error));
+          },
+        }),
+        cardUrl
+          ? h("img", {
+              src: versionedUrl(cardUrl, profile.url ? profile.updated_at : image.preview_updated_at),
+              alt: profile.profile_stem,
+              loading: profile.profile_index === previewProfile?.profile_index ? "eager" : "lazy",
+              decoding: "async",
+              fetchpriority: profile.profile_index === previewProfile?.profile_index ? "high" : "low",
+              onLoad: (event) => {
+                event.currentTarget
+                  .closest(".profile-card")
+                  ?.classList.toggle("portrait", event.currentTarget.naturalHeight > event.currentTarget.naturalWidth);
+              },
+            })
+          : null,
+        h("div", { class: "profile-name" }, profile.profile_stem),
+        h(
+          "div",
+          {
+            class: "profile-status",
+            title: display.title,
+          },
+          `${sourceStatus} | ${publishSelected ? "publish" : "skip"}`,
+        ),
       ),
+      profile.url
+        ? h(
+            "a",
+            {
+              class: "profile-download",
+              href: versionedUrl(profile.url, profile.updated_at),
+              download: profileDownloadName(image, profile),
+              title: `Download rendered ${profile.profile_stem}`,
+              "aria-label": `Download rendered ${profile.profile_stem}`,
+              onClick: (event) => event.stopPropagation(),
+            },
+            "DL",
+          )
+        : null,
     );
   });
+}
+
+function profileDownloadName(image, profile) {
+  const rawName = image.file_name || image.relative_path || "mini-film";
+  const baseName = rawName.replace(/\.[^.]*$/, "");
+  const profileName = profile.profile_stem || profile.selector || "profile";
+  return `${safeDownloadPart(baseName)}--${safeDownloadPart(profileName)}.jpg`;
+}
+
+function safeDownloadPart(value) {
+  return String(value || "image")
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, "-")
+    .split("")
+    .filter((char) => char >= " ")
+    .join("")
+    .replace(/\s+/g, " ")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 120);
 }
 
 function isMobileReviewLayout() {
