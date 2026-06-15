@@ -602,14 +602,6 @@
           }
 
           if (payload.type === "keepalive") {
-            if (payload.version) {
-              state.version = payload.version;
-            }
-            if (!payload.datetime || !payload.datetime.substring) {
-              statusEl.innerText = "connected • v" + sanitize(state.version || "");
-            } else {
-              statusEl.innerText = "connected • v" + sanitize(state.version || "") + " • " + sanitize(payload.datetime);
-            }
             return;
           }
 
@@ -654,7 +646,7 @@
 
               eventSource.onopen = function () {
                 reconnectDelay = 500;
-                statusEl.innerText = "connected • v" + sanitize(state.version || "");
+                statusEl.innerText = "connected";
               };
 
               eventSource.onmessage = function (event) {
