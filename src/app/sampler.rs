@@ -38,7 +38,8 @@ use crate::app::sampler_assets::{
 };
 use crate::app::util::{
     OutputEditMetadata, extract_capture_iso, half_cpu_thread_count, remove_temp_file,
-    sync_output_metadata_from_raw, sync_output_timestamps_from_exif, time_of_day_seed,
+    sync_output_metadata_from_raw_with_color_profile, sync_output_timestamps_from_exif,
+    time_of_day_seed,
 };
 use crate::cli::{ExportOptions, JpegSubsampling, LensCorrections};
 
@@ -577,6 +578,7 @@ fn render_profile_thumbnail(
     let metadata_grain_seed =
         grain_enabled.then(|| sample_seed(context.base_seed, context.index, profile));
 
+    let color_profile_source = developed.clone();
     let source = if grain_enabled {
         let grain_stage = progress_stage_adaptive(
             Some(&apply_progress),
@@ -594,7 +596,6 @@ fn render_profile_thumbnail(
             metadata_grain_seed.unwrap_or_default(),
         )?;
         grain_stage.finish();
-        remove_temp_file(&developed)?;
         grained
     } else {
         sampler_step(context.progress, 3, "grain skipped");
@@ -612,7 +613,6 @@ fn render_profile_thumbnail(
     let thumb = profile_temp.join("thumb.jpg");
     finalize_output(&context.args.convert, &source, &thumb, context.export)?;
     thumbnail_stage.finish();
-    remove_temp_file(&source)?;
     if context.args.strip_metadata {
         let metadata_stage = progress_stage_adaptive(
             Some(&apply_progress),
@@ -633,7 +633,7 @@ fn render_profile_thumbnail(
             "exif",
             estimate_sampler_exif_duration(),
         );
-        sync_output_metadata_from_raw(
+        sync_output_metadata_from_raw_with_color_profile(
             &context.args.raw,
             &thumb,
             OutputEditMetadata {
@@ -646,9 +646,14 @@ fn render_profile_thumbnail(
                 grain: metadata_grain,
                 grain_seed: metadata_grain_seed,
             },
+            Some(&color_profile_source),
         )?;
         sync_output_timestamps_from_exif(&context.args.raw, &thumb)?;
         metadata_stage.finish();
+    }
+    remove_temp_file(&source)?;
+    if grain_enabled {
+        remove_temp_file(&color_profile_source)?;
     }
     let image = if let Some(cache) = context.cache {
         let cached = cache.path_for(profile, context.args)?;

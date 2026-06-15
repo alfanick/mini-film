@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Local, NaiveDateTime, TimeZone, Utc};
 use exif::{Reader, Tag};
 use filetime::{FileTime, set_file_atime, set_file_mtime};
@@ -85,10 +85,11 @@ pub(crate) fn sync_output_timestamps_from_exif(raw: &Path, output: &Path) -> Res
     Ok(true)
 }
 
-pub(crate) fn sync_output_metadata_from_raw(
+pub(crate) fn sync_output_metadata_from_raw_with_color_profile(
     raw: &Path,
     output: &Path,
     edit: OutputEditMetadata<'_>,
+    color_profile_source: Option<&Path>,
 ) -> Result<()> {
     let is_tiff = matches!(
         output.extension().and_then(|ext| ext.to_str()),
@@ -99,6 +100,7 @@ pub(crate) fn sync_output_metadata_from_raw(
         .with_context(|| format!("running exiftool on {}", output.display()))?;
 
     if status.success() {
+        restore_output_color_profile(color_profile_source, output)?;
         return Ok(());
     }
 
@@ -115,6 +117,47 @@ pub(crate) fn sync_output_metadata_from_raw(
         // Never hard-fail batch/apply here because this step is cosmetic versus
         // critical output validity; capture metadata best-effort only.
         return Ok(());
+    }
+
+    restore_output_color_profile(color_profile_source, output)?;
+    Ok(())
+}
+
+fn restore_output_color_profile(color_profile_source: Option<&Path>, output: &Path) -> Result<()> {
+    let Some(color_profile_source) = color_profile_source else {
+        return Ok(());
+    };
+    let is_jpeg = matches!(
+        output.extension().and_then(|ext| ext.to_str()),
+        Some(ext) if ext.eq_ignore_ascii_case("jpg") || ext.eq_ignore_ascii_case("jpeg")
+    );
+    if !is_jpeg {
+        return Ok(());
+    }
+
+    let mut command = Command::new("exiftool");
+    command
+        .arg("-q")
+        .arg("-quiet")
+        .arg("-overwrite_original")
+        .arg("-TagsFromFile")
+        .arg(color_profile_source)
+        .arg("-icc_profile")
+        .arg(output);
+    command.stdout(Stdio::null()).stderr(Stdio::null());
+    let status = command.status().with_context(|| {
+        format!(
+            "copying color profile from {} to {}",
+            color_profile_source.display(),
+            output.display()
+        )
+    })?;
+    if !status.success() {
+        bail!(
+            "exiftool failed with status {status} while copying color profile from {} to {}",
+            color_profile_source.display(),
+            output.display()
+        );
     }
 
     Ok(())

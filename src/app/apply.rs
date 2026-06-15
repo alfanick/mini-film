@@ -22,8 +22,9 @@ use crate::app::progress::{
 use crate::app::raw::{run_raw_develop, run_raw_develop_jpeg};
 use crate::app::retouch::{RetouchSettings, write_rawtherapee_retouch_profile};
 use crate::app::util::{
-    OutputEditMetadata, extract_capture_iso, remove_temp_file, sync_output_metadata_from_raw,
-    sync_output_timestamps_from_exif, time_of_day_seed,
+    OutputEditMetadata, extract_capture_iso, remove_temp_file,
+    sync_output_metadata_from_raw_with_color_profile, sync_output_timestamps_from_exif,
+    time_of_day_seed,
 };
 use crate::cli::{ExportOptions, LensCorrections};
 use mini_film::rawtherapee_hald_clut_profile_text;
@@ -318,10 +319,6 @@ pub(crate) fn apply_resolved(
         export_stage.finish();
     }
 
-    if cleanup_intermediate {
-        remove_temp_file(&intermediate)?;
-    }
-
     if !job.export.strip_metadata {
         let exif_stage = progress_stage_adaptive(
             progress,
@@ -336,7 +333,7 @@ pub(crate) fn apply_resolved(
         } else {
             GrainSettings::default()
         };
-        sync_output_metadata_from_raw(
+        sync_output_metadata_from_raw_with_color_profile(
             job.raw,
             job.output,
             OutputEditMetadata {
@@ -345,6 +342,7 @@ pub(crate) fn apply_resolved(
                 grain: actual_grain,
                 grain_seed: grain_enabled.then_some(grain_seed),
             },
+            Some(&intermediate),
         )?;
         sync_output_timestamps_from_exif(job.raw, job.output)?;
         exif_stage.finish();
@@ -359,6 +357,9 @@ pub(crate) fn apply_resolved(
         );
         sync_output_timestamps_from_exif(job.raw, job.output)?;
         timestamp_stage.finish();
+    }
+    if cleanup_intermediate {
+        remove_temp_file(&intermediate)?;
     }
     progress_step(progress, 6, "done");
     Ok(())

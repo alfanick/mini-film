@@ -1,5 +1,5 @@
 pub(crate) use crate::app::timestamps::{
-    OutputEditMetadata, extract_capture_iso, sync_output_metadata_from_raw,
+    OutputEditMetadata, extract_capture_iso, sync_output_metadata_from_raw_with_color_profile,
     sync_output_timestamps_from_exif,
 };
 pub(crate) use crate::util::{
