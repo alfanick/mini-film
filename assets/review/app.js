@@ -984,7 +984,9 @@ function ImageList({ images, currentId, onSelect }) {
       h("img", {
         class: "image-row-thumb",
         alt: "",
-        src: image.preview_url || undefined,
+        src: image.preview_url
+          ? versionedUrl(image.preview_url, image.preview_updated_at || image.updated_at)
+          : undefined,
         loading: "lazy",
         decoding: "async",
         fetchpriority: "low",
@@ -1239,15 +1241,35 @@ function renderImageExif(image) {
   const parts = [
     exif.shooting_mode ? `Mode ${exif.shooting_mode}` : "",
     exif.camera_model || "",
-    exif.focal_length || "",
+    formatExifFocalLength(exif.focal_length),
     exif.iso ? `ISO ${exif.iso}` : "",
-    exif.aperture || "",
+    formatExifAperture(exif.aperture),
     exif.shutter_speed || "",
     exif.flash ? `Flash ${exif.flash}` : "",
   ].filter(Boolean);
   const text = parts.join(" · ");
   els.imageExif.textContent = text;
   els.imageExif.title = text;
+}
+
+function formatExifFocalLength(value) {
+  return formatExifNumberText(value, 2);
+}
+
+function formatExifAperture(value) {
+  return formatExifNumberText(value, 1);
+}
+
+function formatExifNumberText(value, maxDigits) {
+  if (!value) return "";
+  return String(value).replace(/[-+]?\d+(?:\.\d+)?/g, (match) => {
+    const number = Number(match);
+    if (!Number.isFinite(number)) return match;
+    return number.toLocaleString("en-US", {
+      maximumFractionDigits: maxDigits,
+      useGrouping: false,
+    });
+  });
 }
 
 function selectedProfile(image) {

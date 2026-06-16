@@ -830,13 +830,16 @@ pub(super) fn safe_existing_output_source(source: &Path, output_root: &Path) -> 
 }
 
 pub(super) fn safe_existing_raw_source(raw: &Path, input_root: &Path) -> Result<PathBuf> {
-    let raw = fs::canonicalize(raw)
+    if raw.starts_with(input_root) && raw.is_file() {
+        return Ok(raw.to_path_buf());
+    }
+    let canonical = fs::canonicalize(raw)
         .with_context(|| format!("canonicalizing RAW source {}", raw.display()))?;
-    ensure_path_within(&raw, input_root)?;
-    if !raw.is_file() {
+    ensure_path_within(&canonical, input_root)?;
+    if !canonical.is_file() {
         bail!("review RAW source is not a file: {}", raw.display());
     }
-    Ok(raw)
+    Ok(raw.to_path_buf())
 }
 
 pub(super) fn review_publish_seed(base_seed: u64, raw: &Path, profile_index: usize) -> u64 {

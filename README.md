@@ -112,6 +112,9 @@ so `DSC_8313-1.jpg` pairs with `DSC_8313-2.dng`. The review UI shows it as an
 unchecked `straight out of camera` profile thumbnail; if selected for publish,
 its output uses the `-sooc` suffix.
 
+Image files that are symlinks inside the input folder are treated like normal
+input files, including review and publish rerenders.
+
 Run the live review workflow:
 
 ```sh

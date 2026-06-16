@@ -843,7 +843,7 @@ fn process_batch_file_inner(
 fn collect_batch_inputs(input: &Path, filter: InputFileFilter) -> Result<Vec<PathBuf>> {
     let mut raws = Vec::new();
     for entry in WalkDir::new(input).into_iter().filter_map(Result::ok) {
-        if !entry.file_type().is_file() {
+        if !entry.path().is_file() {
             continue;
         }
         if is_supported_input_file(entry.path(), filter) {

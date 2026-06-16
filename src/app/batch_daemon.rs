@@ -1284,7 +1284,7 @@ fn enqueue_sooc_job(
 fn collect_batch_inputs(input: &Path, filter: InputFileFilter) -> Result<Vec<PathBuf>> {
     let mut inputs = Vec::new();
     for entry in WalkDir::new(input).into_iter().filter_map(Result::ok) {
-        if entry.file_type().is_file() && is_supported_input_file(entry.path(), filter) {
+        if entry.path().is_file() && is_supported_input_file(entry.path(), filter) {
             inputs.push(entry.path().to_path_buf());
         }
     }

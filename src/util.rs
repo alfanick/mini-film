@@ -104,6 +104,7 @@ fn matching_sibling_with_kind(path: &Path, accept: impl Fn(&Path) -> bool) -> Op
         .ok()?
         .filter_map(Result::ok)
         .map(|entry| entry.path())
+        .filter(|candidate| candidate.is_file())
         .filter(|candidate| accept(candidate))
         .filter(|candidate| {
             candidate
