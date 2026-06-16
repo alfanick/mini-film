@@ -694,7 +694,12 @@ fn extract_gallery_text_metadata_with_exiftool(file: &Path) -> Option<GalleryTex
         .or_else(|| json_rating_value(object.get("XMP-xmp:Rating")))
         .or_else(|| json_rating_value(object.get("XMP-nine:Rating")))
         .or_else(|| json_rating_value(object.get("EXIF:Rating")));
-    Some(GalleryTextMetadata { tags, note, rating, flash })
+    Some(GalleryTextMetadata {
+        tags,
+        note,
+        rating,
+        flash,
+    })
 }
 
 fn json_string_values(value: Option<&Value>) -> Vec<String> {
