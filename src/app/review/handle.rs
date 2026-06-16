@@ -128,12 +128,27 @@ impl ReviewHandle {
             .join(format!("{image_id:08}-{}.jpg", short_path_sha1(raw)))
     }
 
+    #[cfg(test)]
     pub(crate) fn record_discovered_raw(&self, raw: &Path) -> Result<()> {
+        self.record_discovered_raw_with_sidecar(raw, None)
+    }
+
+    pub(crate) fn record_discovered_raw_with_sidecar(
+        &self,
+        raw: &Path,
+        sooc_sidecar: Option<&Path>,
+    ) -> Result<()> {
         let (history_entry, preview_job) = self.update_store(|store| {
             let mut preview_job = None;
             let mut history_entry = None;
             let discovered = !store.images.iter().any(|image| image.raw_path == raw);
+            let profiles = store.profiles.clone();
             let image = store.ensure_image(&self.input_root, raw)?;
+            let old_sidecar = image.sooc_sidecar_path.clone();
+            image.sooc_sidecar_path = sooc_sidecar.map(Path::to_path_buf);
+            if image.sooc_sidecar_path != old_sidecar {
+                sync_image_profile_renders(image, &profiles, false, &HashSet::new());
+            }
             let preview_path = self.preview_path_for(raw, image.id);
             let mut preview_queued = false;
             if !preview_path.is_file()
@@ -150,7 +165,7 @@ impl ReviewHandle {
                 preview_job = Some((raw.to_path_buf(), preview_path));
                 preview_queued = true;
             }
-            if discovered || preview_queued {
+            if discovered || preview_queued || image.sooc_sidecar_path != old_sidecar {
                 history_entry = Some(history_image_discovered(image, discovered, preview_queued));
             }
             Ok((history_entry, preview_job))
@@ -163,6 +178,94 @@ impl ReviewHandle {
             self.spawn_preview_job(raw, preview_path);
         }
         Ok(())
+    }
+
+    pub(crate) fn record_compressed_queued(
+        &self,
+        input: &Path,
+        expected_output: &Path,
+    ) -> Result<()> {
+        let history_entries = self.update_store(|store| {
+            let mut history_entries = Vec::new();
+            let discovered = !store.images.iter().any(|image| image.raw_path == input);
+            let image = store.ensure_image(&self.input_root, input)?;
+            let before = image.preview.clone();
+            image.preview.status = ReviewRenderStatus::Queued;
+            image.preview.path = Some(expected_output.to_path_buf());
+            image.preview.error = None;
+            image.preview.duration_ms = None;
+            image.preview.render_key = retouch_render_key(&image.retouch);
+            image.preview.updated_at = now_string();
+            image.updated_at = now_string();
+            if discovered {
+                history_entries.push(history_image_discovered(image, true, false));
+            }
+            if let Some(entry) = history_preview_changed(image, &before, &image.preview) {
+                history_entries.push(entry);
+            }
+            Ok(history_entries)
+        })?;
+        for entry in history_entries {
+            self.append_history(entry)?;
+        }
+        self.broadcast_state()
+    }
+
+    pub(crate) fn record_compressed_processing(&self, input: &Path) -> Result<()> {
+        self.update_preview(input, |preview| {
+            preview.status = ReviewRenderStatus::Processing;
+            preview.error = None;
+        })
+    }
+
+    pub(crate) fn record_compressed_done(
+        &self,
+        input: &Path,
+        output: &Path,
+        duration: Duration,
+    ) -> Result<()> {
+        let mut pending_retouch_key = None;
+        let result = self.update_preview(input, |preview| {
+            pending_retouch_key = apply_base_preview_done(preview, output, duration);
+        });
+        if result.is_ok()
+            && let Some(render_key) = pending_retouch_key
+        {
+            self.schedule_retouch_job(input.to_path_buf(), None, output.to_path_buf(), render_key);
+        }
+        if result.is_ok() {
+            self.maybe_schedule_codex_for_raw(input)?;
+        }
+        result
+    }
+
+    pub(crate) fn record_compressed_failed(
+        &self,
+        input: &Path,
+        output: Option<&Path>,
+        duration: Duration,
+        error: &str,
+    ) -> Result<()> {
+        let result = self.update_preview(input, |preview| {
+            if preview.render_key.is_some()
+                && matches!(
+                    preview.status,
+                    ReviewRenderStatus::Queued | ReviewRenderStatus::Processing
+                )
+            {
+                return;
+            }
+            preview.status = ReviewRenderStatus::Failed;
+            if let Some(output) = output {
+                preview.path = Some(output.to_path_buf());
+            }
+            preview.error = Some(error.to_string());
+            preview.duration_ms = Some(duration.as_millis() as u64);
+        });
+        if result.is_ok() {
+            self.maybe_schedule_codex_for_raw(input)?;
+        }
+        result
     }
 
     pub(super) fn spawn_preview_job(&self, raw: PathBuf, output: PathBuf) {
@@ -218,9 +321,9 @@ impl ReviewHandle {
         })
     }
 
-    pub(super) fn update_preview<F>(&self, raw: &Path, update: F) -> Result<()>
+    pub(super) fn update_preview<F>(&self, raw: &Path, mut update: F) -> Result<()>
     where
-        F: Fn(&mut ReviewPreview),
+        F: FnMut(&mut ReviewPreview),
     {
         let history_entry = self.update_store(|store| {
             let image = store.ensure_image(&self.input_root, raw)?;
@@ -234,6 +337,38 @@ impl ReviewHandle {
             self.append_history(entry)?;
         }
         self.broadcast_state()
+    }
+
+    pub(super) fn update_preview_if_key<F>(
+        &self,
+        raw: &Path,
+        render_key: &str,
+        mut update: F,
+    ) -> Result<bool>
+    where
+        F: FnMut(&mut ReviewPreview),
+    {
+        let (updated, history_entry) = self.update_store(|store| {
+            let mut updated = false;
+            let mut history_entry = None;
+            let image = store.ensure_image(&self.input_root, raw)?;
+            if image.preview.render_key.as_deref() == Some(render_key) {
+                let before = image.preview.clone();
+                update(&mut image.preview);
+                image.preview.updated_at = now_string();
+                image.updated_at = now_string();
+                history_entry = history_preview_changed(image, &before, &image.preview);
+                updated = true;
+            }
+            Ok((updated, history_entry))
+        })?;
+        if updated {
+            if let Some(entry) = history_entry {
+                self.append_history(entry)?;
+            }
+            self.broadcast_state()?;
+        }
+        Ok(updated)
     }
 
     pub(crate) fn record_profile_queued(
@@ -296,7 +431,7 @@ impl ReviewHandle {
         {
             self.schedule_retouch_job(
                 raw.to_path_buf(),
-                profile_index,
+                Some(profile_index),
                 output.to_path_buf(),
                 render_key,
             );
@@ -440,10 +575,57 @@ impl ReviewHandle {
         Ok(Some((profile, image.retouch.clone())))
     }
 
+    pub(super) fn sooc_retouch_task_snapshot(
+        &self,
+        raw: &Path,
+        render_key: &str,
+    ) -> Result<Option<(PathBuf, RetouchSettings)>> {
+        let store = self.store_snapshot();
+        let Some(image) = store.images.iter().find(|image| image.raw_path == raw) else {
+            return Ok(None);
+        };
+        let Some(render) = image
+            .profiles
+            .iter()
+            .find(|render| render.profile_index == SOOC_PROFILE_INDEX)
+        else {
+            return Ok(None);
+        };
+        if render.render_key.as_deref() != Some(render_key) {
+            return Ok(None);
+        }
+        let Some(sidecar) = image
+            .sooc_sidecar_path
+            .clone()
+            .filter(|path| path.is_file())
+        else {
+            return Ok(None);
+        };
+        Ok(Some((sidecar, retouch_without_adjustments(&image.retouch))))
+    }
+
+    pub(super) fn compressed_retouch_task_snapshot(
+        &self,
+        input: &Path,
+        render_key: &str,
+    ) -> Result<Option<RetouchSettings>> {
+        let store = self.store_snapshot();
+        let Some(image) = store.images.iter().find(|image| image.raw_path == input) else {
+            return Ok(None);
+        };
+        if !is_jpeg_input_file(&image.raw_path) {
+            return Ok(None);
+        }
+        if image.preview.render_key.as_deref() != Some(render_key) {
+            return Ok(None);
+        }
+        Ok(Some(image.retouch.clone()))
+    }
+
     pub(super) fn schedule_retouch_job(
         &self,
         raw: PathBuf,
-        profile_index: usize,
+        profile_index: Option<usize>,
         output: PathBuf,
         render_key: String,
     ) {
@@ -701,66 +883,191 @@ impl ReviewHandle {
     }
 
     pub(super) fn run_scheduled_retouch_job(&self, job: ScheduledRetouchJob) {
+        if job.profile_index == Some(SOOC_PROFILE_INDEX) {
+            self.run_scheduled_sooc_retouch_job(job);
+            return;
+        }
+        if job.profile_index.is_none() {
+            self.run_scheduled_compressed_retouch_job(job);
+            return;
+        }
+        let profile_index = job.profile_index.expect("profile retouch job has an index");
         let Ok(Some((profile, retouch))) =
-            self.retouch_task_snapshot(&job.raw, job.profile_index, &job.render_key)
+            self.retouch_task_snapshot(&job.raw, profile_index, &job.render_key)
         else {
             return;
         };
         let started = Instant::now();
-        let _ = self.update_render_if_key(&job.raw, job.profile_index, &job.render_key, |render| {
+        let _ = self.update_render_if_key(&job.raw, profile_index, &job.render_key, |render| {
             render.status = ReviewRenderStatus::Processing;
             render.error = None;
         });
         let temp_output = retouch_temp_output(&job.output, &job.render_key);
-        let result = self.render_retouch_output(
-            &job.raw,
-            &profile,
-            job.profile_index,
-            &retouch,
-            &temp_output,
-        );
+        let result =
+            self.render_retouch_output(&job.raw, &profile, profile_index, &retouch, &temp_output);
         match result {
-            Ok(()) => {
-                match self.retouch_task_snapshot(&job.raw, job.profile_index, &job.render_key) {
-                    Ok(Some(_)) => {
-                        if let Some(parent) = job.output.parent()
-                            && let Err(error) = fs::create_dir_all(parent)
-                        {
-                            self.record_retouch_render_failed(
-                                &job,
-                                &temp_output,
-                                started,
-                                error.to_string(),
-                            );
-                            return;
-                        }
-                        if let Err(error) = fs::rename(&temp_output, &job.output) {
-                            self.record_retouch_render_failed(
-                                &job,
-                                &temp_output,
-                                started,
-                                error.to_string(),
-                            );
-                            return;
-                        }
-                        let _ = self.update_render_if_key(
-                            &job.raw,
-                            job.profile_index,
-                            &job.render_key,
-                            |render| {
-                                render.status = ReviewRenderStatus::Done;
-                                render.render_key = None;
-                                render.output_path = Some(job.output.clone());
-                                render.error = None;
-                                render.duration_ms = Some(started.elapsed().as_millis() as u64);
-                            },
+            Ok(()) => match self.retouch_task_snapshot(&job.raw, profile_index, &job.render_key) {
+                Ok(Some(_)) => {
+                    if let Some(parent) = job.output.parent()
+                        && let Err(error) = fs::create_dir_all(parent)
+                    {
+                        self.record_retouch_render_failed(
+                            &job,
+                            &temp_output,
+                            started,
+                            error.to_string(),
                         );
+                        return;
                     }
-                    _ => {
-                        let _ = fs::remove_file(&temp_output);
+                    if let Err(error) = fs::rename(&temp_output, &job.output) {
+                        self.record_retouch_render_failed(
+                            &job,
+                            &temp_output,
+                            started,
+                            error.to_string(),
+                        );
+                        return;
                     }
+                    let _ = self.update_render_if_key(
+                        &job.raw,
+                        profile_index,
+                        &job.render_key,
+                        |render| {
+                            render.status = ReviewRenderStatus::Done;
+                            render.render_key = None;
+                            render.output_path = Some(job.output.clone());
+                            render.error = None;
+                            render.duration_ms = Some(started.elapsed().as_millis() as u64);
+                        },
+                    );
                 }
+                _ => {
+                    let _ = fs::remove_file(&temp_output);
+                }
+            },
+            Err(error) => {
+                self.record_retouch_render_failed(
+                    &job,
+                    &temp_output,
+                    started,
+                    format!("{error:#}"),
+                );
             }
+        }
+    }
+
+    pub(super) fn run_scheduled_sooc_retouch_job(&self, job: ScheduledRetouchJob) {
+        let Ok(Some((sidecar, retouch))) =
+            self.sooc_retouch_task_snapshot(&job.raw, &job.render_key)
+        else {
+            return;
+        };
+        let started = Instant::now();
+        let _ =
+            self.update_render_if_key(&job.raw, SOOC_PROFILE_INDEX, &job.render_key, |render| {
+                render.status = ReviewRenderStatus::Processing;
+                render.error = None;
+            });
+        let temp_output = retouch_temp_output(&job.output, &job.render_key);
+        let result = self.render_sooc_retouch_output(&sidecar, &retouch, &temp_output);
+        match result {
+            Ok(()) => match self.sooc_retouch_task_snapshot(&job.raw, &job.render_key) {
+                Ok(Some(_)) => {
+                    if let Some(parent) = job.output.parent()
+                        && let Err(error) = fs::create_dir_all(parent)
+                    {
+                        self.record_retouch_render_failed(
+                            &job,
+                            &temp_output,
+                            started,
+                            error.to_string(),
+                        );
+                        return;
+                    }
+                    if let Err(error) = fs::rename(&temp_output, &job.output) {
+                        self.record_retouch_render_failed(
+                            &job,
+                            &temp_output,
+                            started,
+                            error.to_string(),
+                        );
+                        return;
+                    }
+                    let _ = self.update_render_if_key(
+                        &job.raw,
+                        SOOC_PROFILE_INDEX,
+                        &job.render_key,
+                        |render| {
+                            render.status = ReviewRenderStatus::Done;
+                            render.render_key = None;
+                            render.output_path = Some(job.output.clone());
+                            render.error = None;
+                            render.duration_ms = Some(started.elapsed().as_millis() as u64);
+                        },
+                    );
+                }
+                _ => {
+                    let _ = fs::remove_file(&temp_output);
+                }
+            },
+            Err(error) => {
+                self.record_retouch_render_failed(
+                    &job,
+                    &temp_output,
+                    started,
+                    format!("{error:#}"),
+                );
+            }
+        }
+    }
+
+    pub(super) fn run_scheduled_compressed_retouch_job(&self, job: ScheduledRetouchJob) {
+        let Ok(Some(retouch)) = self.compressed_retouch_task_snapshot(&job.raw, &job.render_key)
+        else {
+            return;
+        };
+        let started = Instant::now();
+        let _ = self.update_preview_if_key(&job.raw, &job.render_key, |preview| {
+            preview.status = ReviewRenderStatus::Processing;
+            preview.error = None;
+        });
+        let temp_output = retouch_temp_output(&job.output, &job.render_key);
+        let result = self.render_compressed_retouch_output(&job.raw, &retouch, &temp_output);
+        match result {
+            Ok(()) => match self.compressed_retouch_task_snapshot(&job.raw, &job.render_key) {
+                Ok(Some(_)) => {
+                    if let Some(parent) = job.output.parent()
+                        && let Err(error) = fs::create_dir_all(parent)
+                    {
+                        self.record_retouch_render_failed(
+                            &job,
+                            &temp_output,
+                            started,
+                            error.to_string(),
+                        );
+                        return;
+                    }
+                    if let Err(error) = fs::rename(&temp_output, &job.output) {
+                        self.record_retouch_render_failed(
+                            &job,
+                            &temp_output,
+                            started,
+                            error.to_string(),
+                        );
+                        return;
+                    }
+                    let _ = self.update_preview_if_key(&job.raw, &job.render_key, |preview| {
+                        preview.status = ReviewRenderStatus::Done;
+                        preview.render_key = None;
+                        preview.path = Some(job.output.clone());
+                        preview.error = None;
+                        preview.duration_ms = Some(started.elapsed().as_millis() as u64);
+                    });
+                }
+                _ => {
+                    let _ = fs::remove_file(&temp_output);
+                }
+            },
             Err(error) => {
                 self.record_retouch_render_failed(
                     &job,
@@ -779,12 +1086,21 @@ impl ReviewHandle {
         started: Instant,
         message: String,
     ) {
-        let _ = self.update_render_if_key(&job.raw, job.profile_index, &job.render_key, |render| {
-            render.status = ReviewRenderStatus::Failed;
-            render.render_key = None;
-            render.error = Some(message.clone());
-            render.duration_ms = Some(started.elapsed().as_millis() as u64);
-        });
+        if let Some(profile_index) = job.profile_index {
+            let _ = self.update_render_if_key(&job.raw, profile_index, &job.render_key, |render| {
+                render.status = ReviewRenderStatus::Failed;
+                render.render_key = None;
+                render.error = Some(message.clone());
+                render.duration_ms = Some(started.elapsed().as_millis() as u64);
+            });
+        } else {
+            let _ = self.update_preview_if_key(&job.raw, &job.render_key, |preview| {
+                preview.status = ReviewRenderStatus::Failed;
+                preview.render_key = None;
+                preview.error = Some(message.clone());
+                preview.duration_ms = Some(started.elapsed().as_millis() as u64);
+            });
+        }
         let _ = fs::remove_file(temp_output);
     }
 
@@ -862,6 +1178,54 @@ impl ReviewHandle {
         )
     }
 
+    pub(super) fn render_compressed_retouch_output(
+        &self,
+        input: &Path,
+        retouch: &RetouchSettings,
+        output: &Path,
+    ) -> Result<()> {
+        let input = safe_existing_raw_source(input, &self.input_root)?;
+        apply_compressed(
+            CompressedApplyJob {
+                input: &input,
+                output,
+                convert: &self.convert,
+                export: &self.export,
+                exif_comment: Some(format!(
+                    "mini-film {} usage=review compressed-input {}",
+                    env!("CARGO_PKG_VERSION"),
+                    retouch.summary()
+                )),
+                retouch: Some(retouch),
+            },
+            None,
+        )
+    }
+
+    pub(super) fn render_sooc_retouch_output(
+        &self,
+        sidecar: &Path,
+        retouch: &RetouchSettings,
+        output: &Path,
+    ) -> Result<()> {
+        let sidecar = safe_existing_raw_source(sidecar, &self.input_root)?;
+        apply_compressed(
+            CompressedApplyJob {
+                input: &sidecar,
+                output,
+                convert: &self.convert,
+                export: &self.export,
+                exif_comment: Some(format!(
+                    "mini-film {} usage=review sooc-sidecar {}",
+                    env!("CARGO_PKG_VERSION"),
+                    retouch.summary()
+                )),
+                retouch: Some(retouch),
+            },
+            None,
+        )
+    }
+
     pub(super) fn apply_review_update(&self, update: ReviewUpdateRequest) -> Result<()> {
         let (history_entries, retouch_jobs) = self.update_store(|store| {
             let mut retouch_jobs = Vec::new();
@@ -879,6 +1243,7 @@ impl ReviewHandle {
                     bail!("review image {} does not exist", update.image_id);
                 };
                 if let Some(selected_profile_index) = update.selected_profile_index
+                    && !is_jpeg_input_file(&image.raw_path)
                     && !image
                         .profiles
                         .iter()
@@ -919,50 +1284,75 @@ impl ReviewHandle {
                 if let Some(retouch) = update.retouch.clone() {
                     image.retouch = retouch.normalized();
                 }
-                if let Some(selected_profile_index) = update.selected_profile_index {
+                if let Some(selected_profile_index) = update
+                    .selected_profile_index
+                    .filter(|_| !is_jpeg_input_file(&image.raw_path))
+                {
                     image.selected_profile_index = selected_profile_index;
                 }
                 if let Some(indexes) = update.publish_profile_indexes.clone() {
-                    validate_publish_profile_indexes(&indexes, &image.profiles)?;
-                    image.publish_profile_indexes =
-                        Some(normalize_publish_profile_indexes(&indexes, &image.profiles));
+                    if is_jpeg_input_file(&image.raw_path) {
+                        image.publish_profile_indexes = Some(Vec::new());
+                    } else {
+                        validate_publish_profile_indexes(&indexes, &image.profiles)?;
+                        image.publish_profile_indexes =
+                            Some(normalize_publish_profile_indexes(&indexes, &image.profiles));
+                    }
                 }
                 if retouch_changed {
                     let render_key = image.retouch.render_key();
-                    let publish_indexes = effective_publish_profile_indexes(image);
-                    let visible_profile_index =
-                        preferred_preview_profile_index(image, &publish_indexes);
-                    let publish_index_set = publish_indexes.iter().copied().collect::<HashSet<_>>();
-                    let mut render_order = image
-                        .profiles
-                        .iter()
-                        .enumerate()
-                        .map(|(index, render)| {
-                            let priority = if Some(render.profile_index) == visible_profile_index {
-                                0
-                            } else if publish_index_set.contains(&render.profile_index) {
-                                1
-                            } else {
-                                2
-                            };
-                            (priority, index)
-                        })
-                        .collect::<Vec<_>>();
-                    render_order.sort_by_key(|(priority, index)| (*priority, *index));
-                    for (_, index) in render_order {
-                        let render = &mut image.profiles[index];
-                        render.status = ReviewRenderStatus::Queued;
-                        render.error = None;
-                        render.duration_ms = None;
-                        render.render_key = Some(render_key.clone());
-                        render.updated_at = now_string();
-                        if let Some(output) = &render.output_path {
+                    if is_jpeg_input_file(&image.raw_path) {
+                        image.preview.status = ReviewRenderStatus::Queued;
+                        image.preview.error = None;
+                        image.preview.duration_ms = None;
+                        image.preview.render_key = Some(render_key.clone());
+                        image.preview.updated_at = now_string();
+                        if let Some(output) = &image.preview.path {
                             retouch_jobs.push((
                                 image.raw_path.clone(),
-                                render.profile_index,
+                                None,
                                 output.clone(),
                                 render_key.clone(),
                             ));
+                        }
+                    } else {
+                        let publish_indexes = effective_publish_profile_indexes(image);
+                        let visible_profile_index =
+                            preferred_preview_profile_index(image, &publish_indexes);
+                        let publish_index_set =
+                            publish_indexes.iter().copied().collect::<HashSet<_>>();
+                        let mut render_order = image
+                            .profiles
+                            .iter()
+                            .enumerate()
+                            .map(|(index, render)| {
+                                let priority =
+                                    if Some(render.profile_index) == visible_profile_index {
+                                        0
+                                    } else if publish_index_set.contains(&render.profile_index) {
+                                        1
+                                    } else {
+                                        2
+                                    };
+                                (priority, index)
+                            })
+                            .collect::<Vec<_>>();
+                        render_order.sort_by_key(|(priority, index)| (*priority, *index));
+                        for (_, index) in render_order {
+                            let render = &mut image.profiles[index];
+                            render.status = ReviewRenderStatus::Queued;
+                            render.error = None;
+                            render.duration_ms = None;
+                            render.render_key = Some(render_key.clone());
+                            render.updated_at = now_string();
+                            if let Some(output) = &render.output_path {
+                                retouch_jobs.push((
+                                    image.raw_path.clone(),
+                                    Some(render.profile_index),
+                                    output.clone(),
+                                    render_key.clone(),
+                                ));
+                            }
                         }
                     }
                 }
@@ -1025,6 +1415,7 @@ impl ReviewHandle {
                         json!({
                             "profile_index": render.profile_index,
                             "profile_stem": render.profile_stem,
+                            "display_name": render.display_name,
                             "status": render.status,
                             "url": if render.status == ReviewRenderStatus::Done {
                                 Some(format!("media/{}/{}", image.id, render.profile_index))
@@ -1040,6 +1431,7 @@ impl ReviewHandle {
                     .collect::<Vec<_>>();
                 json!({
                     "id": image.id,
+                    "source_type": if is_jpeg_input_file(&image.raw_path) { "compressed" } else { "raw" },
                     "relative_path": image.relative_path,
                     "file_name": image.file_name,
                     "exif": exif,
@@ -1050,6 +1442,8 @@ impl ReviewHandle {
                         None
                     },
                     "preview_error": image.preview.error,
+                    "preview_duration_ms": image.preview.duration_ms,
+                    "preview_retouch_pending": image.preview.render_key.is_some(),
                     "preview_updated_at": image.preview.updated_at,
                     "selected_profile_index": image.selected_profile_index,
                     "rating": image.rating,
@@ -1593,6 +1987,12 @@ fn codex_analysis_key_for_image_with_config(
 }
 
 fn review_image_renders_terminal(image: &ReviewImage) -> bool {
+    if is_jpeg_input_file(&image.raw_path) {
+        return matches!(
+            image.preview.status,
+            ReviewRenderStatus::Done | ReviewRenderStatus::Failed
+        ) && image.preview.render_key.is_none();
+    }
     !image.profiles.is_empty()
         && image.profiles.iter().all(|render| {
             matches!(
@@ -1658,6 +2058,12 @@ pub(super) fn retouch_render_key(retouch: &RetouchSettings) -> Option<String> {
     (normalized != RetouchSettings::default()).then(|| normalized.render_key())
 }
 
+pub(super) fn retouch_without_adjustments(retouch: &RetouchSettings) -> RetouchSettings {
+    let mut retouch = retouch.clone().normalized();
+    retouch.adjustments = BasicRetouchAdjustments::default();
+    retouch
+}
+
 pub(super) fn apply_base_render_done(
     render: &mut ReviewProfileRender,
     output: &Path,
@@ -1678,5 +2084,28 @@ pub(super) fn apply_base_render_done(
     render.output_path = Some(output.to_path_buf());
     render.error = None;
     render.duration_ms = Some(duration.as_millis() as u64);
+    None
+}
+
+pub(super) fn apply_base_preview_done(
+    preview: &mut ReviewPreview,
+    output: &Path,
+    duration: Duration,
+) -> Option<String> {
+    if preview.render_key.is_some()
+        && matches!(
+            preview.status,
+            ReviewRenderStatus::Queued | ReviewRenderStatus::Processing
+        )
+    {
+        preview.path = Some(output.to_path_buf());
+        preview.error = None;
+        preview.duration_ms = Some(duration.as_millis() as u64);
+        return preview.render_key.clone();
+    }
+    preview.status = ReviewRenderStatus::Done;
+    preview.path = Some(output.to_path_buf());
+    preview.error = None;
+    preview.duration_ms = Some(duration.as_millis() as u64);
     None
 }

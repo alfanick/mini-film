@@ -1,10 +1,11 @@
 # mini-film
 
-`mini-film` is a complete RAW-to-review-to-publish workflow for photographers
+`mini-film` is a complete photo-to-review-to-publish workflow for photographers
 who want film-emulation output without opening Lightroom. It watches an inbox of
-RAW files, develops them through RawTherapee, applies user-supplied film profiles
-and grain, serves a live review UI, records ratings/tags/notes, and publishes the
-final selection with metadata preserved.
+RAW, JPEG, and HEIC files, develops RAWs through RawTherapee, applies
+user-supplied film profiles and grain to RAW outputs, serves a live review UI,
+records ratings/tags/notes, and publishes the final selection with metadata
+preserved.
 
 The fastest way in is the desktop app:
 
@@ -47,6 +48,10 @@ Available shortcuts:
   multiple passes, compare profile variants, and publish the final selection
   with live job progress. The review workflow is optimized for fast keyboard
   operation, while still supporting mouse, touch, and tablet use.
+- **Mixed RAW and processed-file input**: batch, daemon, review, and publish can
+  take RAW files plus existing JPEG/HEIC files. RAWs get profiles and adjustment
+  sliders; JPEG/HEIC inputs keep their existing look and expose rating, labels,
+  tags, notes, crop, and rotation only.
 - **Optional Codex review assist**: let Codex analyze small embedded RAW
   previews after rendering finishes and fill tags, notes, or initial ratings
   while the live review UI shows the same queued/processing status indicators.
@@ -86,15 +91,24 @@ mini-film apply input.RAW \
   --output output.jpg
 ```
 
-Batch-process a folder:
+Batch-process a folder, accepting RAW plus JPEG/HEIC inputs by default:
 
 ```sh
-mini-film batch /path/to/raws /path/to/output \
+mini-film batch /path/to/photos /path/to/output \
   --profile 'Classic Film' \
   --profiles-root /path/to/profile-library \
   --long-edge 3840 \
   --progressive-jpeg
 ```
+
+Use `--input-raw-only` or `--input-jpg-only` when a mixed input folder should be
+filtered before processing. JPEG and HEIC are treated as the same processed-file
+group for these filters.
+
+In the default mixed mode, a JPEG/HEIC with the same stem in the same folder as a
+RAW is treated as that RAW's straight-out-of-camera sidecar instead of a separate
+picture. The review UI shows it as an unchecked `straight out of camera` profile
+thumbnail; if selected for publish, its output uses the `-sooc` suffix.
 
 Run the live review workflow:
 
@@ -288,9 +302,13 @@ Output metadata behavior for `apply`, `batch`, `daemon`, and `sampler`:
   `mini-film <version> usage=<command> profile=<profile-or-emulation>`
   or `profile=none` when no profile was configured
 
+For JPEG/HEIC inputs, source metadata is copied from the compressed source and
+mini-film only adds its basic version/comment marker and review/publish metadata.
+Camera Raw Settings edit history is reserved for RAW-generated outputs.
+
 ## Batch Apply
 
-Process every supported RAW file (`.dng`, `.nef`, `.cr2`, `.cr3`, `.arw`, `.raf`, `.orf`, `.rw2`, etc.) under an input directory and write JPGs or 16-bit TIFFs under an output directory:
+Process every supported RAW file (`.dng`, `.nef`, `.cr2`, `.cr3`, `.arw`, `.raf`, `.orf`, `.rw2`, etc.) plus JPEG/HEIC files (`.jpg`, `.jpeg`, `.heic`, `.heif`) under an input directory and write JPGs or 16-bit TIFFs under an output directory:
 
 ```sh
 cargo run --release -- batch \
@@ -302,14 +320,20 @@ cargo run --release -- batch \
   --jobs 8
 ```
 
-The output directory is created if it does not exist. Nested input folders are preserved, and each RAW output uses the same relative path with a `.jpg` extension by default. Use `--output-format tiff` to write `.tif` files through the 16-bit Zip-compressed TIFF path.
+The output directory is created if it does not exist. Nested input folders are
+preserved, and each input uses the same relative path with a `.jpg` extension by
+default. Use `--output-format tiff` to write `.tif` files through the 16-bit
+Zip-compressed TIFF path. JPEG/HEIC inputs are converted directly with
+resize/crop/rotation and metadata copyback; RAW-only profiles, grain, denoise,
+and lens corrections are skipped for those files.
 
 By default, `batch` processes half of the detected CPU threads at once. On a 16-thread CPU that means 8 files in parallel. Override it with `--jobs N` when tuning for a different machine, output format, or memory budget.
 
 `batch` shows two progress bars:
 
 - total batch progress across files
-- current file progress across RAW decode, Hald, grain, and final export steps
+- current file progress across RAW decode/Hald/grain or compressed-file export
+  steps
 
 ### Batch Gallery
 
@@ -355,9 +379,10 @@ or regenerate thumbnails.
 
 ## Daemon
 
-Run a long-lived watcher that applies optional profiles whenever new RAW files
+Run a long-lived watcher that applies optional profiles whenever new files
 arrive in an input folder. If no `--profile` is provided, each RAW is developed
-once with RawTherapee defaults.
+once with RawTherapee defaults. JPEG/HEIC inputs are converted directly without
+profiles.
 
 ```sh
 mini-film daemon \
@@ -395,7 +420,7 @@ becomes:
 
 If profile resolution fails for any selector, startup stops with a clear error.
 
-`daemon` processes raw files in parallel and defaults to half the available
+`daemon` processes input files in parallel and defaults to half the available
 CPU threads unless `--jobs` is set.
 
 ### Live Review
@@ -416,11 +441,12 @@ mini-film daemon \
 
 The review server assets are compiled into the binary, so a release executable
 does not need HTML/CSS/JS files next to it. The UI is live: the daemon records
-new RAW files immediately, extracts an embedded camera preview when available,
-then updates the browser over server-sent events as each profile render moves
+new RAW and JPEG/HEIC files immediately, extracts an embedded camera preview when
+available, then updates the browser over server-sent events as each render moves
 from queued to processing to done. When no profiles are configured, the review UI
-shows the developed RawTherapee-default output without a profile rail. The first
-`--profile` is the default selected look when profiles are configured. All configured profile variants are selected for publish by default; use
+shows the developed RawTherapee-default output without a profile rail. JPEG/HEIC
+inputs also hide the profile rail because they are already processed. The first
+`--profile` is the default selected look for RAW files when profiles are configured. All configured profile variants are selected for publish by default; use
 the checkbox on each profile thumbnail to exclude or re-include a variant while
 reviewing.
 
@@ -451,13 +477,13 @@ label toggles. `c` copies the current retouch slider adjustments, and `v` pastes
 them onto another picture.
 
 The review UI stores rating, label, tags, notes, active preview profile, and the
-set of profile variants selected for publish. It also supports per-picture
+set of profile variants selected for publish. RAW inputs support per-picture
 retouch controls for exposure, highlights, shadows, whites, blacks, relative
-color temperature, clarity, rotation, and crop. The browser applies a fast
-draft preview while edits are being made, then queues a high-quality
-RawTherapee/mini-film render and swaps in the finished output when it is ready.
-Crop and rotation are persisted with the review state and are used by publish
-rerenders.
+color temperature, clarity, rotation, and crop. JPEG/HEIC inputs support crop and
+rotation only. The browser applies a fast draft preview while edits are being
+made, then queues a high-quality mini-film render and swaps in the finished
+output when it is ready. Crop and rotation are persisted with the review state
+and are used by publish rerenders.
 
 Optional Codex analysis can run after each RAW has a camera preview and its
 configured profile renders have finished:
@@ -504,8 +530,8 @@ browser.
 The default publish settings match the daemon render settings, so publishing
 uses hardlinks to the already-reviewed outputs when possible and falls back to
 symlinks if hardlinks are not available. If output settings differ, mini-film
-rerenders the selected pictures from the original RAW files through the normal
-`apply` pipeline before building the gallery.
+rerenders the selected pictures from the original RAW, JPEG, or HEIC inputs
+through the normal `apply` pipeline before building the gallery.
 
 Published outputs are flat under the chosen album folder:
 

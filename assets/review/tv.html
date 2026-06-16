@@ -276,6 +276,12 @@
         function chooseProfile(image) {
           var i;
           var profiles = image && image.profiles;
+          if (image && image.source_type === "compressed" && image.preview_url) {
+            return {
+              url: image.preview_url,
+              profile_stem: "image",
+            };
+          }
           if (isArray(profiles)) {
             for (i = 0; i < profiles.length; i += 1) {
               if (profiles[i] && profiles[i].profile_index === image.selected_profile_index && profiles[i].url) {
@@ -349,7 +355,12 @@
 
           var profile = chooseProfile(currentImage);
           var profileUrl = profile && profile.url ? profile.url : "";
-          var captionStem = profile && profile.profile_stem ? profile.profile_stem : "preview";
+          var captionStem =
+            profile && profile.display_name
+              ? profile.display_name
+              : profile && profile.profile_stem
+                ? profile.profile_stem
+                : "preview";
           var caption = sanitize(currentImage.file_name || "image") + " • " + sanitize(captionStem) + captionMeta;
 
           if (!profileUrl) {

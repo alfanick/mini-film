@@ -18,7 +18,8 @@ use tempfile::Builder;
 use walkdir::WalkDir;
 
 use crate::app::apply::{
-    ApplyArgs, ApplyJob, apply_resolved, resolve_apply_effects, resolve_grain_override,
+    ApplyArgs, ApplyJob, CompressedApplyJob, apply_compressed, apply_resolved,
+    resolve_apply_effects, resolve_grain_override,
 };
 use crate::app::batch_assets::{
     gallery_html_item_template, gallery_html_page_template, gallery_html_script,
@@ -33,13 +34,17 @@ use crate::app::progress::{
 };
 use crate::app::system_stats::{ResourceUsageSummary, sample_usage_block};
 use crate::app::timestamps::{GalleryExifData, extract_gallery_exif};
-use crate::app::util::{half_cpu_thread_count, is_supported_raw_file, time_of_day_seed};
+use crate::app::util::{
+    InputFileFilter, coalesce_input_sidecars, half_cpu_thread_count, input_filter_name,
+    is_raw_input_file, is_supported_input_file, time_of_day_seed,
+};
 use crate::cli::{BatchOutputFormat, ExportOptions, GalleryTemplate, LensCorrections};
 
 pub(crate) struct BatchArgs {
     pub(crate) input: PathBuf,
     pub(crate) output: PathBuf,
     pub(crate) profile: Option<String>,
+    pub(crate) input_file_filter: InputFileFilter,
     pub(crate) hald_dir: PathBuf,
     pub(crate) profiles_root: PathBuf,
     pub(crate) hald_level: u32,
@@ -137,60 +142,73 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
     fs::create_dir_all(&args.output)
         .with_context(|| format!("creating {}", args.output.display()))?;
 
-    let raws = collect_batch_inputs(&args.input)?;
-    if raws.is_empty() {
+    let inputs = collect_batch_inputs(&args.input, args.input_file_filter)?;
+    if inputs.is_empty() {
+        let filter_name = input_filter_name(args.input_file_filter);
         bail!(
-            "no supported RAW files found under {}",
+            "no supported {filter_name} files found under {}",
             args.input.display()
         );
     }
+    let has_raw_inputs = inputs.iter().any(|input| is_raw_input_file(input));
 
     let temp_dir = Builder::new().prefix("mini-film-batch-").tempdir()?;
-    let apply_args = ApplyArgs {
-        raw: PathBuf::new(),
-        output: PathBuf::new(),
-        profile: args.profile.clone(),
-        lens_corrections: args.lens_corrections,
-        hald_dir: args.hald_dir.clone(),
-        profiles_root: args.profiles_root.clone(),
-        hald_level: args.hald_level,
-        rawtherapee: args.rawtherapee.clone(),
-        convert: args.convert.clone(),
-        keep_intermediate: None,
-        no_grain: args.no_grain,
-        color_noise_iso_threshold: args.color_noise_iso_threshold,
-        lcp_root: args.lcp_root.clone(),
-        grain: args.grain.clone(),
-        grain_preset: args.grain_preset.clone(),
-        grain_seed: args.grain_seed,
-        export: args.export.clone(),
-        retouch: None,
+    let resolved = if has_raw_inputs {
+        let apply_args = ApplyArgs {
+            raw: PathBuf::new(),
+            output: PathBuf::new(),
+            profile: args.profile.clone(),
+            lens_corrections: args.lens_corrections,
+            hald_dir: args.hald_dir.clone(),
+            profiles_root: args.profiles_root.clone(),
+            hald_level: args.hald_level,
+            rawtherapee: args.rawtherapee.clone(),
+            convert: args.convert.clone(),
+            keep_intermediate: None,
+            no_grain: args.no_grain,
+            color_noise_iso_threshold: args.color_noise_iso_threshold,
+            lcp_root: args.lcp_root.clone(),
+            grain: args.grain.clone(),
+            grain_preset: args.grain_preset.clone(),
+            grain_seed: args.grain_seed,
+            export: args.export.clone(),
+            retouch: None,
+        };
+        let mut resolved = resolve_profile(&apply_args, temp_dir.path())?;
+        if let Some(grain) =
+            resolve_grain_override(args.grain.as_deref(), args.grain_preset.as_deref())?
+        {
+            resolved.grain = grain;
+        }
+        Some(resolved)
+    } else {
+        None
     };
-    let mut resolved = resolve_profile(&apply_args, temp_dir.path())?;
-    if let Some(grain) =
-        resolve_grain_override(args.grain.as_deref(), args.grain_preset.as_deref())?
-    {
-        resolved.grain = grain;
-    }
     let profile_selector = args
         .profile
         .as_deref()
         .map(str::trim)
         .filter(|profile| !profile.is_empty());
-    let profile_report = if let Some(profile) = profile_selector {
+    let profile_report = if let Some(profile) = profile_selector.filter(|_| has_raw_inputs) {
         profile_info_text_for_selector(
             profile,
             &args.profiles_root,
             &args.hald_dir,
             args.hald_level,
         )?
-    } else {
+    } else if has_raw_inputs {
         "No profile configured; RawTherapee defaults are used.".to_string()
+    } else {
+        "Compressed inputs are converted directly; RAW profiles are not used.".to_string()
     };
+    let resolved_profile_stem = resolved
+        .as_ref()
+        .map(|resolved| resolved.resolved_stem.as_str())
+        .unwrap_or("source image");
     let base_seed = args.grain_seed.unwrap_or_else(time_of_day_seed);
 
     let multi = MultiProgress::new();
-    let batch = multi.add(ProgressBar::new(raws.len() as u64));
+    let batch = multi.add(ProgressBar::new(inputs.len() as u64));
     batch.set_style(batch_progress_style());
     batch.set_message("starting");
     let worker_bars: Vec<_> = (0..jobs)
@@ -208,13 +226,14 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
     let estimates = Arc::new(StageEstimates::default());
     let resource_usage = Arc::new(Mutex::new(ResourceUsageSummary::default()));
     let results: Vec<_> = pool.install(|| {
-        raws.par_iter()
+        inputs
+            .par_iter()
             .enumerate()
-            .map(|(index, raw)| {
+            .map(|(index, input)| {
                 let file = acquire_worker_bar(&bar_pool);
                 let context = ProcessBatchFileContext {
                     args: &args,
-                    resolved: &resolved,
+                    resolved: resolved.as_ref(),
                     base_seed,
                     temp_root: temp_dir.path(),
                     batch: &batch,
@@ -223,7 +242,7 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
                     resource_usage: Arc::clone(&resource_usage),
                     index,
                 };
-                let result = process_batch_file(&context, raw);
+                let result = process_batch_file(&context, input);
                 release_worker_bar(&bar_pool, file);
                 result
             })
@@ -241,7 +260,7 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
     if let Some(gallery_style) = args.gallery {
         run_batch_gallery(
             &args.output,
-            &resolved.resolved_stem,
+            resolved_profile_stem,
             gallery_style,
             &successes,
             &args,
@@ -250,9 +269,9 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
     write_batch_report(&BatchReportContext {
         output_dir: &args.output,
         args: &args,
-        resolved_profile_stem: &resolved.resolved_stem,
+        resolved_profile_stem,
         profile_report: &profile_report,
-        raw_count: raws.len(),
+        raw_count: inputs.len(),
         elapsed: end,
         resource_usage: Some(&resource_usage),
         successes: &successes,
@@ -262,7 +281,7 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
     if failures.is_empty() {
         batch.finish_with_message(format!(
             "done {} files in {}",
-            raws.len(),
+            inputs.len(),
             format_duration(end)
         ));
         Ok(())
@@ -270,7 +289,7 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
         batch.abandon_with_message(format!(
             "failed {}/{} files in {}",
             failures.len(),
-            raws.len(),
+            inputs.len(),
             format_duration(end)
         ));
         for result in failures {
@@ -668,7 +687,7 @@ fn release_worker_bar(bar_pool: &Arc<Mutex<Vec<ProgressBar>>>, file: ProgressBar
 
 struct ProcessBatchFileContext<'a> {
     args: &'a BatchArgs,
-    resolved: &'a crate::app::profile::ResolvedProfile,
+    resolved: Option<&'a crate::app::profile::ResolvedProfile>,
     base_seed: u64,
     temp_root: &'a Path,
     batch: &'a ProgressBar,
@@ -679,17 +698,28 @@ struct ProcessBatchFileContext<'a> {
 }
 
 fn process_batch_file(context: &ProcessBatchFileContext<'_>, raw: &Path) -> BatchFileRecord {
-    let (sharpening_applied, denoise_applied) = resolve_apply_effects(
-        raw,
-        context.resolved,
-        context.args.color_noise_iso_threshold,
-    );
+    let (sharpening_applied, denoise_applied) =
+        if let Some(resolved) = context.resolved.filter(|_| is_raw_input_file(raw)) {
+            resolve_apply_effects(raw, resolved, context.args.color_noise_iso_threshold)
+        } else {
+            (false, false)
+        };
+    let lens_status = if is_raw_input_file(raw) {
+        lens_profile_status(context.args.lens_corrections, true)
+    } else {
+        "lens-profile: skipped (compressed input)".to_string()
+    };
+    let failure_lens_status = if is_raw_input_file(raw) {
+        lens_profile_status(context.args.lens_corrections, false)
+    } else {
+        "lens-profile: skipped (compressed input)".to_string()
+    };
     match process_batch_file_inner(context, raw) {
         Ok((output, duration)) => BatchFileRecord {
             raw: raw.to_path_buf(),
             output,
             duration,
-            lens_profile_status: lens_profile_status(context.args.lens_corrections, true),
+            lens_profile_status: lens_status,
             sharpening_status: sharpening_status(sharpening_applied),
             denoise_status: denoise_status(denoise_applied),
             error: None,
@@ -698,7 +728,7 @@ fn process_batch_file(context: &ProcessBatchFileContext<'_>, raw: &Path) -> Batc
             raw: raw.to_path_buf(),
             output: PathBuf::new(),
             duration: Duration::ZERO,
-            lens_profile_status: lens_profile_status(context.args.lens_corrections, false),
+            lens_profile_status: failure_lens_status,
             sharpening_status: sharpening_status(sharpening_applied),
             denoise_status: denoise_status(denoise_applied),
             error: Some(format!("{error:#}")),
@@ -738,35 +768,55 @@ fn process_batch_file_inner(
     let file_temp = context.temp_root.join(format!("file-{}", context.index));
     fs::create_dir_all(&file_temp).with_context(|| format!("creating {}", file_temp.display()))?;
     let seed = per_file_seed(context.base_seed, context.index as u64, raw);
-    let result = apply_resolved(
-        ApplyJob {
-            raw,
-            output: &output,
-            rawtherapee: &context.args.rawtherapee,
-            convert: &context.args.convert,
-            keep_intermediate: None,
-            no_grain: context.args.no_grain,
-            color_noise_iso_threshold: context.args.color_noise_iso_threshold,
-            lcp_root: context.args.lcp_root.as_deref(),
-            lens_corrections: context.args.lens_corrections,
-            export: &context.args.export,
-            quiet: true,
-            exif_comment: Some(format!(
-                "mini-film {} usage=batch profile={}",
-                env!("CARGO_PKG_VERSION"),
-                if context.resolved.resolved_stem.trim().is_empty() {
-                    "none"
-                } else {
-                    &context.resolved.resolved_stem
-                }
-            )),
-            retouch: None,
-        },
-        context.resolved,
-        seed,
-        &file_temp,
-        Some(&progress),
-    );
+    let result = if is_raw_input_file(raw) {
+        let resolved = context
+            .resolved
+            .ok_or_else(|| anyhow::anyhow!("RAW input queued without a resolved profile"))?;
+        apply_resolved(
+            ApplyJob {
+                raw,
+                output: &output,
+                rawtherapee: &context.args.rawtherapee,
+                convert: &context.args.convert,
+                keep_intermediate: None,
+                no_grain: context.args.no_grain,
+                color_noise_iso_threshold: context.args.color_noise_iso_threshold,
+                lcp_root: context.args.lcp_root.as_deref(),
+                lens_corrections: context.args.lens_corrections,
+                export: &context.args.export,
+                quiet: true,
+                exif_comment: Some(format!(
+                    "mini-film {} usage=batch profile={}",
+                    env!("CARGO_PKG_VERSION"),
+                    if resolved.resolved_stem.trim().is_empty() {
+                        "none"
+                    } else {
+                        &resolved.resolved_stem
+                    }
+                )),
+                retouch: None,
+            },
+            resolved,
+            seed,
+            &file_temp,
+            Some(&progress),
+        )
+    } else {
+        apply_compressed(
+            CompressedApplyJob {
+                input: raw,
+                output: &output,
+                convert: &context.args.convert,
+                export: &context.args.export,
+                exif_comment: Some(format!(
+                    "mini-film {} usage=batch compressed-input",
+                    env!("CARGO_PKG_VERSION")
+                )),
+                retouch: None,
+            },
+            Some(&progress),
+        )
+    };
     maybe_sample_resource_usage(&context.resource_usage);
 
     context.batch.inc(1);
@@ -790,18 +840,17 @@ fn process_batch_file_inner(
     }
 }
 
-fn collect_batch_inputs(input: &Path) -> Result<Vec<PathBuf>> {
+fn collect_batch_inputs(input: &Path, filter: InputFileFilter) -> Result<Vec<PathBuf>> {
     let mut raws = Vec::new();
     for entry in WalkDir::new(input).into_iter().filter_map(Result::ok) {
         if !entry.file_type().is_file() {
             continue;
         }
-        if is_supported_raw_file(entry.path()) {
+        if is_supported_input_file(entry.path(), filter) {
             raws.push(entry.path().to_path_buf());
         }
     }
-    raws.sort();
-    Ok(raws)
+    Ok(coalesce_input_sidecars(raws, filter))
 }
 
 fn resolve_batch_jobs(jobs: Option<usize>) -> Result<usize> {
@@ -944,6 +993,7 @@ fn maybe_sample_resource_usage(resource_usage: &Arc<Mutex<ResourceUsageSummary>>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::util::is_supported_raw_file;
 
     #[test]
     fn batch_output_path_preserves_relative_folders_and_extension() {
@@ -992,7 +1042,7 @@ mod tests {
     }
 
     #[test]
-    fn collect_batch_inputs_recurse_and_sort_supported_raw_files() {
+    fn collect_batch_inputs_recurse_and_sort_supported_inputs() {
         let root = tempfile::tempdir().unwrap();
         let a = root.path().join("day");
         let b = root.path().join("day2");
@@ -1002,6 +1052,8 @@ mod tests {
         let files = [
             b.join("frame3.ARW"),
             a.join("frame1.NEF"),
+            a.join("frame2.jpg"),
+            b.join("clip.HEIC"),
             a.join("notes.txt"),
             b.join("frame2.nef"),
         ];
@@ -1012,7 +1064,7 @@ mod tests {
             fs::write(path, b"raw").unwrap();
         }
 
-        let raw_files = collect_batch_inputs(root.path()).unwrap();
+        let raw_files = collect_batch_inputs(root.path(), InputFileFilter::RawOnly).unwrap();
         assert_eq!(raw_files.len(), 3);
         assert_eq!(
             raw_files,
@@ -1022,6 +1074,19 @@ mod tests {
                 root.path().join("day2/frame3.ARW"),
             ]
         );
+
+        let jpg_files = collect_batch_inputs(root.path(), InputFileFilter::JpgOnly).unwrap();
+        assert_eq!(jpg_files.len(), 2);
+        assert_eq!(
+            jpg_files,
+            vec![
+                root.path().join("day/frame2.jpg"),
+                root.path().join("day2/clip.HEIC")
+            ]
+        );
+
+        let all_files = collect_batch_inputs(root.path(), InputFileFilter::All).unwrap();
+        assert_eq!(all_files.len(), 5);
     }
 
     #[test]

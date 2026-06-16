@@ -19,7 +19,8 @@ use tempfile::Builder;
 use walkdir::WalkDir;
 
 use crate::app::apply::{
-    ApplyArgs, ApplyJob, apply_resolved, resolve_apply_effects, resolve_grain_override,
+    ApplyArgs, ApplyJob, CompressedApplyJob, apply_compressed, apply_resolved,
+    resolve_apply_effects, resolve_grain_override,
 };
 use crate::app::export::validate_export_options;
 use crate::app::info::profile_info_text_for_selector;
@@ -30,10 +31,15 @@ use crate::app::progress::{
     progress_length,
 };
 use crate::app::review::{
-    ReviewConfig, ReviewGalleryConfig, ReviewHandle, ReviewProfile, start_review_server,
+    ReviewConfig, ReviewGalleryConfig, ReviewHandle, ReviewProfile, SOOC_PROFILE_INDEX,
+    SOOC_PROFILE_STEM, start_review_server,
 };
 use crate::app::system_stats::{ResourceUsageSummary, sample_usage_block};
-use crate::app::util::{half_cpu_thread_count, is_supported_raw_file, time_of_day_seed};
+use crate::app::util::{
+    InputFileFilter, coalesce_due_input_sidecars, coalesce_input_sidecars, half_cpu_thread_count,
+    input_filter_name, is_raw_input_file, is_supported_input_file, matching_sidecar_for_raw,
+    time_of_day_seed,
+};
 use crate::cli::{
     BatchOutputFormat, CodexAnalysisFlags, ExportOptions, GalleryTemplate, LensCorrections,
 };
@@ -46,6 +52,7 @@ pub(crate) struct BatchDaemonArgs {
     pub(crate) input: PathBuf,
     pub(crate) output: PathBuf,
     pub(crate) profile: Vec<String>,
+    pub(crate) input_file_filter: InputFileFilter,
     pub(crate) hald_dir: PathBuf,
     pub(crate) profiles_root: PathBuf,
     pub(crate) hald_level: u32,
@@ -86,11 +93,18 @@ struct DaemonProfile {
 
 struct PendingTask {
     raw: PathBuf,
-    profile_index: usize,
+    kind: DaemonTaskKind,
+}
+
+#[derive(Clone, Debug)]
+enum DaemonTaskKind {
+    RawProfile(usize),
+    StandaloneCompressed,
+    SoocSidecar { sidecar: PathBuf },
 }
 
 struct InFlightTask {
-    profile_index: usize,
+    kind: DaemonTaskKind,
     raw: PathBuf,
     handle: thread::JoinHandle<DaemonFileResult>,
 }
@@ -136,7 +150,7 @@ struct DaemonFileResult {
     raw: PathBuf,
     output: PathBuf,
     duration: Duration,
-    profile_index: usize,
+    profile_index: Option<usize>,
     error: Option<String>,
     lens_profile_status: String,
     sharpening_status: String,
@@ -197,17 +211,27 @@ impl DaemonProgressState {
         } else {
             self.total_succeeded += 1;
         }
-        let profile = self.profile_stats_mut(result.profile_index);
-        profile.processed += 1;
-        profile.elapsed_ms += result.duration.as_millis() as u64;
-        if result.error.is_some() {
-            profile.failed += 1;
-        } else {
-            profile.succeeded += 1;
+        if let Some(profile_index) = result
+            .profile_index
+            .filter(|profile_index| *profile_index < self.profile_stats.len())
+        {
+            let profile = self.profile_stats_mut(profile_index);
+            profile.processed += 1;
+            profile.elapsed_ms += result.duration.as_millis() as u64;
+            if result.error.is_some() {
+                profile.failed += 1;
+            } else {
+                profile.succeeded += 1;
+            }
         }
         self.files.push(result.clone());
-        if let Some(parent) = result.output.parent() {
-            self.profile_output_dirs_mut(result.profile_index)
+        if let (Some(profile_index), Some(parent)) = (
+            result
+                .profile_index
+                .filter(|profile_index| *profile_index < self.profile_output_dirs.len()),
+            result.output.parent(),
+        ) {
+            self.profile_output_dirs_mut(profile_index)
                 .insert(parent.to_path_buf());
         }
         if self.files.len() > 3000 {
@@ -240,6 +264,7 @@ struct ProfileScheduleContext<'a> {
     input_root: &'a Path,
     output_root: &'a Path,
     output_format: BatchOutputFormat,
+    input_file_filter: InputFileFilter,
     skip_existing: bool,
     review: Option<&'a ReviewHandle>,
 }
@@ -414,10 +439,11 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
         ));
     }
     batch.println(format!(
-        "[{}] output: {}, profiles: {}, jobs: {}, debounce: {}",
+        "[{}] output: {}, profiles: {}, inputs: {}, jobs: {}, debounce: {}",
         elapsed_human(start.elapsed()),
         args.output.display(),
         profiles.len(),
+        input_filter_name(args.input_file_filter),
         jobs,
         if debounce.is_zero() {
             "immediate".to_string()
@@ -443,9 +469,14 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
     let worker_bars = Arc::new(Mutex::new(worker_bars));
 
     let mut pending: HashMap<PathBuf, PendingFile> = HashMap::new();
-    let startup_raws = collect_batch_inputs(&args.input)?;
-    for raw in &startup_raws {
-        queue_raw_file(&mut pending, raw.clone(), Duration::ZERO);
+    let startup_inputs = collect_batch_inputs(&args.input, args.input_file_filter)?;
+    for input in &startup_inputs {
+        queue_input_file(
+            &mut pending,
+            input.clone(),
+            Duration::ZERO,
+            args.input_file_filter,
+        );
     }
 
     let mut queue: VecDeque<PendingTask> = VecDeque::new();
@@ -474,15 +505,16 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
             input_root: &args.input,
             output_root: &args.output,
             output_format: args.output_format,
+            input_file_filter: args.input_file_filter,
             skip_existing: true,
             review: review.as_ref(),
         },
     )?;
-    if !startup_raws.is_empty() {
+    if !startup_inputs.is_empty() {
         batch.println(format!(
             "[{}] startup: {} files discovered, {} queued",
             elapsed_human(start.elapsed()),
-            startup_raws.len(),
+            startup_inputs.len(),
             queued_from_startup
         ));
     }
@@ -500,7 +532,7 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
 
     loop {
         drain_nikon_wtu_logs(nikon_wtu_receiver.as_ref(), &batch, start);
-        drain_watch_events(&watch_rx, &mut pending, debounce);
+        drain_watch_events(&watch_rx, &mut pending, debounce, args.input_file_filter);
         schedule_pending_due_paths(
             &mut pending,
             debounce,
@@ -511,6 +543,7 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
                 input_root: &args.input,
                 output_root: &args.output,
                 output_format: args.output_format,
+                input_file_filter: args.input_file_filter,
                 skip_existing: false,
                 review: review.as_ref(),
             },
@@ -520,12 +553,19 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
             let Some(task) = queue.pop_front() else {
                 break;
             };
-            let Some(profile) = profiles.get(task.profile_index).cloned() else {
-                continue;
+            let profile = match &task.kind {
+                DaemonTaskKind::RawProfile(profile_index) => {
+                    match profiles.get(*profile_index).cloned() {
+                        Some(profile) => Some(profile),
+                        None => continue,
+                    }
+                }
+                DaemonTaskKind::StandaloneCompressed | DaemonTaskKind::SoocSidecar { .. } => None,
             };
             let bar = acquire_worker_bar(&worker_bars);
             let raw = task.raw.clone();
             let worker_raw = raw.clone();
+            let task_kind = task.kind.clone();
             let raw_name = raw
                 .file_name()
                 .and_then(|name| name.to_str())
@@ -537,53 +577,95 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
             let thread_review = review.clone();
 
             let handle = thread::spawn(move || {
-                let profile_index = task.profile_index;
                 let context = DaemonTaskContext {
                     args: thread_args,
                     base_seed,
                     estimates: thread_estimates,
                     review: thread_review,
                 };
+                let result = match task_kind {
+                    DaemonTaskKind::RawProfile(profile_index) => {
+                        let profile = profile.expect("profile exists for RAW task");
+                        if let Some(review) = &context.review {
+                            let _ = review.record_profile_processing(&worker_raw, profile_index);
+                        }
+                        process_single_profile(
+                            &worker_raw,
+                            &profile,
+                            profile_index as u64,
+                            &profile.stem,
+                            &context,
+                            &bar,
+                            &raw_name,
+                        )
+                    }
+                    DaemonTaskKind::StandaloneCompressed => {
+                        if let Some(review) = &context.review {
+                            let _ = review.record_compressed_processing(&worker_raw);
+                        }
+                        process_single_compressed(&worker_raw, &context, &bar, &raw_name)
+                    }
+                    DaemonTaskKind::SoocSidecar { sidecar } => {
+                        if let Some(review) = &context.review {
+                            let _ =
+                                review.record_profile_processing(&worker_raw, SOOC_PROFILE_INDEX);
+                        }
+                        process_single_sooc(&worker_raw, &sidecar, &context, &bar, &raw_name)
+                    }
+                };
                 if let Some(review) = &context.review {
-                    let _ = review.record_profile_processing(&worker_raw, profile_index);
-                }
-                let result = process_single_profile(
-                    &worker_raw,
-                    &profile,
-                    profile_index as u64,
-                    &profile.stem,
-                    &context,
-                    &bar,
-                    &raw_name,
-                );
-                if let Some(review) = &context.review {
-                    if let Some(error) = &result.error {
-                        let output = if result.output.as_os_str().is_empty() {
-                            None
-                        } else {
-                            Some(result.output.as_path())
-                        };
-                        let _ = review.record_profile_failed(
-                            &result.raw,
-                            result.profile_index,
-                            output,
-                            result.duration,
-                            error,
-                        );
-                    } else {
-                        let _ = review.record_profile_done(
-                            &result.raw,
-                            result.profile_index,
-                            &result.output,
-                            result.duration,
-                        );
+                    match result.profile_index {
+                        Some(profile_index) => {
+                            if let Some(error) = &result.error {
+                                let output = if result.output.as_os_str().is_empty() {
+                                    None
+                                } else {
+                                    Some(result.output.as_path())
+                                };
+                                let _ = review.record_profile_failed(
+                                    &result.raw,
+                                    profile_index,
+                                    output,
+                                    result.duration,
+                                    error,
+                                );
+                            } else {
+                                let _ = review.record_profile_done(
+                                    &result.raw,
+                                    profile_index,
+                                    &result.output,
+                                    result.duration,
+                                );
+                            }
+                        }
+                        None => {
+                            if let Some(error) = &result.error {
+                                let output = if result.output.as_os_str().is_empty() {
+                                    None
+                                } else {
+                                    Some(result.output.as_path())
+                                };
+                                let _ = review.record_compressed_failed(
+                                    &result.raw,
+                                    output,
+                                    result.duration,
+                                    error,
+                                );
+                            } else {
+                                let _ = review.record_compressed_done(
+                                    &result.raw,
+                                    &result.output,
+                                    result.duration,
+                                );
+                            }
+                        }
                     }
                 }
                 release_worker_bar(&bar_pool, bar);
                 result
             });
             in_flight.push(InFlightTask {
-                profile_index: task.profile_index,
+                kind: task.kind,
                 raw,
                 handle,
             });
@@ -604,7 +686,11 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
                     raw: task.raw,
                     output: PathBuf::new(),
                     duration: Duration::ZERO,
-                    profile_index: task.profile_index,
+                    profile_index: match task.kind {
+                        DaemonTaskKind::RawProfile(profile_index) => Some(profile_index),
+                        DaemonTaskKind::SoocSidecar { .. } => Some(SOOC_PROFILE_INDEX),
+                        DaemonTaskKind::StandaloneCompressed => None,
+                    },
                     error: Some("worker thread panicked".to_string()),
                     lens_profile_status: lens_profile_status(LensCorrections::default(), false),
                     sharpening_status: sharpening_status(false),
@@ -887,7 +973,7 @@ fn profile_daemon_info(
     for file in state
         .files
         .iter()
-        .filter(|file| file.profile_index == profile_index)
+        .filter(|file| file.profile_index == Some(profile_index))
     {
         if let Some(error) = &file.error {
             writeln!(
@@ -920,6 +1006,10 @@ fn profile_daemon_info(
 }
 
 fn resolve_daemon_profiles(args: &BatchDaemonArgs, temp_dir: &Path) -> Result<Vec<DaemonProfile>> {
+    if matches!(args.input_file_filter, InputFileFilter::JpgOnly) {
+        return Ok(Vec::new());
+    }
+
     let selectors = args
         .profile
         .iter()
@@ -1030,6 +1120,7 @@ fn drain_watch_events(
     watch_rx: &Receiver<Result<Event, notify::Error>>,
     pending: &mut HashMap<PathBuf, PendingFile>,
     debounce: Duration,
+    filter: InputFileFilter,
 ) {
     loop {
         match watch_rx.try_recv() {
@@ -1037,7 +1128,7 @@ fn drain_watch_events(
                 if is_relevant_daemon_event(&event.kind) {
                     let delay = event_stability_delay(&event.kind, debounce);
                     for path in event.paths {
-                        queue_raw_file(pending, path, delay);
+                        queue_input_file(pending, path, delay, filter);
                     }
                 }
             }
@@ -1056,7 +1147,10 @@ fn schedule_pending_due_paths(
     batch: &ProgressBar,
     context: &ProfileScheduleContext<'_>,
 ) -> Result<usize> {
-    let due = collect_due_paths(pending, debounce);
+    let due = coalesce_due_input_sidecars(
+        collect_due_paths(pending, debounce),
+        context.input_file_filter,
+    );
     if due.is_empty() {
         return Ok(0);
     }
@@ -1079,8 +1173,14 @@ fn enqueue_profile_jobs(
     context: &ProfileScheduleContext<'_>,
 ) -> Result<usize> {
     let mut queued = 0usize;
+    if !is_raw_input_file(&raw) {
+        return enqueue_compressed_job(queue, raw, context);
+    }
+    let sooc_sidecar = matches!(context.input_file_filter, InputFileFilter::All)
+        .then(|| matching_sidecar_for_raw(&raw))
+        .flatten();
     if let Some(review) = context.review {
-        review.record_discovered_raw(&raw)?;
+        review.record_discovered_raw_with_sidecar(&raw, sooc_sidecar.as_deref())?;
     }
     for (profile_index, profile) in profiles.iter().enumerate() {
         let expected_output = daemon_output_path(
@@ -1107,22 +1207,88 @@ fn enqueue_profile_jobs(
         }
         queue.push_back(PendingTask {
             raw: raw.clone(),
-            profile_index,
+            kind: DaemonTaskKind::RawProfile(profile_index),
         });
         queued += 1;
+    }
+    if let Some(sidecar) = sooc_sidecar {
+        queued += enqueue_sooc_job(queue, raw, sidecar, context)?;
     }
     Ok(queued)
 }
 
-fn collect_batch_inputs(input: &Path) -> Result<Vec<PathBuf>> {
-    let mut raws = Vec::new();
+fn enqueue_compressed_job(
+    queue: &mut VecDeque<PendingTask>,
+    input: PathBuf,
+    context: &ProfileScheduleContext<'_>,
+) -> Result<usize> {
+    let expected_output = daemon_output_path(
+        context.input_root,
+        context.output_root,
+        context.output_format,
+        &input,
+        "",
+    )?;
+    if let Some(review) = context.review {
+        review.record_compressed_queued(&input, &expected_output)?;
+    }
+    if context.skip_existing && expected_output.exists() {
+        if let Some(review) = context.review {
+            review.record_compressed_done(&input, &expected_output, Duration::ZERO)?;
+        }
+        return Ok(0);
+    }
+
+    queue.push_back(PendingTask {
+        raw: input,
+        kind: DaemonTaskKind::StandaloneCompressed,
+    });
+    Ok(1)
+}
+
+fn enqueue_sooc_job(
+    queue: &mut VecDeque<PendingTask>,
+    raw: PathBuf,
+    sidecar: PathBuf,
+    context: &ProfileScheduleContext<'_>,
+) -> Result<usize> {
+    let expected_output = daemon_output_path(
+        context.input_root,
+        context.output_root,
+        context.output_format,
+        &raw,
+        SOOC_PROFILE_STEM,
+    )?;
+    if let Some(review) = context.review {
+        review.record_profile_queued(&raw, SOOC_PROFILE_INDEX, &expected_output)?;
+    }
+    if context.skip_existing && expected_output.exists() {
+        if let Some(review) = context.review {
+            review.record_profile_done(
+                &raw,
+                SOOC_PROFILE_INDEX,
+                &expected_output,
+                Duration::ZERO,
+            )?;
+        }
+        return Ok(0);
+    }
+
+    queue.push_back(PendingTask {
+        raw,
+        kind: DaemonTaskKind::SoocSidecar { sidecar },
+    });
+    Ok(1)
+}
+
+fn collect_batch_inputs(input: &Path, filter: InputFileFilter) -> Result<Vec<PathBuf>> {
+    let mut inputs = Vec::new();
     for entry in WalkDir::new(input).into_iter().filter_map(Result::ok) {
-        if entry.file_type().is_file() && is_supported_raw_file(entry.path()) {
-            raws.push(entry.path().to_path_buf());
+        if entry.file_type().is_file() && is_supported_input_file(entry.path(), filter) {
+            inputs.push(entry.path().to_path_buf());
         }
     }
-    raws.sort();
-    Ok(raws)
+    Ok(coalesce_input_sidecars(inputs, filter))
 }
 
 struct DaemonTaskContext {
@@ -1155,7 +1321,7 @@ fn process_single_profile(
                 raw: raw.to_path_buf(),
                 output: PathBuf::new(),
                 duration: Duration::ZERO,
-                profile_index: profile_index as usize,
+                profile_index: Some(profile_index as usize),
                 error: Some(error.to_string()),
                 lens_profile_status: lens_profile_status(args.lens_corrections, false),
                 sharpening_status: sharpening_status(false),
@@ -1171,7 +1337,7 @@ fn process_single_profile(
             raw: raw.to_path_buf(),
             output,
             duration: Duration::ZERO,
-            profile_index: profile_index as usize,
+            profile_index: Some(profile_index as usize),
             error: Some(error.to_string()),
             lens_profile_status: lens_profile_status(args.lens_corrections, false),
             sharpening_status: sharpening_status(false),
@@ -1186,7 +1352,7 @@ fn process_single_profile(
                 raw: raw.to_path_buf(),
                 output,
                 duration: Duration::ZERO,
-                profile_index: profile_index as usize,
+                profile_index: Some(profile_index as usize),
                 error: Some(error.to_string()),
                 lens_profile_status: lens_profile_status(args.lens_corrections, false),
                 sharpening_status: sharpening_status(false),
@@ -1239,7 +1405,7 @@ fn process_single_profile(
             raw: raw.to_path_buf(),
             output,
             duration: file_start.elapsed(),
-            profile_index: profile_index as usize,
+            profile_index: Some(profile_index as usize),
             error: Some(error.to_string()),
             lens_profile_status: lens_profile_status(args.lens_corrections, false),
             sharpening_status: sharpening_status(false),
@@ -1261,11 +1427,201 @@ fn process_single_profile(
         raw: raw.to_path_buf(),
         output,
         duration: file_start.elapsed(),
-        profile_index: profile_index as usize,
+        profile_index: Some(profile_index as usize),
         error: None,
         lens_profile_status: lens_profile_status(args.lens_corrections, true),
         sharpening_status: sharpening_status(sharpening_applied),
         denoise_status: denoise_status(denoise_applied),
+    }
+}
+
+fn process_single_compressed(
+    input: &Path,
+    context: &DaemonTaskContext,
+    file: &ProgressBar,
+    raw_name: &str,
+) -> DaemonFileResult {
+    let args = &context.args;
+    let output = match daemon_output_path(&args.input, &args.output, args.output_format, input, "")
+    {
+        Ok(output) => output,
+        Err(error) => {
+            return DaemonFileResult {
+                raw: input.to_path_buf(),
+                output: PathBuf::new(),
+                duration: Duration::ZERO,
+                profile_index: None,
+                error: Some(error.to_string()),
+                lens_profile_status: "lens-profile: skipped (compressed input)".to_string(),
+                sharpening_status: sharpening_status(false),
+                denoise_status: denoise_status(false),
+            };
+        }
+    };
+
+    if let Some(parent) = output.parent()
+        && let Err(error) = fs::create_dir_all(parent)
+    {
+        return DaemonFileResult {
+            raw: input.to_path_buf(),
+            output,
+            duration: Duration::ZERO,
+            profile_index: None,
+            error: Some(error.to_string()),
+            lens_profile_status: "lens-profile: skipped (compressed input)".to_string(),
+            sharpening_status: sharpening_status(false),
+            denoise_status: denoise_status(false),
+        };
+    }
+
+    file.set_position(0);
+    file.set_message(format!("{raw_name}: compressed queued"));
+
+    let file_start = Instant::now();
+    let progress = ApplyProgress {
+        file,
+        started: file_start,
+        estimates: Some(Arc::clone(&context.estimates)),
+    };
+    if let Err(error) = apply_compressed(
+        CompressedApplyJob {
+            input,
+            output: &output,
+            convert: &args.convert,
+            export: &args.export,
+            exif_comment: Some(format!(
+                "mini-film {} usage=daemon compressed-input",
+                env!("CARGO_PKG_VERSION")
+            )),
+            retouch: None,
+        },
+        Some(&progress),
+    ) {
+        return DaemonFileResult {
+            raw: input.to_path_buf(),
+            output,
+            duration: file_start.elapsed(),
+            profile_index: None,
+            error: Some(error.to_string()),
+            lens_profile_status: "lens-profile: skipped (compressed input)".to_string(),
+            sharpening_status: sharpening_status(false),
+            denoise_status: denoise_status(false),
+        };
+    }
+
+    file.set_message(format!(
+        "{}: compressed done in {}",
+        raw_name,
+        format_duration(file_start.elapsed())
+    ));
+
+    DaemonFileResult {
+        raw: input.to_path_buf(),
+        output,
+        duration: file_start.elapsed(),
+        profile_index: None,
+        error: None,
+        lens_profile_status: "lens-profile: skipped (compressed input)".to_string(),
+        sharpening_status: sharpening_status(false),
+        denoise_status: denoise_status(false),
+    }
+}
+
+fn process_single_sooc(
+    raw: &Path,
+    sidecar: &Path,
+    context: &DaemonTaskContext,
+    file: &ProgressBar,
+    raw_name: &str,
+) -> DaemonFileResult {
+    let args = &context.args;
+    let output = match daemon_output_path(
+        &args.input,
+        &args.output,
+        args.output_format,
+        raw,
+        SOOC_PROFILE_STEM,
+    ) {
+        Ok(output) => output,
+        Err(error) => {
+            return DaemonFileResult {
+                raw: raw.to_path_buf(),
+                output: PathBuf::new(),
+                duration: Duration::ZERO,
+                profile_index: Some(SOOC_PROFILE_INDEX),
+                error: Some(error.to_string()),
+                lens_profile_status: "lens-profile: skipped (sooc sidecar)".to_string(),
+                sharpening_status: sharpening_status(false),
+                denoise_status: denoise_status(false),
+            };
+        }
+    };
+
+    if let Some(parent) = output.parent()
+        && let Err(error) = fs::create_dir_all(parent)
+    {
+        return DaemonFileResult {
+            raw: raw.to_path_buf(),
+            output,
+            duration: Duration::ZERO,
+            profile_index: Some(SOOC_PROFILE_INDEX),
+            error: Some(error.to_string()),
+            lens_profile_status: "lens-profile: skipped (sooc sidecar)".to_string(),
+            sharpening_status: sharpening_status(false),
+            denoise_status: denoise_status(false),
+        };
+    }
+
+    file.set_position(0);
+    file.set_message(format!("{raw_name} -> sooc: queued"));
+
+    let file_start = Instant::now();
+    let progress = ApplyProgress {
+        file,
+        started: file_start,
+        estimates: Some(Arc::clone(&context.estimates)),
+    };
+    if let Err(error) = apply_compressed(
+        CompressedApplyJob {
+            input: sidecar,
+            output: &output,
+            convert: &args.convert,
+            export: &args.export,
+            exif_comment: Some(format!(
+                "mini-film {} usage=daemon sooc-sidecar",
+                env!("CARGO_PKG_VERSION")
+            )),
+            retouch: None,
+        },
+        Some(&progress),
+    ) {
+        return DaemonFileResult {
+            raw: raw.to_path_buf(),
+            output,
+            duration: file_start.elapsed(),
+            profile_index: Some(SOOC_PROFILE_INDEX),
+            error: Some(error.to_string()),
+            lens_profile_status: "lens-profile: skipped (sooc sidecar)".to_string(),
+            sharpening_status: sharpening_status(false),
+            denoise_status: denoise_status(false),
+        };
+    }
+
+    file.set_message(format!(
+        "{} -> sooc: done in {}",
+        raw_name,
+        format_duration(file_start.elapsed())
+    ));
+
+    DaemonFileResult {
+        raw: raw.to_path_buf(),
+        output,
+        duration: file_start.elapsed(),
+        profile_index: Some(SOOC_PROFILE_INDEX),
+        error: None,
+        lens_profile_status: "lens-profile: skipped (sooc sidecar)".to_string(),
+        sharpening_status: sharpening_status(false),
+        denoise_status: denoise_status(false),
     }
 }
 
@@ -1345,8 +1701,13 @@ fn relative_raw_stem(raw: &Path) -> Result<&str> {
         .ok_or_else(|| anyhow!("raw path has no file stem: {}", raw.display()))
 }
 
-fn queue_raw_file(pending: &mut HashMap<PathBuf, PendingFile>, path: PathBuf, debounce: Duration) {
-    if !path.is_file() || !is_supported_raw_file(&path) {
+fn queue_input_file(
+    pending: &mut HashMap<PathBuf, PendingFile>,
+    path: PathBuf,
+    debounce: Duration,
+    filter: InputFileFilter,
+) {
+    if !path.is_file() || !is_supported_input_file(&path, filter) {
         return;
     }
     if let Ok(metadata) = fs::metadata(&path) {
@@ -1434,6 +1795,7 @@ mod tests {
             input: input_root.clone(),
             output: output_root.clone(),
             profile: vec!["Portra 400 grainy".into()],
+            input_file_filter: InputFileFilter::All,
             hald_dir: root.path().to_path_buf(),
             profiles_root: root.path().to_path_buf(),
             hald_level: 16,
@@ -1524,7 +1886,7 @@ mod tests {
                 raw: raw.clone(),
                 output,
                 duration: Duration::from_millis(100),
-                profile_index: 0,
+                profile_index: Some(0),
                 error: None,
                 lens_profile_status: lens_profile_status(LensCorrections::default(), false),
                 sharpening_status: sharpening_status(false),
@@ -1571,6 +1933,7 @@ mod tests {
             input: PathBuf::from("/input"),
             output: root.path().join("out"),
             profile: vec!["Portra 400 grainy".into()],
+            input_file_filter: InputFileFilter::All,
             hald_dir: root.path().to_path_buf(),
             profiles_root: root.path().to_path_buf(),
             hald_level: 16,
@@ -1648,7 +2011,7 @@ mod tests {
                 raw: PathBuf::from("/input/DSC_0001.NEF"),
                 output: PathBuf::from("/out/day/Portra 400 grainy/DSC_0001.jpg"),
                 duration: Duration::from_millis(120),
-                profile_index: 0,
+                profile_index: Some(0),
                 error: None,
                 lens_profile_status: lens_profile_status(LensCorrections::default(), true),
                 sharpening_status: sharpening_status(false),
@@ -1844,19 +2207,38 @@ mod tests {
     }
 
     #[test]
-    fn queue_raw_file_ignores_non_raw_and_keeps_supported() {
+    fn queue_input_file_filters_supported_inputs() {
         let root = tempfile::tempdir().unwrap();
         let mut pending = HashMap::new();
 
-        let supported = root.path().join("frame.NEF");
-        fs::write(&supported, b"raw").unwrap();
+        let raw = root.path().join("frame.NEF");
+        fs::write(&raw, b"raw").unwrap();
+        let compressed = root.path().join("frame.jpg");
+        fs::write(&compressed, b"jpg").unwrap();
         let unsupported = root.path().join("notes.txt");
         fs::write(&unsupported, b"text").unwrap();
 
-        queue_raw_file(&mut pending, supported.clone(), Duration::ZERO);
-        queue_raw_file(&mut pending, unsupported.clone(), Duration::ZERO);
+        queue_input_file(
+            &mut pending,
+            raw.clone(),
+            Duration::ZERO,
+            InputFileFilter::All,
+        );
+        queue_input_file(
+            &mut pending,
+            compressed.clone(),
+            Duration::ZERO,
+            InputFileFilter::All,
+        );
+        queue_input_file(
+            &mut pending,
+            unsupported.clone(),
+            Duration::ZERO,
+            InputFileFilter::All,
+        );
 
-        assert!(pending.contains_key(&supported));
+        assert!(pending.contains_key(&raw));
+        assert!(pending.contains_key(&compressed));
         assert!(!pending.contains_key(&unsupported));
     }
 }

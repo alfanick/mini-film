@@ -102,13 +102,22 @@ pub(super) fn history_image_discovered(
         image.relative_path, image.id
     ));
     if discovered {
-        entry.line("discovered raw");
+        entry.line(if is_jpeg_input_file(&image.raw_path) {
+            "discovered compressed input"
+        } else {
+            "discovered raw"
+        });
     }
     if preview_queued {
         entry.line("preview queued");
     }
-    entry.line(format!("raw: {}", image.raw_path.display()));
-    entry.line(format!("profiles: {}", image.profiles.len()));
+    entry.line(format!("source: {}", image.raw_path.display()));
+    if let Some(sidecar) = &image.sooc_sidecar_path {
+        entry.line(format!("sooc sidecar: {}", sidecar.display()));
+    }
+    if !is_jpeg_input_file(&image.raw_path) {
+        entry.line(format!("profiles: {}", image.profiles.len()));
+    }
     entry
 }
 
@@ -202,16 +211,18 @@ pub(super) fn history_review_changed(
     entry.change("labels", labels_text(before), labels_text(after));
     entry.change("tags", list_text(&before.tags), list_text(&after.tags));
     entry.change("notes", quoted(&before.notes), quoted(&after.notes));
-    entry.change(
-        "selected profile",
-        profile_index_text(before.selected_profile_index, before),
-        profile_index_text(after.selected_profile_index, after),
-    );
-    entry.change(
-        "publish profiles",
-        publish_profiles_text(before),
-        publish_profiles_text(after),
-    );
+    if !is_jpeg_input_file(&after.raw_path) {
+        entry.change(
+            "selected profile",
+            profile_index_text(before.selected_profile_index, before),
+            profile_index_text(after.selected_profile_index, after),
+        );
+        entry.change(
+            "publish profiles",
+            publish_profiles_text(before),
+            publish_profiles_text(after),
+        );
+    }
     if before.retouch != after.retouch {
         entry.line(format!(
             "retouch: {} -> {}",

@@ -1,4 +1,4 @@
-use super::{model::*, prelude::*, store::*};
+use super::{handle::retouch_without_adjustments, model::*, prelude::*, store::*};
 
 pub(super) fn parse_batch_output_format(raw: &str) -> Result<BatchOutputFormat> {
     match raw.trim().to_ascii_lowercase().as_str() {
@@ -393,6 +393,36 @@ pub(super) fn publish_store_inner(
             continue;
         }
 
+        if is_jpeg_input_file(&image.raw_path) {
+            if image.preview.status != ReviewRenderStatus::Done {
+                report.skipped += 1;
+                continue;
+            }
+            let Some(source) = &image.preview.path else {
+                report.skipped += 1;
+                continue;
+            };
+            let source = safe_existing_output_source(source, output_root)?;
+            let raw_stem = Path::new(&image.relative_path)
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .ok_or_else(|| {
+                    anyhow!("review image has no valid stem: {}", image.relative_path)
+                })?;
+            let file_name = review_publish_source_file_name(raw_stem, options.output_format)?;
+            let destination_relative = options.album.join(file_name);
+            let destination = safe_child_path(output_root, &destination_relative)?;
+            tasks.push(ReviewPublishTask {
+                source,
+                destination,
+                image: image.clone(),
+                render: None,
+                profile: None,
+                current: image.file_name.clone(),
+            });
+            continue;
+        }
+
         let publish_indexes = effective_publish_profile_indexes(image);
         if publish_indexes.is_empty() {
             report.skipped += 1;
@@ -430,18 +460,33 @@ pub(super) fn publish_store_inner(
             )?;
             let destination_relative = options.album.join(file_name);
             let destination = safe_child_path(output_root, &destination_relative)?;
-            let profile = store
-                .profiles
-                .iter()
-                .find(|profile| profile.index == profile_index)
-                .ok_or_else(|| anyhow!("review profile index {profile_index} is not configured"))?;
+            let profile = if profile_index == SOOC_PROFILE_INDEX {
+                None
+            } else {
+                Some(
+                    store
+                        .profiles
+                        .iter()
+                        .find(|profile| profile.index == profile_index)
+                        .ok_or_else(|| {
+                            anyhow!("review profile index {profile_index} is not configured")
+                        })?,
+                )
+            };
             tasks.push(ReviewPublishTask {
                 source,
                 destination,
                 image: image.clone(),
-                render: render.clone(),
-                profile: profile.clone(),
-                current: format!("{} / {}", image.file_name, render.profile_stem),
+                render: Some(render.clone()),
+                profile: profile.cloned(),
+                current: format!(
+                    "{} / {}",
+                    image.file_name,
+                    render
+                        .display_name
+                        .as_deref()
+                        .unwrap_or(render.profile_stem.as_str())
+                ),
             });
         }
     }
@@ -480,8 +525,8 @@ pub(super) fn publish_store_inner(
                     source: &task.source,
                     destination: &task.destination,
                     image: &task.image,
-                    render: &task.render,
-                    profile: &task.profile,
+                    render: task.render.as_ref(),
+                    profile: task.profile.as_ref(),
                     options,
                 })?;
                 let linked_now = linked.fetch_add(1, Ordering::Relaxed) + 1;
@@ -562,13 +607,29 @@ pub(super) fn publish_review_output(item: ReviewPublishOutput<'_>) -> Result<()>
             .with_context(|| format!("removing {}", item.destination.display()))?;
     }
     if item.options.rerender_raw {
-        rerender_review_output(
-            item.input_root,
-            item.destination,
-            item.image,
-            item.profile,
-            item.options,
-        )?;
+        if item.render.is_some_and(is_sooc_render) {
+            rerender_sooc_review_output(
+                item.input_root,
+                item.destination,
+                item.image,
+                item.options,
+            )?;
+        } else if let Some(profile) = item.profile {
+            rerender_review_output(
+                item.input_root,
+                item.destination,
+                item.image,
+                profile,
+                item.options,
+            )?;
+        } else {
+            rerender_compressed_review_output(
+                item.input_root,
+                item.destination,
+                item.image,
+                item.options,
+            )?;
+        }
     } else if fs::hard_link(item.source, item.destination).is_err() {
         symlink_file(item.source, item.destination).with_context(|| {
             format!(
@@ -579,9 +640,17 @@ pub(super) fn publish_review_output(item: ReviewPublishOutput<'_>) -> Result<()>
         })?;
     }
     if item.options.write_metadata {
-        write_review_metadata(item.destination, item.image, item.render)?;
+        let profile_stem = item
+            .render
+            .map(|render| render.profile_stem.as_str())
+            .unwrap_or("source");
+        write_review_metadata(item.destination, item.image, profile_stem)?;
     }
     Ok(())
+}
+
+pub(super) fn is_sooc_render(render: &ReviewProfileRender) -> bool {
+    render.profile_index == SOOC_PROFILE_INDEX || render.profile_stem == SOOC_PROFILE_STEM
 }
 
 pub(super) fn rerender_review_output(
@@ -614,6 +683,59 @@ pub(super) fn rerender_review_output(
         export: options.export.clone(),
         retouch: Some(image.retouch.clone()),
     })
+}
+
+pub(super) fn rerender_compressed_review_output(
+    input_root: &Path,
+    destination: &Path,
+    image: &ReviewImage,
+    options: &ReviewPublishOptions,
+) -> Result<()> {
+    let input = safe_existing_raw_source(&image.raw_path, input_root)?;
+    apply_compressed(
+        CompressedApplyJob {
+            input: &input,
+            output: destination,
+            convert: &options.convert,
+            export: &options.export,
+            exif_comment: Some(format!(
+                "mini-film {} usage=review-publish compressed-input {}",
+                env!("CARGO_PKG_VERSION"),
+                image.retouch.summary()
+            )),
+            retouch: Some(&image.retouch),
+        },
+        None,
+    )
+}
+
+pub(super) fn rerender_sooc_review_output(
+    input_root: &Path,
+    destination: &Path,
+    image: &ReviewImage,
+    options: &ReviewPublishOptions,
+) -> Result<()> {
+    let sidecar = image
+        .sooc_sidecar_path
+        .as_ref()
+        .ok_or_else(|| anyhow!("review image has no SOOC sidecar: {}", image.relative_path))?;
+    let sidecar = safe_existing_raw_source(sidecar, input_root)?;
+    let retouch = retouch_without_adjustments(&image.retouch);
+    apply_compressed(
+        CompressedApplyJob {
+            input: &sidecar,
+            output: destination,
+            convert: &options.convert,
+            export: &options.export,
+            exif_comment: Some(format!(
+                "mini-film {} usage=review-publish sooc-sidecar {}",
+                env!("CARGO_PKG_VERSION"),
+                retouch.summary()
+            )),
+            retouch: Some(&retouch),
+        },
+        None,
+    )
 }
 
 pub(super) fn optional_profile_selector(selector: &str) -> Option<String> {
@@ -758,6 +880,19 @@ pub(super) fn review_publish_file_name(
     Ok(format!("{stem}{suffix}.{}", output_format.extension()))
 }
 
+pub(super) fn review_publish_source_file_name(
+    raw_stem: &str,
+    output_format: BatchOutputFormat,
+) -> Result<String> {
+    let stem = sanitize_filename::sanitize(raw_stem).into_owned();
+    let stem = if stem.trim().is_empty() {
+        "image".to_string()
+    } else {
+        stem
+    };
+    Ok(format!("{stem}.{}", output_format.extension()))
+}
+
 pub(super) fn review_profile_folder_name(profile_stem: &str) -> String {
     let folder = sanitize_filename::sanitize(profile_stem).into_owned();
     if folder.trim().is_empty() {
@@ -770,7 +905,7 @@ pub(super) fn review_profile_folder_name(profile_stem: &str) -> String {
 pub(super) fn write_review_metadata(
     path: &Path,
     image: &ReviewImage,
-    render: &ReviewProfileRender,
+    profile_stem: &str,
 ) -> Result<()> {
     let labels = image_review_labels(image);
     let labels_text = review_labels_text(&labels);
@@ -789,10 +924,10 @@ pub(super) fn write_review_metadata(
         .arg(format!(
             "-UserComment=mini-film {} review profile={} rating={} labels={} {} notes={}",
             env!("CARGO_PKG_VERSION"),
-            if render.profile_stem.trim().is_empty() {
+            if profile_stem.trim().is_empty() {
                 "none"
             } else {
-                &render.profile_stem
+                profile_stem
             },
             image.rating,
             labels_text,

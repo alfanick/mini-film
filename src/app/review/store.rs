@@ -100,6 +100,7 @@ impl ReviewStore {
         let mut image = ReviewImage {
             id,
             raw_path: raw.to_path_buf(),
+            sooc_sidecar_path: None,
             relative_path: relative,
             file_name,
             exif,
@@ -295,6 +296,13 @@ pub(super) fn sync_image_profile_renders(
     profiles_changed: bool,
     unchanged_profile_indexes: &HashSet<usize>,
 ) {
+    if is_jpeg_input_file(&image.raw_path) {
+        image.profiles.clear();
+        image.selected_profile_index = 0;
+        image.publish_profile_indexes = Some(Vec::new());
+        return;
+    }
+
     let existing = image
         .profiles
         .iter()
@@ -314,6 +322,7 @@ pub(super) fn sync_image_profile_renders(
                 .unwrap_or_else(|| ReviewProfileRender {
                     profile_index: profile.index,
                     profile_stem: profile.stem.clone(),
+                    display_name: None,
                     status: ReviewRenderStatus::Missing,
                     output_path: None,
                     error: None,
@@ -323,12 +332,40 @@ pub(super) fn sync_image_profile_renders(
                 })
         })
         .collect();
+    if image.sooc_sidecar_path.is_some() {
+        image.profiles.push(
+            existing
+                .get(&SOOC_PROFILE_INDEX)
+                .filter(|render| render.profile_stem == SOOC_PROFILE_STEM)
+                .cloned()
+                .unwrap_or_else(|| ReviewProfileRender {
+                    profile_index: SOOC_PROFILE_INDEX,
+                    profile_stem: SOOC_PROFILE_STEM.to_string(),
+                    display_name: Some(SOOC_PROFILE_DISPLAY_NAME.to_string()),
+                    status: ReviewRenderStatus::Missing,
+                    output_path: None,
+                    error: None,
+                    duration_ms: None,
+                    render_key: None,
+                    updated_at: now_string(),
+                }),
+        );
+        if let Some(render) = image
+            .profiles
+            .iter_mut()
+            .find(|render| render.profile_index == SOOC_PROFILE_INDEX)
+        {
+            render.profile_stem = SOOC_PROFILE_STEM.to_string();
+            render.display_name = Some(SOOC_PROFILE_DISPLAY_NAME.to_string());
+        }
+    }
     if profiles_changed {
         image.selected_profile_index = profiles.first().map(|profile| profile.index).unwrap_or(0);
         image.publish_profile_indexes = Some(
             image
                 .profiles
                 .iter()
+                .filter(|profile| profile.profile_index != SOOC_PROFILE_INDEX)
                 .map(|profile| profile.profile_index)
                 .collect(),
         );
@@ -345,11 +382,15 @@ pub(super) fn sync_image_profile_renders(
 }
 
 pub(super) fn effective_publish_profile_indexes(image: &ReviewImage) -> Vec<usize> {
+    if is_jpeg_input_file(&image.raw_path) {
+        return Vec::new();
+    }
     match &image.publish_profile_indexes {
         Some(indexes) => normalize_publish_profile_indexes(indexes, &image.profiles),
         None => image
             .profiles
             .iter()
+            .filter(|profile| profile.profile_index != SOOC_PROFILE_INDEX)
             .map(|profile| profile.profile_index)
             .collect(),
     }

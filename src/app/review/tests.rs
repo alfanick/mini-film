@@ -98,6 +98,7 @@ fn profile_render(index: usize, stem: &str) -> ReviewProfileRender {
     ReviewProfileRender {
         profile_index: index,
         profile_stem: stem.to_string(),
+        display_name: None,
         status: ReviewRenderStatus::Done,
         output_path: None,
         error: None,
@@ -112,6 +113,7 @@ fn preferred_preview_profile_keeps_selected_profile_even_when_publish_unchecked(
     let image = ReviewImage {
         id: 1,
         raw_path: PathBuf::from("/in/frame.NEF"),
+        sooc_sidecar_path: None,
         relative_path: "frame.NEF".to_string(),
         file_name: "frame.NEF".to_string(),
         exif: GalleryExifData::default(),
@@ -187,6 +189,7 @@ fn review_visible_order_uses_exif_capture_time_before_path() {
     store.images.push(ReviewImage {
         id: 1,
         raw_path: PathBuf::from("/in/camera-a/late.NEF"),
+        sooc_sidecar_path: None,
         relative_path: "camera-a/late.NEF".to_string(),
         file_name: "late.NEF".to_string(),
         exif: GalleryExifData {
@@ -212,6 +215,7 @@ fn review_visible_order_uses_exif_capture_time_before_path() {
     store.images.push(ReviewImage {
         id: 2,
         raw_path: PathBuf::from("/in/camera-b/early.NEF"),
+        sooc_sidecar_path: None,
         relative_path: "camera-b/early.NEF".to_string(),
         file_name: "early.NEF".to_string(),
         exif: GalleryExifData {
@@ -237,6 +241,7 @@ fn review_visible_order_uses_exif_capture_time_before_path() {
     store.images.push(ReviewImage {
         id: 3,
         raw_path: PathBuf::from("/in/camera-c/no-exif.NEF"),
+        sooc_sidecar_path: None,
         relative_path: "camera-c/no-exif.NEF".to_string(),
         file_name: "no-exif.NEF".to_string(),
         exif: GalleryExifData::default(),
@@ -272,6 +277,7 @@ fn sync_profiles_drops_stale_renders_when_wizard_profile_changes() {
     store.images.push(ReviewImage {
         id: 1,
         raw_path: PathBuf::from("/in/frame.NEF"),
+        sooc_sidecar_path: None,
         relative_path: "frame.NEF".to_string(),
         file_name: "frame.NEF".to_string(),
         exif: GalleryExifData::default(),
@@ -316,6 +322,7 @@ fn sync_profiles_selects_all_wizard_profiles_when_profile_set_changes() {
     store.images.push(ReviewImage {
         id: 1,
         raw_path: PathBuf::from("/in/frame.NEF"),
+        sooc_sidecar_path: None,
         relative_path: "frame.NEF".to_string(),
         file_name: "frame.NEF".to_string(),
         exif: GalleryExifData::default(),
@@ -361,6 +368,7 @@ fn sync_profiles_drops_same_stem_render_when_profile_identity_changes() {
     store.images.push(ReviewImage {
         id: 1,
         raw_path: PathBuf::from("/in/frame.NEF"),
+        sooc_sidecar_path: None,
         relative_path: "frame.NEF".to_string(),
         file_name: "frame.NEF".to_string(),
         exif: GalleryExifData::default(),
@@ -401,6 +409,7 @@ fn sync_profiles_preserves_publish_selection_when_profiles_are_unchanged() {
     store.images.push(ReviewImage {
         id: 1,
         raw_path: PathBuf::from("/in/frame.NEF"),
+        sooc_sidecar_path: None,
         relative_path: "frame.NEF".to_string(),
         file_name: "frame.NEF".to_string(),
         exif: GalleryExifData::default(),
@@ -434,6 +443,7 @@ fn base_render_done_triggers_pending_retouch_without_marking_done() {
     let mut render = ReviewProfileRender {
         profile_index: 0,
         profile_stem: "Classic".to_string(),
+        display_name: None,
         status: ReviewRenderStatus::Queued,
         output_path: None,
         error: Some("old".to_string()),
@@ -508,7 +518,7 @@ fn queued_missing_output_reuses_saved_retouch_settings() {
         .unwrap();
     let job = handle.retouch_scheduler.next_job();
     assert_eq!(job.raw, raw);
-    assert_eq!(job.profile_index, 0);
+    assert_eq!(job.profile_index, Some(0));
     assert_eq!(job.output, rendered);
     assert_eq!(job.render_key, expected_key);
 }
@@ -518,14 +528,14 @@ fn retouch_scheduler_coalesces_same_raw_profile_to_latest_job() {
     let scheduler = ReviewRetouchScheduler::default();
     scheduler.schedule_after(
         PathBuf::from("frame.NEF"),
-        1,
+        Some(1),
         PathBuf::from("old.jpg"),
         "old".to_string(),
         Duration::ZERO,
     );
     scheduler.schedule_after(
         PathBuf::from("frame.NEF"),
-        1,
+        Some(1),
         PathBuf::from("new.jpg"),
         "new".to_string(),
         Duration::ZERO,
@@ -534,7 +544,7 @@ fn retouch_scheduler_coalesces_same_raw_profile_to_latest_job() {
     let job = scheduler.next_job();
 
     assert_eq!(job.raw, PathBuf::from("frame.NEF"));
-    assert_eq!(job.profile_index, 1);
+    assert_eq!(job.profile_index, Some(1));
     assert_eq!(job.output, PathBuf::from("new.jpg"));
     assert_eq!(job.render_key, "new");
 }
@@ -832,6 +842,7 @@ fn publish_flat_album_filters_rating_label_and_tag() {
     store.images.push(ReviewImage {
         id: 1,
         raw_path: PathBuf::from("/in/day/frame.NEF"),
+        sooc_sidecar_path: None,
         relative_path: "day/frame.NEF".to_string(),
         file_name: "frame.NEF".to_string(),
         exif: GalleryExifData::default(),
@@ -851,6 +862,7 @@ fn publish_flat_album_filters_rating_label_and_tag() {
         profiles: vec![ReviewProfileRender {
             profile_index: 0,
             profile_stem: "Classic".to_string(),
+            display_name: None,
             status: ReviewRenderStatus::Done,
             output_path: Some(source.clone()),
             error: None,
@@ -885,6 +897,7 @@ fn publish_flat_album_suffixes_non_default_profiles() {
     store.images.push(ReviewImage {
         id: 1,
         raw_path: PathBuf::from("/in/day/frame.NEF"),
+        sooc_sidecar_path: None,
         relative_path: "day/frame.NEF".to_string(),
         file_name: "frame.NEF".to_string(),
         exif: GalleryExifData::default(),
@@ -905,6 +918,7 @@ fn publish_flat_album_suffixes_non_default_profiles() {
             ReviewProfileRender {
                 profile_index: 0,
                 profile_stem: "Classic".to_string(),
+                display_name: None,
                 status: ReviewRenderStatus::Done,
                 output_path: Some(classic.clone()),
                 error: None,
@@ -915,6 +929,7 @@ fn publish_flat_album_suffixes_non_default_profiles() {
             ReviewProfileRender {
                 profile_index: 1,
                 profile_stem: "Fade".to_string(),
+                display_name: None,
                 status: ReviewRenderStatus::Done,
                 output_path: Some(fade.clone()),
                 error: None,
@@ -948,6 +963,7 @@ fn publish_store_reports_realtime_progress() {
     store.images.push(ReviewImage {
         id: 1,
         raw_path: PathBuf::from("/in/day/frame.NEF"),
+        sooc_sidecar_path: None,
         relative_path: "day/frame.NEF".to_string(),
         file_name: "frame.NEF".to_string(),
         exif: GalleryExifData::default(),
@@ -968,6 +984,7 @@ fn publish_store_reports_realtime_progress() {
             ReviewProfileRender {
                 profile_index: 0,
                 profile_stem: "Classic".to_string(),
+                display_name: None,
                 status: ReviewRenderStatus::Done,
                 output_path: Some(classic.clone()),
                 error: None,
@@ -978,6 +995,7 @@ fn publish_store_reports_realtime_progress() {
             ReviewProfileRender {
                 profile_index: 1,
                 profile_stem: "Fade".to_string(),
+                display_name: None,
                 status: ReviewRenderStatus::Done,
                 output_path: Some(fade.clone()),
                 error: None,

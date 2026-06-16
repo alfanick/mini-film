@@ -191,7 +191,7 @@ pub(super) async fn media_response(path: &str, handle: &ReviewHandle) -> Respons
         .trim_start_matches("/media/")
         .split('/')
         .collect::<Vec<_>>();
-    if parts.len() != 2 {
+    if parts.len() != 1 && parts.len() != 2 {
         return text_response(404, "text/plain; charset=utf-8", "not found").into_response();
     }
     let image_id = match parts[0].parse::<u64>() {
@@ -200,6 +200,12 @@ pub(super) async fn media_response(path: &str, handle: &ReviewHandle) -> Respons
             return text_response(400, "text/plain; charset=utf-8", "bad image id").into_response();
         }
     };
+    if parts.len() == 1 {
+        return match handle.preview_media_path(image_id) {
+            Ok(path) => serve_review_file(path, "image/jpeg").await,
+            Err(error) => json_error(404, error).into_response(),
+        };
+    }
     let profile_index = match parts[1].parse::<usize>() {
         Ok(index) => index,
         Err(_) => {

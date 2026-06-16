@@ -1,7 +1,7 @@
 [package]
 name = "mini-film"
-version = "12.5.4"
-description = "Apply Lightroom-style film emulation profiles to RAW files with RawTherapee and HALD workflows."
+version = "13.1.0"
+description = "Review and publish RAW, JPEG, and HEIC photos with optional Lightroom-style film emulation profiles for RAW workflows."
 repository = "https://github.com/alfanick/mini-film"
 homepage = "https://github.com/alfanick/mini-film"
 readme = "README.md"

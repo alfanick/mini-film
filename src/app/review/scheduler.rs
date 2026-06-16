@@ -6,13 +6,13 @@ const REVIEW_RETOUCH_DEBOUNCE: Duration = Duration::from_secs(2);
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) struct ReviewRetouchJobKey {
     pub(super) raw: PathBuf,
-    pub(super) profile_index: usize,
+    pub(super) profile_index: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
 pub(super) struct ScheduledRetouchJob {
     pub(super) raw: PathBuf,
-    pub(super) profile_index: usize,
+    pub(super) profile_index: Option<usize>,
     pub(super) output: PathBuf,
     pub(super) render_key: String,
     pub(super) due_at: Instant,
@@ -34,7 +34,7 @@ impl ReviewRetouchScheduler {
     pub(super) fn schedule(
         &self,
         raw: PathBuf,
-        profile_index: usize,
+        profile_index: Option<usize>,
         output: PathBuf,
         render_key: String,
     ) {
@@ -50,7 +50,7 @@ impl ReviewRetouchScheduler {
     pub(super) fn schedule_after(
         &self,
         raw: PathBuf,
-        profile_index: usize,
+        profile_index: Option<usize>,
         output: PathBuf,
         render_key: String,
         delay: Duration,

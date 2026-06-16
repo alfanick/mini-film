@@ -8,7 +8,7 @@ const DEFAULT_HALD_LEVEL: u32 = 16;
 #[derive(Parser, Debug)]
 #[command(
     version,
-    about = "Develop RAW files with Lightroom-style film profile Hald CLUTs"
+    about = "Review and publish RAW, JPEG, and HEIC photos with optional RAW film profiles"
 )]
 pub(crate) struct Cli {
     #[command(subcommand)]
@@ -112,18 +112,20 @@ pub(crate) enum CommandKind {
         hald_level: u32,
     },
 
-    /// Develop a RAW file with RawTherapee, optional profile Film Simulation, grain, and final export.
+    /// Develop a RAW file or convert an already-processed JPEG/HEIC input.
     Apply {
-        /// RAW file to develop (supports common camera RAW formats such as `.dng`,
-        /// `.nef`, `.cr2`, `.cr3`, `.arw`, `.raf`, `.orf`, `.rw2`).
+        /// Input file. RAW inputs support common camera RAW formats such as `.dng`,
+        /// `.nef`, `.cr2`, `.cr3`, `.arw`, `.raf`, `.orf`, `.rw2`; compressed
+        /// inputs support `.jpg`, `.jpeg`, `.heic`, and `.heif`.
         raw: PathBuf,
 
         /// Output image path.
         #[arg(short, long)]
         output: PathBuf,
 
-        /// Optional profile selector: Hald PNG path/name, emulation XMP path/name, or RawTherapee PP3 path.
+        /// Optional RAW profile selector: Hald PNG path/name, emulation XMP path/name, or RawTherapee PP3 path.
         /// If omitted, RawTherapee develops the RAW with its default settings.
+        /// JPEG/HEIC inputs do not accept profiles.
         #[arg(short, long)]
         profile: Option<String>,
 
@@ -224,17 +226,21 @@ pub(crate) enum CommandKind {
         progressive_jpeg: bool,
     },
 
-    /// Apply an optional profile to every supported RAW file in an input folder.
+    /// Apply optional RAW profiles or convert compressed inputs in an input folder.
     Batch {
-        /// Input folder scanned recursively for supported RAW files (case-insensitive), e.g.
-        /// `.dng`, `.nef`, `.cr2`, `.cr3`, `.arw`, `.raf`, `.orf`, `.rw2`, ...
+        /// Input folder scanned recursively for supported RAW and compressed image files.
+        ///
+        /// Without filters, both file groups are accepted: RAW (e.g. `.dng`, `.nef`, `.cr2`,
+        /// `.cr3`, `.arw`, `.raf`, `.orf`, `.rw2`, ...) and JPEG/HEIC (`.jpg`, `.jpeg`,
+        /// `.heic`, `.heif`).
         input: PathBuf,
 
         /// Output folder. It is created if it does not exist.
         output: PathBuf,
 
-        /// Optional profile selector: Hald PNG path/name, emulation XMP path/name, or RawTherapee PP3 path.
+        /// Optional RAW profile selector: Hald PNG path/name, emulation XMP path/name, or RawTherapee PP3 path.
         /// If omitted, RawTherapee develops each RAW with its default settings.
+        /// JPEG/HEIC inputs are converted directly without profiles.
         #[arg(short, long)]
         profile: Option<String>,
 
@@ -293,9 +299,18 @@ pub(crate) enum CommandKind {
         #[arg(long)]
         grain_seed: Option<u64>,
 
-        /// Number of RAW files to process in parallel. Defaults to half of CPU threads.
+        /// Number of files to process in parallel. Defaults to half of CPU threads.
         #[arg(long)]
         jobs: Option<usize>,
+
+        /// Process only JPEG/HEIC inputs (JPG/JPEG/HEIC/HEIF).
+        #[arg(long, conflicts_with = "input_raw_only")]
+        input_jpg_only: bool,
+
+        /// Process only RAW inputs (default RAW extensions and extensions supported by
+        /// `--raw` operations).
+        #[arg(long, conflicts_with = "input_jpg_only")]
+        input_raw_only: bool,
 
         /// Output format for generated batch files.
         #[arg(long, value_enum, default_value_t = BatchOutputFormat::Jpg)]
@@ -444,14 +459,19 @@ pub(crate) enum CommandKind {
     /// Watch an input inbox folder and apply optional profiles as files arrive.
     #[command(name = "daemon")]
     BatchDaemon {
-        /// Input folder to watch recursively for new RAW files.
+        /// Input folder to watch recursively for new RAW and compressed image files.
+        ///
+        /// Without filters, both file groups are accepted: RAW (e.g. `.dng`, `.nef`, `.cr2`,
+        /// `.cr3`, `.arw`, `.raf`, `.orf`, `.rw2`, ...) and JPEG/HEIC (`.jpg`, `.jpeg`,
+        /// `.heic`, `.heif`).
         input: PathBuf,
 
         /// Output root folder. It is created if it does not exist.
         output: PathBuf,
 
-        /// Profile selectors to apply to each incoming RAW. Repeat this option for each profile.
+        /// RAW profile selectors to apply to each incoming RAW. Repeat this option for each profile.
         /// If omitted, each RAW is developed once with RawTherapee defaults.
+        /// JPEG/HEIC inputs are converted directly without profiles.
         #[arg(short = 'p', long = "profile")]
         profile: Vec<String>,
 
@@ -513,6 +533,15 @@ pub(crate) enum CommandKind {
         /// Number of files to process in parallel. Defaults to half of CPU threads.
         #[arg(long)]
         jobs: Option<usize>,
+
+        /// Process only JPEG/HEIC inputs (JPG/JPEG/HEIC/HEIF).
+        #[arg(long, conflicts_with = "input_raw_only")]
+        input_jpg_only: bool,
+
+        /// Process only RAW inputs (default RAW extensions and extensions supported by
+        /// `--raw` operations).
+        #[arg(long, conflicts_with = "input_jpg_only")]
+        input_raw_only: bool,
 
         /// Debounce time in seconds for newly-created files when no inotify-style
         /// close/move completion notification is available.

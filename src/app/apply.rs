@@ -22,7 +22,8 @@ use crate::app::progress::{
 use crate::app::raw::{run_raw_develop, run_raw_develop_jpeg};
 use crate::app::retouch::{RetouchSettings, write_rawtherapee_retouch_profile};
 use crate::app::util::{
-    OutputEditMetadata, extract_capture_iso, remove_temp_file,
+    OutputEditMetadata, extract_capture_iso, is_jpeg_input_file, remove_temp_file,
+    sync_output_metadata_from_image_with_color_profile,
     sync_output_metadata_from_raw_with_color_profile, sync_output_timestamps_from_exif,
     time_of_day_seed,
 };
@@ -66,6 +67,15 @@ pub(crate) struct ApplyJob<'a> {
     pub(crate) retouch: Option<&'a RetouchSettings>,
 }
 
+pub(crate) struct CompressedApplyJob<'a> {
+    pub(crate) input: &'a Path,
+    pub(crate) output: &'a Path,
+    pub(crate) convert: &'a Path,
+    pub(crate) export: &'a ExportOptions,
+    pub(crate) exif_comment: Option<String>,
+    pub(crate) retouch: Option<&'a RetouchSettings>,
+}
+
 fn exif_comment_for_command(command: &str, profile: Option<&str>) -> String {
     let profile = profile
         .map(str::trim)
@@ -86,6 +96,54 @@ fn exif_comment_for_command(command: &str, profile: Option<&str>) -> String {
 pub(crate) fn run_apply(args: ApplyArgs) -> Result<()> {
     validate_output_format(&args.output)?;
     validate_export_options(&args.export)?;
+
+    if is_jpeg_input_file(&args.raw) {
+        if args
+            .profile
+            .as_deref()
+            .is_some_and(|profile| !profile.trim().is_empty())
+        {
+            bail!("--profile is only supported for RAW inputs");
+        }
+        if args.lens_corrections.is_enabled() {
+            bail!("--lens-corrections is only supported for RAW inputs");
+        }
+        if args.grain.is_some() || args.grain_preset.is_some() {
+            bail!("--grain and --grain-preset are only supported for RAW inputs");
+        }
+
+        let file = ProgressBar::new(progress_length());
+        file.set_style(file_progress_style());
+        file.set_message("starting");
+        let started = std::time::Instant::now();
+        let progress = ApplyProgress {
+            file: &file,
+            started,
+            estimates: None,
+        };
+        let result = apply_compressed(
+            CompressedApplyJob {
+                input: &args.raw,
+                output: &args.output,
+                convert: &args.convert,
+                export: &args.export,
+                exif_comment: Some(exif_comment_for_command("apply", None)),
+                retouch: args.retouch.as_ref(),
+            },
+            Some(&progress),
+        );
+        match &result {
+            Ok(()) => file.finish_and_clear(),
+            Err(_) => file.abandon_with_message("failed"),
+        }
+        result?;
+        eprintln!(
+            "wrote {} from compressed source {}",
+            args.output.display(),
+            args.raw.display()
+        );
+        return Ok(());
+    }
 
     let temp_dir = Builder::new().prefix("mini-film-").tempdir()?;
     let mut resolved = resolve_profile(&args, temp_dir.path())?;
@@ -144,6 +202,65 @@ pub(crate) fn run_apply(args: ApplyArgs) -> Result<()> {
     } else {
         eprintln!("wrote {} using RawTherapee PP3", args.output.display());
     }
+    Ok(())
+}
+
+pub(crate) fn apply_compressed(
+    job: CompressedApplyJob<'_>,
+    progress: Option<&ApplyProgress<'_>>,
+) -> Result<()> {
+    validate_output_format(job.output)?;
+
+    progress_step(progress, 1, "compressed input");
+    progress_step(progress, 3, "raw development skipped");
+
+    let output_ext = output_ext(job.output)?;
+    let jpeg_output = output_ext == "jpg" || output_ext == "jpeg";
+    let export_stage = progress_stage_adaptive(
+        progress,
+        4,
+        5,
+        if jpeg_output {
+            "export-jpeg"
+        } else {
+            "export-tiff"
+        },
+        "export",
+        estimate_export_duration(jpeg_output),
+    );
+    finalize_output_with_retouch(job.convert, job.input, job.output, job.export, job.retouch)?;
+    export_stage.finish();
+
+    if !job.export.strip_metadata {
+        let exif_stage = progress_stage_adaptive(
+            progress,
+            5,
+            6,
+            "image-metadata",
+            "metadata",
+            estimate_exif_duration(job.input),
+        );
+        sync_output_metadata_from_image_with_color_profile(
+            job.input,
+            job.output,
+            job.exif_comment.as_deref(),
+            Some(job.input),
+        )?;
+        sync_output_timestamps_from_exif(job.input, job.output)?;
+        exif_stage.finish();
+    } else {
+        let timestamp_stage = progress_stage_adaptive(
+            progress,
+            5,
+            6,
+            "timestamps",
+            "timestamps",
+            estimate_timestamp_sync_duration(),
+        );
+        sync_output_timestamps_from_exif(job.input, job.output)?;
+        timestamp_stage.finish();
+    }
+    progress_step(progress, 6, "done");
     Ok(())
 }
 

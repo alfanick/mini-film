@@ -24,7 +24,9 @@ use crate::app::review::{ReviewPublishCommandArgs, run_review_publish};
 use crate::app::run_hald;
 use crate::app::run_update;
 use crate::app::sampler::{SamplerArgs, run_sampler};
-use crate::app::util::{configure_threads, default_hald_dir, half_cpu_thread_count};
+use crate::app::util::{
+    InputFileFilter, configure_threads, default_hald_dir, half_cpu_thread_count,
+};
 use crate::cli::{Cli, CommandKind, ExportOptions};
 
 /// Parse CLI arguments and dispatch to the selected mini-film workflow.
@@ -168,6 +170,8 @@ fn main() -> Result<()> {
             grain_preset,
             grain_seed,
             jobs,
+            input_jpg_only,
+            input_raw_only,
             output_format,
             gallery,
             gallery_thumbnail_long_edge,
@@ -184,6 +188,7 @@ fn main() -> Result<()> {
             input,
             output,
             profile,
+            input_file_filter: input_file_filter(input_jpg_only, input_raw_only),
             hald_dir: hald_dir.unwrap_or_else(default_hald_dir),
             profiles_root: resolve_profiles_root(profiles_root),
             hald_level,
@@ -229,6 +234,8 @@ fn main() -> Result<()> {
             grain_preset,
             grain_seed,
             jobs,
+            input_jpg_only,
+            input_raw_only,
             debounce_seconds,
             nikon_wtu,
             nikon_wtu_port,
@@ -256,6 +263,7 @@ fn main() -> Result<()> {
             input,
             output,
             profile,
+            input_file_filter: input_file_filter(input_jpg_only, input_raw_only),
             hald_dir: hald_dir.unwrap_or_else(default_hald_dir),
             profiles_root: resolve_profiles_root(profiles_root),
             hald_level,
@@ -537,6 +545,16 @@ fn resolve_lcp_root(explicit: Option<PathBuf>) -> Option<PathBuf> {
             .filter(|root| !root.is_empty())
             .map(PathBuf::from)
     })
+}
+
+fn input_file_filter(input_jpg_only: bool, input_raw_only: bool) -> InputFileFilter {
+    if input_jpg_only {
+        InputFileFilter::JpgOnly
+    } else if input_raw_only {
+        InputFileFilter::RawOnly
+    } else {
+        InputFileFilter::All
+    }
 }
 
 fn verify_dependency_binary(name: &str, path: &Path) -> Result<()> {

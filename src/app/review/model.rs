@@ -2,6 +2,10 @@ use super::prelude::*;
 use super::scheduler::ReviewRetouchScheduler;
 use super::store::now_string;
 
+pub(crate) const SOOC_PROFILE_INDEX: usize = 1_000_000_000;
+pub(crate) const SOOC_PROFILE_STEM: &str = "sooc";
+pub(super) const SOOC_PROFILE_DISPLAY_NAME: &str = "straight out of camera";
+
 #[derive(Clone, Debug)]
 pub(crate) struct ReviewConfig {
     pub(crate) address: String,
@@ -100,6 +104,8 @@ pub(super) struct ReviewUiState {
 pub(super) struct ReviewImage {
     pub(super) id: u64,
     pub(super) raw_path: PathBuf,
+    #[serde(default)]
+    pub(super) sooc_sidecar_path: Option<PathBuf>,
     pub(super) relative_path: String,
     pub(super) file_name: String,
     #[serde(default)]
@@ -231,6 +237,10 @@ pub(super) struct ReviewPreview {
     pub(super) status: ReviewRenderStatus,
     pub(super) path: Option<PathBuf>,
     pub(super) error: Option<String>,
+    #[serde(default)]
+    pub(super) duration_ms: Option<u64>,
+    #[serde(default)]
+    pub(super) render_key: Option<String>,
     pub(super) updated_at: String,
 }
 
@@ -240,6 +250,8 @@ impl Default for ReviewPreview {
             status: ReviewRenderStatus::Missing,
             path: None,
             error: None,
+            duration_ms: None,
+            render_key: None,
             updated_at: now_string(),
         }
     }
@@ -249,6 +261,8 @@ impl Default for ReviewPreview {
 pub(super) struct ReviewProfileRender {
     pub(super) profile_index: usize,
     pub(super) profile_stem: String,
+    #[serde(default)]
+    pub(super) display_name: Option<String>,
     pub(super) status: ReviewRenderStatus,
     pub(super) output_path: Option<PathBuf>,
     pub(super) error: Option<String>,
@@ -454,8 +468,8 @@ pub(super) struct ReviewPublishOutput<'a> {
     pub(super) source: &'a Path,
     pub(super) destination: &'a Path,
     pub(super) image: &'a ReviewImage,
-    pub(super) render: &'a ReviewProfileRender,
-    pub(super) profile: &'a ReviewProfile,
+    pub(super) render: Option<&'a ReviewProfileRender>,
+    pub(super) profile: Option<&'a ReviewProfile>,
     pub(super) options: &'a ReviewPublishOptions,
 }
 
@@ -464,8 +478,8 @@ pub(super) struct ReviewPublishTask {
     pub(super) source: PathBuf,
     pub(super) destination: PathBuf,
     pub(super) image: ReviewImage,
-    pub(super) render: ReviewProfileRender,
-    pub(super) profile: ReviewProfile,
+    pub(super) render: Option<ReviewProfileRender>,
+    pub(super) profile: Option<ReviewProfile>,
     pub(super) current: String,
 }
 

@@ -265,7 +265,7 @@ function ControlsShell() {
 function RetouchSlider({ id, label, min, max, step, value, output = value }) {
   return h(
     "label",
-    null,
+    { "data-retouch-adjustment": "true" },
     h("span", null, label),
     h("input", { id, type: "range", min, max, step, value }),
     h("output", { id: `${id}-value` }, output),
@@ -1020,6 +1020,27 @@ function ImageList({ images, currentId, onSelect }) {
 }
 
 function renderProgressSummary(image) {
+  if (isCompressedImage(image)) {
+    if (isLocalRetouchDraft(image)) {
+      return {
+        state: "retouch-draft",
+        text: "crop draft",
+        title: "crop draft preview is local; server render will queue after edits settle",
+      };
+    }
+    const codexState = codexProgressState(image);
+    if (codexState) return codexState;
+    const display = compressedDisplayState(image);
+    if (display.state === "done") {
+      return {
+        state: "ready",
+        text: "ready",
+        title: "image ready",
+      };
+    }
+    return display;
+  }
+
   const publishIndexes = new Set(publishProfileIndexes(image));
   const profiles = (image.profiles || []).filter((profile) => publishIndexes.has(profile.profile_index));
   const total = profiles.length;
@@ -1044,7 +1065,7 @@ function renderProgressSummary(image) {
     return {
       state: "waiting",
       text: "none",
-      title: profilesAreImplicitOnly() ? "RawTherapee default render pending" : "no profiles selected for publish",
+      title: profilesAreImplicitOnly(image) ? "RawTherapee default render pending" : "no profiles selected for publish",
     };
   }
   if (failed > 0 && done + failed === total) {
@@ -1134,6 +1155,8 @@ function renderCurrent(image) {
     stopZoom();
     clearCropDraftState();
     els.viewer.classList.remove("has-image");
+    els.app.classList.remove("compressed-image");
+    els.app.classList.remove("sooc-profile-selected");
     els.image.removeAttribute("src");
     els.title.textContent = "";
     els.subtitle.textContent = "";
@@ -1149,10 +1172,13 @@ function renderCurrent(image) {
   }
 
   const selected = selectedProfile(image);
-  const hideProfiles = profilesAreImplicitOnly();
+  const compressed = isCompressedImage(image);
+  els.app.classList.toggle("compressed-image", compressed);
+  els.app.classList.toggle("sooc-profile-selected", isSoocProfile(selected));
+  const hideProfiles = profilesAreImplicitOnly(image) || compressed;
   const mainUrl = selected?.url || image.preview_url;
-  const previewNote = selected?.url ? "" : image.preview_url ? " | camera preview" : "";
-  const selectedState = profileDisplayState(image, selected);
+  const previewNote = selected?.url || compressed ? "" : image.preview_url ? " | camera preview" : "";
+  const selectedState = compressed ? compressedDisplayState(image) : profileDisplayState(image, selected);
   const codexState = currentCodexStateText(image);
   if (state.cropDraftImageId !== null && state.cropDraftImageId !== image.id) {
     clearCropDraftState();
@@ -1160,9 +1186,10 @@ function renderCurrent(image) {
   els.title.textContent = image.file_name;
   els.subtitle.textContent = `${image.relative_path} | rating ${image.rating}`;
   renderImageExif(image);
-  els.profileState.textContent =
-    !hideProfiles && selected
-      ? `${selected.profile_stem}: ${selectedState.text}${previewNote}${codexState ? ` | ${codexState}` : ""}`
+  els.profileState.textContent = compressed
+    ? `${selectedState.text}${codexState ? ` | ${codexState}` : ""}`
+    : !hideProfiles && selected
+      ? `${profileDisplayName(selected)}: ${selectedState.text}${previewNote}${codexState ? ` | ${codexState}` : ""}`
       : codexState;
   const imageChanged = state.lastInputImageId !== image.id;
   if (imageChanged || document.activeElement !== els.tags) {
@@ -1172,7 +1199,7 @@ function renderCurrent(image) {
     els.notes.value = image.notes || "";
   }
   if (imageChanged || !isRetouchControlActive()) {
-    setRetouchInputs(image.retouch || defaultRetouch());
+    setRetouchInputs(retouchForImage(image, image.retouch || defaultRetouch()));
   }
   state.lastInputImageId = image.id;
   setActiveReviewButtons(image);
@@ -1228,6 +1255,7 @@ function selectedProfile(image) {
 }
 
 function selectedProfileForImage(image) {
+  if (isCompressedImage(image)) return null;
   const profiles = image?.profiles || [];
   const selectedIndex = selectedProfileIndexForImage(image);
   const selected = profiles.find((profile) => profile.profile_index === selectedIndex);
@@ -1239,8 +1267,60 @@ function selectedProfileIndexForImage(image) {
   return state.pendingProfileSelections.get(image.id) ?? image.selected_profile_index;
 }
 
+function isCompressedImage(image) {
+  return image?.source_type === "compressed";
+}
+
+function isSoocProfile(profile) {
+  return profile?.profile_stem === "sooc" || profile?.profile_index === 1000000000;
+}
+
+function hasSoocProfile(image) {
+  return Boolean((image?.profiles || []).some((profile) => isSoocProfile(profile)));
+}
+
+function profileDisplayName(profile) {
+  return profile?.display_name || profile?.profile_stem || "profile";
+}
+
 function isLocalRetouchDraft(image) {
   return Boolean(image && image.id === state.currentId && state.localRetouchDirty);
+}
+
+function compressedDisplayState(image) {
+  if (!image) {
+    return {
+      state: "waiting",
+      text: "waiting",
+      title: "waiting for image render",
+    };
+  }
+  if (isLocalRetouchDraft(image)) {
+    return {
+      state: "retouch-draft",
+      text: "crop draft",
+      title: "local crop preview; server render will queue after edits settle",
+    };
+  }
+  if (image.preview_retouch_pending && image.preview_status === "processing") {
+    return {
+      state: "retouch-processing",
+      text: "crop rendering",
+      title: "server-side crop render is running",
+    };
+  }
+  if (image.preview_retouch_pending && image.preview_status === "queued") {
+    return {
+      state: "retouch-queued",
+      text: "crop queued",
+      title: "server-side crop render is queued",
+    };
+  }
+  return {
+    state: image.preview_status || "waiting",
+    text: image.preview_status === "done" ? "ready" : image.preview_status || "waiting",
+    title: image.preview_error || image.preview_status || "waiting for image render",
+  };
 }
 
 function profileDisplayState(image, profile) {
@@ -1280,17 +1360,20 @@ function profileDisplayState(image, profile) {
 }
 
 function publishProfileIndexes(image) {
+  if (isCompressedImage(image)) return [];
   if (Array.isArray(image.publish_profile_indexes)) return image.publish_profile_indexes;
   return (image.profiles || []).map((profile) => profile.profile_index);
 }
 
-function profilesAreImplicitOnly() {
+function profilesAreImplicitOnly(image = null) {
+  if (hasSoocProfile(image)) return false;
   const profiles = state.data?.profiles || [];
   return profiles.length === 1 && !String(profiles[0].selector || "").trim();
 }
 
 function visibleProfileCount(image = null) {
-  if (profilesAreImplicitOnly()) return 0;
+  if (isCompressedImage(image)) return 0;
+  if (profilesAreImplicitOnly(image)) return 0;
   return image ? image.profiles?.length || 0 : state.data?.profiles?.length || 0;
 }
 
@@ -1307,7 +1390,7 @@ function togglePublishProfile(image, profileIndex) {
 }
 
 function renderProfiles(image) {
-  if (profilesAreImplicitOnly()) {
+  if (profilesAreImplicitOnly(image) || isCompressedImage(image)) {
     preactRender(null, els.profiles);
     return;
   }
@@ -1343,6 +1426,7 @@ function ProfileList({ image, onSelect, onTogglePublish, onSoloPublish }) {
   const profiles = image.profiles || [];
   const canSoloPublish = profiles.length > 1;
   return profiles.map((profile) => {
+    const displayName = profileDisplayName(profile);
     const cardUrl = profile.url || image.preview_url;
     const publishSelected = publishIndexes.has(profile.profile_index);
     const display = profileDisplayState(image, profile);
@@ -1390,7 +1474,7 @@ function ProfileList({ image, onSelect, onTogglePublish, onSoloPublish }) {
           class: "profile-publish",
           checked: publishSelected,
           title: publishSelected ? "Included in publish" : "Skipped by publish",
-          "aria-label": `Publish ${profile.profile_stem}`,
+          "aria-label": `Publish ${displayName}`,
           onClick: (event) => event.stopPropagation(),
           onChange: (event) => {
             event.stopPropagation();
@@ -1400,7 +1484,7 @@ function ProfileList({ image, onSelect, onTogglePublish, onSoloPublish }) {
         cardUrl
           ? h("img", {
               src: versionedUrl(cardUrl, profile.url ? profile.updated_at : image.preview_updated_at),
-              alt: profile.profile_stem,
+              alt: displayName,
               loading: profile.profile_index === previewProfile?.profile_index ? "eager" : "lazy",
               decoding: "async",
               fetchpriority: profile.profile_index === previewProfile?.profile_index ? "high" : "low",
@@ -1411,7 +1495,7 @@ function ProfileList({ image, onSelect, onTogglePublish, onSoloPublish }) {
               },
             })
           : null,
-        h("div", { class: "profile-name" }, profile.profile_stem),
+        h("div", { class: "profile-name" }, displayName),
         h(
           "div",
           {
@@ -1428,8 +1512,8 @@ function ProfileList({ image, onSelect, onTogglePublish, onSoloPublish }) {
               class: "profile-download",
               href: versionedUrl(profile.url, profile.updated_at),
               download: profileDownloadName(image, profile),
-              title: `Download rendered ${profile.profile_stem}`,
-              "aria-label": `Download rendered ${profile.profile_stem}`,
+              title: `Download rendered ${displayName}`,
+              "aria-label": `Download rendered ${displayName}`,
               onClick: (event) => event.stopPropagation(),
             },
             "DL",
@@ -1493,11 +1577,15 @@ function updateMobileActionLabels(image) {
   const profileCount = visibleProfileCount(image);
   const tagsCount = image?.tags?.length || 0;
   const hasNotes = Boolean(image?.notes);
-  const retouchActive = image ? !retouchIsDefault(image.retouch || defaultRetouch()) : false;
+  const retouchActive = image
+    ? isCompressedImage(image)
+      ? hasCropAdjustment(image)
+      : !retouchIsDefault(image.retouch || defaultRetouch())
+    : false;
   els.mobileDrawerButtons.forEach((button) => {
     const drawer = button.dataset.mobileDrawer;
     if (drawer === "profiles") {
-      button.hidden = profilesAreImplicitOnly();
+      button.hidden = profilesAreImplicitOnly(image) || isCompressedImage(image);
       button.textContent = profileCount > 0 ? `Profiles ${profileCount}` : "Profiles";
       button.title = `${profileCount} profile ${profileCount === 1 ? "render" : "renders"}`;
     } else if (drawer === "retouch") {
@@ -1663,7 +1751,7 @@ function publishSelectionStats(body = publishFormBody()) {
   for (const image of state.data?.images || []) {
     if (!imagePassesPublishFilters(image, body.min_rating, labels, tags)) continue;
     pictures += 1;
-    outputs += publishProfileIndexes(image).length;
+    outputs += isCompressedImage(image) ? 1 : publishProfileIndexes(image).length;
   }
   return { pictures, outputs };
 }
@@ -1838,7 +1926,7 @@ function normalizeRotation(value) {
 
 function retouchFromInputs(image = findImage(state.currentId)) {
   const existing = normalizedRetouch(image?.retouch || defaultRetouch());
-  return normalizedRetouch({
+  return retouchForImage(image, {
     adjustments: {
       exposure: Number(els.retouchExposure.value || 0),
       highlights: Number(els.retouchHighlights.value || 0),
@@ -1851,6 +1939,15 @@ function retouchFromInputs(image = findImage(state.currentId)) {
     },
     crop: existing.crop,
     rotation_degrees: existing.rotation_degrees,
+  });
+}
+
+function retouchForImage(image, retouch) {
+  const normalized = normalizedRetouch(retouch);
+  if (!isCompressedImage(image)) return normalized;
+  return normalizedRetouch({
+    ...normalized,
+    adjustments: defaultRetouch().adjustments,
   });
 }
 
@@ -1900,7 +1997,7 @@ function applyLocalRetouch(retouch, options = {}) {
   const image = findImage(state.currentId);
   if (!image) return;
   state.localRetouchDirty = true;
-  image.retouch = normalizedRetouch(retouch);
+  image.retouch = retouchForImage(image, retouch);
   setRetouchInputs(image.retouch);
   applyDraftRetouch(image, selectedProfile(image));
   renderRetouchGrid(image, selectedProfile(image));
@@ -1908,9 +2005,10 @@ function applyLocalRetouch(retouch, options = {}) {
   renderList(filteredImages());
   renderProfiles(image);
   const selected = selectedProfile(image);
-  els.profileState.textContent =
-    !profilesAreImplicitOnly() && selected
-      ? `${selected.profile_stem}: ${profileDisplayState(image, selected).text}`
+  els.profileState.textContent = isCompressedImage(image)
+    ? compressedDisplayState(image).text
+    : !profilesAreImplicitOnly(image) && selected
+      ? `${profileDisplayName(selected)}: ${profileDisplayState(image, selected).text}`
       : "";
   if (options.save !== false) scheduleRetouchSave();
 }
@@ -1924,9 +2022,10 @@ function copyCurrentRetouch() {
 }
 
 function pasteCurrentRetouch() {
-  if (!state.retouchClipboard) return false;
-  const current = retouchFromInputs();
-  const retouch = normalizedRetouch({
+  const image = findImage(state.currentId);
+  if (!image || !state.retouchClipboard) return false;
+  const current = retouchFromInputs(image);
+  const retouch = retouchForImage(image, {
     ...current,
     adjustments: state.retouchClipboard,
   });
@@ -1942,11 +2041,14 @@ function syncRetouchClipboardButtons() {
 
 function applyDraftRetouch(image, selected) {
   const retouch = cropDraftIsFor(image)
-    ? normalizedRetouch({
+    ? retouchForImage(image, {
         ...(image?.retouch || defaultRetouch()),
         rotation_degrees: state.cropDraftRotation,
       })
-    : normalizedRetouch(image?.retouch || defaultRetouch());
+    : retouchForImage(image, image?.retouch || defaultRetouch());
+  if (isSoocProfile(selected)) {
+    retouch.adjustments = defaultRetouch().adjustments;
+  }
   const pending = state.localRetouchDirty || (selected && selected.status !== "done");
   const active = (pending || cropDraftIsFor(image)) && !retouchIsDefault(retouch);
   els.viewer.classList.toggle("draft-retouch", active);
@@ -2006,11 +2108,11 @@ function retouchIsDefault(retouch) {
 
 function renderRetouchGrid(image, selected = selectedProfile(image)) {
   const retouch = cropDraftIsFor(image)
-    ? normalizedRetouch({
+    ? retouchForImage(image, {
         ...(image?.retouch || defaultRetouch()),
         rotation_degrees: state.cropDraftRotation,
       })
-    : normalizedRetouch(image?.retouch || defaultRetouch());
+    : retouchForImage(image, image?.retouch || defaultRetouch());
   const display = profileDisplayState(image, selected);
   const rotating =
     Math.abs(retouch.rotation_degrees) > 0.001 &&
@@ -2447,8 +2549,8 @@ async function carrySelectedProfileToImage(imageId, profileIndex) {
 }
 
 async function selectProfileRelative(delta) {
-  if (profilesAreImplicitOnly()) return;
   const image = findImage(state.currentId);
+  if (profilesAreImplicitOnly(image)) return;
   const profiles = image?.profiles || [];
   if (profiles.length === 0) return;
   const index = profiles.findIndex((profile) => profile.profile_index === image.selected_profile_index);
@@ -2457,8 +2559,8 @@ async function selectProfileRelative(delta) {
 }
 
 async function toggleSelectedProfilePublish() {
-  if (profilesAreImplicitOnly()) return;
   const image = findImage(state.currentId);
+  if (profilesAreImplicitOnly(image)) return;
   const profile = selectedProfile(image);
   if (!image || !profile) return;
   await saveReview({ publish_profile_indexes: togglePublishProfile(image, profile.profile_index) });

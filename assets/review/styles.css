@@ -522,6 +522,13 @@ button:disabled {
   display: none;
 }
 
+.app.compressed-image .retouch [data-retouch-adjustment],
+.app.compressed-image .retouch-header-actions,
+.app.sooc-profile-selected .retouch [data-retouch-adjustment],
+.app.sooc-profile-selected .retouch-header-actions {
+  display: none;
+}
+
 .crop-overlay {
   position: absolute;
   z-index: 4;

@@ -24,7 +24,7 @@ mod enabled {
                 collect_xmp_profiles, emulation_root, profile_display_name_from_relative,
                 profile_name_parts, variant_sort_key,
             },
-            util::{default_hald_dir, half_cpu_thread_count},
+            util::{InputFileFilter, default_hald_dir, half_cpu_thread_count},
         },
         cli::{
             BatchOutputFormat, CodexAnalysisFlags, ExportOptions, GalleryTemplate, JpegSubsampling,
@@ -387,6 +387,7 @@ mod enabled {
                 input,
                 output,
                 profile,
+                input_file_filter: InputFileFilter::All,
                 hald_dir,
                 profiles_root,
                 hald_level: 16,

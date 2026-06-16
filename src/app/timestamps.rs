@@ -126,6 +126,40 @@ pub(crate) fn sync_output_metadata_from_raw_with_color_profile(
     Ok(())
 }
 
+pub(crate) fn sync_output_metadata_from_image_with_color_profile(
+    input: &Path,
+    output: &Path,
+    comment: Option<&str>,
+    color_profile_source: Option<&Path>,
+) -> Result<()> {
+    let is_tiff = matches!(
+        output.extension().and_then(|ext| ext.to_str()),
+        Some(ext) if ext.eq_ignore_ascii_case("tiff") || ext.eq_ignore_ascii_case("tif")
+    );
+
+    let status = run_exiftool_image_copy_all(input, output, comment)
+        .with_context(|| format!("running exiftool on {}", output.display()))?;
+    if status.success() {
+        restore_output_color_profile(color_profile_source, output)?;
+        return Ok(());
+    }
+
+    if !is_tiff {
+        return Err(anyhow::anyhow!(
+            "exiftool failed with status {status} while syncing metadata"
+        ));
+    }
+
+    if !run_exiftool_image_fallback(input, output, comment)?.success()
+        && !run_exiftool_image_minimal(output, comment)?.success()
+    {
+        return Ok(());
+    }
+
+    restore_output_color_profile(color_profile_source, output)?;
+    Ok(())
+}
+
 fn restore_output_color_profile(color_profile_source: Option<&Path>, output: &Path) -> Result<()> {
     let Some(color_profile_source) = color_profile_source else {
         return Ok(());
@@ -232,6 +266,85 @@ fn run_exiftool_minimal(
     command.stdout(Stdio::null()).stderr(Stdio::null());
 
     Ok(command.status()?)
+}
+
+fn run_exiftool_image_copy_all(
+    input: &Path,
+    output: &Path,
+    comment: Option<&str>,
+) -> Result<std::process::ExitStatus> {
+    let mut command = Command::new("exiftool");
+    command
+        .arg("-q")
+        .arg("-quiet")
+        .arg("-overwrite_original")
+        .arg("-m")
+        .arg("-TagsFromFile")
+        .arg(input)
+        .arg("-all:all")
+        .arg("-icc_profile")
+        .arg("-Orientation#=1");
+    add_basic_output_metadata_args(&mut command, comment);
+    command.arg(output);
+    command.stdout(Stdio::null()).stderr(Stdio::null());
+
+    Ok(command.status()?)
+}
+
+fn run_exiftool_image_fallback(
+    input: &Path,
+    output: &Path,
+    comment: Option<&str>,
+) -> Result<std::process::ExitStatus> {
+    let mut command = Command::new("exiftool");
+    command
+        .arg("-q")
+        .arg("-quiet")
+        .arg("-overwrite_original")
+        .arg("-m")
+        .arg("-TagsFromFile")
+        .arg(input)
+        .arg("-exif:all")
+        .arg("-xmp:all")
+        .arg("-icc_profile")
+        .arg("-Orientation#=1");
+    add_basic_output_metadata_args(&mut command, comment);
+    command.arg(output);
+    command.stdout(Stdio::null()).stderr(Stdio::null());
+
+    Ok(command.status()?)
+}
+
+fn run_exiftool_image_minimal(
+    output: &Path,
+    comment: Option<&str>,
+) -> Result<std::process::ExitStatus> {
+    let mut command = Command::new("exiftool");
+    command
+        .arg("-q")
+        .arg("-quiet")
+        .arg("-overwrite_original")
+        .arg("-m");
+    add_basic_output_metadata_args(&mut command, comment);
+    command.arg(output);
+    command.stdout(Stdio::null()).stderr(Stdio::null());
+
+    Ok(command.status()?)
+}
+
+fn add_basic_output_metadata_args(command: &mut Command, comment: Option<&str>) {
+    let agent = format!("mini-film {}", env!("CARGO_PKG_VERSION"));
+    let timestamp = exiftool_timestamp(Local::now());
+
+    if let Some(comment) = comment {
+        command.arg(format!("-Comment={comment}"));
+        command.arg(format!("-UserComment={comment}"));
+    }
+
+    command
+        .arg(format!("-XMP-xmp:CreatorTool={agent}"))
+        .arg(format!("-XMP-xmp:MetadataDate={timestamp}"))
+        .arg(format!("-XMP-xmp:ModifyDate={timestamp}"));
 }
 
 fn add_edit_metadata_args(command: &mut Command, raw: &Path, edit: &OutputEditMetadata<'_>) {
