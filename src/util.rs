@@ -98,6 +98,7 @@ pub fn matching_raw_for_sidecar(sidecar: &Path) -> Option<PathBuf> {
 
 fn matching_sibling_with_kind(path: &Path, accept: impl Fn(&Path) -> bool) -> Option<PathBuf> {
     let stem = path.file_stem()?.to_str()?;
+    let stem = sidecar_match_stem(stem);
     let parent = path.parent().unwrap_or_else(|| Path::new(""));
     let mut matches = fs::read_dir(parent)
         .ok()?
@@ -108,11 +109,24 @@ fn matching_sibling_with_kind(path: &Path, accept: impl Fn(&Path) -> bool) -> Op
             candidate
                 .file_stem()
                 .and_then(|candidate_stem| candidate_stem.to_str())
-                .is_some_and(|candidate_stem| candidate_stem.eq_ignore_ascii_case(stem))
+                .is_some_and(|candidate_stem| {
+                    sidecar_match_stem(candidate_stem).eq_ignore_ascii_case(stem)
+                })
         })
         .collect::<Vec<_>>();
     matches.sort();
     matches.into_iter().next()
+}
+
+fn sidecar_match_stem(stem: &str) -> &str {
+    stem.rsplit_once('-')
+        .filter(|(base, suffix)| {
+            !base.is_empty()
+                && !suffix.is_empty()
+                && suffix.bytes().all(|byte| byte.is_ascii_digit())
+        })
+        .map(|(base, _)| base)
+        .unwrap_or(stem)
 }
 
 #[allow(dead_code)]

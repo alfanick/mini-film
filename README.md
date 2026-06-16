@@ -105,10 +105,12 @@ Use `--input-raw-only` or `--input-jpg-only` when a mixed input folder should be
 filtered before processing. JPEG and HEIC are treated as the same processed-file
 group for these filters.
 
-In the default mixed mode, a JPEG/HEIC with the same stem in the same folder as a
-RAW is treated as that RAW's straight-out-of-camera sidecar instead of a separate
-picture. The review UI shows it as an unchecked `straight out of camera` profile
-thumbnail; if selected for publish, its output uses the `-sooc` suffix.
+In the default mixed mode, a JPEG/HEIC with the same normalized stem in the same
+folder as a RAW is treated as that RAW's straight-out-of-camera sidecar instead
+of a separate picture. A trailing dash-number suffix is ignored for this match,
+so `DSC_8313-1.jpg` pairs with `DSC_8313-2.dng`. The review UI shows it as an
+unchecked `straight out of camera` profile thumbnail; if selected for publish,
+its output uses the `-sooc` suffix.
 
 Run the live review workflow:
 
