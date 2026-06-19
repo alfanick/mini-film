@@ -1,6 +1,6 @@
 [package]
 name = "mini-film"
-version = "13.1.5"
+version = "13.1.6"
 description = "Review and publish RAW, JPEG, and HEIC photos with optional Lightroom-style film emulation profiles for RAW workflows."
 repository = "https://github.com/alfanick/mini-film"
 homepage = "https://github.com/alfanick/mini-film"
@@ -53,9 +53,9 @@ tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "net", "f
 async-stream = "0.3.6"
 tower-http = { version = "0.7.0", features = ["fs"] }
 tower = "0.5.3"
-tauri = { version = "2.11.2", optional = true }
+tauri = { version = "2.11.3", optional = true }
 tauri-plugin-dialog = { version = "2.7.1", optional = true }
 arc-swap = "1"
 
 [build-dependencies]
-tauri-build = { version = "2.6.2", optional = true }
+tauri-build = { version = "2.6.3", optional = true }
