@@ -41,6 +41,9 @@ jobs:
       - name: Install Linux GUI dependencies
         run: ./.github/scripts/install-linux-gui-deps.sh
 
+      - name: Install Linux image tool dependencies
+        run: ./.github/scripts/install-linux-image-deps.sh
+
       - name: Ensure cargo-outdated
         run: ./.github/scripts/ensure-cargo-outdated.sh
 

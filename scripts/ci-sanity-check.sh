@@ -4,8 +4,13 @@ set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
 
-RAW_FILE="${MINI_FILM_SANITY_RAW:-/home/alfanick/Pictures/mini-film-sample.dng}"
-PROFILES_ROOT="${MINI_FILM_SANITY_PROFILES_ROOT:-/home/alfanick/Pictures/profile-library}"
+if [ -z "${MINI_FILM_SANITY_RAW:-}" ] || [ -z "${MINI_FILM_SANITY_PROFILES_ROOT:-}" ]; then
+  echo "Skipping sanity check: MINI_FILM_SANITY_RAW and MINI_FILM_SANITY_PROFILES_ROOT are not set."
+  exit 0
+fi
+
+RAW_FILE="$MINI_FILM_SANITY_RAW"
+PROFILES_ROOT="$MINI_FILM_SANITY_PROFILES_ROOT"
 PROFILE="${MINI_FILM_SANITY_PROFILE:-$PROFILES_ROOT/emulations/Agfa Scala 200.xmp}"
 BINARY="${MINI_FILM_BINARY:-target/release/mini-film}"
 WORKDIR="${MINI_FILM_SANITY_WORKDIR:-${RUNNER_TEMP:-/tmp}/mini-film-ci-sanity}"
