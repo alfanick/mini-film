@@ -10,7 +10,8 @@ use mini_film::{GrainSettings, apply_grain, apply_grain_8bit};
 use tempfile::Builder;
 
 use crate::app::export::{
-    finalize_output_with_retouch, output_ext, validate_export_options, validate_output_format,
+    finalize_auto_oriented_output_with_retouch, finalize_output_with_retouch, output_ext,
+    validate_export_options, validate_output_format,
 };
 use crate::app::pp3::{
     write_rawtherapee_color_noise_profile, write_rawtherapee_lens_corrections_profile,
@@ -228,7 +229,13 @@ pub(crate) fn apply_compressed(
         "export",
         estimate_export_duration(jpeg_output),
     );
-    finalize_output_with_retouch(job.convert, job.input, job.output, job.export, job.retouch)?;
+    finalize_auto_oriented_output_with_retouch(
+        job.convert,
+        job.input,
+        job.output,
+        job.export,
+        job.retouch,
+    )?;
     export_stage.finish();
 
     if !job.export.strip_metadata {

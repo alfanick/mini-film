@@ -1,9 +1,14 @@
 use super::prelude::*;
 use crate::app::export::add_convert_thread_limit;
+use crate::app::util::is_jpeg_input_file;
 
 pub(super) fn extract_embedded_preview(raw: &Path, output: &Path, convert: &Path) -> Result<()> {
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+
+    if is_jpeg_input_file(raw) {
+        return auto_orient_preview(convert, raw, output);
     }
 
     for tag in ["PreviewImage", "JpgFromRaw", "OtherImage", "ThumbnailImage"] {

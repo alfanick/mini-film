@@ -34,6 +34,27 @@ pub(crate) fn finalize_output_with_retouch(
     export: &ExportOptions,
     retouch: Option<&RetouchSettings>,
 ) -> Result<()> {
+    finalize_output_impl(convert, input, output, export, retouch, false)
+}
+
+pub(crate) fn finalize_auto_oriented_output_with_retouch(
+    convert: &Path,
+    input: &Path,
+    output: &Path,
+    export: &ExportOptions,
+    retouch: Option<&RetouchSettings>,
+) -> Result<()> {
+    finalize_output_impl(convert, input, output, export, retouch, true)
+}
+
+fn finalize_output_impl(
+    convert: &Path,
+    input: &Path,
+    output: &Path,
+    export: &ExportOptions,
+    retouch: Option<&RetouchSettings>,
+    auto_orient: bool,
+) -> Result<()> {
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
@@ -41,6 +62,9 @@ pub(crate) fn finalize_output_with_retouch(
     let mut command = Command::new(convert);
     add_convert_thread_limit(&mut command, convert);
     command.arg(input);
+    if auto_orient {
+        command.arg("-auto-orient");
+    }
     add_retouch_geometry_args(&mut command, input, retouch)?;
     add_final_convert_args(&mut command, output, export)?;
 
