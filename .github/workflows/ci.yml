@@ -1,7 +1,6 @@
 name: CI
 permissions:
   contents: write
-  actions: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -15,51 +14,29 @@ on:
 jobs:
   test-and-lint:
     name: Test and quality checks
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        shell: bash
-        env:
-          CHECKOUT_REF: ${{ github.ref }}
-          CHECKOUT_SHA: ${{ github.sha }}
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$GITHUB_WORKSPACE"
-          cd /
-          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
-          cd "$GITHUB_WORKSPACE"
-          git -c init.defaultBranch=main init
-          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
-
-          fetch_ref() {
-            git -c "http.https://github.com/.extraheader=${auth_header}" fetch --force --tags origin "$1"
-          }
-
-          if [[ -n "${CHECKOUT_REF:-}" && "$CHECKOUT_REF" == refs/* ]] &&
-            fetch_ref "+${CHECKOUT_REF}:refs/remotes/origin/ci-ref"; then
-            git checkout --force refs/remotes/origin/ci-ref
-          elif [[ -n "${CHECKOUT_SHA:-}" ]] && fetch_ref "$CHECKOUT_SHA"; then
-            git checkout --force FETCH_HEAD
-          elif [[ -n "${CHECKOUT_REF:-}" ]] && fetch_ref "$CHECKOUT_REF"; then
-            git checkout --force FETCH_HEAD
-          elif [[ -n "${CHECKOUT_REF:-}" ]] && fetch_ref "refs/heads/${CHECKOUT_REF}"; then
-            git checkout --force FETCH_HEAD
-          elif [[ -n "${CHECKOUT_REF:-}" ]] && fetch_ref "refs/tags/${CHECKOUT_REF}"; then
-            git checkout --force FETCH_HEAD
-          else
-            echo "Failed to fetch ${CHECKOUT_REF:-${CHECKOUT_SHA:-unknown ref}} from ${GITHUB_REPOSITORY}" >&2
-            exit 1
-          fi
-
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install Rust
-        run: |
-          set -euo pipefail
-          rustup toolchain install nightly --component clippy,rustfmt
-          rustup default nightly
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: nightly
+          components: clippy,rustfmt,llvm-tools-preview
+
+      - name: Cache cargo registry, git deps, and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-ci-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-ci-cargo-
 
       - name: Install Linux GUI dependencies
         run: ./.github/scripts/install-linux-gui-deps.sh
@@ -79,10 +56,9 @@ jobs:
           cargo test --all-targets --no-default-features --no-fail-fast -- --nocapture --test-threads=1 | tee "$test_log"
         continue-on-error: false
 
-      - name: Install llvm-tools and cargo-llvm-cov
+      - name: Install cargo-llvm-cov
         run: |
           set -euo pipefail
-          rustup component add llvm-tools-preview
           if ! command -v cargo-llvm-cov >/dev/null 2>&1; then
             cargo install --locked cargo-llvm-cov
           fi
@@ -204,7 +180,7 @@ jobs:
             echo '```'
             echo '</details>'
             echo
-            echo "Full test log path on the self-hosted runner: ${test_log}"
+            echo "Full test log path on the runner: ${test_log}"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Build release smoke binaries
@@ -215,47 +191,15 @@ jobs:
 
   tag-on-version-bump:
     name: Tag release
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     needs: test-and-lint
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.test-and-lint.result == 'success' }}
     steps:
       - name: Checkout
-        shell: bash
-        env:
-          CHECKOUT_REF: ${{ github.ref }}
-          CHECKOUT_SHA: ${{ github.sha }}
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$GITHUB_WORKSPACE"
-          cd /
-          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
-          cd "$GITHUB_WORKSPACE"
-          git -c init.defaultBranch=main init
-          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
-
-          fetch_ref() {
-            git -c "http.https://github.com/.extraheader=${auth_header}" fetch --force --tags origin "$1"
-          }
-
-          if [[ -n "${CHECKOUT_REF:-}" && "$CHECKOUT_REF" == refs/* ]] &&
-            fetch_ref "+${CHECKOUT_REF}:refs/remotes/origin/ci-ref"; then
-            git checkout --force refs/remotes/origin/ci-ref
-          elif [[ -n "${CHECKOUT_SHA:-}" ]] && fetch_ref "$CHECKOUT_SHA"; then
-            git checkout --force FETCH_HEAD
-          elif [[ -n "${CHECKOUT_REF:-}" ]] && fetch_ref "$CHECKOUT_REF"; then
-            git checkout --force FETCH_HEAD
-          elif [[ -n "${CHECKOUT_REF:-}" ]] && fetch_ref "refs/heads/${CHECKOUT_REF}"; then
-            git checkout --force FETCH_HEAD
-          elif [[ -n "${CHECKOUT_REF:-}" ]] && fetch_ref "refs/tags/${CHECKOUT_REF}"; then
-            git checkout --force FETCH_HEAD
-          else
-            echo "Failed to fetch ${CHECKOUT_REF:-${CHECKOUT_SHA:-unknown ref}} from ${GITHUB_REPOSITORY}" >&2
-            exit 1
-          fi
-
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ github.token }}
 
       - name: Check cargo versions
         run: ./.githooks/check-cargo-versions.sh
@@ -312,56 +256,3 @@ jobs:
             fi
             exit 1
           fi
-
-      - name: Cleanup self-hosted runner metadata
-        if: always()
-        run: |
-          ./.github/scripts/cleanup-build-dir.sh
-
-  cleanup-runner:
-    name: Cleanup self-hosted workspace
-    runs-on: self-hosted
-    needs: test-and-lint
-    if: always()
-    steps:
-      - name: Checkout
-        shell: bash
-        env:
-          CHECKOUT_REF: ${{ github.ref }}
-          CHECKOUT_SHA: ${{ github.sha }}
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$GITHUB_WORKSPACE"
-          cd /
-          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
-          cd "$GITHUB_WORKSPACE"
-          git -c init.defaultBranch=main init
-          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
-
-          fetch_ref() {
-            git -c "http.https://github.com/.extraheader=${auth_header}" fetch --force --tags origin "$1"
-          }
-
-          if [[ -n "${CHECKOUT_REF:-}" && "$CHECKOUT_REF" == refs/* ]] &&
-            fetch_ref "+${CHECKOUT_REF}:refs/remotes/origin/ci-ref"; then
-            git checkout --force refs/remotes/origin/ci-ref
-          elif [[ -n "${CHECKOUT_SHA:-}" ]] && fetch_ref "$CHECKOUT_SHA"; then
-            git checkout --force FETCH_HEAD
-          elif [[ -n "${CHECKOUT_REF:-}" ]] && fetch_ref "$CHECKOUT_REF"; then
-            git checkout --force FETCH_HEAD
-          elif [[ -n "${CHECKOUT_REF:-}" ]] && fetch_ref "refs/heads/${CHECKOUT_REF}"; then
-            git checkout --force FETCH_HEAD
-          elif [[ -n "${CHECKOUT_REF:-}" ]] && fetch_ref "refs/tags/${CHECKOUT_REF}"; then
-            git checkout --force FETCH_HEAD
-          else
-            echo "Failed to fetch ${CHECKOUT_REF:-${CHECKOUT_SHA:-unknown ref}} from ${GITHUB_REPOSITORY}" >&2
-            exit 1
-          fi
-
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-
-      - name: Cleanup self-hosted workspace
-        run: |
-          ./.github/scripts/cleanup-build-dir.sh

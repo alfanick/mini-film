@@ -18,13 +18,10 @@ permissions:
   contents: write
   actions: read
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-
 jobs:
   resolve-release:
     name: Resolve release context
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     if: |
       github.event_name != 'workflow_run' ||
       (github.event_name == 'workflow_run' &&
@@ -36,27 +33,10 @@ jobs:
       source_ref: ${{ steps.release.outputs.source_ref }}
     steps:
       - name: Checkout
-        shell: bash
-        env:
-          CHECKOUT_REF: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.ref_name }}
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$GITHUB_WORKSPACE"
-          cd /
-          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
-          cd "$GITHUB_WORKSPACE"
-          git -c init.defaultBranch=main init
-          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
-          if ! git -c "http.https://github.com/.extraheader=${auth_header}" fetch --force --tags origin "$CHECKOUT_REF" &&
-            ! git -c "http.https://github.com/.extraheader=${auth_header}" fetch --force --tags origin "refs/heads/${CHECKOUT_REF}" &&
-            ! git -c "http.https://github.com/.extraheader=${auth_header}" fetch --force --tags origin "refs/tags/${CHECKOUT_REF}"; then
-            echo "Failed to fetch ${CHECKOUT_REF} from ${GITHUB_REPOSITORY}" >&2
-            exit 1
-          fi
-          git checkout --force FETCH_HEAD
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.ref }}
 
       - name: Check cargo versions
         shell: bash
@@ -107,7 +87,7 @@ jobs:
           echo "source_ref=$source_ref" >> "$GITHUB_OUTPUT"
 
   build-binaries:
-    name: Build ${{ matrix.target }}
+    name: Build ${{ matrix.target }}${{ matrix.artifact_suffix }}
     needs: resolve-release
     runs-on: ${{ matrix.runs_on }}
     if: needs.resolve-release.outputs.should_release == 'true'
@@ -118,7 +98,7 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             extension: ""
             artifact_suffix: ""
-            runs_on: self-hosted
+            runs_on: ubuntu-latest
             use_cross: false
             cargo_features: "github-update"
             default_features: false
@@ -146,7 +126,7 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             extension: ""
             artifact_suffix: "-gui"
-            runs_on: self-hosted
+            runs_on: ubuntu-latest
             use_cross: false
             cargo_features: "github-update"
             default_features: true
@@ -173,52 +153,26 @@ jobs:
             default_features: true
 
     steps:
-      - name: Checkout (GitHub-hosted)
-        if: ${{ matrix.runs_on != 'self-hosted' }}
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: ${{ needs.resolve-release.outputs.source_ref }}
-
-      - name: Checkout (self-hosted)
-        if: ${{ matrix.runs_on == 'self-hosted' }}
-        shell: bash
-        env:
-          CHECKOUT_REF: ${{ needs.resolve-release.outputs.source_ref }}
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$GITHUB_WORKSPACE"
-          cd /
-          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
-          cd "$GITHUB_WORKSPACE"
-          git -c init.defaultBranch=main init
-          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
-          if ! git -c "http.https://github.com/.extraheader=${auth_header}" fetch --force --tags origin "$CHECKOUT_REF" &&
-            ! git -c "http.https://github.com/.extraheader=${auth_header}" fetch --force --tags origin "refs/heads/${CHECKOUT_REF}" &&
-            ! git -c "http.https://github.com/.extraheader=${auth_header}" fetch --force --tags origin "refs/tags/${CHECKOUT_REF}"; then
-            echo "Failed to fetch ${CHECKOUT_REF} from ${GITHUB_REPOSITORY}" >&2
-            exit 1
-          fi
-          git checkout --force FETCH_HEAD
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Check cargo versions
         shell: bash
         run: ./.githooks/check-cargo-versions.sh
 
       - name: Cache cargo registry, git deps, and target
-        if: ${{ matrix.runs_on != 'self-hosted' }}
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target/${{ matrix.target }}
-          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ matrix.target }}${{ matrix.artifact_suffix }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-${{ matrix.target }}-cargo-
+            ${{ runner.os }}-${{ matrix.target }}${{ matrix.artifact_suffix }}-cargo-
 
       - name: Resolve release tag
         id: release-tag
@@ -228,19 +182,10 @@ jobs:
           echo "tag=${{ needs.resolve-release.outputs.release_tag }}" >> "$GITHUB_OUTPUT"
 
       - name: Install Rust
-        if: ${{ matrix.runs_on != 'self-hosted' }}
         uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: nightly
           targets: ${{ matrix.target }}
-
-      - name: Install Rust (self-hosted)
-        if: ${{ matrix.runs_on == 'self-hosted' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          rustup toolchain install nightly --target "${{ matrix.target }}"
-          rustup default nightly
 
       - name: Install cross
         if: matrix.use_cross
@@ -274,9 +219,48 @@ jobs:
             PKG_CONFIG_ALLOW_CROSS=1 cargo build "${build_args[@]}"
           fi
 
-      - name: Publish to crates.io
-        if: matrix.target == 'x86_64-unknown-linux-gnu' && matrix.artifact_suffix == ''
+      - name: Prepare artifact
         shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          binary="target/${{ matrix.target }}/release/mini-film${{ matrix.extension }}"
+          artifact="artifacts/mini-film-${{ steps.release-tag.outputs.tag }}-${{ matrix.target }}${{ matrix.artifact_suffix }}${{ matrix.extension }}"
+          cp "$binary" "$artifact"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mini-film-${{ matrix.target }}${{ matrix.artifact_suffix }}
+          path: artifacts/*
+          if-no-files-found: error
+
+  publish-crate:
+    name: Publish crates.io package
+    runs-on: ubuntu-latest
+    needs: resolve-release
+    if: needs.resolve-release.outputs.should_release == 'true'
+    environment: Default
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.resolve-release.outputs.source_ref }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: nightly
+
+      - name: Check cargo versions
+        shell: bash
+        run: ./.githooks/check-cargo-versions.sh
+
+      - name: Publish to crates.io
+        shell: bash
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           set -euo pipefail
 
@@ -306,16 +290,9 @@ jobs:
             echo "curl not available; publish will rely on cargo publish error handling."
           fi
 
-          token_file="${CARGO_REGISTRY_TOKEN_FILE:-/home/alfanick/.etcfiles/.cargo_registry_token}"
-          if [ ! -f "$token_file" ]; then
-            echo "Cargo registry token file not found: $token_file" >&2
-            exit 1
-          fi
-
-          token="$(tr -d '[:space:]' < "$token_file")"
-          if [ -z "$token" ]; then
-            echo "Cargo registry token file is empty: $token_file" >&2
-            exit 1
+          if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
+            echo "::warning::CARGO_REGISTRY_TOKEN secret is not set; skipping crates.io publish."
+            exit 0
           fi
 
           if [ "$skip_publish" = "true" ]; then
@@ -324,7 +301,7 @@ jobs:
             publish_output="$(mktemp)"
             trap 'rm -f "$publish_output"' EXIT
             set +e
-            cargo publish --locked --no-verify --token "$token" >"$publish_output" 2>&1
+            cargo publish --locked --no-verify --token "$CARGO_REGISTRY_TOKEN" >"$publish_output" 2>&1
             publish_status=$?
             set -e
 
@@ -344,63 +321,20 @@ jobs:
             fi
           fi
 
-      - name: Prepare artifact
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p artifacts
-          binary="target/${{ matrix.target }}/release/mini-film${{ matrix.extension }}"
-          artifact="artifacts/mini-film-${{ steps.release-tag.outputs.tag }}-${{ matrix.target }}${{ matrix.artifact_suffix }}${{ matrix.extension }}"
-          cp "$binary" "$artifact"
-
-      - name: Upload artifact
-        if: ${{ matrix.runs_on != 'self-hosted' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: mini-film-${{ matrix.target }}${{ matrix.artifact_suffix }}
-          path: artifacts/*
-          if-no-files-found: error
-
-      - name: Store artifact on self-hosted runner
-        if: ${{ matrix.runs_on == 'self-hosted' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          store="$HOME/.cache/mini-film/release-artifacts/${GITHUB_RUN_ID}"
-          mkdir -p "$store"
-          cp artifacts/* "$store/"
-          echo "Stored self-hosted artifact in $store"
-
   publish-release:
     name: Publish release
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     needs:
       - resolve-release
       - build-binaries
+      - publish-crate
     if: needs.resolve-release.outputs.should_release == 'true'
     steps:
       - name: Checkout
-        shell: bash
-        env:
-          CHECKOUT_REF: ${{ needs.resolve-release.outputs.source_ref }}
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$GITHUB_WORKSPACE"
-          cd /
-          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
-          cd "$GITHUB_WORKSPACE"
-          git -c init.defaultBranch=main init
-          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
-          if ! git -c "http.https://github.com/.extraheader=${auth_header}" fetch --force --tags origin "$CHECKOUT_REF" &&
-            ! git -c "http.https://github.com/.extraheader=${auth_header}" fetch --force --tags origin "refs/heads/${CHECKOUT_REF}" &&
-            ! git -c "http.https://github.com/.extraheader=${auth_header}" fetch --force --tags origin "refs/tags/${CHECKOUT_REF}"; then
-            echo "Failed to fetch ${CHECKOUT_REF} from ${GITHUB_REPOSITORY}" >&2
-            exit 1
-          fi
-          git checkout --force FETCH_HEAD
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.resolve-release.outputs.source_ref }}
 
       - name: Check cargo versions
         shell: bash
@@ -413,25 +347,17 @@ jobs:
           set -euo pipefail
           echo "tag=${{ needs.resolve-release.outputs.release_tag }}" >> "$GITHUB_OUTPUT"
 
-      - name: Collect release artifacts
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: mini-film-*
+          merge-multiple: true
+
+      - name: Verify release artifacts
         shell: bash
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          rm -rf artifacts
-          mkdir -p artifacts
-          python3 .github/scripts/download-run-artifacts.py \
-            --repo "$GITHUB_REPOSITORY" \
-            --run-id "$GITHUB_RUN_ID" \
-            --pattern 'mini-film-*' \
-            --output artifacts
-
-          self_hosted_store="$HOME/.cache/mini-film/release-artifacts/${GITHUB_RUN_ID}"
-          if [[ -d "$self_hosted_store" ]]; then
-            cp "$self_hosted_store"/* artifacts/
-          fi
-
           shopt -s nullglob
           files=(artifacts/*)
           if [[ "${#files[@]}" -eq 0 ]]; then
