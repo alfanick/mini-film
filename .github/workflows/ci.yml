@@ -208,8 +208,6 @@ jobs:
         run: ./.githooks/check-cargo-versions.sh
 
       - name: Create and push version tag if version changed
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
@@ -239,8 +237,7 @@ jobs:
           fi
 
           tag="v${new_version}"
-          auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
-          if git -c "http.https://github.com/.extraheader=${auth_header}" ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
             echo "Tag ${tag} already exists in remote; skipping."
             exit 0
           fi
@@ -251,9 +248,9 @@ jobs:
           fi
 
           git tag "$tag" "$current_sha"
-          if ! git -c "http.https://github.com/.extraheader=${auth_header}" push origin "$tag"; then
+          if ! git push origin "$tag"; then
             echo "Push of ${tag} failed, checking if tag appeared in remote concurrently..."
-            if git -c "http.https://github.com/.extraheader=${auth_header}" ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+            if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
               echo "Tag ${tag} already exists in remote after push race; treating as success."
               exit 0
             fi
