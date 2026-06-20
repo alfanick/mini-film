@@ -298,7 +298,7 @@ function ShortcutsOverlay() {
     [
       "Rating",
       [
-        [["1", "2", "3", "4", "5"], "Set rating and advance to the next visible picture."],
+        [["§", "1", "2", "3", "4", "5"], "Set rating and advance to the next visible picture."],
         [["↑", "↓"], "Increase or decrease the rating, then advance."],
       ],
     ],
@@ -3113,6 +3113,10 @@ window.addEventListener("keydown", (event) => {
   if (event.key.toLowerCase() === "f") {
     event.preventDefault();
     toggleFullscreen().catch((error) => console.error(error));
+  }
+  if (event.key === "§") {
+    event.preventDefault();
+    rateCurrentAndAdvance(0);
   }
   if (["1", "2", "3", "4", "5"].includes(event.key)) {
     event.preventDefault();
