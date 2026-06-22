@@ -1297,6 +1297,12 @@ function isSoocProfile(profile) {
   return profile?.profile_stem === "sooc" || profile?.profile_index === 1000000000;
 }
 
+function isPortraitRenderProfile(profile) {
+  const width = Number(profile?.width);
+  const height = Number(profile?.height);
+  return Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0 && height > width;
+}
+
 function hasSoocProfile(image) {
   return Boolean((image?.profiles || []).some((profile) => isSoocProfile(profile)));
 }
@@ -1452,11 +1458,13 @@ function ProfileList({ image, onSelect, onTogglePublish, onSoloPublish }) {
     const cardUrl = profile.url || image.preview_url;
     const publishSelected = publishIndexes.has(profile.profile_index);
     const display = profileDisplayState(image, profile);
+    const isPortrait = isPortraitRenderProfile(profile);
     const sourceStatus = profile.url ? display.text : `${display.text} | preview`;
     const classes = [
       "profile-card",
       profile.profile_index === previewProfile?.profile_index ? "active" : "",
       profile.url ? "" : "pending",
+      isPortrait ? "portrait" : "",
       display.state,
       publishSelected ? "publish-selected" : "publish-excluded",
     ]
@@ -1511,6 +1519,7 @@ function ProfileList({ image, onSelect, onTogglePublish, onSoloPublish }) {
               decoding: "async",
               fetchpriority: profile.profile_index === previewProfile?.profile_index ? "high" : "low",
               onLoad: (event) => {
+                if (isPortraitRenderProfile(profile)) return;
                 event.currentTarget
                   .closest(".profile-card")
                   ?.classList.toggle("portrait", event.currentTarget.naturalHeight > event.currentTarget.naturalWidth);

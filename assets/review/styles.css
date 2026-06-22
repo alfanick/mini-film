@@ -847,6 +847,7 @@ button:disabled {
 }
 
 .profile-card.portrait img {
+  aspect-ratio: 2 / 3;
   object-fit: contain;
   background: #20201f;
 }

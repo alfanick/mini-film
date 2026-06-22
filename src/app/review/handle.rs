@@ -393,6 +393,8 @@ impl ReviewHandle {
             render.error = None;
             render.duration_ms = None;
             render.render_key = render_key;
+            render.width = None;
+            render.height = None;
             render.updated_at = now_string();
             let after = render.clone();
             image.updated_at = now_string();
@@ -938,6 +940,7 @@ impl ReviewHandle {
                             render.output_path = Some(job.output.clone());
                             render.error = None;
                             render.duration_ms = Some(started.elapsed().as_millis() as u64);
+                            refresh_review_render_dimensions(render, &job.output);
                         },
                     );
                 }
@@ -1003,6 +1006,7 @@ impl ReviewHandle {
                             render.output_path = Some(job.output.clone());
                             render.error = None;
                             render.duration_ms = Some(started.elapsed().as_millis() as u64);
+                            refresh_review_render_dimensions(render, &job.output);
                         },
                     );
                 }
@@ -1424,6 +1428,8 @@ impl ReviewHandle {
                             },
                             "error": render.error,
                             "duration_ms": render.duration_ms,
+                            "width": render.width,
+                            "height": render.height,
                             "retouch_pending": render.render_key.is_some(),
                             "updated_at": render.updated_at,
                         })
@@ -2069,6 +2075,7 @@ pub(super) fn apply_base_render_done(
     output: &Path,
     duration: Duration,
 ) -> Option<String> {
+    refresh_review_render_dimensions(render, output);
     if render.render_key.is_some()
         && matches!(
             render.status,
@@ -2085,6 +2092,19 @@ pub(super) fn apply_base_render_done(
     render.error = None;
     render.duration_ms = Some(duration.as_millis() as u64);
     None
+}
+
+fn refresh_review_render_dimensions(render: &mut ReviewProfileRender, output: &Path) {
+    match image::image_dimensions(output) {
+        Ok((width, height)) => {
+            render.width = Some(width);
+            render.height = Some(height);
+        }
+        Err(_) => {
+            render.width = None;
+            render.height = None;
+        }
+    }
 }
 
 pub(super) fn apply_base_preview_done(

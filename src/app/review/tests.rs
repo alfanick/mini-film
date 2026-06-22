@@ -104,6 +104,8 @@ fn profile_render(index: usize, stem: &str) -> ReviewProfileRender {
         error: None,
         duration_ms: Some(1),
         render_key: None,
+        width: None,
+        height: None,
         updated_at: now_string(),
     }
 }
@@ -449,6 +451,8 @@ fn base_render_done_triggers_pending_retouch_without_marking_done() {
         error: Some("old".to_string()),
         duration_ms: None,
         render_key: Some("retouch-key".to_string()),
+        width: None,
+        height: None,
         updated_at: now_string(),
     };
 
@@ -868,6 +872,8 @@ fn publish_flat_album_filters_rating_label_and_tag() {
             error: None,
             duration_ms: Some(1),
             render_key: None,
+            width: None,
+            height: None,
             updated_at: now_string(),
         }],
         updated_at: now_string(),
@@ -924,6 +930,8 @@ fn publish_flat_album_suffixes_non_default_profiles() {
                 error: None,
                 duration_ms: Some(1),
                 render_key: None,
+                width: None,
+                height: None,
                 updated_at: now_string(),
             },
             ReviewProfileRender {
@@ -935,6 +943,8 @@ fn publish_flat_album_suffixes_non_default_profiles() {
                 error: None,
                 duration_ms: Some(1),
                 render_key: None,
+                width: None,
+                height: None,
                 updated_at: now_string(),
             },
         ],
@@ -990,6 +1000,8 @@ fn publish_store_reports_realtime_progress() {
                 error: None,
                 duration_ms: Some(1),
                 render_key: None,
+                width: None,
+                height: None,
                 updated_at: now_string(),
             },
             ReviewProfileRender {
@@ -1001,6 +1013,8 @@ fn publish_store_reports_realtime_progress() {
                 error: None,
                 duration_ms: Some(1),
                 render_key: None,
+                width: None,
+                height: None,
                 updated_at: now_string(),
             },
         ],

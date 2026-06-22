@@ -269,6 +269,10 @@ pub(super) struct ReviewProfileRender {
     pub(super) duration_ms: Option<u64>,
     #[serde(default)]
     pub(super) render_key: Option<String>,
+    #[serde(default)]
+    pub(super) width: Option<u32>,
+    #[serde(default)]
+    pub(super) height: Option<u32>,
     pub(super) updated_at: String,
 }
 

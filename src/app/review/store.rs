@@ -328,6 +328,8 @@ pub(super) fn sync_image_profile_renders(
                     error: None,
                     duration_ms: None,
                     render_key: None,
+                    width: None,
+                    height: None,
                     updated_at: now_string(),
                 })
         })
@@ -347,6 +349,8 @@ pub(super) fn sync_image_profile_renders(
                     error: None,
                     duration_ms: None,
                     render_key: None,
+                    width: None,
+                    height: None,
                     updated_at: now_string(),
                 }),
         );
