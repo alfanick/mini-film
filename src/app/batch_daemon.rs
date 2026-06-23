@@ -31,8 +31,8 @@ use crate::app::progress::{
     progress_length,
 };
 use crate::app::review::{
-    ReviewConfig, ReviewGalleryConfig, ReviewHandle, ReviewProfile, SOOC_PROFILE_INDEX,
-    SOOC_PROFILE_STEM, start_review_server,
+    ReviewConfig, ReviewGalleryConfig, ReviewHandle, ReviewProfile, ReviewProfileMetadata,
+    SOOC_PROFILE_INDEX, SOOC_PROFILE_STEM, start_review_server,
 };
 use crate::app::system_stats::{ResourceUsageSummary, sample_usage_block};
 use crate::app::util::{
@@ -324,6 +324,8 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
                 selector: profile.selector.clone(),
                 stem: profile.stem.clone(),
                 retouch_base: profile.resolved.retouch_base,
+                metadata: Some(ReviewProfileMetadata::from(&profile.resolved.metadata)),
+                hald_path: profile.resolved.hald_path.clone(),
             })
             .collect();
         Some(start_review_server(ReviewConfig {

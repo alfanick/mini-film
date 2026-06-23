@@ -25,6 +25,7 @@ const state = {
   localRetouchDirty: false,
   mobileDrawer: null,
   pendingProfileSelections: new Map(),
+  profileInfoProfileIndex: null,
 };
 
 const RETOUCH_SAVE_DEBOUNCE_MS = 1200;
@@ -168,8 +169,161 @@ function ReviewShell() {
       ),
     ),
     h(ShortcutsOverlay),
+    h("div", { id: "profile-info-overlay", class: "profile-info-overlay", hidden: true }),
     h(PublishOverlay),
   );
+}
+
+function ProfileInfoOverlay() {
+  const profile = profileByIndex(state.profileInfoProfileIndex);
+  if (!profile) return null;
+  const metadata = profile.metadata || {};
+  const haldImage = metadata.has_hald ? `api/profile/${profile.index}/hald` : null;
+  return h(
+    "section",
+    { class: "profile-info-card", role: "dialog", "aria-modal": "true" },
+    h(
+      "header",
+      { class: "profile-info-header" },
+      h("div", null, h("h3", null, "Profile info"), h("p", null, profileDisplayName(profile))),
+      h(
+        "button",
+        {
+          class: "profile-info-close",
+          type: "button",
+          "aria-label": "Close profile info",
+          onClick: (event) => {
+            event.preventDefault();
+            closeProfileInfo();
+          },
+        },
+        "×",
+      ),
+    ),
+    h(
+      "div",
+      { class: "profile-info-grid" },
+      ProfileInfoRow("Profile", metadata.profile_name || "—"),
+      ProfileInfoRow("Profile UUID", metadata.profile_uuid || "—"),
+      ProfileInfoRow("Look", metadata.look_name || "—"),
+      ProfileInfoRow("Look UUID", metadata.look_uuid || "—"),
+      ProfileInfoRow("Source profile", metadata.source_profile_name || "—"),
+      ProfileInfoRow("Source UUID", metadata.source_profile_uuid || "—"),
+      ProfileInfoRow("Source adjustments", renderAdjustments(metadata.source_adjustments || {}), true),
+      ProfileInfoRow("Emulation adjustments", renderAdjustments(metadata.emulation_adjustments || {}), true),
+      ProfileInfoRow("Source sharpening", renderSharpening(metadata.source_sharpening || {}), true),
+      ProfileInfoRow("Emulation sharpening", renderSharpening(metadata.emulation_sharpening || {}), true),
+      ProfileInfoRow("Has Camera Raw settings", metadata.has_camera_raw_settings ? "Yes" : "No"),
+      ProfileInfoRow("Has HALD LUT", metadata.has_hald ? "Yes" : "No"),
+      ProfileInfoRow("Has PP3", metadata.has_pp3 ? "Yes" : "No"),
+      ProfileInfoRow("PP3 file", metadata.pp3_name || "—"),
+    ),
+    haldImage
+      ? h(
+          "div",
+          { class: "profile-info-hald" },
+          h("img", {
+            src: versionedUrl(haldImage, state.data?.version || ""),
+            alt: "HALD LUT table",
+            loading: "lazy",
+          }),
+        )
+      : null,
+    h(
+      "details",
+      { class: "profile-info-details" },
+      h("summary", null, "Advanced metadata"),
+      h("pre", { class: "profile-info-json" }, JSON.stringify(metadata, null, 2)),
+    ),
+  );
+}
+
+function ProfileInfoRow(label, value, multiline = false) {
+  if (value === null || value === undefined || value === "") {
+    value = "—";
+  }
+  return h(
+    "div",
+    { class: `profile-info-row ${multiline ? "profile-info-row-multiline" : ""}` },
+    h("span", { class: "profile-info-label" }, label),
+    h(
+      "span",
+      { class: "profile-info-value" },
+      typeof value === "string" ? value : h("code", { class: "profile-info-pre" }, value),
+    ),
+  );
+}
+
+function renderAdjustments(adjustments) {
+  const values = [
+    ["exposure", adjustments.exposure],
+    ["contrast", adjustments.contrast],
+    ["highlights", adjustments.highlights],
+    ["shadows", adjustments.shadows],
+    ["whites", adjustments.whites],
+    ["blacks", adjustments.blacks],
+    ["saturation", adjustments.saturation],
+    ["vibrance", adjustments.vibrance],
+    ["clarity", adjustments.clarity],
+  ].map(([key, value]) => `${key}: ${formatNumberField(value, 2)}`);
+  return values.join("\n");
+}
+
+function renderSharpening(sharpening) {
+  const values = [
+    ["present", sharpening.present],
+    ["amount", sharpening.amount],
+    ["radius", sharpening.radius],
+    ["detail", sharpening.detail],
+    ["masking", sharpening.masking],
+  ].map(([key, value]) => `${key}: ${formatNumberField(value, 2)}`);
+  return values.join("\n");
+}
+
+function formatNumberField(value, digits = 2) {
+  const number = Number(value);
+  if (Number.isFinite(number)) {
+    return number.toLocaleString("en-US", {
+      maximumFractionDigits: digits,
+      useGrouping: false,
+    });
+  }
+  return String(value ?? "—");
+}
+
+function profileByIndex(profileIndex) {
+  if (profileIndex === null || profileIndex === undefined) return null;
+  return (state.data?.profiles || []).find((profile) => profile.index === profileIndex) || null;
+}
+
+function openProfileInfo(profile) {
+  state.profileInfoProfileIndex = profileRenderIndex(profile);
+  renderProfileInfo();
+}
+
+function closeProfileInfo() {
+  if (state.profileInfoProfileIndex === null) return;
+  state.profileInfoProfileIndex = null;
+  renderProfileInfo();
+}
+
+function renderProfileInfo() {
+  if (!els.profileInfoOverlay) return;
+  const overlayContent = ProfileInfoOverlay();
+  if (!overlayContent) {
+    preactRender(null, els.profileInfoOverlay);
+    els.profileInfoOverlay.setAttribute("hidden", "hidden");
+    return;
+  }
+  preactRender(overlayContent, els.profileInfoOverlay);
+  els.profileInfoOverlay.removeAttribute("hidden");
+}
+
+function profileRenderIndex(profile) {
+  if (profile?.index !== undefined && Number.isFinite(Number(profile.index))) return Number(profile.index);
+  if (profile?.profile_index !== undefined && Number.isFinite(Number(profile.profile_index)))
+    return Number(profile.profile_index);
+  return null;
 }
 
 function ControlsShell() {
@@ -649,6 +803,7 @@ const els = {
   mobilePublish: document.getElementById("mobile-publish"),
   shortcutsOverlay: document.getElementById("shortcuts-overlay"),
   shortcutsClose: document.getElementById("shortcuts-close"),
+  profileInfoOverlay: document.getElementById("profile-info-overlay"),
   appVersion: document.getElementById("app-version"),
   publishOverlay: document.getElementById("publish-overlay"),
   publishForm: document.getElementById("publish-form"),
@@ -786,6 +941,10 @@ function findImageInData(data, id) {
 }
 
 function render() {
+  if (state.profileInfoProfileIndex !== null && !profileByIndex(state.profileInfoProfileIndex)) {
+    state.profileInfoProfileIndex = null;
+  }
+  renderProfileInfo();
   syncProfilesPlacement();
   const images = filteredImages();
   const total = state.data?.images?.length || 0;
@@ -1188,11 +1347,7 @@ function renderCurrent(image) {
   els.title.textContent = image.file_name;
   els.subtitle.textContent = `${image.relative_path} | rating ${image.rating}`;
   renderImageExif(image);
-  els.profileState.textContent = compressed
-    ? `${selectedState.text}${codexState ? ` | ${codexState}` : ""}`
-    : !hideProfiles && selected
-      ? `${profileDisplayName(selected)}: ${selectedState.text}${previewNote}${codexState ? ` | ${codexState}` : ""}`
-      : codexState;
+  renderProfileStateSummary(image, selected, selectedState, previewNote, codexState, hideProfiles);
   const imageChanged = state.lastInputImageId !== image.id;
   if (imageChanged || document.activeElement !== els.tags) {
     els.tags.value = image.tags.join(", ");
@@ -1233,6 +1388,32 @@ function currentCodexStateText(image) {
   if (status === "queued") return "Codex queued";
   if (status === "failed") return "Codex failed";
   return "";
+}
+
+function renderProfileStateSummary(image, selected, selectedState, previewNote, codexState, hideProfiles) {
+  const selectedName = !hideProfiles && selected ? profileDisplayName(selected) : "";
+  if (isCompressedImage(image) || !selectedName) {
+    els.profileState.textContent = `${selectedState?.text || ""}${codexState ? ` | ${codexState}` : ""}`.trim();
+    return;
+  }
+  const suffix = `${selectedState?.text || ""}${previewNote || ""}${codexState ? ` | ${codexState}` : ""}`;
+  preactRender(
+    h(
+      "span",
+      null,
+      h(
+        "button",
+        {
+          type: "button",
+          class: "current-profile-link",
+          onClick: () => openProfileInfo(selected),
+        },
+        selectedName,
+      ),
+      `: ${suffix}`,
+    ),
+    els.profileState,
+  );
 }
 
 function renderImageExif(image) {
@@ -2036,11 +2217,14 @@ function applyLocalRetouch(retouch, options = {}) {
   renderList(filteredImages());
   renderProfiles(image);
   const selected = selectedProfile(image);
-  els.profileState.textContent = isCompressedImage(image)
-    ? compressedDisplayState(image).text
-    : !profilesAreImplicitOnly(image) && selected
-      ? `${profileDisplayName(selected)}: ${profileDisplayState(image, selected).text}`
-      : "";
+  renderProfileStateSummary(
+    image,
+    selected,
+    isCompressedImage(image) ? compressedDisplayState(image) : profileDisplayState(image, selected),
+    "",
+    "",
+    isCompressedImage(image) || profilesAreImplicitOnly(image),
+  );
   if (options.save !== false) scheduleRetouchSave();
 }
 
@@ -3008,6 +3192,11 @@ els.publishCancel.addEventListener("click", () => togglePublishWizard(false));
 els.publishOverlay.addEventListener("click", (event) => {
   if (event.target === els.publishOverlay) togglePublishWizard(false);
 });
+els.profileInfoOverlay?.addEventListener("click", (event) => {
+  if (event.target === els.profileInfoOverlay) {
+    closeProfileInfo();
+  }
+});
 els.publishForm.addEventListener("input", updatePublishModeText);
 els.publishForm.addEventListener("change", (event) => {
   if (event.target === els.publishSizeMode) {
@@ -3047,6 +3236,11 @@ els.shortcutsOverlay.addEventListener("click", (event) => {
 });
 
 window.addEventListener("keydown", (event) => {
+  if (state.profileInfoProfileIndex !== null && event.key === "Escape") {
+    event.preventDefault();
+    closeProfileInfo();
+    return;
+  }
   if (!els.publishOverlay.hidden) {
     if (event.key === "Escape") {
       event.preventDefault();

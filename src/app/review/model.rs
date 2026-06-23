@@ -1,6 +1,12 @@
 use super::prelude::*;
 use super::scheduler::ReviewRetouchScheduler;
 use super::store::now_string;
+use crate::app::profile::ResolvedProfileMetadata;
+
+use mini_film::{
+    CalibrationAdjustments, HslAdjustments, ParametricTone, ProfileAdjustments, SharpeningSettings,
+    ToneCurves,
+};
 
 pub(crate) const SOOC_PROFILE_INDEX: usize = 1_000_000_000;
 pub(crate) const SOOC_PROFILE_STEM: &str = "sooc";
@@ -49,6 +55,260 @@ pub(crate) struct ReviewProfile {
     pub(crate) stem: String,
     #[serde(default)]
     pub(crate) retouch_base: BasicRetouchAdjustments,
+    pub(crate) metadata: Option<ReviewProfileMetadata>,
+    #[serde(skip)]
+    pub(crate) hald_path: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub(crate) struct ReviewProfileMetadata {
+    #[serde(default)]
+    pub(crate) profile_name: String,
+    #[serde(default)]
+    pub(crate) profile_uuid: Option<String>,
+    #[serde(default)]
+    pub(crate) look_name: Option<String>,
+    #[serde(default)]
+    pub(crate) look_uuid: Option<String>,
+    #[serde(default)]
+    pub(crate) source_profile_name: Option<String>,
+    #[serde(default)]
+    pub(crate) source_profile_uuid: Option<String>,
+    #[serde(default)]
+    pub(crate) source_adjustments: ReviewProfileAdjustments,
+    #[serde(default)]
+    pub(crate) source_sharpening: ReviewProfileSharpening,
+    #[serde(default)]
+    pub(crate) emulation_adjustments: ReviewProfileAdjustments,
+    #[serde(default)]
+    pub(crate) emulation_sharpening: ReviewProfileSharpening,
+    #[serde(default)]
+    pub(crate) has_camera_raw_settings: bool,
+    #[serde(default)]
+    pub(crate) has_hald: bool,
+    #[serde(default)]
+    pub(crate) has_pp3: bool,
+    #[serde(default)]
+    pub(crate) pp3_name: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub(crate) struct ReviewProfileAdjustments {
+    #[serde(default)]
+    pub(crate) exposure: f32,
+    #[serde(default)]
+    pub(crate) contrast: f32,
+    #[serde(default)]
+    pub(crate) highlights: f32,
+    #[serde(default)]
+    pub(crate) shadows: f32,
+    #[serde(default)]
+    pub(crate) whites: f32,
+    #[serde(default)]
+    pub(crate) blacks: f32,
+    #[serde(default)]
+    pub(crate) saturation: f32,
+    #[serde(default)]
+    pub(crate) vibrance: f32,
+    #[serde(default)]
+    pub(crate) clarity: f32,
+    #[serde(default)]
+    pub(crate) parametric: ReviewProfileParametricTone,
+    #[serde(default)]
+    pub(crate) hsl: ReviewProfileHslAdjustments,
+    #[serde(default)]
+    pub(crate) calibration: ReviewProfileCalibration,
+    #[serde(default)]
+    pub(crate) tone_curve: ReviewProfileToneCurves,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub(crate) struct ReviewProfileSharpening {
+    #[serde(default)]
+    pub(crate) present: bool,
+    #[serde(default)]
+    pub(crate) amount: f32,
+    #[serde(default)]
+    pub(crate) radius: f32,
+    #[serde(default)]
+    pub(crate) detail: f32,
+    #[serde(default)]
+    pub(crate) masking: f32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub(crate) struct ReviewProfileParametricTone {
+    #[serde(default)]
+    pub(crate) shadows: f32,
+    #[serde(default)]
+    pub(crate) darks: f32,
+    #[serde(default)]
+    pub(crate) lights: f32,
+    #[serde(default)]
+    pub(crate) highlights: f32,
+    #[serde(default)]
+    pub(crate) shadow_split: f32,
+    #[serde(default)]
+    pub(crate) midtone_split: f32,
+    #[serde(default)]
+    pub(crate) highlight_split: f32,
+}
+
+impl Default for ReviewProfileParametricTone {
+    fn default() -> Self {
+        Self {
+            shadows: 0.0,
+            darks: 0.0,
+            lights: 0.0,
+            highlights: 0.0,
+            shadow_split: 25.0,
+            midtone_split: 50.0,
+            highlight_split: 75.0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub(crate) struct ReviewProfileHslAdjustments {
+    #[serde(default)]
+    pub(crate) hue: Vec<f32>,
+    #[serde(default)]
+    pub(crate) saturation: Vec<f32>,
+    #[serde(default)]
+    pub(crate) luminance: Vec<f32>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub(crate) struct ReviewProfileCalibration {
+    #[serde(default)]
+    pub(crate) red_hue: f32,
+    #[serde(default)]
+    pub(crate) red_saturation: f32,
+    #[serde(default)]
+    pub(crate) green_hue: f32,
+    #[serde(default)]
+    pub(crate) green_saturation: f32,
+    #[serde(default)]
+    pub(crate) blue_hue: f32,
+    #[serde(default)]
+    pub(crate) blue_saturation: f32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub(crate) struct ReviewProfileToneCurves {
+    #[serde(default)]
+    pub(crate) composite: Vec<[f32; 2]>,
+    #[serde(default)]
+    pub(crate) red: Vec<[f32; 2]>,
+    #[serde(default)]
+    pub(crate) green: Vec<[f32; 2]>,
+    #[serde(default)]
+    pub(crate) blue: Vec<[f32; 2]>,
+}
+
+impl From<&ResolvedProfileMetadata> for ReviewProfileMetadata {
+    fn from(metadata: &ResolvedProfileMetadata) -> Self {
+        Self {
+            profile_name: metadata.profile_name.clone(),
+            profile_uuid: metadata.profile_uuid.clone(),
+            look_name: metadata.look_name.clone(),
+            look_uuid: metadata.look_uuid.clone(),
+            source_profile_name: metadata.source_profile_name.clone(),
+            source_profile_uuid: metadata.source_profile_uuid.clone(),
+            source_adjustments: ReviewProfileAdjustments::from(&metadata.source_adjustments),
+            source_sharpening: ReviewProfileSharpening::from(&metadata.source_sharpening),
+            emulation_adjustments: ReviewProfileAdjustments::from(&metadata.emulation_adjustments),
+            emulation_sharpening: ReviewProfileSharpening::from(&metadata.emulation_sharpening),
+            has_camera_raw_settings: metadata.has_camera_raw_settings,
+            has_hald: metadata.hald_path.is_some(),
+            has_pp3: metadata.pp3_path.is_some(),
+            pp3_name: metadata.pp3_path.as_ref().and_then(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .map(String::from)
+            }),
+        }
+    }
+}
+
+impl From<&ProfileAdjustments> for ReviewProfileAdjustments {
+    fn from(adjustments: &ProfileAdjustments) -> Self {
+        Self {
+            exposure: adjustments.exposure,
+            contrast: adjustments.contrast,
+            highlights: adjustments.highlights,
+            shadows: adjustments.shadows,
+            whites: adjustments.whites,
+            blacks: adjustments.blacks,
+            saturation: adjustments.saturation,
+            vibrance: adjustments.vibrance,
+            clarity: adjustments.clarity,
+            parametric: ReviewProfileParametricTone::from(&adjustments.parametric),
+            hsl: ReviewProfileHslAdjustments::from(&adjustments.hsl),
+            calibration: ReviewProfileCalibration::from(&adjustments.calibration),
+            tone_curve: ReviewProfileToneCurves::from(&adjustments.tone_curve),
+        }
+    }
+}
+
+impl From<&SharpeningSettings> for ReviewProfileSharpening {
+    fn from(sharpening: &SharpeningSettings) -> Self {
+        Self {
+            present: sharpening.present,
+            amount: sharpening.amount,
+            radius: sharpening.radius,
+            detail: sharpening.detail,
+            masking: sharpening.masking,
+        }
+    }
+}
+
+impl From<&ParametricTone> for ReviewProfileParametricTone {
+    fn from(parametric: &ParametricTone) -> Self {
+        Self {
+            shadows: parametric.shadows,
+            darks: parametric.darks,
+            lights: parametric.lights,
+            highlights: parametric.highlights,
+            shadow_split: parametric.shadow_split,
+            midtone_split: parametric.midtone_split,
+            highlight_split: parametric.highlight_split,
+        }
+    }
+}
+
+impl From<&HslAdjustments> for ReviewProfileHslAdjustments {
+    fn from(hsl: &HslAdjustments) -> Self {
+        Self {
+            hue: hsl.hue.to_vec(),
+            saturation: hsl.saturation.to_vec(),
+            luminance: hsl.luminance.to_vec(),
+        }
+    }
+}
+
+impl From<&CalibrationAdjustments> for ReviewProfileCalibration {
+    fn from(calibration: &CalibrationAdjustments) -> Self {
+        Self {
+            red_hue: calibration.red_hue,
+            red_saturation: calibration.red_saturation,
+            green_hue: calibration.green_hue,
+            green_saturation: calibration.green_saturation,
+            blue_hue: calibration.blue_hue,
+            blue_saturation: calibration.blue_saturation,
+        }
+    }
+}
+
+impl From<&ToneCurves> for ReviewProfileToneCurves {
+    fn from(curves: &ToneCurves) -> Self {
+        Self {
+            composite: curves.composite.iter().map(|(x, y)| [*x, *y]).collect(),
+            red: curves.red.iter().map(|(x, y)| [*x, *y]).collect(),
+            green: curves.green.iter().map(|(x, y)| [*x, *y]).collect(),
+            blue: curves.blue.iter().map(|(x, y)| [*x, *y]).collect(),
+        }
+    }
 }
 
 #[derive(Clone)]

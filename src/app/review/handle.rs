@@ -1533,6 +1533,23 @@ impl ReviewHandle {
         Ok(path.clone())
     }
 
+    pub(super) fn profile_hald_path(&self, profile_index: usize) -> Result<PathBuf> {
+        let store = self.store_snapshot();
+        let profile = store
+            .profiles
+            .iter()
+            .find(|profile| profile.index == profile_index)
+            .ok_or_else(|| anyhow!("review profile {profile_index} does not exist"))?;
+        let path = profile
+            .hald_path
+            .as_ref()
+            .ok_or_else(|| anyhow!("review profile {profile_index} has no HALD"))?;
+        if !path.is_file() {
+            bail!("review profile HALD is missing: {}", path.display());
+        }
+        Ok(path.clone())
+    }
+
     pub(super) fn preview_media_path(&self, image_id: u64) -> Result<PathBuf> {
         let store = self.store_snapshot();
         let image = store

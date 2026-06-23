@@ -146,6 +146,9 @@ pub(super) async fn route_request(
                 Err(error) => json_error(500, error).into_response(),
             }
         }
+        (Method::GET, _) if path.starts_with("/api/profile/") => {
+            profile_hald_response(path, handle).await
+        }
         (Method::GET, _) if path.starts_with("/media/") => media_response(path, handle).await,
         (Method::GET, _) if path.starts_with("/preview/") => preview_response(path, handle).await,
         _ => text_response(404, "text/plain; charset=utf-8", "not found").into_response(),
@@ -215,6 +218,25 @@ pub(super) async fn media_response(path: &str, handle: &ReviewHandle) -> Respons
     };
     match handle.media_path(image_id, profile_index) {
         Ok(path) => serve_review_file(path, "image/jpeg").await,
+        Err(error) => json_error(404, error).into_response(),
+    }
+}
+
+async fn profile_hald_response(path: &str, handle: &ReviewHandle) -> Response {
+    let suffix = path.trim_start_matches("/api/profile/");
+    let parts = suffix.split('/').collect::<Vec<_>>();
+    if parts.len() != 2 || parts[1] != "hald" {
+        return text_response(404, "text/plain; charset=utf-8", "not found").into_response();
+    }
+    let profile_index = match parts[0].parse::<usize>() {
+        Ok(index) => index,
+        Err(_) => {
+            return text_response(400, "text/plain; charset=utf-8", "bad profile index")
+                .into_response();
+        }
+    };
+    match handle.profile_hald_path(profile_index) {
+        Ok(path) => serve_review_file(path, "image/png").await,
         Err(error) => json_error(404, error).into_response(),
     }
 }

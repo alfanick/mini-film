@@ -13,7 +13,7 @@ mod tests;
 
 pub(crate) use handle::start_review_server;
 pub(crate) use model::{
-    ReviewConfig, ReviewGalleryConfig, ReviewHandle, ReviewProfile, ReviewPublishCommandArgs,
-    SOOC_PROFILE_INDEX, SOOC_PROFILE_STEM,
+    ReviewConfig, ReviewGalleryConfig, ReviewHandle, ReviewProfile, ReviewProfileMetadata,
+    ReviewPublishCommandArgs, SOOC_PROFILE_INDEX, SOOC_PROFILE_STEM,
 };
 pub(crate) use publish::run_review_publish;

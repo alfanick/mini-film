@@ -8,6 +8,8 @@ fn profile(index: usize, stem: &str) -> ReviewProfile {
         selector: stem.to_string(),
         stem: stem.to_string(),
         retouch_base: BasicRetouchAdjustments::default(),
+        hald_path: None,
+        metadata: None,
     }
 }
 
