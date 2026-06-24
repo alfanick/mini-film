@@ -151,7 +151,6 @@ function ReviewShell() {
                 h("div", { id: "image-title", class: "image-title" }),
                 h("div", { id: "image-exif", class: "image-exif", "aria-label": "Camera settings" }),
               ),
-              h("div", { id: "image-subtitle", class: "image-subtitle" }),
             ),
             h("div", { id: "profile-state", class: "profile-state" }),
           ),
@@ -757,7 +756,6 @@ const els = {
   gestureFeedback: document.getElementById("gesture-feedback"),
   zoomLoupe: document.getElementById("zoom-loupe"),
   title: document.getElementById("image-title"),
-  subtitle: document.getElementById("image-subtitle"),
   profileState: document.getElementById("profile-state"),
   profiles: document.getElementById("profiles"),
   controls: document.querySelector(".controls"),
@@ -1320,7 +1318,6 @@ function renderCurrent(image) {
     els.app.classList.remove("sooc-profile-selected");
     els.image.removeAttribute("src");
     els.title.textContent = "";
-    els.subtitle.textContent = "";
     els.profileState.textContent = "";
     els.imageExif.replaceChildren();
     preactRender(null, els.profiles);
@@ -1345,7 +1342,6 @@ function renderCurrent(image) {
     clearCropDraftState();
   }
   els.title.textContent = image.file_name;
-  els.subtitle.textContent = `${image.relative_path} | rating ${image.rating}`;
   renderImageExif(image);
   renderProfileStateSummary(image, selected, selectedState, previewNote, codexState, hideProfiles);
   const imageChanged = state.lastInputImageId !== image.id;
