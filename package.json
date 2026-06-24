@@ -1,6 +1,6 @@
 {
   "name": "mini-film",
-  "version": "13.3.5",
+  "version": "13.3.6",
   "private": true,
   "description": "Frontend asset checks for embedded mini-film review and gallery UIs.",
   "scripts": {
