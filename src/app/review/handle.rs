@@ -726,12 +726,13 @@ impl ReviewHandle {
             let mut history_entry = None;
             let mut should_schedule = false;
             if let Some(image) = store.images.iter_mut().find(|image| image.raw_path == raw) {
+                if image.codex.status == ReviewCodexStatus::Done {
+                    return Ok((None, false));
+                }
                 if image.codex.analysis_key.as_deref() == Some(&analysis_key)
                     && matches!(
                         image.codex.status,
-                        ReviewCodexStatus::Queued
-                            | ReviewCodexStatus::Processing
-                            | ReviewCodexStatus::Done
+                        ReviewCodexStatus::Queued | ReviewCodexStatus::Processing
                     )
                 {
                     return Ok((None, false));

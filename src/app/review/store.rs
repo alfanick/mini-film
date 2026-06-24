@@ -15,16 +15,24 @@ impl ReviewStore {
     }
 
     pub(super) fn sync_profiles(&mut self, profiles: Vec<ReviewProfile>) {
-        let profiles_changed = self.profiles != profiles;
         let old_profiles = self
             .profiles
             .iter()
             .map(|profile| (profile.index, profile.clone()))
             .collect::<HashMap<_, _>>();
+        let profiles_changed = profiles.len() != self.profiles.len()
+            || profiles.iter().any(|profile| {
+                old_profiles
+                    .get(&profile.index)
+                    .is_none_or(|old_profile| !review_profiles_match(old_profile, profile))
+            });
         let unchanged_profile_indexes = profiles
             .iter()
             .filter_map(|profile| {
-                (old_profiles.get(&profile.index) == Some(profile)).then_some(profile.index)
+                old_profiles
+                    .get(&profile.index)
+                    .filter(|old_profile| review_profiles_match(old_profile, profile))
+                    .map(|_| profile.index)
             })
             .collect::<HashSet<_>>();
         self.profiles = profiles;
@@ -194,6 +202,13 @@ impl ReviewStore {
         sort_review_image_refs(&mut images);
         images.into_iter().map(|image| image.id).collect()
     }
+}
+
+fn review_profiles_match(left: &ReviewProfile, right: &ReviewProfile) -> bool {
+    left.index == right.index
+        && left.selector == right.selector
+        && left.stem == right.stem
+        && left.retouch_base == right.retouch_base
 }
 
 fn normalize_review_metadata_sources(image: &mut ReviewImage) {

@@ -1,6 +1,6 @@
 [package]
 name = "mini-film"
-version = "13.4.4"
+version = "13.4.6"
 description = "Review and publish RAW, JPEG, and HEIC photos with optional Lightroom-style film emulation profiles for RAW workflows."
 repository = "https://github.com/alfanick/mini-film"
 homepage = "https://github.com/alfanick/mini-film"

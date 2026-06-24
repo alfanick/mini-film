@@ -443,6 +443,124 @@ fn sync_profiles_preserves_publish_selection_when_profiles_are_unchanged() {
 }
 
 #[test]
+fn sync_profiles_preserves_publish_selection_after_restart_with_metadata_changes() {
+    let base_profiles = vec![profile(0, "Classic"), profile(1, "Fade")];
+    let mut changed_profiles = base_profiles.clone();
+    changed_profiles[0].metadata = Some(ReviewProfileMetadata::default());
+    changed_profiles[1].metadata = Some(ReviewProfileMetadata::default());
+
+    let temp = tempfile::tempdir().unwrap();
+    let state_path = temp.path().join("mini-film-review.json");
+    let mut store = ReviewStore::new(base_profiles);
+    store.images.push(ReviewImage {
+        id: 1,
+        raw_path: PathBuf::from("/in/frame.NEF"),
+        sooc_sidecar_path: None,
+        relative_path: "frame.NEF".to_string(),
+        file_name: "frame.NEF".to_string(),
+        exif: GalleryExifData::default(),
+        preview: ReviewPreview::default(),
+        selected_profile_index: 1,
+        rating: 0,
+        label: ReviewLabel::None,
+        labels: Vec::new(),
+        tags: Vec::new(),
+        notes: String::new(),
+        rating_source: ReviewMetadataSource::Default,
+        tags_source: ReviewMetadataSource::Default,
+        notes_source: ReviewMetadataSource::Default,
+        codex: ReviewCodexAnalysis::default(),
+        retouch: RetouchSettings::default(),
+        publish_profile_indexes: Some(vec![1]),
+        profiles: vec![profile_render(0, "Classic"), profile_render(1, "Fade")],
+        updated_at: now_string(),
+    });
+    save_store(&state_path, &store).unwrap();
+    let mut loaded = load_store(&state_path).unwrap().unwrap();
+
+    loaded.sync_profiles(changed_profiles);
+
+    assert_eq!(loaded.images[0].publish_profile_indexes, Some(vec![1]));
+    assert_eq!(loaded.images[0].selected_profile_index, 1);
+}
+
+#[test]
+fn schedule_ready_codex_jobs_does_not_reschedule_done_images() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let raw = input.join("frame.jpg");
+    let preview = output.join("preview.jpg");
+    fs::write(&raw, b"jpg").unwrap();
+    fs::write(&preview, b"jpg").unwrap();
+
+    let mut handle = test_handle(
+        input,
+        output.clone(),
+        vec![profile(0, "Classic"), profile(1, "Fade")],
+    );
+    handle.codex = Some(ReviewCodexConfig {
+        flags: CodexAnalysisFlags::all(),
+        codex_binary: PathBuf::from("codex"),
+        model: "yolo11n".to_string(),
+        timeout: Duration::from_secs(60),
+    });
+
+    handle
+        .update_store(|store| {
+            store.images.push(ReviewImage {
+                id: 1,
+                raw_path: raw.clone(),
+                sooc_sidecar_path: None,
+                relative_path: "frame.jpg".to_string(),
+                file_name: "frame.jpg".to_string(),
+                exif: GalleryExifData::default(),
+                preview: ReviewPreview {
+                    status: ReviewRenderStatus::Done,
+                    path: Some(preview.clone()),
+                    render_key: None,
+                    error: None,
+                    duration_ms: Some(1),
+                    updated_at: now_string(),
+                },
+                selected_profile_index: 0,
+                rating: 0,
+                label: ReviewLabel::None,
+                labels: Vec::new(),
+                tags: Vec::new(),
+                notes: String::new(),
+                rating_source: ReviewMetadataSource::Manual,
+                tags_source: ReviewMetadataSource::Manual,
+                notes_source: ReviewMetadataSource::Manual,
+                codex: ReviewCodexAnalysis {
+                    status: ReviewCodexStatus::Done,
+                    flags: CodexAnalysisFlags::all(),
+                    model: "yolo11n".to_string(),
+                    analysis_key: Some("stale-key".to_string()),
+                    error: None,
+                    updated_at: now_string(),
+                },
+                retouch: RetouchSettings::default(),
+                publish_profile_indexes: Some(vec![0]),
+                profiles: Vec::new(),
+                updated_at: now_string(),
+            });
+            Ok(())
+        })
+        .unwrap();
+
+    handle.schedule_ready_codex_jobs().unwrap();
+
+    let state = handle.store_snapshot();
+    let image = &state.images[0];
+    assert_eq!(image.codex.status, ReviewCodexStatus::Done);
+    assert_eq!(image.codex.analysis_key.as_deref(), Some("stale-key"));
+    assert!(handle.codex_scheduler.pending.load_full().is_empty());
+}
+
+#[test]
 fn base_render_done_triggers_pending_retouch_without_marking_done() {
     let output = PathBuf::from("frame.jpg");
     let mut render = ReviewProfileRender {
