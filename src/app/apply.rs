@@ -834,6 +834,7 @@ mod tests {
                 source_profile_uuid: None,
                 hald_path: None,
                 pp3_path: None,
+                grain,
                 source_adjustments: Default::default(),
                 source_sharpening: Default::default(),
                 emulation_adjustments: Default::default(),

@@ -217,6 +217,7 @@ function ProfileInfoOverlay() {
       ProfileInfoRow("Has Camera Raw settings", metadata.has_camera_raw_settings ? "Yes" : "No"),
       ProfileInfoRow("Has HALD LUT", metadata.has_hald ? "Yes" : "No"),
       ProfileInfoRow("Has PP3", metadata.has_pp3 ? "Yes" : "No"),
+      ProfileInfoRow("Grain", renderGrain(metadata.grain)),
       ProfileInfoRow("PP3 file", metadata.pp3_name || "—"),
     ),
     haldImage
@@ -268,6 +269,18 @@ function renderAdjustments(adjustments) {
     ["clarity", adjustments.clarity],
   ].map(([key, value]) => `${key}: ${formatNumberField(value, 2)}`);
   return values.join("\n");
+}
+
+function renderGrain(grain) {
+  if (!grain || !grain.amount) {
+    return "off";
+  }
+  const size = Number(grain.size);
+  const frequency = Number(grain.frequency);
+  if (!Number.isFinite(size) || !Number.isFinite(frequency)) {
+    return "off";
+  }
+  return `amount=${grain.amount}, size=${size}, frequency=${frequency}`;
 }
 
 function renderSharpening(sharpening) {

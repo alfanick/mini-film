@@ -4,8 +4,8 @@ use super::store::now_string;
 use crate::app::profile::ResolvedProfileMetadata;
 
 use mini_film::{
-    CalibrationAdjustments, HslAdjustments, ParametricTone, ProfileAdjustments, SharpeningSettings,
-    ToneCurves,
+    CalibrationAdjustments, GrainSettings, HslAdjustments, ParametricTone, ProfileAdjustments,
+    SharpeningSettings, ToneCurves,
 };
 
 pub(crate) const SOOC_PROFILE_INDEX: usize = 1_000_000_000;
@@ -86,11 +86,39 @@ pub(crate) struct ReviewProfileMetadata {
     #[serde(default)]
     pub(crate) has_camera_raw_settings: bool,
     #[serde(default)]
+    pub(crate) grain: Option<ReviewProfileGrain>,
+    #[serde(default)]
     pub(crate) has_hald: bool,
     #[serde(default)]
     pub(crate) has_pp3: bool,
     #[serde(default)]
     pub(crate) pp3_name: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub(crate) struct ReviewProfileGrain {
+    #[serde(default)]
+    pub(crate) amount: u8,
+    #[serde(default)]
+    pub(crate) size: u8,
+    #[serde(default)]
+    pub(crate) frequency: u8,
+}
+
+impl Default for ReviewProfileGrain {
+    fn default() -> Self {
+        Self::from(GrainSettings::default())
+    }
+}
+
+impl From<GrainSettings> for ReviewProfileGrain {
+    fn from(grain: GrainSettings) -> Self {
+        Self {
+            amount: grain.amount,
+            size: grain.size,
+            frequency: grain.frequency,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
@@ -221,6 +249,7 @@ impl From<&ResolvedProfileMetadata> for ReviewProfileMetadata {
             emulation_adjustments: ReviewProfileAdjustments::from(&metadata.emulation_adjustments),
             emulation_sharpening: ReviewProfileSharpening::from(&metadata.emulation_sharpening),
             has_camera_raw_settings: metadata.has_camera_raw_settings,
+            grain: (metadata.grain.is_enabled()).then_some(metadata.grain.into()),
             has_hald: metadata.hald_path.is_some(),
             has_pp3: metadata.pp3_path.is_some(),
             pp3_name: metadata.pp3_path.as_ref().and_then(|path| {
