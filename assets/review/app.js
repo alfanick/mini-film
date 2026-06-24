@@ -3466,17 +3466,30 @@ function confirmTagsInput(event) {
   move(1).catch((error) => console.error(error));
 }
 
-function focusMetadataInput(input) {
+function focusMetadataInput(input, { select = true } = {}) {
+  const placeCursorToEnd = () => {
+    const end = input.value.length;
+    input.setSelectionRange(end, end);
+  };
+
   if (isMobileReviewLayout()) {
     setMobileDrawer("metadata");
     requestAnimationFrame(() => {
       input.focus();
-      input.select();
+      if (select) {
+        input.select();
+      } else {
+        placeCursorToEnd();
+      }
     });
     return;
   }
   input.focus();
-  input.select();
+  if (select) {
+    input.select();
+    return;
+  }
+  placeCursorToEnd();
 }
 
 function scheduleRetouchSave() {
@@ -3593,7 +3606,7 @@ window.addEventListener("keydown", (event) => {
   }
   if (event.key === ",") {
     event.preventDefault();
-    focusMetadataInput(els.tags);
+    focusMetadataInput(els.tags, { select: false });
     return;
   }
   if (event.key === "/") {
