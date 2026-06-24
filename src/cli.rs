@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
+use mini_film::GrainEngine;
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_HALD_LEVEL: u32 = 16;
@@ -193,6 +194,10 @@ pub(crate) enum CommandKind {
         #[arg(long)]
         grain_seed: Option<u64>,
 
+        /// Grain renderer to use for RAW outputs.
+        #[arg(long, value_enum, default_value_t = GrainEngine::default())]
+        grain_engine: GrainEngine,
+
         /// JPEG quality when output path ends in .jpg or .jpeg.
         #[arg(long, default_value_t = 95)]
         jpg_quality: u8,
@@ -298,6 +303,10 @@ pub(crate) enum CommandKind {
         /// Base seed for deterministic generated grain. Defaults to current time of day.
         #[arg(long)]
         grain_seed: Option<u64>,
+
+        /// Grain renderer to use for RAW outputs.
+        #[arg(long, value_enum, default_value_t = GrainEngine::default())]
+        grain_engine: GrainEngine,
 
         /// Number of files to process in parallel. Defaults to half of CPU threads.
         #[arg(long)]
@@ -423,6 +432,10 @@ pub(crate) enum CommandKind {
         #[arg(long)]
         grain_seed: Option<u64>,
 
+        /// Grain renderer to use for RAW outputs.
+        #[arg(long, value_enum, default_value_t = GrainEngine::default())]
+        grain_engine: GrainEngine,
+
         /// Disable /tmp sampler thumbnail cache and regenerate every profile thumbnail.
         #[arg(long)]
         no_cache: bool,
@@ -529,6 +542,10 @@ pub(crate) enum CommandKind {
         /// Base seed for deterministic generated grain. Defaults to current time of day.
         #[arg(long)]
         grain_seed: Option<u64>,
+
+        /// Grain renderer to use for RAW outputs.
+        #[arg(long, value_enum, default_value_t = GrainEngine::default())]
+        grain_engine: GrainEngine,
 
         /// Number of files to process in parallel. Defaults to half of CPU threads.
         #[arg(long)]
@@ -782,6 +799,10 @@ pub(crate) enum CommandKind {
         /// Base seed for deterministic generated grain when rerendering RAWs.
         #[arg(long)]
         grain_seed: Option<u64>,
+
+        /// Grain renderer to use when rerendering RAWs.
+        #[arg(long, value_enum, default_value_t = GrainEngine::default())]
+        grain_engine: GrainEngine,
 
         /// Emit newline-delimited progress events for the daemon review UI.
         #[arg(long, hide = true)]
@@ -1508,6 +1529,123 @@ mod tests {
         .to_string();
 
         assert!(error.contains("unsupported --lens-corrections token \"radial\""));
+    }
+
+    #[test]
+    fn cli_grain_engine_defaults_to_legacy_and_accepts_alternates() {
+        let apply = Cli::parse_from(["mini-film", "apply", "input.dng", "--output", "out.jpg"]);
+        assert!(matches!(
+            apply.command,
+            CommandKind::Apply {
+                grain_engine: GrainEngine::Legacy,
+                ..
+            }
+        ));
+
+        let batch = Cli::parse_from([
+            "mini-film",
+            "batch",
+            "input-dir",
+            "output-dir",
+            "--grain-engine",
+            "legacy",
+        ]);
+        assert!(matches!(
+            batch.command,
+            CommandKind::Batch {
+                grain_engine: GrainEngine::Legacy,
+                ..
+            }
+        ));
+
+        let exact = Cli::parse_from([
+            "mini-film",
+            "apply",
+            "input.dng",
+            "--output",
+            "out.jpg",
+            "--grain-engine",
+            "rfgr",
+        ]);
+        assert!(matches!(
+            exact.command,
+            CommandKind::Apply {
+                grain_engine: GrainEngine::Rfgr,
+                ..
+            }
+        ));
+
+        let fast = Cli::parse_from([
+            "mini-film",
+            "apply",
+            "input.dng",
+            "--output",
+            "out.jpg",
+            "--grain-engine",
+            "rfgrfast",
+        ]);
+        assert!(matches!(
+            fast.command,
+            CommandKind::Apply {
+                grain_engine: GrainEngine::RfgrFast,
+                ..
+            }
+        ));
+
+        let daemon = Cli::parse_from(["mini-film", "daemon", "input-dir", "output-dir"]);
+        assert!(matches!(
+            daemon.command,
+            CommandKind::BatchDaemon {
+                grain_engine: GrainEngine::Legacy,
+                ..
+            }
+        ));
+
+        let sampler = Cli::parse_from(["mini-film", "sampler", "input.dng", "--output", "out.jpg"]);
+        assert!(matches!(
+            sampler.command,
+            CommandKind::Sampler {
+                grain_engine: GrainEngine::Legacy,
+                ..
+            }
+        ));
+
+        let publish = Cli::parse_from([
+            "mini-film",
+            "review-publish",
+            "--state",
+            "state.json",
+            "--input-root",
+            "in",
+            "--output-root",
+            "out",
+            "--album",
+            "published",
+        ]);
+        assert!(matches!(
+            publish.command,
+            CommandKind::ReviewPublish {
+                grain_engine: GrainEngine::Legacy,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn cli_grain_engine_rejects_unknown_values() {
+        let error = Cli::try_parse_from([
+            "mini-film",
+            "apply",
+            "input.dng",
+            "--output",
+            "out.jpg",
+            "--grain-engine",
+            "paper",
+        ])
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("invalid value 'paper'"));
     }
 
     #[test]

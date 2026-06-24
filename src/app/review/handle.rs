@@ -71,6 +71,7 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
         grain: config.grain,
         grain_preset: config.grain_preset,
         grain_seed: config.grain_seed,
+        grain_engine: config.grain_engine,
         publish_defaults,
         publish_jobs: Arc::new(ArcSwap::from_pointee(Vec::new())),
         next_publish_job_id: Arc::new(AtomicU64::new(1)),
@@ -1152,6 +1153,7 @@ impl ReviewHandle {
             grain: self.grain.clone(),
             grain_preset: self.grain_preset.clone(),
             grain_seed: self.grain_seed,
+            grain_engine: self.grain_engine,
             export: self.export.clone(),
             retouch: None,
         };
@@ -1173,6 +1175,7 @@ impl ReviewHandle {
                 convert: &self.convert,
                 keep_intermediate: None,
                 no_grain: self.no_grain,
+                grain_engine: self.grain_engine,
                 color_noise_iso_threshold: self.color_noise_iso_threshold,
                 lens_corrections: self.lens_corrections,
                 lcp_root: self.lcp_root.as_deref(),
@@ -1747,6 +1750,7 @@ impl ReviewHandle {
             grain: self.grain.clone(),
             grain_preset: self.grain_preset.clone(),
             grain_seed: self.grain_seed,
+            grain_engine: self.grain_engine,
             progress_events: true,
         })
     }

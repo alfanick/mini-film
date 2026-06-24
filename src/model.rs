@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{fmt, path::PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct XmpRgbTable {
@@ -19,6 +19,31 @@ pub struct GrainSettings {
 impl GrainSettings {
     pub fn is_enabled(self) -> bool {
         self.amount > 0
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum GrainEngine {
+    Rfgr,
+    #[value(name = "rfgrfast", alias = "rfgr-fast")]
+    RfgrFast,
+    #[default]
+    Legacy,
+}
+
+impl GrainEngine {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Rfgr => "rfgr",
+            Self::RfgrFast => "rfgrfast",
+            Self::Legacy => "legacy",
+        }
+    }
+}
+
+impl fmt::Display for GrainEngine {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 

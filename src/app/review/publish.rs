@@ -218,6 +218,9 @@ where
     if let Some(grain_seed) = args.grain_seed {
         command.arg("--grain-seed").arg(grain_seed.to_string());
     }
+    command
+        .arg("--grain-engine")
+        .arg(args.grain_engine.to_string());
 
     let mut child = command
         .spawn()
@@ -317,6 +320,7 @@ pub(super) fn publish_review_state(
         grain: args.grain.clone(),
         grain_preset: args.grain_preset.clone(),
         grain_seed: args.grain_seed,
+        grain_engine: args.grain_engine,
         write_metadata: true,
     };
     let mut report = publish_store_inner(&store, &input_root, &output_root, &options, progress)?;
@@ -725,6 +729,7 @@ pub(super) fn rerender_review_output(
         grain_seed: options
             .grain_seed
             .map(|seed| review_publish_seed(seed, &image.raw_path, profile.index)),
+        grain_engine: options.grain_engine,
         export: options.export.clone(),
         retouch: Some(image.retouch.clone()),
     })

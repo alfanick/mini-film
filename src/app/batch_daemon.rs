@@ -18,6 +18,8 @@ use notify::{
 use tempfile::Builder;
 use walkdir::WalkDir;
 
+use mini_film::GrainEngine;
+
 use crate::app::apply::{
     ApplyArgs, ApplyJob, CompressedApplyJob, apply_compressed, apply_resolved,
     resolve_apply_effects, resolve_grain_override,
@@ -64,6 +66,7 @@ pub(crate) struct BatchDaemonArgs {
     pub(crate) grain: Option<String>,
     pub(crate) grain_preset: Option<String>,
     pub(crate) grain_seed: Option<u64>,
+    pub(crate) grain_engine: GrainEngine,
     pub(crate) color_noise_iso_threshold: u32,
     pub(crate) jobs: Option<usize>,
     pub(crate) debounce_seconds: u64,
@@ -355,6 +358,7 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
             grain: args.grain.clone(),
             grain_preset: args.grain_preset.clone(),
             grain_seed: Some(base_seed),
+            grain_engine: args.grain_engine,
             codex: args.codex,
             codex_binary: args.codex_binary.clone(),
             codex_model: args.codex_model.clone(),
@@ -1051,6 +1055,7 @@ fn resolve_daemon_profiles(args: &BatchDaemonArgs, temp_dir: &Path) -> Result<Ve
                 grain: args.grain.clone(),
                 grain_preset: args.grain_preset.clone(),
                 grain_seed: args.grain_seed,
+                grain_engine: args.grain_engine,
                 export: args.export.clone(),
                 retouch: None,
             };
@@ -1384,6 +1389,7 @@ fn process_single_profile(
             convert: &args.convert,
             keep_intermediate: None,
             no_grain: args.no_grain,
+            grain_engine: args.grain_engine,
             lcp_root: args.lcp_root.as_deref(),
             lens_corrections: args.lens_corrections,
             color_noise_iso_threshold: args.color_noise_iso_threshold,
@@ -1809,6 +1815,7 @@ mod tests {
             grain: None,
             grain_preset: None,
             grain_seed: None,
+            grain_engine: GrainEngine::default(),
             color_noise_iso_threshold: 1600,
             lcp_root: None,
             lens_corrections: LensCorrections::default(),
@@ -1949,6 +1956,7 @@ mod tests {
             grain: None,
             grain_preset: None,
             grain_seed: None,
+            grain_engine: GrainEngine::default(),
             color_noise_iso_threshold: 1600,
             lcp_root: None,
             lens_corrections: LensCorrections::default(),

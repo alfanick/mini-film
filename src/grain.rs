@@ -7,7 +7,7 @@ use image::{DynamicImage, GenericImageView, ImageBuffer, ImageReader, Rgba};
 use noise::{NoiseFn, Perlin};
 use rayon::prelude::*;
 
-use crate::model::GrainSettings;
+use crate::model::{GrainEngine, GrainSettings};
 
 const KERNEL_LUT_SIZE: usize = 1024;
 const KERNEL_MAX_RADIUS2: f64 = 9.0;
@@ -20,6 +20,16 @@ const KERNEL_MAX_RADIUS2: f64 = 9.0;
 /// memory, and writes the result through the `image` crate. Keeping IO here and
 /// noise synthesis in `render_grain` makes the renderer easier to optimize.
 pub fn apply_grain(input: &Path, output: &Path, grain: GrainSettings, seed: u64) -> Result<()> {
+    apply_grain_with_engine(input, output, grain, seed, GrainEngine::default())
+}
+
+pub fn apply_grain_with_engine(
+    input: &Path,
+    output: &Path,
+    grain: GrainSettings,
+    seed: u64,
+    engine: GrainEngine,
+) -> Result<()> {
     if !grain.is_enabled() {
         fs::copy(input, output)
             .with_context(|| format!("copying {} to {}", input.display(), output.display()))?;
@@ -36,7 +46,11 @@ pub fn apply_grain(input: &Path, output: &Path, grain: GrainSettings, seed: u64)
     let image = reader
         .decode()
         .with_context(|| format!("decoding {}", input.display()))?;
-    let grained = render_grain(image, grain, seed)?;
+    let grained = match engine {
+        GrainEngine::Rfgr => crate::grain_rfgr::render_grain(image, grain, seed)?,
+        GrainEngine::RfgrFast => crate::grain_rfgr::render_grain_fast(image, grain, seed)?,
+        GrainEngine::Legacy => render_legacy_grain(image, grain, seed)?,
+    };
     grained
         .save(output)
         .with_context(|| format!("saving {}", output.display()))?;
@@ -55,6 +69,16 @@ pub fn apply_grain_8bit(
     grain: GrainSettings,
     seed: u64,
 ) -> Result<()> {
+    apply_grain_8bit_with_engine(input, output, grain, seed, GrainEngine::default())
+}
+
+pub fn apply_grain_8bit_with_engine(
+    input: &Path,
+    output: &Path,
+    grain: GrainSettings,
+    seed: u64,
+    engine: GrainEngine,
+) -> Result<()> {
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
@@ -66,7 +90,11 @@ pub fn apply_grain_8bit(
         .decode()
         .with_context(|| format!("decoding {}", input.display()))?;
     let grained = if grain.is_enabled() {
-        DynamicImage::ImageRgb8(render_grain_8(image, grain, seed)?)
+        DynamicImage::ImageRgb8(match engine {
+            GrainEngine::Rfgr => crate::grain_rfgr::render_grain_8(image, grain, seed)?,
+            GrainEngine::RfgrFast => crate::grain_rfgr::render_grain_8_fast(image, grain, seed)?,
+            GrainEngine::Legacy => render_legacy_grain_8(image, grain, seed)?,
+        })
     } else {
         DynamicImage::ImageRgb8(image.to_rgb8())
     };
@@ -91,7 +119,11 @@ pub fn apply_grain_8bit(
 /// bright specks. The expensive procedural field is precomputed once into a
 /// deterministic texture so row rendering only has to combine luma weighting,
 /// channel jitter, and clamped channel writes.
-fn render_grain(image: DynamicImage, grain: GrainSettings, seed: u64) -> Result<DynamicImage> {
+fn render_legacy_grain(
+    image: DynamicImage,
+    grain: GrainSettings,
+    seed: u64,
+) -> Result<DynamicImage> {
     let (width, height) = image.dimensions();
     let mut out = image.to_rgba16().into_raw();
     let luma_weight = luma_weight_lut_u16();
@@ -250,7 +282,7 @@ fn render_grain_16_row_simd<const LANES: usize>(
 /// silver-cluster structure instead of becoming flat white noise after
 /// quantization. The only scaling difference is that channel deltas are already
 /// expressed in 0..255 space rather than 16-bit channel space.
-fn render_grain_8(
+fn render_legacy_grain_8(
     image: DynamicImage,
     grain: GrainSettings,
     seed: u64,
@@ -806,6 +838,7 @@ fn approx_normal_from_hash(hash: u64) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::{ImageFormat, Rgb};
 
     #[test]
     fn grain_channel_addition_rounds_and_clamps() {
@@ -893,5 +926,56 @@ mod tests {
         for value in [r, g, b] {
             assert!((0.62..=1.38).contains(&value));
         }
+    }
+
+    #[test]
+    fn disabled_16bit_grain_copies_input_without_rendering() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("input.tif");
+        let output = dir.path().join("output.tif");
+        let image = ImageBuffer::from_fn(2, 2, |x, y| {
+            Rgba([(1000 + x * 100) as u16, (2000 + y * 100) as u16, 3000, 4000])
+        });
+        DynamicImage::ImageRgba16(image)
+            .save_with_format(&input, ImageFormat::Tiff)
+            .unwrap();
+
+        apply_grain_with_engine(
+            &input,
+            &output,
+            GrainSettings::default(),
+            7,
+            GrainEngine::Rfgr,
+        )
+        .unwrap();
+
+        assert_eq!(fs::read(input).unwrap(), fs::read(output).unwrap());
+    }
+
+    #[test]
+    fn legacy_engine_dispatch_matches_legacy_renderer() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("input.png");
+        let output = dir.path().join("output.png");
+        let image = DynamicImage::ImageRgb8(ImageBuffer::from_fn(5, 4, |x, y| {
+            Rgb([(40 + x * 5) as u8, (70 + y * 7) as u8, 120])
+        }));
+        image.save(&input).unwrap();
+        let grain = GrainSettings {
+            amount: 25,
+            size: 45,
+            frequency: 50,
+        };
+        let expected = render_legacy_grain_8(image, grain, 42).unwrap().into_raw();
+
+        apply_grain_8bit_with_engine(&input, &output, grain, 42, GrainEngine::Legacy).unwrap();
+        let actual = ImageReader::open(output)
+            .unwrap()
+            .decode()
+            .unwrap()
+            .to_rgb8()
+            .into_raw();
+
+        assert_eq!(actual, expected);
     }
 }

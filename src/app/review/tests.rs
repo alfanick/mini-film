@@ -52,6 +52,7 @@ fn test_handle(input: PathBuf, output: PathBuf, profiles: Vec<ReviewProfile>) ->
         grain: None,
         grain_preset: None,
         grain_seed: Some(1),
+        grain_engine: mini_film::GrainEngine::default(),
         publish_defaults: ReviewPublishDefaults::new(
             "published".to_string(),
             BatchOutputFormat::Jpg,
@@ -93,6 +94,7 @@ fn test_publish_options(album: &str) -> ReviewPublishOptions {
         grain: None,
         grain_preset: None,
         grain_seed: Some(1),
+        grain_engine: mini_film::GrainEngine::default(),
         write_metadata: false,
     }
 }

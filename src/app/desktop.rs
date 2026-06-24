@@ -13,6 +13,7 @@ mod enabled {
     };
 
     use anyhow::{Context, Result, anyhow, bail};
+    use mini_film::GrainEngine;
     use serde::{Deserialize, Serialize};
     use tauri_plugin_dialog::DialogExt;
 
@@ -402,6 +403,7 @@ mod enabled {
                 grain: None,
                 grain_preset,
                 grain_seed: None,
+                grain_engine: GrainEngine::default(),
                 color_noise_iso_threshold: self.color_noise_iso_threshold.unwrap_or(1600),
                 jobs: self.jobs,
                 debounce_seconds: 0,

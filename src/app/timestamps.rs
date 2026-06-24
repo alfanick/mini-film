@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Local, NaiveDateTime, TimeZone, Utc};
 use exif::{Reader, Tag};
 use filetime::{FileTime, set_file_atime, set_file_mtime};
-use mini_film::{GrainSettings, ProfileAdjustments, SharpeningSettings, ToneCurves};
+use mini_film::{GrainEngine, GrainSettings, ProfileAdjustments, SharpeningSettings, ToneCurves};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -19,6 +19,7 @@ pub(crate) struct OutputEditMetadata<'a> {
     pub(crate) profile: &'a ResolvedProfileMetadata,
     pub(crate) grain: GrainSettings,
     pub(crate) grain_seed: Option<u64>,
+    pub(crate) grain_engine: Option<GrainEngine>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -438,6 +439,9 @@ fn history_parameters(raw: &Path, edit: &OutputEditMetadata<'_>) -> String {
             "grain={},{},{}",
             edit.grain.amount, edit.grain.size, edit.grain.frequency
         ));
+        if let Some(engine) = edit.grain_engine {
+            parts.push(format!("grain_engine={engine}"));
+        }
     } else {
         parts.push("grain=off".to_string());
     }

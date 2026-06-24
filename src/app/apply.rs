@@ -6,7 +6,9 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use indicatif::ProgressBar;
-use mini_film::{GrainSettings, apply_grain, apply_grain_8bit};
+use mini_film::{
+    GrainEngine, GrainSettings, apply_grain_8bit_with_engine, apply_grain_with_engine,
+};
 use tempfile::Builder;
 
 use crate::app::export::{
@@ -48,6 +50,7 @@ pub(crate) struct ApplyArgs {
     pub(crate) grain: Option<String>,
     pub(crate) grain_preset: Option<String>,
     pub(crate) grain_seed: Option<u64>,
+    pub(crate) grain_engine: GrainEngine,
     pub(crate) export: ExportOptions,
     pub(crate) retouch: Option<RetouchSettings>,
 }
@@ -59,6 +62,7 @@ pub(crate) struct ApplyJob<'a> {
     pub(crate) convert: &'a Path,
     pub(crate) keep_intermediate: Option<&'a Path>,
     pub(crate) no_grain: bool,
+    pub(crate) grain_engine: GrainEngine,
     pub(crate) color_noise_iso_threshold: u32,
     pub(crate) lens_corrections: LensCorrections,
     pub(crate) lcp_root: Option<&'a Path>,
@@ -173,6 +177,7 @@ pub(crate) fn run_apply(args: ApplyArgs) -> Result<()> {
             convert: &args.convert,
             keep_intermediate: args.keep_intermediate.as_deref(),
             no_grain: args.no_grain,
+            grain_engine: args.grain_engine,
             color_noise_iso_threshold: args.color_noise_iso_threshold,
             lens_corrections: args.lens_corrections,
             lcp_root: args.lcp_root.as_deref(),
@@ -382,12 +387,21 @@ pub(crate) fn apply_resolved(
             estimate_grain_duration(job.raw, true),
         );
         let grained = temp_dir.join("grained-8.ppm");
-        apply_grain_8bit(&intermediate, &grained, resolved.grain, grain_seed)?;
+        apply_grain_8bit_with_engine(
+            &intermediate,
+            &grained,
+            resolved.grain,
+            grain_seed,
+            job.grain_engine,
+        )?;
         grain_stage.finish();
         if progress.is_none() {
             eprintln!(
-                "applied grain amount={} size={} frequency={}",
-                resolved.grain.amount, resolved.grain.size, resolved.grain.frequency
+                "applied grain amount={} size={} frequency={} engine={}",
+                resolved.grain.amount,
+                resolved.grain.size,
+                resolved.grain.frequency,
+                job.grain_engine
             );
         }
         let export_stage = progress_stage_adaptive(
@@ -411,12 +425,21 @@ pub(crate) fn apply_resolved(
             estimate_grain_duration(job.raw, false),
         );
         let grained = temp_dir.join("grained.tif");
-        apply_grain(&intermediate, &grained, resolved.grain, grain_seed)?;
+        apply_grain_with_engine(
+            &intermediate,
+            &grained,
+            resolved.grain,
+            grain_seed,
+            job.grain_engine,
+        )?;
         grain_stage.finish();
         if progress.is_none() {
             eprintln!(
-                "applied grain amount={} size={} frequency={}",
-                resolved.grain.amount, resolved.grain.size, resolved.grain.frequency
+                "applied grain amount={} size={} frequency={} engine={}",
+                resolved.grain.amount,
+                resolved.grain.size,
+                resolved.grain.frequency,
+                job.grain_engine
             );
         }
         let export_stage = progress_stage_adaptive(
@@ -476,6 +499,7 @@ pub(crate) fn apply_resolved(
                 profile: &resolved.metadata,
                 grain: actual_grain,
                 grain_seed: grain_enabled.then_some(grain_seed),
+                grain_engine: grain_enabled.then_some(job.grain_engine),
             },
             Some(&intermediate),
         )?;
@@ -867,6 +891,7 @@ mod tests {
                 convert: &temp.path().join("convert"),
                 keep_intermediate: None,
                 no_grain: true,
+                grain_engine: GrainEngine::default(),
                 color_noise_iso_threshold: 0,
                 lens_corrections: LensCorrections::default(),
                 lcp_root: None,
@@ -920,6 +945,7 @@ mod tests {
                 convert: &temp.path().join("convert"),
                 keep_intermediate: None,
                 no_grain: false,
+                grain_engine: GrainEngine::default(),
                 color_noise_iso_threshold: 0,
                 lens_corrections: LensCorrections::default(),
                 lcp_root: None,
@@ -975,6 +1001,7 @@ mod tests {
                 convert: &temp.path().join("convert"),
                 keep_intermediate: None,
                 no_grain: false,
+                grain_engine: GrainEngine::default(),
                 color_noise_iso_threshold: 0,
                 lens_corrections: LensCorrections::default(),
                 lcp_root: None,

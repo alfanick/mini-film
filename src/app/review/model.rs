@@ -4,8 +4,8 @@ use super::store::now_string;
 use crate::app::profile::ResolvedProfileMetadata;
 
 use mini_film::{
-    CalibrationAdjustments, GrainSettings, HslAdjustments, ParametricTone, ProfileAdjustments,
-    SharpeningSettings, ToneCurves,
+    CalibrationAdjustments, GrainEngine, GrainSettings, HslAdjustments, ParametricTone,
+    ProfileAdjustments, SharpeningSettings, ToneCurves,
 };
 
 pub(crate) const SOOC_PROFILE_INDEX: usize = 1_000_000_000;
@@ -35,6 +35,7 @@ pub(crate) struct ReviewConfig {
     pub(crate) grain: Option<String>,
     pub(crate) grain_preset: Option<String>,
     pub(crate) grain_seed: Option<u64>,
+    pub(crate) grain_engine: GrainEngine,
     pub(crate) codex: Option<CodexAnalysisFlags>,
     pub(crate) codex_binary: PathBuf,
     pub(crate) codex_model: String,
@@ -365,6 +366,7 @@ pub(crate) struct ReviewHandle {
     pub(super) grain: Option<String>,
     pub(super) grain_preset: Option<String>,
     pub(super) grain_seed: Option<u64>,
+    pub(super) grain_engine: GrainEngine,
     pub(super) publish_defaults: ReviewPublishDefaults,
     pub(super) publish_jobs: Arc<ArcSwap<Vec<ReviewPublishJob>>>,
     pub(super) next_publish_job_id: Arc<AtomicU64>,
@@ -681,6 +683,7 @@ pub(crate) struct ReviewPublishCommandArgs {
     pub(crate) grain: Option<String>,
     pub(crate) grain_preset: Option<String>,
     pub(crate) grain_seed: Option<u64>,
+    pub(crate) grain_engine: GrainEngine,
     pub(crate) progress_events: bool,
 }
 
@@ -757,6 +760,7 @@ pub(super) struct ReviewPublishOptions {
     pub(super) grain: Option<String>,
     pub(super) grain_preset: Option<String>,
     pub(super) grain_seed: Option<u64>,
+    pub(super) grain_engine: GrainEngine,
     pub(super) write_metadata: bool,
 }
 

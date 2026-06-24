@@ -1003,6 +1003,7 @@ mod tests {
             grain: None,
             grain_preset: None,
             grain_seed: None,
+            grain_engine: mini_film::GrainEngine::default(),
             export: ExportOptions {
                 jpg_quality: 95,
                 resize: None,

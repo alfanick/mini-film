@@ -15,7 +15,9 @@ use std::{
 use anyhow::{Context, Result, bail};
 use handlebars::Handlebars;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use mini_film::{GrainSettings, apply_grain_8bit, write_rawtherapee_resize_profile};
+use mini_film::{
+    GrainEngine, GrainSettings, apply_grain_8bit_with_engine, write_rawtherapee_resize_profile,
+};
 use rayon::prelude::*;
 use serde_json::json;
 use sha1::{Digest, Sha1};
@@ -56,6 +58,7 @@ pub(crate) struct SamplerArgs {
     pub(crate) color_noise_iso_threshold: u32,
     pub(crate) lens_corrections: LensCorrections,
     pub(crate) grain_seed: Option<u64>,
+    pub(crate) grain_engine: GrainEngine,
     pub(crate) no_cache: bool,
     pub(crate) jobs: Option<usize>,
     pub(crate) thumbnail_long_edge: u32,
@@ -359,7 +362,11 @@ impl ThumbnailCache {
     fn path_for(&self, profile: &Path, args: &SamplerArgs) -> Result<PathBuf> {
         let xmp_sha1 =
             sha1_file(profile).with_context(|| format!("hashing XMP {}", profile.display()))?;
-        let grain_mode = if args.no_grain { "nograin" } else { "grain" };
+        let grain_mode = if args.no_grain {
+            "nograin".to_string()
+        } else {
+            format!("grain-{}", args.grain_engine)
+        };
         let subsampling = format!("{:?}", args.jpeg_subsampling).to_ascii_lowercase();
         let lens_corrections = if args.lens_corrections == LensCorrections::default() {
             "none".to_string()
@@ -591,11 +598,12 @@ fn render_profile_thumbnail(
             estimate_sampler_grain_duration(context.args.thumbnail_long_edge),
         );
         let grained = profile_temp.join("grained-8.ppm");
-        apply_grain_8bit(
+        apply_grain_8bit_with_engine(
             &developed,
             &grained,
             metadata_grain,
             metadata_grain_seed.unwrap_or_default(),
+            context.args.grain_engine,
         )?;
         grain_stage.finish();
         grained
@@ -647,6 +655,7 @@ fn render_profile_thumbnail(
                 profile: &resolved.metadata,
                 grain: metadata_grain,
                 grain_seed: metadata_grain_seed,
+                grain_engine: grain_enabled.then_some(context.args.grain_engine),
             },
             Some(&color_profile_source),
         )?;
@@ -2016,6 +2025,7 @@ mod tests {
             lcp_root: None,
             no_grain: false,
             grain_seed: Some(123),
+            grain_engine: GrainEngine::default(),
             lens_corrections: crate::cli::LensCorrections::default(),
             color_noise_iso_threshold: 1600,
             no_cache: false,

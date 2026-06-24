@@ -2,6 +2,7 @@
 
 mod adjustments;
 mod grain;
+mod grain_rfgr;
 mod hald;
 mod model;
 mod nikon;
@@ -10,15 +11,17 @@ mod rgb_table;
 pub mod util;
 mod xmp;
 
-pub use grain::{apply_grain, apply_grain_8bit};
+pub use grain::{
+    apply_grain, apply_grain_8bit, apply_grain_8bit_with_engine, apply_grain_with_engine,
+};
 pub use hald::{
     convert_dir, convert_path, convert_xmp_to_hald, profile_display_name, profile_info_line,
     try_convert_dir, write_hald_png, write_hald_png_with_adjustments,
 };
 pub use model::{
-    BatchSummary, CalibrationAdjustments, ConvertedProfile, GrainSettings, HaldOptions,
-    HslAdjustments, ParametricTone, ProfileAdjustments, RgbTable, SharpeningSettings, ToneCurves,
-    XmpFilmRecipe, XmpRgbTable, dummy_converted_profile, non_default_adjustments,
+    BatchSummary, CalibrationAdjustments, ConvertedProfile, GrainEngine, GrainSettings,
+    HaldOptions, HslAdjustments, ParametricTone, ProfileAdjustments, RgbTable, SharpeningSettings,
+    ToneCurves, XmpFilmRecipe, XmpRgbTable, dummy_converted_profile, non_default_adjustments,
 };
 pub use nikon::{
     NikonPictureControl, NikonReport, fit_nikon_picture_control,

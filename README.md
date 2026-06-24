@@ -302,7 +302,7 @@ Output metadata behavior for `apply`, `batch`, `daemon`, and `sampler`:
   data for the render
 - the XMP packet also records mini-film as the creator/converter and adds a
   high-level `xmpMM` history entry with the raw file, profile, linked profile,
-  Hald or PP3 source, grain state, and grain seed
+  Hald or PP3 source, grain state, grain engine, and grain seed
 - an EXIF comment is written as  
   `mini-film <version> usage=<command> profile=<profile-or-emulation>`
   or `profile=none` when no profile was configured
@@ -762,7 +762,23 @@ Lightroom grain fields are read from preset XMPs:
 - `crs:GrainSize`
 - `crs:GrainFrequency`
 
-Grain is rendered internally after RawTherapee. TIFF outputs use the 16-bit grain path; JPEG outputs use the optimized 8-bit grain path. Disable it with:
+Grain is rendered internally after RawTherapee. TIFF outputs use the 16-bit
+grain path; JPEG outputs use the optimized 8-bit grain path. The default engine
+is `legacy`, mini-film's older additive procedural renderer.
+
+RFGR remains available as an opt-in engine. It is an original implementation
+derived from the algorithm described in Newson, Faraj, Galerne, and Delon's IPOL
+paper "Realistic Film Grain Rendering": an inhomogeneous Boolean model of random
+disks, Gaussian filtering, and Monte Carlo sampling. It uses the existing
+Lightroom-style `amount,size,frequency` controls, not new RFGR-specific knobs.
+The implementation is derived from the paper's described algorithm and is not
+copied from IPOL's GPL source archive.
+
+RFGR engines detect visually monochrome developed images and switch to a shared
+luminance grain path, so black-and-white exports do not get independent RGB
+grain speckles.
+
+Disable grain with:
 
 ```sh
 --no-grain
@@ -786,6 +802,30 @@ or use a preset:
 --grain-preset light
 --grain-preset medium
 --grain-preset heavy
+```
+
+Select the default legacy renderer explicitly with:
+
+```sh
+--grain-engine legacy
+```
+
+For a much faster cached approximation of the RFGR look, use:
+
+```sh
+--grain-engine rfgrfast
+```
+
+`rfgrfast` builds a seeded stochastic coverage cache for each RGB channel and
+blurs it once instead of running the full per-pixel Monte Carlo disk sampler.
+It still uses the same `amount,size,frequency` controls and the same
+time-based or explicit grain seed flow, so batch/daemon/review outputs get
+per-picture variation rather than reusing one fixed texture.
+
+Select the exact RFGR engine explicitly with:
+
+```sh
+--grain-engine rfgr
 ```
 
 ## Color Noise Reduction
