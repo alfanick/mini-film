@@ -37,6 +37,7 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
         config.output_format,
         &config.export,
         gallery_defaults,
+        config.grain_engine,
     );
     let codex = config
         .codex
@@ -1707,6 +1708,15 @@ impl ReviewHandle {
             export.progressive_jpeg = progressive_jpeg;
         }
         validate_export_options(&export)?;
+        let grain_engine = request
+            .grain_engine
+            .as_deref()
+            .map(parse_grain_engine)
+            .transpose()?
+            .unwrap_or(self.grain_engine);
+        let rerender_raw = output_format != self.output_format
+            || export != self.export
+            || grain_engine != self.grain_engine;
 
         Ok(ReviewPublishCommandArgs {
             state: self.state_path.clone(),
@@ -1742,7 +1752,7 @@ impl ReviewHandle {
                 .gallery_columns
                 .or_else(|| self.gallery.as_ref().map(|gallery| gallery.columns))
                 .unwrap_or(4),
-            rerender_raw: output_format != self.output_format || export != self.export,
+            rerender_raw,
             export,
             no_grain: self.no_grain,
             color_noise_iso_threshold: self.color_noise_iso_threshold,
@@ -1750,7 +1760,7 @@ impl ReviewHandle {
             grain: self.grain.clone(),
             grain_preset: self.grain_preset.clone(),
             grain_seed: self.grain_seed,
-            grain_engine: self.grain_engine,
+            grain_engine,
             progress_events: true,
         })
     }

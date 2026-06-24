@@ -778,6 +778,9 @@ RFGR engines detect visually monochrome developed images and switch to a shared
 luminance grain path, so black-and-white exports do not get independent RGB
 grain speckles.
 
+For visual reference, see the
+[grain engine comparison PDF](https://sam.nakarmamana.ch/mini-film-hidden/grain_engine_comparison.pdf).
+
 Disable grain with:
 
 ```sh

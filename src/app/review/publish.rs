@@ -1,4 +1,5 @@
 use super::{handle::retouch_without_adjustments, model::*, prelude::*, store::*};
+use mini_film::GrainEngine;
 
 pub(super) fn parse_batch_output_format(raw: &str) -> Result<BatchOutputFormat> {
     match raw.trim().to_ascii_lowercase().as_str() {
@@ -31,6 +32,15 @@ pub(super) fn parse_jpeg_subsampling(raw: &str) -> Result<crate::cli::JpegSubsam
         "s422" | "422" | "4:2:2" => Ok(crate::cli::JpegSubsampling::S422),
         "s420" | "420" | "4:2:0" => Ok(crate::cli::JpegSubsampling::S420),
         other => bail!("unsupported JPEG subsampling {other:?}"),
+    }
+}
+
+pub(super) fn parse_grain_engine(raw: &str) -> Result<GrainEngine> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "legacy" => Ok(GrainEngine::Legacy),
+        "rfgr" => Ok(GrainEngine::Rfgr),
+        "rfgrfast" | "rfgr-fast" => Ok(GrainEngine::RfgrFast),
+        other => bail!("unsupported grain engine {other:?}; expected legacy, rfgr, or rfgrfast"),
     }
 }
 

@@ -62,6 +62,7 @@ fn test_handle(input: PathBuf, output: PathBuf, profiles: Vec<ReviewProfile>) ->
                 thumbnail_long_edge: 1024,
                 columns: 4,
             },
+            mini_film::GrainEngine::default(),
         ),
         publish_jobs: Arc::new(ArcSwap::from_pointee(Vec::new())),
         next_publish_job_id: Arc::new(AtomicU64::new(1)),
@@ -927,6 +928,52 @@ fn review_state_reports_connected_client_count() {
     let state =
         serde_json::from_str::<serde_json::Value>(&handle.api_state_json().unwrap()).unwrap();
     assert_eq!(state["client_count"], 0);
+}
+
+#[test]
+fn review_state_publish_defaults_include_daemon_grain_engine() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+
+    let handle = test_handle(input, output, vec![profile(0, "Classic")]);
+
+    let state =
+        serde_json::from_str::<serde_json::Value>(&handle.api_state_json().unwrap()).unwrap();
+    assert_eq!(
+        state["publish_defaults"]["grain_engine"],
+        mini_film::GrainEngine::default().to_string()
+    );
+}
+
+#[test]
+fn publish_args_rerender_when_publish_grain_engine_differs_from_daemon() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+
+    let handle = test_handle(input, output, vec![profile(0, "Classic")]);
+    let matching = handle
+        .publish_args_from_request(&PublishRequest {
+            grain_engine: Some(mini_film::GrainEngine::default().to_string()),
+            ..PublishRequest::default()
+        })
+        .unwrap();
+    assert!(!matching.rerender_raw);
+    assert_eq!(matching.grain_engine, mini_film::GrainEngine::default());
+
+    let changed = handle
+        .publish_args_from_request(&PublishRequest {
+            grain_engine: Some(mini_film::GrainEngine::Rfgr.to_string()),
+            ..PublishRequest::default()
+        })
+        .unwrap();
+    assert!(changed.rerender_raw);
+    assert_eq!(changed.grain_engine, mini_film::GrainEngine::Rfgr);
 }
 
 #[test]

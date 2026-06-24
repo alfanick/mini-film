@@ -258,6 +258,7 @@ pub(super) fn history_publish_started(
     entry.line(format!("labels: {}", list_text(&args.labels)));
     entry.line(format!("tags: {}", list_text(&args.tags)));
     entry.line(format!("format: {}", args.output_format));
+    entry.line(format!("grain engine: {}", args.grain_engine));
     entry.line(format!("rerender raw: {}", yes_no(args.rerender_raw)));
     entry.line(format!("jobs: {}", args.jobs));
     if let Some(gallery) = args.gallery {

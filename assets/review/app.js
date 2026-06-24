@@ -941,6 +941,18 @@ function PublishOutputSection() {
     h(
       "label",
       null,
+      h("span", null, "Grain engine"),
+      h(
+        "select",
+        { id: "publish-grain-engine" },
+        h("option", { value: "legacy" }, "Legacy"),
+        h("option", { value: "rfgrfast" }, "RFGR fast"),
+        h("option", { value: "rfgr" }, "RFGR"),
+      ),
+    ),
+    h(
+      "label",
+      null,
       h("span", null, "Size"),
       h(
         "select",
@@ -1098,6 +1110,7 @@ const els = {
   publishMinRating: document.getElementById("publish-min-rating"),
   publishTags: document.getElementById("publish-tags"),
   publishOutputFormat: document.getElementById("publish-output-format"),
+  publishGrainEngine: document.getElementById("publish-grain-engine"),
   publishSizeMode: document.getElementById("publish-size-mode"),
   publishLongEdge: document.getElementById("publish-long-edge"),
   publishMaxWidth: document.getElementById("publish-max-width"),
@@ -2292,6 +2305,7 @@ function populatePublishWizard() {
     input.checked = false;
   });
   els.publishOutputFormat.value = defaults.output_format || "jpg";
+  els.publishGrainEngine.value = defaults.grain_engine || "legacy";
   els.publishJpgQuality.value = String(defaults.jpg_quality || 95);
   els.publishJpegSubsampling.value = defaults.jpeg_subsampling || "s444";
   els.publishProgressive.checked = Boolean(defaults.progressive_jpeg);
@@ -2333,6 +2347,7 @@ function publishFormBody() {
     labels: Array.from(document.querySelectorAll("[name='publish-label']:checked")).map((input) => input.value),
     tags: splitPublishTags(els.publishTags.value),
     output_format: els.publishOutputFormat.value,
+    grain_engine: els.publishGrainEngine.value,
     gallery: els.publishGallery.value,
     size_mode: sizeMode,
     jpg_quality: Number(els.publishJpgQuality.value || 95),
@@ -2403,6 +2418,7 @@ function publishWouldRerender() {
         : "original";
   return (
     body.output_format !== (defaults.output_format || "jpg") ||
+    body.grain_engine !== (defaults.grain_engine || "legacy") ||
     body.size_mode !== defaultsSizeMode ||
     body.jpg_quality !== Number(defaults.jpg_quality || 95) ||
     body.jpeg_subsampling !== (defaults.jpeg_subsampling || "s444") ||
@@ -2418,7 +2434,7 @@ function publishWouldRerender() {
 function updatePublishModeText() {
   const rerender = publishWouldRerender();
   els.publishMode.textContent = rerender
-    ? "Changed output settings will rerender selected pictures from the original RAW files."
+    ? "Changed output or grain settings will rerender selected pictures from the original RAW files."
     : "Settings match daemon defaults, so publish will hardlink reviewed outputs when possible.";
   updatePublishCount();
   updatePublishStatus();

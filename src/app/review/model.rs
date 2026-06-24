@@ -644,6 +644,8 @@ pub(super) struct PublishRequest {
     pub(super) gallery_thumbnail_long_edge: Option<u32>,
     #[serde(default)]
     pub(super) gallery_columns: Option<u32>,
+    #[serde(default)]
+    pub(super) grain_engine: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -702,6 +704,7 @@ pub(super) struct ReviewPublishDefaults {
     pub(super) gallery: Option<String>,
     pub(super) gallery_thumbnail_long_edge: u32,
     pub(super) gallery_columns: u32,
+    pub(super) grain_engine: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -810,6 +813,7 @@ impl ReviewPublishDefaults {
         output_format: BatchOutputFormat,
         export: &ExportOptions,
         gallery: ReviewGalleryDefaults,
+        grain_engine: GrainEngine,
     ) -> Self {
         Self {
             album,
@@ -825,6 +829,7 @@ impl ReviewPublishDefaults {
             gallery: gallery.template.map(|template| template.to_string()),
             gallery_thumbnail_long_edge: gallery.thumbnail_long_edge,
             gallery_columns: gallery.columns,
+            grain_engine: grain_engine.to_string(),
         }
     }
 }
