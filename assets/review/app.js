@@ -1605,6 +1605,7 @@ function renderCurrent(image) {
     els.viewer.classList.remove("has-image");
     els.app.classList.remove("compressed-image");
     els.app.classList.remove("sooc-profile-selected");
+    setRetouchControlsEnabled(false);
     els.image.removeAttribute("src");
     els.title.textContent = "";
     els.profileState.textContent = "";
@@ -1643,6 +1644,7 @@ function renderCurrent(image) {
   if (imageChanged || !isRetouchControlActive()) {
     setRetouchInputs(retouchForImage(image, image.retouch || defaultRetouch()));
   }
+  setRetouchControlsEnabled(!compressed && !isSoocProfile(selected));
   state.lastInputImageId = image.id;
   setActiveReviewButtons(image);
 
@@ -1774,6 +1776,33 @@ function selectedProfileForImage(image) {
   return selected || profiles[0] || null;
 }
 
+function setRetouchControlsEnabled(enabled) {
+  const controls = [
+    els.retouchCopy,
+    els.retouchPaste,
+    els.retouchReset,
+    els.retouchExposure,
+    els.retouchHighlights,
+    els.retouchShadows,
+    els.retouchWhites,
+    els.retouchBlacks,
+    els.retouchTemperature,
+    els.retouchOffset,
+    els.retouchClarity,
+    els.cropToggle,
+    els.cropOk,
+    els.cropCancel,
+    els.cropReset,
+  ];
+  controls.forEach((control) => {
+    if (control) control.disabled = !enabled;
+  });
+  document.querySelectorAll(".retouch label > span").forEach((label) => {
+    label.classList.toggle("retouch-adjustment-label-disabled", !enabled);
+  });
+  syncRetouchClipboardButtons();
+}
+
 function selectedProfileIndexForImage(image) {
   if (!image) return undefined;
   return state.pendingProfileSelections.get(image.id) ?? image.selected_profile_index;
@@ -1785,6 +1814,11 @@ function isCompressedImage(image) {
 
 function isSoocProfile(profile) {
   return profile?.profile_stem === "sooc" || profile?.profile_index === 1000000000;
+}
+
+function isRetouchControlsDisabledForImage(image) {
+  if (!image) return true;
+  return isCompressedImage(image) || isSoocProfile(selectedProfile(image));
 }
 
 function isPortraitRenderProfile(profile) {
@@ -2539,7 +2573,7 @@ function applyLocalRetouch(retouch, options = {}) {
 
 function copyCurrentRetouch() {
   const image = findImage(state.currentId);
-  if (!image) return;
+  if (!image || isRetouchControlsDisabledForImage(image)) return;
   state.retouchClipboard = cloneRetouchAdjustments(retouchFromInputs(image));
   syncRetouchClipboardButtons();
   showGestureFeedback("copied sliders");
@@ -2547,7 +2581,7 @@ function copyCurrentRetouch() {
 
 function pasteCurrentRetouch() {
   const image = findImage(state.currentId);
-  if (!image || !state.retouchClipboard) return false;
+  if (!image || isRetouchControlsDisabledForImage(image) || !state.retouchClipboard) return false;
   const current = retouchFromInputs(image);
   const retouch = retouchForImage(image, {
     ...current,
@@ -2560,7 +2594,8 @@ function pasteCurrentRetouch() {
 }
 
 function syncRetouchClipboardButtons() {
-  els.retouchPaste.disabled = !state.retouchClipboard;
+  const image = findImage(state.currentId);
+  els.retouchPaste.disabled = isRetouchControlsDisabledForImage(image) || !state.retouchClipboard;
 }
 
 function applyDraftRetouch(image, selected) {
@@ -3431,6 +3466,8 @@ document.querySelectorAll(".retouch label > span").forEach((label) => {
   label.title = "Double-click to reset";
   label.addEventListener("dblclick", (event) => {
     event.preventDefault();
+    const image = findImage(state.currentId);
+    if (isRetouchControlsDisabledForImage(image)) return;
     const input = label.parentElement?.querySelector('input[type="range"]');
     if (!input) return;
     input.value = input.defaultValue || "0";
@@ -3617,11 +3654,15 @@ window.addEventListener("keydown", (event) => {
   const shortcutKey = event.key.toLowerCase();
   const plainShortcut = !event.ctrlKey && !event.metaKey && !event.altKey;
   if (plainShortcut && shortcutKey === "c") {
+    const image = findImage(state.currentId);
+    if (isRetouchControlsDisabledForImage(image)) return;
     event.preventDefault();
     copyCurrentRetouch();
     return;
   }
   if (plainShortcut && shortcutKey === "v") {
+    const image = findImage(state.currentId);
+    if (isRetouchControlsDisabledForImage(image)) return;
     event.preventDefault();
     pasteCurrentRetouch();
     return;

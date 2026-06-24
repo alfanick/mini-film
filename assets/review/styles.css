@@ -554,11 +554,26 @@ button:disabled {
   display: none;
 }
 
-.app.compressed-image .retouch [data-retouch-adjustment],
 .app.compressed-image .retouch-header-actions,
-.app.sooc-profile-selected .retouch [data-retouch-adjustment],
-.app.sooc-profile-selected .retouch-header-actions {
-  display: none;
+.app.sooc-profile-selected .retouch-header-actions,
+.app.compressed-image .retouch-adjustment-label-disabled,
+.app.sooc-profile-selected .retouch-adjustment-label-disabled {
+  opacity: 0.56;
+}
+
+.app.compressed-image .retouch [data-retouch-adjustment],
+.app.sooc-profile-selected .retouch [data-retouch-adjustment] {
+  opacity: 0.84;
+}
+
+.app.compressed-image .retouch input[type="range"][disabled],
+.app.sooc-profile-selected .retouch input[type="range"][disabled] {
+  filter: grayscale(1);
+}
+
+.app.compressed-image .retouch button:disabled,
+.app.sooc-profile-selected .retouch button:disabled {
+  filter: grayscale(1);
 }
 
 .crop-overlay {
@@ -1074,6 +1089,10 @@ button:disabled {
   text-overflow: clip;
   white-space: nowrap;
   user-select: none;
+}
+
+.retouch label > span.retouch-adjustment-label-disabled {
+  color: #94948c;
 }
 
 .retouch input[type="range"] {
