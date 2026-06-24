@@ -491,6 +491,16 @@ pub(super) fn publish_store_inner(
         }
     }
 
+    let expected_output_file_names = tasks
+        .iter()
+        .filter_map(|task| {
+            task.destination
+                .file_name()
+                .and_then(|file_name| file_name.to_str())
+                .map(|file_name| file_name.to_owned())
+        })
+        .collect::<HashSet<_>>();
+
     let total = tasks.len() as u64;
     emit_publish_progress(
         progress,
@@ -548,9 +558,10 @@ pub(super) fn publish_store_inner(
         })?;
         report.linked = linked.load(Ordering::Relaxed);
         if report.linked > 0 {
-            report.gallery_roots.push(publish_root);
+            report.gallery_roots.push(publish_root.clone());
         }
     }
+    cleanup_stale_publish_outputs(&publish_root, &expected_output_file_names)?;
     emit_publish_progress(
         progress,
         ReviewPublishProgress {
@@ -564,6 +575,40 @@ pub(super) fn publish_store_inner(
         },
     );
     Ok(report)
+}
+
+fn cleanup_stale_publish_outputs(
+    publish_root: &Path,
+    expected_file_names: &HashSet<String>,
+) -> Result<()> {
+    for entry in fs::read_dir(publish_root)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if !(file_type.is_file() || file_type.is_symlink()) {
+            continue;
+        }
+        let file_name_os = entry.file_name();
+        let Some(file_name) = file_name_os.to_str() else {
+            continue;
+        };
+        if expected_file_names.contains(file_name) {
+            continue;
+        }
+        let entry_path = entry.path();
+        let Some(extension) = entry_path.extension().and_then(|ext| ext.to_str()) else {
+            continue;
+        };
+        if !extension.eq_ignore_ascii_case("jpg")
+            && !extension.eq_ignore_ascii_case("jpeg")
+            && !extension.eq_ignore_ascii_case("tif")
+            && !extension.eq_ignore_ascii_case("tiff")
+        {
+            continue;
+        }
+        fs::remove_file(&entry_path)
+            .with_context(|| format!("removing stale publish output {}", entry_path.display()))?;
+    }
+    Ok(())
 }
 
 pub(super) fn emit_publish_progress(
