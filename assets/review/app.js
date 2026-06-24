@@ -3142,9 +3142,14 @@ async function rateCurrentAndAdvance(rating) {
 async function carrySelectedProfileToImage(imageId, profileIndex) {
   const image = findImage(imageId);
   if (!image || profileIndex === undefined || profileIndex === null) return;
-  const hasProfile = (image.profiles || []).some((profile) => profile.profile_index === profileIndex);
-  if (!hasProfile || image.selected_profile_index === profileIndex) return;
-  await saveImageReview(image, { selected_profile_index: profileIndex });
+  const profiles = image.profiles || [];
+  const publishedProfileIndexes = publishProfileIndexes(image);
+  const hasProfile = profiles.some((profile) => profile.profile_index === profileIndex);
+  const nextProfileIndex = publishedProfileIndexes.includes(profileIndex) ? profileIndex : publishedProfileIndexes[0];
+  if (nextProfileIndex === undefined && !hasProfile) return;
+  const resolvedProfileIndex = nextProfileIndex ?? image.selected_profile_index;
+  if (resolvedProfileIndex === image.selected_profile_index) return;
+  await saveImageReview(image, { selected_profile_index: resolvedProfileIndex });
 }
 
 async function selectProfileRelative(delta) {

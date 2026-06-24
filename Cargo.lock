@@ -2669,7 +2669,7 @@ dependencies = [
 
 [[package]]
 name = "mini-film"
-version = "13.4.6"
+version = "13.4.7"
 dependencies = [
  "anyhow",
  "arc-swap",
