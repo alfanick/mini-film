@@ -39,6 +39,7 @@ pub(crate) struct ReviewConfig {
     pub(crate) codex_binary: PathBuf,
     pub(crate) codex_model: String,
     pub(crate) codex_timeout: Duration,
+    pub(crate) invocation: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -341,6 +342,7 @@ pub(crate) struct ReviewHandle {
     pub(super) retouch_scheduler: Arc<ReviewRetouchScheduler>,
     pub(super) codex: Option<ReviewCodexConfig>,
     pub(super) codex_scheduler: Arc<ReviewCodexScheduler>,
+    pub(super) invocation: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

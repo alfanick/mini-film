@@ -82,6 +82,7 @@ pub(crate) struct BatchDaemonArgs {
     pub(crate) publish_album: String,
     pub(crate) output_format: BatchOutputFormat,
     pub(crate) export: ExportOptions,
+    pub(crate) invocation: Option<String>,
 }
 
 struct DaemonProfile {
@@ -358,6 +359,7 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
             codex_binary: args.codex_binary.clone(),
             codex_model: args.codex_model.clone(),
             codex_timeout: Duration::from_secs(args.codex_timeout),
+            invocation: args.invocation.clone(),
         })?)
     } else {
         None
@@ -1836,6 +1838,7 @@ mod tests {
                 strip_metadata: true,
                 progressive_jpeg: false,
             },
+            invocation: None,
         };
 
         let mut output_dirs = HashSet::new();
@@ -1974,6 +1977,7 @@ mod tests {
                 strip_metadata: true,
                 progressive_jpeg: false,
             },
+            invocation: None,
         };
         let profile = Arc::new(DaemonProfile {
             selector: "Portra 400 grainy".to_string(),

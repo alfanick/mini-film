@@ -26,6 +26,7 @@ const state = {
   mobileDrawer: null,
   pendingProfileSelections: new Map(),
   profileInfoProfileIndex: null,
+  commandInvocationOpen: false,
 };
 
 const RETOUCH_SAVE_DEBOUNCE_MS = 1200;
@@ -168,6 +169,7 @@ function ReviewShell() {
       ),
     ),
     h(ShortcutsOverlay),
+    h("div", { id: "command-invocation-overlay", class: "command-invocation-overlay", hidden: true }),
     h("div", { id: "profile-info-overlay", class: "profile-info-overlay", hidden: true }),
     h(PublishOverlay),
   );
@@ -296,6 +298,7 @@ function profileByIndex(profileIndex) {
 }
 
 function openProfileInfo(profile) {
+  closeCommandInvocation();
   state.profileInfoProfileIndex = profileRenderIndex(profile);
   renderProfileInfo();
 }
@@ -316,6 +319,88 @@ function renderProfileInfo() {
   }
   preactRender(overlayContent, els.profileInfoOverlay);
   els.profileInfoOverlay.removeAttribute("hidden");
+}
+
+function CommandInvocationOverlay() {
+  const invocation = state.data?.invocation || "Invocation unavailable.";
+  return h(
+    "section",
+    { class: "command-invocation-card", role: "dialog", "aria-modal": "true" },
+    h(
+      "header",
+      { class: "command-invocation-header" },
+      h("div", null, h("h3", null, "Command invocation"), h("p", null, "This review session was launched with:")),
+      h(
+        "button",
+        {
+          class: "command-invocation-close",
+          type: "button",
+          "aria-label": "Close command invocation",
+          onClick: (event) => {
+            event.preventDefault();
+            closeCommandInvocation();
+          },
+        },
+        "×",
+      ),
+    ),
+    h(
+      "pre",
+      {
+        class: "command-invocation-code",
+        title: invocation,
+      },
+      invocation,
+    ),
+    h(
+      "div",
+      { class: "command-invocation-actions" },
+      h(
+        "button",
+        {
+          type: "button",
+          onClick: () => {
+            if (!state.data?.invocation) return;
+            void navigator.clipboard?.writeText(state.data.invocation).catch((error) => {
+              console.error(error);
+            });
+          },
+        },
+        "Copy",
+      ),
+      h(
+        "button",
+        {
+          type: "button",
+          onClick: () => closeCommandInvocation(),
+        },
+        "Close",
+      ),
+    ),
+  );
+}
+
+function openCommandInvocation() {
+  closeProfileInfo();
+  state.commandInvocationOpen = true;
+  renderCommandInvocation();
+}
+
+function closeCommandInvocation() {
+  if (!state.commandInvocationOpen) return;
+  state.commandInvocationOpen = false;
+  renderCommandInvocation();
+}
+
+function renderCommandInvocation() {
+  if (!els.commandInvocationOverlay) return;
+  if (!state.commandInvocationOpen) {
+    preactRender(null, els.commandInvocationOverlay);
+    els.commandInvocationOverlay.setAttribute("hidden", "hidden");
+    return;
+  }
+  preactRender(h(CommandInvocationOverlay), els.commandInvocationOverlay);
+  els.commandInvocationOverlay.removeAttribute("hidden");
 }
 
 function profileRenderIndex(profile) {
@@ -802,6 +887,7 @@ const els = {
   shortcutsOverlay: document.getElementById("shortcuts-overlay"),
   shortcutsClose: document.getElementById("shortcuts-close"),
   profileInfoOverlay: document.getElementById("profile-info-overlay"),
+  commandInvocationOverlay: document.getElementById("command-invocation-overlay"),
   appVersion: document.getElementById("app-version"),
   publishOverlay: document.getElementById("publish-overlay"),
   publishForm: document.getElementById("publish-form"),
@@ -873,7 +959,16 @@ function applyStatePatch(patch) {
     return;
   }
   const data = { ...state.data };
-  for (const key of ["profiles", "client_count", "codex", "publish_defaults", "publish_jobs", "ui", "publish_root"]) {
+  for (const key of [
+    "profiles",
+    "client_count",
+    "codex",
+    "publish_defaults",
+    "publish_jobs",
+    "ui",
+    "publish_root",
+    "invocation",
+  ]) {
     if (Object.prototype.hasOwnProperty.call(patch, key)) data[key] = patch[key];
   }
   if (Array.isArray(patch.images) || Array.isArray(patch.removed_image_ids)) {
@@ -943,6 +1038,7 @@ function render() {
     state.profileInfoProfileIndex = null;
   }
   renderProfileInfo();
+  renderCommandInvocation();
   syncProfilesPlacement();
   const images = filteredImages();
   const total = state.data?.images?.length || 0;
@@ -1104,9 +1200,14 @@ function filteredImagesFromData(data) {
 }
 
 function renderList(images) {
+  let lastCaptureDay = null;
   preactRender(
     h(ImageList, {
-      images,
+      images: images.map((image) => {
+        const captureDay = imageCaptureDisplay(image, lastCaptureDay);
+        lastCaptureDay = captureDay.day;
+        return { ...image, capture_time: captureDay.text };
+      }),
       currentId: state.currentId,
       onSelect: async (image) => {
         const carryProfileIndex = selectedProfile(findImage(state.currentId))?.profile_index;
@@ -1154,7 +1255,10 @@ function ImageList({ images, currentId, onSelect }) {
           class: "image-row-title",
           title: image.relative_path || image.file_name,
         },
-        image.file_name,
+        h("span", { class: "image-row-title-text" }, image.file_name),
+        image.capture_time
+          ? h("span", { class: "image-row-capture-time", title: image.capture_time }, image.capture_time)
+          : null,
       ),
       h(
         "div",
@@ -1410,6 +1514,30 @@ function renderProfileStateSummary(image, selected, selectedState, previewNote, 
     ),
     els.profileState,
   );
+}
+
+function imageCaptureDisplay(image, previousDay) {
+  const timestamp = Number(image?.exif?.capture_timestamp || NaN);
+  if (!Number.isFinite(timestamp)) {
+    return { day: previousDay, text: "" };
+  }
+
+  const date = new Date(timestamp * 1000);
+  if (!Number.isFinite(date.getTime())) {
+    return { day: previousDay, text: "" };
+  }
+
+  const day = `${date.getFullYear()}-${zeroPad(date.getMonth() + 1)}-${zeroPad(date.getDate())}`;
+  const time = `${zeroPad(date.getHours())}:${zeroPad(date.getMinutes())}:${zeroPad(date.getSeconds())}`;
+  const isFirstOfDay = day !== previousDay;
+  return {
+    day,
+    text: isFirstOfDay ? `${day} ${time}` : time,
+  };
+}
+
+function zeroPad(value) {
+  return String(value).padStart(2, "0");
 }
 
 function renderImageExif(image) {
@@ -3181,6 +3309,10 @@ function clearRetouchSaveTimer() {
 
 els.publish.addEventListener("click", () => togglePublishWizard(true));
 els.mobilePublish.addEventListener("click", () => togglePublishWizard(true));
+els.appVersion?.addEventListener("click", (event) => {
+  event.preventDefault();
+  openCommandInvocation();
+});
 els.mobileDrawerButtons.forEach((button) => {
   button.addEventListener("click", () => toggleMobileDrawer(button.dataset.mobileDrawer));
 });
@@ -3191,6 +3323,11 @@ els.publishOverlay.addEventListener("click", (event) => {
 els.profileInfoOverlay?.addEventListener("click", (event) => {
   if (event.target === els.profileInfoOverlay) {
     closeProfileInfo();
+  }
+});
+els.commandInvocationOverlay?.addEventListener("click", (event) => {
+  if (event.target === els.commandInvocationOverlay) {
+    closeCommandInvocation();
   }
 });
 els.publishForm.addEventListener("input", updatePublishModeText);
@@ -3235,6 +3372,11 @@ window.addEventListener("keydown", (event) => {
   if (state.profileInfoProfileIndex !== null && event.key === "Escape") {
     event.preventDefault();
     closeProfileInfo();
+    return;
+  }
+  if (state.commandInvocationOpen && event.key === "Escape") {
+    event.preventDefault();
+    closeCommandInvocation();
     return;
   }
   if (!els.publishOverlay.hidden) {

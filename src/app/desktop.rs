@@ -420,6 +420,7 @@ mod enabled {
                 gallery_columns: 4,
                 publish_album,
                 output_format: BatchOutputFormat::Jpg,
+                invocation: None,
                 export: ExportOptions {
                     jpg_quality: self.jpg_quality.unwrap_or(95),
                     resize: None,

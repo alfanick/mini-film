@@ -67,6 +67,7 @@ fn test_handle(input: PathBuf, output: PathBuf, profiles: Vec<ReviewProfile>) ->
         retouch_scheduler: Arc::new(ReviewRetouchScheduler::default()),
         codex: None,
         codex_scheduler: Arc::new(ReviewCodexScheduler::default()),
+        invocation: None,
     }
 }
 

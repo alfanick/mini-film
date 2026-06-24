@@ -302,6 +302,7 @@ fn main() -> Result<()> {
                 strip_metadata,
                 progressive_jpeg,
             },
+            invocation: Some(format_daemon_invocation(&args)),
         }),
         CommandKind::Sampler {
             raw,
@@ -429,6 +430,35 @@ fn args_with_default_command(mut args: Vec<String>) -> Vec<String> {
         args.push("app".to_string());
     }
     args
+}
+
+fn format_daemon_invocation(args: &[String]) -> String {
+    args.iter()
+        .map(|arg| quote_command_arg(arg))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn quote_command_arg(arg: &str) -> String {
+    if arg.is_empty() {
+        return "''".to_string();
+    }
+    if arg.chars().all(|ch| {
+        ch.is_ascii_alphanumeric()
+            || "-._/:".contains(ch)
+            || ch == ' '
+            || ch == '\\'
+            || ch == '.'
+            || ch == ','
+            || ch == '_'
+            || ch == '-'
+    }) {
+        if arg.contains(' ') {
+            return format!("\"{}\"", arg.replace('\"', "\\\""));
+        }
+        return arg.to_string();
+    }
+    format!("\"{}\"", arg.replace('\\', "\\\\").replace('\"', "\\\""))
 }
 
 const RAWTHERAPEE_BINARY: &str = "rawtherapee-cli";

@@ -77,6 +77,7 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
         retouch_scheduler: Arc::new(ReviewRetouchScheduler::default()),
         codex,
         codex_scheduler: Arc::new(ReviewCodexScheduler::default()),
+        invocation: config.invocation,
     };
     handle.refresh_state_cache()?;
     handle.append_history(history_server_started(
@@ -1477,6 +1478,7 @@ impl ReviewHandle {
 
         Ok(json!({
             "version": env!("CARGO_PKG_VERSION"),
+            "invocation": self.invocation,
             "profiles": store.profiles,
             "client_count": client_count,
             "codex": {
@@ -1894,6 +1896,7 @@ fn review_state_patch_value(
         "client_count",
         "codex",
         "publish_defaults",
+        "invocation",
         "publish_jobs",
         "ui",
         "publish_root",

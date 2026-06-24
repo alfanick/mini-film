@@ -1,6 +1,6 @@
 [package]
 name = "mini-film"
-version = "13.3.2"
+version = "13.3.3"
 description = "Review and publish RAW, JPEG, and HEIC photos with optional Lightroom-style film emulation profiles for RAW workflows."
 repository = "https://github.com/alfanick/mini-film"
 homepage = "https://github.com/alfanick/mini-film"
@@ -30,7 +30,7 @@ filetime = "0.2.29"
 anyhow = "1.0.102"
 clap = { version = "4.6.1", features = ["derive"] }
 flate2 = "1.1.9"
-handlebars = "6.4.1"
+handlebars = "6.4.2"
 image = "0.25.10"
 indicatif = "0.18.4"
 noise = "0.9.0"
