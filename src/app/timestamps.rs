@@ -706,6 +706,7 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
                 data.tags = metadata.tags;
                 data.note = metadata.note;
                 data.rating = metadata.rating;
+                data.exposure_compensation = metadata.exposure_compensation;
                 data.flash = metadata.flash;
             }
             data.sanitize_text_fields();
@@ -717,6 +718,7 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
     let aperture = exif_field_value(&exif, Tag::FNumber)
         .or_else(|| exif_field_value(&exif, Tag::MaxApertureValue));
     let shutter_speed = exif_field_value(&exif, Tag::ExposureTime);
+    let exif_exposure_compensation = exif_field_value(&exif, Tag::ExposureBiasValue);
     let iso = extract_capture_iso_from_exif(&exif).map(|iso| iso.to_string());
 
     let camera_model = exif_field_value(&exif, Tag::Model);
@@ -726,12 +728,14 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
     let mut note = exif_field_value(&exif, Tag::ImageDescription);
     let mut tags = Vec::new();
     let mut rating = None;
-    let mut exposure_compensation = None;
+    let mut exposure_compensation = exif_exposure_compensation
+        .as_ref()
+        .and_then(|value| parse_exposure_compensation_text(value));
     let mut flash = extract_firing_flash_details(&exif);
     if let Some(metadata) = extract_gallery_text_metadata_with_exiftool(file) {
         tags = metadata.tags;
         rating = metadata.rating;
-        exposure_compensation = metadata.exposure_compensation;
+        exposure_compensation = exposure_compensation.or(metadata.exposure_compensation);
         if flash.is_none() {
             flash = metadata
                 .flash
@@ -871,15 +875,33 @@ fn json_to_exposure_compensation_value(value: f64) -> Option<String> {
 }
 
 fn parse_exposure_compensation_text(value: &str) -> Option<String> {
-    if value.contains('/') {
-        parse_rational_exposure_compensation(value)
-    } else {
-        value
+    for token in
+        value.split(|c: char| c.is_whitespace() || c == ';' || c == ',' || c == '(' || c == ')')
+    {
+        let token = token.trim();
+        if token.is_empty() {
+            continue;
+        }
+        let token = token
+            .trim_end_matches("EV")
+            .trim_end_matches("ev")
             .trim()
-            .parse::<f64>()
-            .ok()
-            .and_then(normalize_numeric_exposure_compensation)
+            .trim();
+        if token.is_empty() {
+            continue;
+        }
+        if token.contains('/') {
+            if let Some(value) = parse_rational_exposure_compensation(token) {
+                return Some(value);
+            }
+        } else if let Ok(value) = token.parse::<f64>()
+            && let Some(value) = normalize_numeric_exposure_compensation(value)
+        {
+            return Some(value);
+        }
     }
+
+    None
 }
 
 fn parse_rational_exposure_compensation(value: &str) -> Option<String> {

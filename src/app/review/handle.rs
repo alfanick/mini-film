@@ -152,7 +152,16 @@ impl ReviewHandle {
             }
             let preview_path = self.preview_path_for(raw, image.id);
             let mut preview_queued = false;
-            if !preview_path.is_file()
+            if !matches!(
+                image.preview.status,
+                ReviewRenderStatus::Queued | ReviewRenderStatus::Processing
+            ) && preview_path.is_file()
+            {
+                image.preview.status = ReviewRenderStatus::Done;
+                image.preview.path = Some(preview_path.clone());
+                image.preview.error = None;
+                image.preview.updated_at = now_string();
+            } else if !preview_path.is_file()
                 && !matches!(
                     image.preview.status,
                     ReviewRenderStatus::Queued | ReviewRenderStatus::Processing
