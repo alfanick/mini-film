@@ -1730,6 +1730,7 @@ function zeroPad(value) {
 function renderImageExif(image) {
   els.imageExif.replaceChildren();
   const exif = image?.exif || {};
+  const exposureCompensation = formatExposureCompensation(exif.exposure_compensation);
   const parts = [
     exif.shooting_mode ? `Mode ${exif.shooting_mode}` : "",
     exif.camera_model || "",
@@ -1737,11 +1738,21 @@ function renderImageExif(image) {
     exif.iso ? `ISO ${exif.iso}` : "",
     formatExifAperture(exif.aperture),
     exif.shutter_speed || "",
+    exposureCompensation,
     exif.flash ? `Flash ${exif.flash}` : "",
   ].filter(Boolean);
   const text = parts.join(" · ");
   els.imageExif.textContent = text;
   els.imageExif.title = text;
+}
+
+function formatExposureCompensation(value) {
+  if (!value && value !== 0) return "";
+  const number = Number(value);
+  if (!Number.isFinite(number) || number === 0) return "";
+  const normalized = Number(number.toFixed(1));
+  if (normalized === 0) return "";
+  return `${normalized > 0 ? "+" : ""}${normalized.toFixed(1)}EV`;
 }
 
 function formatExifFocalLength(value) {

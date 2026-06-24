@@ -34,6 +34,7 @@ pub(crate) struct GalleryExifData {
     pub(crate) camera_model: Option<String>,
     pub(crate) lens_model: Option<String>,
     pub(crate) shooting_mode: Option<String>,
+    pub(crate) exposure_compensation: Option<String>,
     pub(crate) flash: Option<String>,
     #[serde(default)]
     pub(crate) tags: Vec<String>,
@@ -52,6 +53,7 @@ impl GalleryExifData {
             && self.camera_model.is_none()
             && self.lens_model.is_none()
             && self.shooting_mode.is_none()
+            && self.exposure_compensation.is_none()
             && self.flash.is_none()
             && self.tags.is_empty()
             && self.note.is_none()
@@ -65,6 +67,7 @@ impl GalleryExifData {
         clean_optional_exif_text(&mut self.camera_model);
         clean_optional_exif_text(&mut self.lens_model);
         clean_optional_exif_text(&mut self.shooting_mode);
+        clean_optional_exif_text(&mut self.exposure_compensation);
         clean_optional_exif_text(&mut self.flash);
         clean_optional_exif_text(&mut self.note);
         self.tags = normalize_gallery_tags(std::mem::take(&mut self.tags));
@@ -723,10 +726,12 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
     let mut note = exif_field_value(&exif, Tag::ImageDescription);
     let mut tags = Vec::new();
     let mut rating = None;
+    let mut exposure_compensation = None;
     let mut flash = extract_firing_flash_details(&exif);
     if let Some(metadata) = extract_gallery_text_metadata_with_exiftool(file) {
         tags = metadata.tags;
         rating = metadata.rating;
+        exposure_compensation = metadata.exposure_compensation;
         if flash.is_none() {
             flash = metadata
                 .flash
@@ -749,6 +754,7 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
         camera_model,
         lens_model,
         shooting_mode,
+        exposure_compensation,
         flash,
         tags,
         note,
@@ -762,6 +768,7 @@ struct GalleryTextMetadata {
     tags: Vec<String>,
     note: Option<String>,
     rating: Option<u8>,
+    exposure_compensation: Option<String>,
     flash: Option<String>,
 }
 
@@ -775,6 +782,7 @@ fn extract_gallery_text_metadata_with_exiftool(file: &Path) -> Option<GalleryTex
         .arg("-Description")
         .arg("-ImageDescription")
         .arg("-Flash")
+        .arg("-ExposureBiasValue")
         .arg("-Rating")
         .arg("-XMP-xmp:Rating")
         .arg("-XMP-nine:Rating")
@@ -802,6 +810,11 @@ fn extract_gallery_text_metadata_with_exiftool(file: &Path) -> Option<GalleryTex
     let flash = json_first_string(object.get("Flash"))
         .map(clean_exif_display_text)
         .filter(|value| !value.is_empty());
+    let exposure_compensation = json_exposure_compensation_value(object.get("ExposureBiasValue"))
+        .or_else(|| json_exposure_compensation_value(object.get("XMP-exif:ExposureBiasValue")))
+        .or_else(|| json_exposure_compensation_value(object.get("XMP:ExposureBiasValue")))
+        .or_else(|| json_exposure_compensation_value(object.get("ExposureCompensation")))
+        .or_else(|| json_exposure_compensation_value(object.get("XMP:ExposureCompensation")));
     let rating = json_rating_value(object.get("Rating"))
         .or_else(|| json_rating_value(object.get("XMP:Rating")))
         .or_else(|| json_rating_value(object.get("XMP-xmp:Rating")))
@@ -811,6 +824,7 @@ fn extract_gallery_text_metadata_with_exiftool(file: &Path) -> Option<GalleryTex
         tags,
         note,
         rating,
+        exposure_compensation,
         flash,
     })
 }
@@ -834,6 +848,59 @@ fn json_first_string(value: Option<&Value>) -> Option<String> {
             .find_map(|value| json_first_string(Some(value))),
         _ => None,
     }
+}
+
+fn json_exposure_compensation_value(value: Option<&Value>) -> Option<String> {
+    let value = match value {
+        Some(Value::Number(value)) => json_to_exposure_compensation_value(value.as_f64()?),
+        Some(Value::String(value)) => parse_exposure_compensation_text(value),
+        Some(Value::Array(values)) => values
+            .iter()
+            .find_map(|value| json_exposure_compensation_value(Some(value))),
+        _ => None,
+    };
+    let value = value?;
+    if value == "0" || value == "0.0" || value == "-0.0" {
+        return None;
+    }
+    Some(value)
+}
+
+fn json_to_exposure_compensation_value(value: f64) -> Option<String> {
+    normalize_numeric_exposure_compensation(value)
+}
+
+fn parse_exposure_compensation_text(value: &str) -> Option<String> {
+    if value.contains('/') {
+        parse_rational_exposure_compensation(value)
+    } else {
+        value
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .and_then(normalize_numeric_exposure_compensation)
+    }
+}
+
+fn parse_rational_exposure_compensation(value: &str) -> Option<String> {
+    let mut parts = value.split('/');
+    let numerator = parts.next()?.trim().parse::<f64>().ok()?;
+    let denominator = parts.next()?.trim().parse::<f64>().ok()?;
+    if !denominator.is_normal() || denominator == 0.0 {
+        return None;
+    }
+    normalize_numeric_exposure_compensation(numerator / denominator)
+}
+
+fn normalize_numeric_exposure_compensation(value: f64) -> Option<String> {
+    if !value.is_finite() {
+        return None;
+    }
+    let normalized = (value * 10.0).round() / 10.0;
+    if normalized == 0.0 {
+        return None;
+    }
+    Some(format!("{normalized:.1}"))
 }
 
 fn json_rating_value(value: Option<&Value>) -> Option<u8> {
