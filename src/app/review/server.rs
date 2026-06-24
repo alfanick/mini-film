@@ -247,7 +247,10 @@ async fn profile_hald_response(path: &str, handle: &ReviewHandle) -> Response {
 
 pub(super) async fn outputs_response(path: &str, handle: &ReviewHandle) -> Response {
     let candidate = path.trim_start_matches("/outputs/");
-    let Ok(relative) = sanitize_output_path(candidate) else {
+    let Ok(candidate) = decode_output_path(candidate) else {
+        return text_response(400, "text/plain; charset=utf-8", "bad path").into_response();
+    };
+    let Ok(relative) = sanitize_output_path(&candidate) else {
         return text_response(404, "text/plain; charset=utf-8", "not found").into_response();
     };
     let request_path = handle.output_root().join(relative);
@@ -295,6 +298,36 @@ fn sanitize_output_path(candidate: &str) -> Result<PathBuf, ()> {
         return Err(());
     }
     Ok(safe)
+}
+
+fn decode_output_path(candidate: &str) -> Result<String, ()> {
+    let bytes = candidate.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len() {
+                return Err(());
+            }
+            let high = hex_value(bytes[index + 1])?;
+            let low = hex_value(bytes[index + 2])?;
+            decoded.push((high << 4) | low);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).map_err(|_| ())
+}
+
+fn hex_value(byte: u8) -> Result<u8, ()> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        _ => Err(()),
+    }
 }
 
 async fn serve_review_file(path: PathBuf, content_type: &'static str) -> Response {
