@@ -250,7 +250,7 @@ pub(super) async fn outputs_response(path: &str, handle: &ReviewHandle) -> Respo
     let Ok(relative) = sanitize_output_path(candidate) else {
         return text_response(404, "text/plain; charset=utf-8", "not found").into_response();
     };
-    let request_path = handle.output_root().join("outputs").join(relative);
+    let request_path = handle.output_root().join(relative);
     if request_path.is_dir() {
         return serve_review_path(request_path.join("index.html")).await;
     }
