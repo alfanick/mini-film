@@ -1305,7 +1305,36 @@ function PublishStatus({ job }) {
     );
   }
   if (job.status === "done") {
-    return `Published ${job.linked} files to ${job.album}; skipped ${job.skipped}; galleries ${job.galleries}.`;
+    const links = Array.isArray(job.gallery_urls) ? job.gallery_urls : [];
+    const galleryLinks = links.map((link) => (link.startsWith("/") ? link : `/${link}`));
+    return h(
+      "div",
+      null,
+      `Published ${job.linked} files to ${job.album}; skipped ${job.skipped}; galleries ${job.galleries}.`,
+      galleryLinks.length
+        ? h(
+            "div",
+            { class: "publish-galleries" },
+            h("div", null, "Gallery links:"),
+            h(
+              "div",
+              { class: "publish-gallery-list" },
+              galleryLinks.map((link, index) =>
+                h(
+                  "a",
+                  {
+                    href: link,
+                    target: "_blank",
+                    rel: "noopener noreferrer",
+                    class: "publish-gallery-link",
+                  },
+                  galleryLinks.length > 1 ? `Gallery ${index + 1}` : "Open gallery",
+                ),
+              ),
+            ),
+          )
+        : null,
+    );
   }
   return `Publish failed: ${job.error || "unknown error"}`;
 }

@@ -1612,6 +1612,28 @@ button:disabled {
   color: #85847a;
 }
 
+.publish-galleries {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #66665f;
+}
+
+.publish-gallery-list {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.publish-gallery-link {
+  color: #2a2aef;
+  text-decoration: underline;
+}
+
+.publish-gallery-link:visited {
+  color: #8b3bd1;
+}
+
 .shortcuts-card {
   width: min(760px, 100%);
   max-height: min(720px, calc(100dvh - 48px));

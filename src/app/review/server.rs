@@ -1,4 +1,7 @@
-use std::convert::Infallible;
+use std::{
+    convert::Infallible,
+    path::{Path, PathBuf},
+};
 
 use async_stream::stream;
 use axum::{
@@ -150,6 +153,7 @@ pub(super) async fn route_request(
             profile_hald_response(path, handle).await
         }
         (Method::GET, _) if path.starts_with("/media/") => media_response(path, handle).await,
+        (Method::GET, _) if path.starts_with("/outputs/") => outputs_response(path, handle).await,
         (Method::GET, _) if path.starts_with("/preview/") => preview_response(path, handle).await,
         _ => text_response(404, "text/plain; charset=utf-8", "not found").into_response(),
     }
@@ -164,7 +168,7 @@ pub(super) fn review_asset_content_type(path: &str) -> &'static str {
 }
 
 pub(super) fn review_route_path(path: &str) -> String {
-    for marker in ["/api/", "/assets/", "/media/", "/preview/"] {
+    for marker in ["/api/", "/assets/", "/media/", "/outputs/", "/preview/"] {
         if let Some(index) = path.find(marker) {
             return path[index..].to_string();
         }
@@ -241,6 +245,18 @@ async fn profile_hald_response(path: &str, handle: &ReviewHandle) -> Response {
     }
 }
 
+pub(super) async fn outputs_response(path: &str, handle: &ReviewHandle) -> Response {
+    let candidate = path.trim_start_matches("/outputs/");
+    let Ok(relative) = sanitize_output_path(candidate) else {
+        return text_response(404, "text/plain; charset=utf-8", "not found").into_response();
+    };
+    let request_path = handle.output_root().join("outputs").join(relative);
+    if request_path.is_dir() {
+        return serve_review_path(request_path.join("index.html")).await;
+    }
+    serve_review_path(request_path).await
+}
+
 pub(super) async fn preview_response(path: &str, handle: &ReviewHandle) -> Response {
     let id = path.trim_start_matches("/preview/");
     let image_id = match id.parse::<u64>() {
@@ -253,6 +269,32 @@ pub(super) async fn preview_response(path: &str, handle: &ReviewHandle) -> Respo
         Ok(path) => serve_review_file(path, "image/jpeg").await,
         Err(error) => json_error(404, error).into_response(),
     }
+}
+
+fn sanitize_output_path(candidate: &str) -> Result<PathBuf, ()> {
+    if candidate.is_empty() {
+        return Err(());
+    }
+    let mut safe = PathBuf::new();
+    let mut has_segment = false;
+    for component in Path::new(candidate).components() {
+        match component {
+            std::path::Component::Normal(component) => {
+                if component.is_empty() {
+                    return Err(());
+                }
+                safe.push(component);
+                has_segment = true;
+            }
+            std::path::Component::ParentDir => return Err(()),
+            std::path::Component::CurDir => {}
+            _ => return Err(()),
+        }
+    }
+    if !has_segment {
+        return Err(());
+    }
+    Ok(safe)
 }
 
 async fn serve_review_file(path: PathBuf, content_type: &'static str) -> Response {
@@ -332,6 +374,26 @@ fn text_response(status: u16, content_type: &'static str, body: &str) -> HttpRes
         status,
         content_type,
         body: body.as_bytes().to_vec(),
+    }
+}
+
+async fn serve_review_path(path: PathBuf) -> Response {
+    let request = match Request::builder()
+        .method(Method::GET)
+        .uri("/")
+        .body(Body::empty())
+    {
+        Ok(request) => request,
+        Err(error) => {
+            return json_error(500, anyhow!("building review file request: {error}"))
+                .into_response();
+        }
+    };
+    match ServeFile::new(path).oneshot(request).await {
+        Ok(response) => response.map(Body::new).into_response(),
+        Err(error) => {
+            json_error(500, anyhow!("serving review file from disk: {error}")).into_response()
+        }
     }
 }
 

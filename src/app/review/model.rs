@@ -686,6 +686,8 @@ pub(super) struct ReviewPublishJob {
     pub(super) linked: u64,
     pub(super) skipped: u64,
     pub(super) galleries: u64,
+    #[serde(default)]
+    pub(super) gallery_urls: Vec<String>,
     pub(super) error: Option<String>,
 }
 

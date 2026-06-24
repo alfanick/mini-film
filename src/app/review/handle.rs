@@ -120,6 +120,10 @@ impl ReviewHandle {
         self.output_root.join("reviewed")
     }
 
+    pub(super) fn output_root(&self) -> &Path {
+        &self.output_root
+    }
+
     pub(super) fn preview_root(&self) -> PathBuf {
         self.output_root.join(".mini-film-review-previews")
     }
@@ -1598,6 +1602,7 @@ impl ReviewHandle {
             linked: 0,
             skipped: 0,
             galleries: 0,
+            gallery_urls: Vec::new(),
             error: None,
         };
 
@@ -1776,8 +1781,32 @@ impl ReviewHandle {
             job.linked = report.linked;
             job.skipped = report.skipped;
             job.galleries = report.galleries;
+            job.gallery_urls = self.publish_job_gallery_urls(report);
             job.error = None;
         })
+    }
+
+    fn publish_job_gallery_urls(&self, report: &PublishReport) -> Vec<String> {
+        let output_root = self.output_root();
+        let mut urls = Vec::new();
+        for gallery_root in &report.gallery_roots {
+            let index = gallery_root.join("index.html");
+            if !index.is_file() {
+                continue;
+            }
+            let Ok(relative_root) = gallery_root.strip_prefix(output_root) else {
+                continue;
+            };
+            if relative_root.as_os_str().is_empty() {
+                continue;
+            }
+            let route = Path::new("outputs").join(relative_root).join("index.html");
+            let path = route.to_string_lossy().into_owned();
+            if !urls.contains(&path) {
+                urls.push(path);
+            }
+        }
+        urls
     }
 
     pub(super) fn record_publish_job_failed(&self, job_id: u64, message: &str) -> Result<()> {

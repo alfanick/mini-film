@@ -736,6 +736,7 @@ fn review_history_records_review_and_publish_state_changes() {
                 linked: 0,
                 skipped: 0,
                 galleries: 0,
+                gallery_urls: Vec::new(),
                 error: None,
             });
             Ok(())
@@ -822,6 +823,10 @@ fn review_route_path_accepts_reverse_proxy_prefixes() {
     );
     assert_eq!(review_route_path("/mini-film/media/1/0"), "/media/1/0");
     assert_eq!(review_route_path("/mini-film/preview/1"), "/preview/1");
+    assert_eq!(
+        review_route_path("/mini-film/outputs/galleries/day/index.html"),
+        "/outputs/galleries/day/index.html"
+    );
     assert_eq!(review_route_path("/mini-film/review"), "/review");
     assert_eq!(review_route_path("/mini-film/tv"), "/tv");
     assert_eq!(review_route_path("/mini-film/"), "/");
