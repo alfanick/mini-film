@@ -323,6 +323,7 @@ function renderProfileInfo() {
 
 function CommandInvocationOverlay() {
   const invocation = state.data?.invocation || "Invocation unavailable.";
+  const lines = commandInvocationLines(invocation);
   return h(
     "section",
     { class: "command-invocation-card", role: "dialog", "aria-modal": "true" },
@@ -345,12 +346,58 @@ function CommandInvocationOverlay() {
       ),
     ),
     h(
-      "pre",
+      "div",
       {
         class: "command-invocation-code",
         title: invocation,
       },
-      invocation,
+      lines.length === 0
+        ? invocation
+        : lines.map((line, index, arr) =>
+            h(
+              "div",
+              {
+                class: `command-invocation-line${index === 0 ? "" : " command-invocation-line-indented"}`,
+                "aria-label":
+                  line.type === "single"
+                    ? line.value
+                    : line.type === "binary-subcommand"
+                      ? `${line.value} ${line.subcommand}`
+                      : `${line.name} ${line.value}`,
+              },
+              h(
+                "span",
+                { class: "command-invocation-line-content" },
+                line.type === "binary-subcommand"
+                  ? [
+                      h("span", { class: "command-invocation-binary" }, line.value),
+                      h("span", { class: "command-invocation-arg" }, line.subcommand),
+                    ]
+                  : line.type === "pair"
+                    ? [
+                        h("span", { class: "command-invocation-arg" }, line.name),
+                        h(
+                          "span",
+                          { class: "command-invocation-value" },
+                          commandInvocationDisplayValue(
+                            line.value,
+                            line.name === "--profile" || line.name === "-p" || line.name === "--profile-name",
+                          ),
+                        ),
+                      ]
+                    : [
+                        h(
+                          "span",
+                          {
+                            class: line.binary ? "command-invocation-binary" : "command-invocation-arg",
+                          },
+                          line.value,
+                        ),
+                      ],
+              ),
+              index < arr.length - 1 ? h("span", { class: "command-invocation-continuation" }, " \\") : null,
+            ),
+          ),
     ),
     h(
       "div",
@@ -360,8 +407,9 @@ function CommandInvocationOverlay() {
         {
           type: "button",
           onClick: () => {
-            if (!state.data?.invocation) return;
-            void navigator.clipboard?.writeText(state.data.invocation).catch((error) => {
+            const copyText = commandInvocationCopyText(state.data?.invocation ?? "");
+            if (!copyText) return;
+            void navigator.clipboard?.writeText(copyText).catch((error) => {
               console.error(error);
             });
           },
@@ -378,6 +426,143 @@ function CommandInvocationOverlay() {
       ),
     ),
   );
+}
+
+function commandInvocationLines(invocation) {
+  const tokens = commandInvocationTokens(invocation);
+  const lines = [];
+  for (let index = 0; index < tokens.length; ) {
+    const token = tokens[index];
+    if (index === 0) {
+      if (token !== "" && (tokens[index + 1] === "app" || tokens[index + 1] === "daemon")) {
+        lines.push({
+          type: "binary-subcommand",
+          value: token,
+          subcommand: tokens[index + 1],
+        });
+        index += 2;
+        continue;
+      }
+      lines.push({
+        type: "single",
+        value: token,
+        binary: true,
+        name: "binary",
+      });
+      index += 1;
+      continue;
+    }
+
+    if (token.startsWith("--") && tokens[index + 1] && !tokens[index + 1].startsWith("--")) {
+      let nextIndex = index + 1;
+      while (nextIndex < tokens.length && !tokens[nextIndex].startsWith("--")) {
+        nextIndex += 1;
+      }
+
+      const rawValue = tokens.slice(index + 1, nextIndex);
+      lines.push({
+        type: "pair",
+        name: token,
+        value: rawValue.join(" "),
+      });
+      index = nextIndex;
+      continue;
+    }
+
+    lines.push({
+      type: "single",
+      value: token,
+    });
+    index += 1;
+  }
+  return lines;
+}
+
+function commandInvocationTokens(invocation) {
+  const tokens = [];
+  let current = "";
+  let quote = null;
+  let escaped = false;
+
+  for (let index = 0; index < invocation.length; index++) {
+    const char = invocation[index];
+    const next = invocation[index + 1];
+
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+
+    if (char === "\\") {
+      if (quote === "'") {
+        current += char;
+      } else if (next !== undefined) {
+        current += next;
+        index += 1;
+      } else {
+        current += "\\";
+      }
+      continue;
+    }
+
+    if (quote) {
+      if (char === quote) {
+        quote = null;
+        continue;
+      }
+      if (quote === '"' && char === "\\") {
+        if (next === "\\" || next === '"' || next === "$" || next === "`") {
+          current += next;
+          index += 1;
+          continue;
+        }
+      }
+      current += char;
+      continue;
+    }
+
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (current.length > 0) {
+        tokens.push(current);
+        current = "";
+      }
+      continue;
+    }
+
+    current += char;
+  }
+
+  if (current.length > 0) tokens.push(current);
+  return tokens;
+}
+
+function commandInvocationDisplayValue(value, forceQuote = false) {
+  const str = String(value);
+  if (!forceQuote && (/^[-+]?\d+(?:\.\d+)?$/.test(str) || !/[\\s"]/.test(str))) {
+    return str;
+  }
+  const escaped = str.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  return `"${escaped}"`;
+}
+
+function commandInvocationCopyText(invocation) {
+  const tokens = commandInvocationTokens(invocation);
+  return tokens.map(commandInvocationShellEscape).join(" ");
+}
+
+function commandInvocationShellEscape(value) {
+  const raw = String(value);
+  if (raw.length === 0) return "''";
+  if (/^[A-Za-z0-9._/+=:@,-]+$/.test(raw)) return raw;
+  if (!raw.includes("'")) {
+    return `'${raw}'`;
+  }
+  return `'${raw.replace(/'/g, "'\"'\"'")}'`;
 }
 
 function openCommandInvocation() {
@@ -1256,10 +1441,10 @@ function ImageList({ images, currentId, onSelect }) {
           title: image.relative_path || image.file_name,
         },
         h("span", { class: "image-row-title-text" }, image.file_name),
-        image.capture_time
-          ? h("span", { class: "image-row-capture-time", title: image.capture_time }, image.capture_time)
-          : null,
       ),
+      image.capture_time
+        ? h("span", { class: "image-row-capture-time", title: image.capture_time }, image.capture_time)
+        : null,
       h(
         "div",
         { class: "image-row-meta" },
