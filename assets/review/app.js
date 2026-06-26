@@ -27,9 +27,14 @@ const state = {
   pendingProfileSelections: new Map(),
   profileInfoProfileIndex: null,
   commandInvocationOpen: false,
+  histogramOpen: false,
+  histogramRequestId: 0,
+  histogramTimer: null,
 };
 
 const RETOUCH_SAVE_DEBOUNCE_MS = 1200;
+const HISTOGRAM_SAMPLE_LONG_EDGE = 512;
+const HISTOGRAM_RETOUCH_DEBOUNCE_MS = 100;
 const TOUCH_SWIPE_MIN_PX = 72;
 const TOUCH_SWIPE_RATIO = 1.65;
 const ZOOM_LONG_PRESS_MS = 380;
@@ -110,6 +115,12 @@ function ReviewShell() {
           h("img", { id: "main-image", alt: "", draggable: false, decoding: "async", fetchpriority: "high" }),
           h("div", { id: "gesture-feedback", class: "gesture-feedback", hidden: true }),
           h("div", { id: "zoom-loupe", class: "zoom-loupe", hidden: true }),
+          h(
+            "div",
+            { id: "histogram-overlay", class: "histogram-overlay", hidden: true, "aria-label": "Histogram" },
+            h("canvas", { id: "histogram-canvas", width: "512", height: "128" }),
+            h("div", { id: "histogram-empty", class: "histogram-empty", hidden: true }, "No image"),
+          ),
           h("div", { id: "retouch-grid", class: "retouch-grid", hidden: true }),
           h(
             "div",
@@ -714,9 +725,10 @@ function ShortcutsOverlay() {
       "Pictures",
       [
         [["←", "→"], "Previous or next picture without changing the rating."],
-        [["h", "l", "Enter"], "Alternative navigation keys for the same previous or next action."],
+        [["Enter"], "Move to the next picture without changing the rating."],
       ],
     ],
+    ["Histogram", [[["h"], "Show or hide the luma and RGB histogram."]]],
     [
       "Touch / Mouse",
       [
@@ -1051,6 +1063,9 @@ const els = {
   image: document.getElementById("main-image"),
   gestureFeedback: document.getElementById("gesture-feedback"),
   zoomLoupe: document.getElementById("zoom-loupe"),
+  histogramOverlay: document.getElementById("histogram-overlay"),
+  histogramCanvas: document.getElementById("histogram-canvas"),
+  histogramEmpty: document.getElementById("histogram-empty"),
   title: document.getElementById("image-title"),
   profileState: document.getElementById("profile-state"),
   profiles: document.getElementById("profiles"),
@@ -1669,6 +1684,7 @@ function renderCurrent(image) {
     preactRender(null, els.profiles);
     els.tags.value = "";
     els.notes.value = "";
+    if (state.histogramOpen) showHistogramEmpty("No image");
     state.lastInputImageId = null;
     setActiveReviewButtons(null);
     updateMobileActionLabels(null);
@@ -1718,6 +1734,7 @@ function renderCurrent(image) {
   }
 
   applyDraftRetouch(image, selected);
+  scheduleHistogramRender();
   renderRetouchGrid(image, selected);
   renderCropOverlay(image);
   renderProfiles(image);
@@ -2285,6 +2302,188 @@ function toggleShortcuts(force) {
   els.shortcutsOverlay.hidden = !show;
 }
 
+function toggleHistogram(force) {
+  const show = force ?? !state.histogramOpen;
+  state.histogramOpen = show;
+  els.histogramOverlay.hidden = !show;
+  if (show) {
+    scheduleHistogramRender();
+    return;
+  }
+  clearTimeout(state.histogramTimer);
+  state.histogramTimer = null;
+  state.histogramRequestId += 1;
+}
+
+function scheduleHistogramRender({ debounce = false } = {}) {
+  if (!state.histogramOpen) return;
+  clearTimeout(state.histogramTimer);
+  const requestId = ++state.histogramRequestId;
+  const delay = debounce ? HISTOGRAM_RETOUCH_DEBOUNCE_MS : 0;
+  state.histogramTimer = setTimeout(() => {
+    state.histogramTimer = null;
+    renderHistogram(requestId);
+  }, delay);
+}
+
+function renderHistogram(requestId) {
+  if (!state.histogramOpen || requestId !== state.histogramRequestId) return;
+  const image = els.image;
+  const source = image.currentSrc || image.src;
+  if (!source) {
+    showHistogramEmpty("No image");
+    return;
+  }
+  if (!image.complete || image.naturalWidth < 1 || image.naturalHeight < 1) {
+    showHistogramEmpty("Loading");
+    return;
+  }
+
+  const longest = Math.max(image.naturalWidth, image.naturalHeight);
+  const scale = Math.min(1, HISTOGRAM_SAMPLE_LONG_EDGE / longest);
+  const width = Math.max(1, Math.round(image.naturalWidth * scale));
+  const height = Math.max(1, Math.round(image.naturalHeight * scale));
+  const sampleCanvas = document.createElement("canvas");
+  sampleCanvas.width = width;
+  sampleCanvas.height = height;
+  const sampleContext = sampleCanvas.getContext("2d", { willReadFrequently: true });
+  if (!sampleContext) {
+    showHistogramEmpty("Unavailable");
+    return;
+  }
+
+  const imageFilter = window.getComputedStyle(image).filter;
+  if ("filter" in sampleContext && imageFilter && imageFilter !== "none") {
+    sampleContext.filter = imageFilter;
+  }
+
+  try {
+    sampleContext.drawImage(image, 0, 0, width, height);
+    drawHistogram(histogramBins(sampleContext.getImageData(0, 0, width, height).data));
+  } catch (error) {
+    console.error(error);
+    showHistogramEmpty("Unavailable");
+  }
+}
+
+function histogramBins(pixels) {
+  const bins = {
+    luma: new Uint32Array(256),
+    red: new Uint32Array(256),
+    green: new Uint32Array(256),
+    blue: new Uint32Array(256),
+  };
+  for (let index = 0; index < pixels.length; index += 4) {
+    const alpha = pixels[index + 3];
+    if (alpha === 0) continue;
+    const red = pixels[index];
+    const green = pixels[index + 1];
+    const blue = pixels[index + 2];
+    const luma = clamp(Math.round(red * 0.2126 + green * 0.7152 + blue * 0.0722), 0, 255);
+    bins.red[red] += 1;
+    bins.green[green] += 1;
+    bins.blue[blue] += 1;
+    bins.luma[luma] += 1;
+  }
+  return bins;
+}
+
+function drawHistogram(bins) {
+  els.histogramEmpty.hidden = true;
+  const canvas = els.histogramCanvas;
+  const context = resizeHistogramCanvas(canvas);
+  if (!context) {
+    showHistogramEmpty("Unavailable");
+    return;
+  }
+  const { ctx, width, height } = context;
+  ctx.clearRect(0, 0, width, height);
+  drawHistogramGrid(ctx, width, height);
+  drawHistogramFill(ctx, bins.luma, width, height);
+  drawHistogramLine(ctx, bins.red, width, height, "rgba(255, 74, 74, 0.92)");
+  drawHistogramLine(ctx, bins.green, width, height, "rgba(65, 210, 116, 0.92)");
+  drawHistogramLine(ctx, bins.blue, width, height, "rgba(85, 154, 255, 0.92)");
+}
+
+function resizeHistogramCanvas(canvas) {
+  const rect = canvas.getBoundingClientRect();
+  const pixelRatio = window.devicePixelRatio || 1;
+  const width = Math.max(1, Math.round((rect.width || 512) * pixelRatio));
+  const height = Math.max(1, Math.round((rect.height || 128) * pixelRatio));
+  if (canvas.width !== width) canvas.width = width;
+  if (canvas.height !== height) canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  return ctx ? { ctx, width, height } : null;
+}
+
+function drawHistogramGrid(ctx, width, height) {
+  ctx.save();
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.12)";
+  ctx.lineWidth = Math.max(1, width / 512);
+  ctx.beginPath();
+  for (const x of [0.25, 0.5, 0.75]) {
+    ctx.moveTo(Math.round(width * x), 0);
+    ctx.lineTo(Math.round(width * x), height);
+  }
+  ctx.moveTo(0, Math.round(height * 0.5));
+  ctx.lineTo(width, Math.round(height * 0.5));
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawHistogramFill(ctx, bins, width, height) {
+  const max = histogramMax(bins);
+  if (max <= 0) return;
+  ctx.save();
+  ctx.fillStyle = "rgba(255, 255, 255, 0.3)";
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.84)";
+  ctx.lineWidth = Math.max(1, width / 512);
+  ctx.beginPath();
+  ctx.moveTo(0, height);
+  for (let index = 0; index < bins.length; index++) {
+    const x = (index / 255) * width;
+    const y = height - (bins[index] / max) * (height - 2);
+    ctx.lineTo(x, y);
+  }
+  ctx.lineTo(width, height);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawHistogramLine(ctx, bins, width, height, color) {
+  const max = histogramMax(bins);
+  if (max <= 0) return;
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = Math.max(1.2, width / 380);
+  ctx.beginPath();
+  for (let index = 0; index < bins.length; index++) {
+    const x = (index / 255) * width;
+    const y = height - (bins[index] / max) * (height - 2);
+    if (index === 0) {
+      ctx.moveTo(x, y);
+    } else {
+      ctx.lineTo(x, y);
+    }
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
+function histogramMax(bins) {
+  return bins.reduce((max, value) => Math.max(max, value), 0);
+}
+
+function showHistogramEmpty(message) {
+  const canvas = els.histogramCanvas;
+  const ctx = canvas.getContext("2d");
+  if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+  els.histogramEmpty.textContent = message;
+  els.histogramEmpty.hidden = false;
+}
+
 function togglePublishWizard(force) {
   const show = force ?? els.publishOverlay.hidden;
   if (show) {
@@ -2625,6 +2824,7 @@ function applyLocalRetouch(retouch, options = {}) {
   image.retouch = retouchForImage(image, retouch);
   setRetouchInputs(image.retouch);
   applyDraftRetouch(image, selectedProfile(image));
+  scheduleHistogramRender({ debounce: true });
   renderRetouchGrid(image, selectedProfile(image));
   renderCropOverlay(image);
   renderList(filteredImages());
@@ -3484,6 +3684,7 @@ els.notes.addEventListener("input", scheduleAutosave);
 els.notes.addEventListener("keydown", confirmMetadataInput);
 els.image.addEventListener("load", () => {
   if (state.zoomActive) stopZoom();
+  scheduleHistogramRender();
   scheduleViewerSafeAreaUpdate();
   renderRetouchGrid(findImage(state.currentId));
   renderCropOverlay(findImage(state.currentId));
@@ -3716,6 +3917,11 @@ window.addEventListener("keydown", (event) => {
   if (event.target === els.tags) return;
   if (event.target === els.notes) return;
   if (event.target === els.minRating) return;
+  if (event.key === "Escape" && state.histogramOpen) {
+    event.preventDefault();
+    toggleHistogram(false);
+    return;
+  }
   if (event.key === "Escape" && state.mobileDrawer) {
     event.preventDefault();
     setMobileDrawer(null);
@@ -3753,8 +3959,13 @@ window.addEventListener("keydown", (event) => {
     return;
   }
   if (event.target.closest(".retouch") || event.target.closest(".crop-tools")) return;
-  if (event.key === "ArrowRight" || event.key.toLowerCase() === "l" || event.key === "Enter") move(1);
-  if (event.key === "ArrowLeft" || event.key.toLowerCase() === "h") move(-1);
+  if (plainShortcut && shortcutKey === "h") {
+    event.preventDefault();
+    toggleHistogram();
+    return;
+  }
+  if (event.key === "ArrowRight" || event.key === "Enter") move(1);
+  if (event.key === "ArrowLeft") move(-1);
   if (event.key === "PageDown") {
     event.preventDefault();
     selectProfileRelative(1);
@@ -3813,7 +4024,10 @@ wideProfilesQuery.addEventListener("change", () => {
   scheduleViewerSafeAreaUpdate();
 });
 mobileReviewQuery.addEventListener("change", syncMobileReviewLayout);
-window.addEventListener("resize", scheduleViewerSafeAreaUpdate);
+window.addEventListener("resize", () => {
+  scheduleViewerSafeAreaUpdate();
+  scheduleHistogramRender({ debounce: true });
+});
 document.addEventListener("fullscreenchange", scheduleViewerSafeAreaUpdate);
 
 if ("ResizeObserver" in window) {
