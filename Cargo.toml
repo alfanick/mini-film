@@ -1,6 +1,6 @@
 [package]
 name = "mini-film"
-version = "14.1.1"
+version = "14.1.2"
 description = "Review and publish RAW, JPEG, and HEIC photos with optional Lightroom-style film emulation profiles for RAW workflows."
 repository = "https://github.com/alfanick/mini-film"
 homepage = "https://github.com/alfanick/mini-film"
@@ -27,7 +27,7 @@ strip = "symbols"
 chrono = "0.4.42"
 exif = { package = "kamadak-exif", version = "0.6.1" }
 filetime = "0.2.29"
-anyhow = "1.0.102"
+anyhow = "1.0.103"
 clap = { version = "4.6.1", features = ["derive"] }
 flate2 = "1.1.9"
 handlebars = "6.4.2"
