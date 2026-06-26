@@ -474,8 +474,8 @@ The review workflow is optimized for keyboard operation. Press `?` in the
 browser UI to show the shortcuts overlay. `§` rates `0` and advances, `1`-`5`
 rates and advances, arrow up/down changes the rating and advances, left/right or
 `h`/`l` navigates without rating, PageUp/PageDown cycles the profile preview for
-the current picture, and Space includes or skips the selected profile for
-publish. Double-click or
+the current picture, Space includes or skips the selected profile for publish,
+and Escape leaves the tags or notes field without advancing. Double-click or
 double-tap a profile thumbnail to publish only that profile and exclude the
 others. `6`, `7`, `8`, `9`, and `0` toggle red, yellow, green, blue, and purple
 labels without advancing; `r`, `y`, `g`, `b`, and `p` provide the same mnemonic

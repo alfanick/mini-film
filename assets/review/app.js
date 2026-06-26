@@ -767,6 +767,7 @@ function ShortcutsOverlay() {
         [[","], "Focus tags."],
         [["/"], "Focus notes."],
         [["Enter"], "Save tags and advance; save notes and return to review."],
+        [["Esc"], "Save tags or notes and return to review without advancing."],
       ],
     ],
     [
@@ -3562,6 +3563,7 @@ function scheduleAutosave() {
 }
 
 function confirmMetadataInput(event) {
+  if (blurMetadataInput(event)) return;
   if (event.key !== "Enter") return;
   event.preventDefault();
   clearTimeout(autosaveTimer);
@@ -3570,11 +3572,20 @@ function confirmMetadataInput(event) {
 }
 
 function confirmTagsInput(event) {
+  if (blurMetadataInput(event)) return;
   if (event.key !== "Enter") return;
   event.preventDefault();
   clearTimeout(autosaveTimer);
   event.currentTarget.blur();
   move(1).catch((error) => console.error(error));
+}
+
+function blurMetadataInput(event) {
+  if (event.key !== "Escape") return false;
+  event.preventDefault();
+  clearTimeout(autosaveTimer);
+  event.currentTarget.blur();
+  return true;
 }
 
 function focusMetadataInput(input, { select = true } = {}) {
