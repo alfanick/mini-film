@@ -789,7 +789,7 @@ fn write_daemon_info_txt(
         writeln!(
             out,
             "Review state: {}",
-            args.output.join("mini-film-review.json").display()
+            args.output.join("mini-film-review.sqlite").display()
         )
         .ok();
         writeln!(

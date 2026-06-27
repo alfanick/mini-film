@@ -1,3 +1,4 @@
+mod db;
 mod handle;
 mod history;
 mod model;

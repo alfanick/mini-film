@@ -1,5 +1,6 @@
 use super::{
-    history::*, model::*, prelude::*, preview::*, publish::*, scheduler::*, server::*, store::*,
+    db::*, history::*, model::*, prelude::*, preview::*, publish::*, scheduler::*, server::*,
+    store::*,
 };
 
 /// Start the embedded review server and return a handle daemon workers can update.
@@ -18,8 +19,7 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
 
     fs::create_dir_all(&config.output_root)
         .with_context(|| format!("creating {}", config.output_root.display()))?;
-    let state_path = config.output_root.join("mini-film-review.json");
-    let mut store = load_store(&state_path)?.unwrap_or_else(|| ReviewStore::new(Vec::new()));
+    let (mut store, state_path) = load_or_migrate_store(&config.output_root)?;
     let needs_exif_schema_refresh = store.needs_exif_schema_refresh();
     store.sync_profiles(config.profiles);
     if needs_exif_schema_refresh {

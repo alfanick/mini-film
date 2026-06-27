@@ -458,27 +458,6 @@ pub(super) fn validate_publish_profile_indexes(
     Ok(())
 }
 
-pub(super) fn load_store(path: &Path) -> Result<Option<ReviewStore>> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let text = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    serde_json::from_str(&text)
-        .with_context(|| format!("parsing {}", path.display()))
-        .map(Some)
-}
-
-pub(super) fn save_store(path: &Path, store: &ReviewStore) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-    }
-    let text = serde_json::to_string_pretty(store).context("serializing review state")?;
-    let temp = path.with_extension("json.tmp");
-    fs::write(&temp, text).with_context(|| format!("writing {}", temp.display()))?;
-    fs::rename(&temp, path)
-        .with_context(|| format!("renaming {} to {}", temp.display(), path.display()))
-}
-
 pub(super) fn now_string() -> String {
     chrono::Local::now().to_rfc3339()
 }

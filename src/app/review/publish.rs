@@ -1,4 +1,4 @@
-use super::{handle::retouch_without_adjustments, model::*, prelude::*, store::*};
+use super::{db::*, handle::retouch_without_adjustments, model::*, prelude::*, store::*};
 use mini_film::GrainEngine;
 
 pub(super) fn parse_batch_output_format(raw: &str) -> Result<BatchOutputFormat> {
@@ -293,10 +293,8 @@ pub(super) fn publish_review_state(
     }
     let input_root = canonical_existing_dir(&args.input_root)?;
     let output_root = canonical_existing_dir(&args.output_root)?;
-    let state = fs::canonicalize(&args.state)
-        .with_context(|| format!("canonicalizing review state {}", args.state.display()))?;
-    ensure_path_within(&state, &output_root)?;
-    let store = load_store(&state)?.ok_or_else(|| anyhow!("review state is empty"))?;
+    let state = resolve_review_state_for_publish(&args.state, &output_root)?;
+    let store = load_store_for_publish(&state)?.ok_or_else(|| anyhow!("review state is empty"))?;
     let album = validate_relative_publish_album(&args.album)?;
     ensure_safe_dir_all(&output_root, &album)?;
 

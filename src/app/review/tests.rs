@@ -1,5 +1,7 @@
 use super::prelude::*;
-use super::{handle::*, model::*, preview::*, publish::*, scheduler::*, server::*, store::*};
+use super::{
+    db::*, handle::*, model::*, preview::*, publish::*, scheduler::*, server::*, store::*,
+};
 use std::sync::Mutex;
 
 fn profile(index: usize, stem: &str) -> ReviewProfile {
@@ -33,7 +35,7 @@ fn test_handle(input: PathBuf, output: PathBuf, profiles: Vec<ReviewProfile>) ->
         state: Arc::new(ArcSwap::from_pointee(ReviewStore::new(profiles))),
         subscribers: Arc::new(subscribers),
         state_cache: Arc::new(ArcSwapOption::empty()),
-        state_path: output.join("mini-film-review.json"),
+        state_path: output.join(SQLITE_STATE_FILE),
         input_root: input.clone(),
         output_root: output.clone(),
         hald_dir: output.join("hald"),
@@ -453,7 +455,7 @@ fn sync_profiles_preserves_publish_selection_after_restart_with_metadata_changes
     changed_profiles[1].metadata = Some(ReviewProfileMetadata::default());
 
     let temp = tempfile::tempdir().unwrap();
-    let state_path = temp.path().join("mini-film-review.json");
+    let state_path = temp.path().join(SQLITE_STATE_FILE);
     let mut store = ReviewStore::new(base_profiles);
     store.images.push(ReviewImage {
         id: 1,
@@ -485,6 +487,101 @@ fn sync_profiles_preserves_publish_selection_after_restart_with_metadata_changes
 
     assert_eq!(loaded.images[0].publish_profile_indexes, Some(vec![1]));
     assert_eq!(loaded.images[0].selected_profile_index, 1);
+}
+
+#[test]
+fn review_state_sqlite_round_trips_and_populates_query_tables() {
+    let temp = tempfile::tempdir().unwrap();
+    let state_path = temp.path().join(SQLITE_STATE_FILE);
+    let mut store = ReviewStore::new(vec![profile(0, "Classic")]);
+    store.ui.current_image_id = Some(1);
+    store.ui.min_rating = 2;
+    store.images.push(ReviewImage {
+        id: 1,
+        raw_path: PathBuf::from("/in/frame.NEF"),
+        sooc_sidecar_path: Some(PathBuf::from("/in/frame.jpg")),
+        relative_path: "frame.NEF".to_string(),
+        file_name: "frame.NEF".to_string(),
+        exif: GalleryExifData {
+            capture_timestamp: Some(123),
+            rating: Some(3),
+            tags: vec!["camera".to_string()],
+            note: Some("camera note".to_string()),
+            ..GalleryExifData::default()
+        },
+        preview: ReviewPreview {
+            status: ReviewRenderStatus::Done,
+            path: Some(PathBuf::from("/out/preview.jpg")),
+            error: None,
+            duration_ms: Some(10),
+            render_key: Some("preview-key".to_string()),
+            updated_at: now_string(),
+        },
+        selected_profile_index: 0,
+        rating: 3,
+        label: ReviewLabel::Green,
+        labels: vec![ReviewLabel::Green],
+        tags: vec!["keeper".to_string()],
+        notes: "manual note".to_string(),
+        rating_source: ReviewMetadataSource::Manual,
+        tags_source: ReviewMetadataSource::Manual,
+        notes_source: ReviewMetadataSource::Manual,
+        codex: ReviewCodexAnalysis::default(),
+        retouch: RetouchSettings::default(),
+        publish_profile_indexes: Some(vec![0]),
+        profiles: vec![profile_render(0, "Classic")],
+        updated_at: now_string(),
+    });
+
+    save_store(&state_path, &store).unwrap();
+    let loaded = load_store(&state_path).unwrap().unwrap();
+
+    assert_eq!(
+        serde_json::to_value(&loaded).unwrap(),
+        serde_json::to_value(&store).unwrap()
+    );
+    assert_eq!(table_count(&state_path, "review_state").unwrap(), 1);
+    assert_eq!(table_count(&state_path, "profiles").unwrap(), 1);
+    assert_eq!(table_count(&state_path, "images").unwrap(), 1);
+    assert_eq!(table_count(&state_path, "image_tags").unwrap(), 1);
+    assert_eq!(
+        table_count(&state_path, "image_profile_renders").unwrap(),
+        1
+    );
+}
+
+#[test]
+fn legacy_json_review_state_is_migrated_once_after_verified_round_trip() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = temp.path();
+    let legacy_path = output.join(LEGACY_JSON_STATE_FILE);
+    let sqlite_path = output.join(SQLITE_STATE_FILE);
+    let mut store = ReviewStore::new(vec![profile(0, "Classic")]);
+    store.ui.min_rating = 1;
+    fs::write(&legacy_path, serde_json::to_string_pretty(&store).unwrap()).unwrap();
+    fs::write(&sqlite_path, b"").unwrap();
+
+    let (loaded, state_path) = load_or_migrate_store(output).unwrap();
+
+    assert_eq!(state_path, sqlite_path);
+    assert_eq!(
+        serde_json::to_value(&loaded).unwrap(),
+        serde_json::to_value(&store).unwrap()
+    );
+    assert!(sqlite_path.is_file());
+    assert!(!legacy_path.exists());
+    assert!(fs::read_dir(output).unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("mini-film-review.json.migrated-")
+    }));
+    let loaded_again = load_store(&sqlite_path).unwrap().unwrap();
+    assert_eq!(
+        serde_json::to_value(&loaded_again).unwrap(),
+        serde_json::to_value(&store).unwrap()
+    );
 }
 
 #[test]

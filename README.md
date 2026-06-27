@@ -463,11 +463,13 @@ connected browser through the server-sent event stream. At the end of a pass,
 the shared filter moves to the next rating level.
 
 Review data and the shared browser position are persisted in
-`<output>/mini-film-review.json`. A human-readable audit trail of review, render,
-and publish state changes is appended to `<output>/history.txt`. Together those
-files make it possible to restart the daemon, reopen the browser, and continue
-the multi-pass culling flow where it stopped. A typical pass is to rate
-everything `0` or `1`, filter to `>= 1`, rate the
+`<output>/mini-film-review.sqlite`. Existing `<output>/mini-film-review.json`
+state files are migrated automatically into that SQLite database on startup and
+renamed only after the migrated database is verified. A human-readable audit
+trail of review, render, and publish state changes is appended to
+`<output>/history.txt`. Together those files make it possible to restart the
+daemon, reopen the browser, and continue the multi-pass culling flow where it
+stopped. A typical pass is to rate everything `0` or `1`, filter to `>= 1`, rate the
 survivors higher, and repeat until the final subset is ready.
 
 The review workflow is optimized for keyboard operation. Press `?` in the
@@ -563,7 +565,7 @@ The same publish operation can be run directly from the CLI:
 
 ```sh
 mini-film review-publish \
-  --state /home/alfanick/Pictures/mini-film-output/mini-film-review.json \
+  --state /home/alfanick/Pictures/mini-film-output/mini-film-review.sqlite \
   --input-root /home/alfanick/Pictures/Lightroom/inbox \
   --output-root /home/alfanick/Pictures/mini-film-output \
   --album published/final \
