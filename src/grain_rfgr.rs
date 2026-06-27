@@ -442,7 +442,7 @@ fn is_monochrome_rgb8(source: &[u8]) -> bool {
 
     let mut spread_total = 0.0f64;
     let mut outliers = 0usize;
-    for pixel in source.chunks_exact(3) {
+    for pixel in source.as_chunks::<3>().0 {
         let max = pixel[0].max(pixel[1]).max(pixel[2]);
         let min = pixel[0].min(pixel[1]).min(pixel[2]);
         let spread = f64::from(max - min) / 255.0;
@@ -463,7 +463,7 @@ fn is_monochrome_rgba16(source: &[u16]) -> bool {
 
     let mut spread_total = 0.0f64;
     let mut outliers = 0usize;
-    for pixel in source.chunks_exact(4) {
+    for pixel in source.as_chunks::<4>().0 {
         let max = pixel[0].max(pixel[1]).max(pixel[2]);
         let min = pixel[0].min(pixel[1]).min(pixel[2]);
         let spread = f64::from(max - min) / 65535.0;
@@ -649,14 +649,24 @@ unsafe fn apply_cached_rgba16_row_avx2(
 }
 
 fn apply_cached_rgb8_row_scalar(row: &mut [u8], grain_row: &[f32], channel: usize, alpha: f32) {
-    for (pixel, grain_value) in row.chunks_exact_mut(3).zip(grain_row.iter().copied()) {
+    for (pixel, grain_value) in row
+        .as_chunks_mut::<3>()
+        .0
+        .iter_mut()
+        .zip(grain_row.iter().copied())
+    {
         let input = srgb8_to_linear(pixel[channel]);
         pixel[channel] = linear_to_srgb8(blend_grain(input, grain_value, alpha));
     }
 }
 
 fn apply_cached_rgba16_row_scalar(row: &mut [u16], grain_row: &[f32], channel: usize, alpha: f32) {
-    for (pixel, grain_value) in row.chunks_exact_mut(4).zip(grain_row.iter().copied()) {
+    for (pixel, grain_value) in row
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(grain_row.iter().copied())
+    {
         let input = srgb16_to_linear(pixel[channel]);
         pixel[channel] = linear_to_srgb16(blend_grain(input, grain_value, alpha));
     }
@@ -754,7 +764,7 @@ fn render_rgb8_monochrome_row_scalar(
     y: usize,
     x_offset: usize,
 ) {
-    for (x, pixel) in row.chunks_exact_mut(3).enumerate() {
+    for (x, pixel) in row.as_chunks_mut::<3>().0.iter_mut().enumerate() {
         let x = x + x_offset;
         let grain_value = context.pixel_value_monochrome(x, y);
         for channel_value in pixel.iter_mut().take(3) {
@@ -770,7 +780,7 @@ fn render_rgba16_monochrome_row_scalar(
     y: usize,
     x_offset: usize,
 ) {
-    for (x, pixel) in row.chunks_exact_mut(4).enumerate() {
+    for (x, pixel) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let x = x + x_offset;
         let grain_value = context.pixel_value_monochrome(x, y);
         for channel_value in pixel.iter_mut().take(3) {
@@ -869,7 +879,7 @@ unsafe fn render_rgba16_row_avx2(context: &Rgba16Context<'_>, row: &mut [u16], y
 }
 
 fn render_rgb8_row_scalar(context: &Rgb8Context<'_>, row: &mut [u8], y: usize, x_offset: usize) {
-    for (x, pixel) in row.chunks_exact_mut(3).enumerate() {
+    for (x, pixel) in row.as_chunks_mut::<3>().0.iter_mut().enumerate() {
         let x = x + x_offset;
         for (channel, channel_value) in pixel.iter_mut().enumerate().take(3) {
             let input = srgb8_to_linear(*channel_value);
@@ -885,7 +895,7 @@ fn render_rgba16_row_scalar(
     y: usize,
     x_offset: usize,
 ) {
-    for (x, pixel) in row.chunks_exact_mut(4).enumerate() {
+    for (x, pixel) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let x = x + x_offset;
         for (channel, channel_value) in pixel.iter_mut().enumerate().take(3) {
             let input = srgb16_to_linear(*channel_value);
@@ -1537,7 +1547,7 @@ mod tests {
         };
 
         let out = render_grain_8(image, grain, 123).unwrap().into_raw();
-        for pixel in out.chunks_exact(3) {
+        for pixel in out.as_chunks::<3>().0 {
             assert_eq!(pixel[0], pixel[1]);
             assert_eq!(pixel[1], pixel[2]);
         }
@@ -1556,7 +1566,7 @@ mod tests {
         };
 
         let out = render_grain_8_fast(image, grain, 123).unwrap().into_raw();
-        for pixel in out.chunks_exact(3) {
+        for pixel in out.as_chunks::<3>().0 {
             assert_eq!(pixel[0], pixel[1]);
             assert_eq!(pixel[1], pixel[2]);
         }

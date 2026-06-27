@@ -201,7 +201,7 @@ fn render_grain_16_row_scalar(
     model: &GrainModel,
     texture: &[f32],
 ) {
-    for (x, pixel) in row.chunks_exact_mut(4).enumerate() {
+    for (x, pixel) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let luma = luma_u16(pixel[0], pixel[1], pixel[2]);
         let grain_value = texture[x] * model.sigma_16 * luma_weight[luma];
         add_grain_pixel_u16(pixel, x, y, seed, grain_value, model.color_jitter);
@@ -363,7 +363,7 @@ fn render_grain_8_row_scalar(
     model: &GrainModel,
     texture: &[f32],
 ) {
-    for (x, pixel) in row.chunks_exact_mut(3).enumerate() {
+    for (x, pixel) in row.as_chunks_mut::<3>().0.iter_mut().enumerate() {
         let luma = luma_u8(pixel[0], pixel[1], pixel[2]);
         let grain_value = texture[x] * model.sigma_8 * luma_weight[luma];
         add_grain_pixel_u8(pixel, x, y, seed, grain_value, model.color_jitter);
