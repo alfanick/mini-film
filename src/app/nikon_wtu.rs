@@ -1364,7 +1364,7 @@ fn push_utf16z(out: &mut Vec<u8>, value: &str) {
 
 fn utf16z_to_string(bytes: &[u8]) -> String {
     let mut units = Vec::new();
-    for chunk in bytes.chunks_exact(2) {
+    for chunk in bytes.as_chunks::<2>().0 {
         let unit = u16::from_le_bytes([chunk[0], chunk[1]]);
         if unit == 0 {
             break;
