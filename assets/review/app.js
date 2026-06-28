@@ -39,6 +39,8 @@ const TOUCH_SWIPE_MIN_PX = 72;
 const TOUCH_SWIPE_RATIO = 1.65;
 const ZOOM_LONG_PRESS_MS = 380;
 const ZOOM_MOVE_CANCEL_PX = 22;
+const ZOOM_LOUPE_TOUCH_GAP_PX = 28;
+const ZOOM_LOUPE_POINTER_GAP_PX = 18;
 const WHEEL_NAV_THRESHOLD_PX = 90;
 const WHEEL_NAV_RESET_MS = 220;
 const WHEEL_NAV_COOLDOWN_MS = 260;
@@ -736,7 +738,7 @@ function ShortcutsOverlay() {
         [["Swipe ↑/↓"], "Change the rating without advancing."],
         [["Wheel ←/→"], "Move between visible pictures after a short scroll threshold."],
         [["Wheel ↑/↓"], "Preview the previous or next profile after a short scroll threshold."],
-        [["Hold"], "Zoom into the picture under the cursor or finger until released."],
+        [["Hold"], "Show a nearby loupe for the picture under the cursor or finger until released."],
         [
           ["Profile"],
           "Click a profile thumbnail to preview it; use its checkbox to include it in publishing. Double-click or double-tap a profile to publish only that profile.",
@@ -3530,9 +3532,10 @@ function canStartViewerZoom(event) {
 function startZoomHold(event) {
   if (!canStartViewerZoom(event)) return false;
   cancelZoomHold();
-  state.zoomLastPoint = { clientX: event.clientX, clientY: event.clientY };
+  state.zoomLastPoint = { clientX: event.clientX, clientY: event.clientY, pointerType: event.pointerType };
   state.zoomPress = {
     pointerId: event.pointerId,
+    pointerType: event.pointerType,
     startX: event.clientX,
     startY: event.clientY,
     timer: setTimeout(() => activateZoomFromHold(event.pointerId), ZOOM_LONG_PRESS_MS),
@@ -3555,7 +3558,7 @@ function activateZoomFromHold(pointerId) {
   els.viewer.classList.add("zooming");
   els.zoomLoupe.hidden = false;
   const point = state.zoomLastPoint || { clientX: press.startX, clientY: press.startY };
-  updateZoomLoupe(point.clientX, point.clientY);
+  updateZoomLoupe(point.clientX, point.clientY, point.pointerType || press.pointerType);
 }
 
 function cancelZoomHold() {
@@ -3579,22 +3582,21 @@ function stopZoom() {
 
 function updateZoomHold(event) {
   if (!state.zoomPress || state.zoomPress.pointerId !== event.pointerId) return;
-  state.zoomLastPoint = { clientX: event.clientX, clientY: event.clientY };
+  state.zoomLastPoint = { clientX: event.clientX, clientY: event.clientY, pointerType: event.pointerType };
   const dx = event.clientX - state.zoomPress.startX;
   const dy = event.clientY - state.zoomPress.startY;
   if (Math.hypot(dx, dy) > ZOOM_MOVE_CANCEL_PX) cancelZoomHold();
 }
 
-function updateZoomLoupe(clientX, clientY) {
+function updateZoomLoupe(clientX, clientY, pointerType = state.zoomLastPoint?.pointerType || "mouse") {
   const imageRect = els.image.getBoundingClientRect();
   const viewerRect = els.viewer.getBoundingClientRect();
   if (imageRect.width <= 1 || imageRect.height <= 1 || viewerRect.width <= 1 || viewerRect.height <= 1) return;
 
-  state.zoomLastPoint = { clientX, clientY };
+  state.zoomLastPoint = { clientX, clientY, pointerType };
   const loupeWidth = els.zoomLoupe.offsetWidth || 180;
   const loupeHeight = els.zoomLoupe.offsetHeight || loupeWidth;
-  const left = clamp(clientX - viewerRect.left - loupeWidth / 2, 0, Math.max(0, viewerRect.width - loupeWidth));
-  const top = clamp(clientY - viewerRect.top - loupeHeight / 2, 0, Math.max(0, viewerRect.height - loupeHeight));
+  const { left, top } = zoomLoupePosition(clientX, clientY, viewerRect, loupeWidth, loupeHeight, pointerType);
   const relX = clamp((clientX - imageRect.left) / imageRect.width, 0, 1);
   const relY = clamp((clientY - imageRect.top) / imageRect.height, 0, 1);
   const sourceWidth = els.image.naturalWidth || imageRect.width;
@@ -3610,6 +3612,25 @@ function updateZoomLoupe(clientX, clientY) {
   els.zoomLoupe.style.backgroundSize = `${sourceWidth}px ${sourceHeight}px`;
   els.zoomLoupe.style.backgroundPosition = `${bgX}px ${bgY}px`;
   els.zoomLoupe.style.filter = imageStyle.filter === "none" ? "" : imageStyle.filter;
+}
+
+function zoomLoupePosition(clientX, clientY, viewerRect, loupeWidth, loupeHeight, pointerType) {
+  const pointerX = clientX - viewerRect.left;
+  const pointerY = clientY - viewerRect.top;
+  const gap = pointerType === "touch" ? ZOOM_LOUPE_TOUCH_GAP_PX : ZOOM_LOUPE_POINTER_GAP_PX;
+  const maxLeft = Math.max(0, viewerRect.width - loupeWidth);
+  const maxTop = Math.max(0, viewerRect.height - loupeHeight);
+  const rightFits = pointerX + gap + loupeWidth <= viewerRect.width;
+  const aboveFits = pointerY - gap - loupeHeight >= 0;
+  const preferRight = rightFits || pointerX < viewerRect.width / 2;
+  const preferAbove = aboveFits || pointerY >= viewerRect.height / 2;
+  const left = preferRight ? pointerX + gap : pointerX - loupeWidth - gap;
+  const top = preferAbove ? pointerY - loupeHeight - gap : pointerY + gap;
+
+  return {
+    left: clamp(left, 0, maxLeft),
+    top: clamp(top, 0, maxTop),
+  };
 }
 
 function cssUrl(value) {
@@ -3632,7 +3653,7 @@ function startViewerTouch(event) {
 function updateViewerTouch(event) {
   if (state.zoomActive && state.zoomPointerId === event.pointerId) {
     event.preventDefault();
-    updateZoomLoupe(event.clientX, event.clientY);
+    updateZoomLoupe(event.clientX, event.clientY, event.pointerType);
     return;
   }
   updateZoomHold(event);
