@@ -472,7 +472,7 @@ function CommandInvocationOverlay() {
 function commandInvocationLines(invocation) {
   const tokens = commandInvocationTokens(invocation);
   const lines = [];
-  for (let index = 0; index < tokens.length; ) {
+  for (let index = 0; index < tokens.length;) {
     const token = tokens[index];
     if (index === 0) {
       if (token !== "" && (tokens[index + 1] === "app" || tokens[index + 1] === "daemon")) {

@@ -496,7 +496,9 @@ and are used by publish rerenders. RAW profiles whose combined source and
 emulation saturation is effectively black-and-white show `None`, `Y`, `O`, `R`,
 and `G` filter controls beside the selected profile name. Those black-and-white
 filter choices are stored per picture/profile variant and are used by review and
-publish rerenders.
+publish rerenders. Generated retouch and black-and-white filter variants are
+cached as hidden sibling outputs so returning to an already rendered variant
+swaps immediately.
 
 Optional Codex analysis can run after each RAW has a camera preview and its
 configured profile renders have finished:

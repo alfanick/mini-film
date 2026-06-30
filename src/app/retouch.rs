@@ -296,6 +296,10 @@ pub(crate) fn write_rawtherapee_bw_filter_profile(
             .with_context(|| format!("creating {}", parent.display()))?;
     }
     let mut out = String::new();
+    let _ = writeln!(out, "[Exposure]");
+    let _ = writeln!(out, "Auto=false");
+    let _ = writeln!(out, "Saturation=0");
+    let _ = writeln!(out);
     let _ = writeln!(out, "[Black & White]");
     let _ = writeln!(out, "Enabled=true");
     let _ = writeln!(out, "Method=ChannelMixer");
@@ -460,6 +464,7 @@ mod tests {
 
         assert_eq!(written, Some(output.clone()));
         let text = std::fs::read_to_string(output).unwrap();
+        assert!(text.contains("[Exposure]\nAuto=false\nSaturation=0\n"));
         assert!(text.contains("[Black & White]"));
         assert!(text.contains("Enabled=true"));
         assert!(text.contains("Method=ChannelMixer"));

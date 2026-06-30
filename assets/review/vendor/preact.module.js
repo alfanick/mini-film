@@ -103,7 +103,7 @@ function A(n) {
 }
 function H() {
   try {
-    for (var n, l = 1; i.length; ) (i.length > l && i.sort(e), (n = i.shift()), (l = i.length), I(n));
+    for (var n, l = 1; i.length;) (i.length > l && i.sort(e), (n = i.shift()), (l = i.length), I(n));
   } finally {
     i.length = H.__r = 0;
   }
@@ -199,7 +199,7 @@ function O(n, l, u, t) {
     a = null != c && 0 == (2 & c.__u);
   if ((null === c && null == e) || (a && e == c.key && f == c.type)) return u;
   if (t > (a ? 1 : 0))
-    for (i = u - 1, r = u + 1; i >= 0 || r < l.length; )
+    for (i = u - 1, r = u + 1; i >= 0 || r < l.length;)
       if (null != (c = l[(o = i >= 0 ? i-- : r++)]) && 0 == (2 & c.__u) && e == c.key && f == c.type) return o;
   return -1;
 }
@@ -359,10 +359,10 @@ function q(n, u, t, i, r, o, e, f, c, a) {
     } catch (n) {
       if (((u.__v = null), c || null != o))
         if (n.then) {
-          for (u.__u |= c ? 160 : 128; f && 8 == f.nodeType && f.nextSibling; ) f = f.nextSibling;
+          for (u.__u |= c ? 160 : 128; f && 8 == f.nodeType && f.nextSibling;) f = f.nextSibling;
           ((o[o.indexOf(f)] = null), (u.__e = f));
         } else {
-          for (H = o.length; H--; ) b(o[H]);
+          for (H = o.length; H--;) b(o[H]);
           B(u);
         }
       else ((u.__e = t.__e), (u.__k = t.__k), n.then || B(u));
@@ -469,7 +469,7 @@ function G(u, t, i, r, o, e, f, c, a) {
       ),
       null != e)
     )
-      for (s = e.length; s--; ) b(e[s]);
+      for (s = e.length; s--;) b(e[s]);
     (c && "textarea" != x) ||
       ((s = "value"),
       "progress" == x && null == w
@@ -592,7 +592,7 @@ function X(n) {
 ((n = w.slice),
   (l = {
     __e: function (n, l, u, t) {
-      for (var i, r, o; (l = l.__); )
+      for (var i, r, o; (l = l.__);)
         if ((i = l.__c) && !i.__)
           try {
             if (

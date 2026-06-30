@@ -452,6 +452,11 @@ impl ReviewHandle {
         let mut pending_retouch_key = None;
         let result = self.update_render(raw, profile_index, |render| {
             pending_retouch_key = apply_base_render_done(render, output, duration);
+            if let Some(render_key) = pending_retouch_key.as_deref()
+                && apply_cached_profile_output(render, output, render_key, false)
+            {
+                pending_retouch_key = None;
+            }
         });
         if result.is_ok()
             && let Some(render_key) = pending_retouch_key
@@ -926,12 +931,34 @@ impl ReviewHandle {
         else {
             return;
         };
+        let use_base_output = profile_retouch_uses_base_output(&retouch, bw_filter);
         let started = Instant::now();
-        let _ = self.update_render_if_key(&job.raw, profile_index, &job.render_key, |render| {
-            render.status = ReviewRenderStatus::Processing;
-            render.error = None;
-        });
-        let temp_output = retouch_temp_output(&job.output, &job.render_key);
+        let mut cached = false;
+        let Ok(updated) =
+            self.update_render_if_key(&job.raw, profile_index, &job.render_key, |render| {
+                cached = apply_cached_profile_output(
+                    render,
+                    &job.output,
+                    &job.render_key,
+                    use_base_output,
+                );
+                if !cached {
+                    render.status = ReviewRenderStatus::Processing;
+                    render.error = None;
+                }
+            })
+        else {
+            return;
+        };
+        if !updated {
+            return;
+        }
+        if cached {
+            let _ = self.maybe_schedule_codex_for_raw(&job.raw);
+            return;
+        }
+        let final_output = profile_retouch_output(&job.output, &job.render_key, use_base_output);
+        let temp_output = retouch_temp_output(&final_output, &job.render_key);
         let result = self.render_retouch_output(
             &job.raw,
             &profile,
@@ -943,7 +970,7 @@ impl ReviewHandle {
         match result {
             Ok(()) => match self.retouch_task_snapshot(&job.raw, profile_index, &job.render_key) {
                 Ok(Some(_)) => {
-                    if let Some(parent) = job.output.parent()
+                    if let Some(parent) = final_output.parent()
                         && let Err(error) = fs::create_dir_all(parent)
                     {
                         self.record_retouch_render_failed(
@@ -954,7 +981,18 @@ impl ReviewHandle {
                         );
                         return;
                     }
-                    if let Err(error) = fs::rename(&temp_output, &job.output) {
+                    if final_output.exists()
+                        && let Err(error) = fs::remove_file(&final_output)
+                    {
+                        self.record_retouch_render_failed(
+                            &job,
+                            &temp_output,
+                            started,
+                            error.to_string(),
+                        );
+                        return;
+                    }
+                    if let Err(error) = fs::rename(&temp_output, &final_output) {
                         self.record_retouch_render_failed(
                             &job,
                             &temp_output,
@@ -970,10 +1008,10 @@ impl ReviewHandle {
                         |render| {
                             render.status = ReviewRenderStatus::Done;
                             render.render_key = None;
-                            render.output_path = Some(job.output.clone());
+                            render.output_path = Some(final_output.clone());
                             render.error = None;
                             render.duration_ms = Some(started.elapsed().as_millis() as u64);
-                            refresh_review_render_dimensions(render, &job.output);
+                            refresh_review_render_dimensions(render, &final_output);
                         },
                     );
                 }
@@ -1411,20 +1449,13 @@ impl ReviewHandle {
                                 .map(|profile| effective_bw_filter_for_profile(image, profile))
                                 .unwrap_or_default();
                             let render_key = profile_render_key_value(&image.retouch, bw_filter);
-                            let render = &mut image.profiles[index];
-                            render.status = ReviewRenderStatus::Queued;
-                            render.error = None;
-                            render.duration_ms = None;
-                            render.render_key = Some(render_key.clone());
-                            render.updated_at = now_string();
-                            if let Some(output) = &render.output_path {
-                                retouch_jobs.push((
-                                    image.raw_path.clone(),
-                                    Some(render.profile_index),
-                                    output.clone(),
-                                    render_key,
-                                ));
-                            }
+                            queue_profile_retouch_render(
+                                image,
+                                index,
+                                render_key,
+                                profile_retouch_uses_base_output(&image.retouch, bw_filter),
+                                &mut retouch_jobs,
+                            );
                         }
                     }
                 } else if !changed_bw_profile_indexes.is_empty() && !compressed {
@@ -1442,20 +1473,13 @@ impl ReviewHandle {
                         };
                         let bw_filter = effective_bw_filter_for_profile(image, profile);
                         let render_key = profile_render_key_value(&image.retouch, bw_filter);
-                        let render = &mut image.profiles[index];
-                        render.status = ReviewRenderStatus::Queued;
-                        render.error = None;
-                        render.duration_ms = None;
-                        render.render_key = Some(render_key.clone());
-                        render.updated_at = now_string();
-                        if let Some(output) = &render.output_path {
-                            retouch_jobs.push((
-                                image.raw_path.clone(),
-                                Some(render.profile_index),
-                                output.clone(),
-                                render_key,
-                            ));
-                        }
+                        queue_profile_retouch_render(
+                            image,
+                            index,
+                            render_key,
+                            profile_retouch_uses_base_output(&image.retouch, bw_filter),
+                            &mut retouch_jobs,
+                        );
                     }
                 }
                 image.updated_at = now_string();
@@ -2212,6 +2236,7 @@ pub(super) fn handle_gallery_defaults(
 }
 
 pub(super) fn retouch_temp_output(output: &Path, render_key: &str) -> PathBuf {
+    let output = retouch_base_output(output);
     let extension = output
         .extension()
         .and_then(|extension| extension.to_str())
@@ -2221,6 +2246,47 @@ pub(super) fn retouch_temp_output(output: &Path, render_key: &str) -> PathBuf {
         .and_then(|stem| stem.to_str())
         .unwrap_or("review");
     output.with_file_name(format!(".{stem}.retouch-{render_key}.{extension}"))
+}
+
+const RETOUCH_CACHE_MARKER: &str = ".retouch-cache-";
+
+pub(super) fn retouch_base_output(output: &Path) -> PathBuf {
+    let Some(stem) = output.file_stem().and_then(|stem| stem.to_str()) else {
+        return output.to_path_buf();
+    };
+    let Some(cache_stem) = stem.strip_prefix('.') else {
+        return output.to_path_buf();
+    };
+    let Some(marker_index) = cache_stem.rfind(RETOUCH_CACHE_MARKER) else {
+        return output.to_path_buf();
+    };
+    let base_stem = &cache_stem[..marker_index];
+    if base_stem.is_empty() {
+        return output.to_path_buf();
+    }
+    let mut file_name = base_stem.to_string();
+    if let Some(extension) = output.extension().and_then(|extension| extension.to_str())
+        && !extension.is_empty()
+    {
+        file_name.push('.');
+        file_name.push_str(extension);
+    }
+    output.with_file_name(file_name)
+}
+
+pub(super) fn retouch_cache_output(output: &Path, render_key: &str) -> PathBuf {
+    let output = retouch_base_output(output);
+    let extension = output
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("jpg");
+    let stem = output
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("review");
+    output.with_file_name(format!(
+        ".{stem}{RETOUCH_CACHE_MARKER}{render_key}.{extension}"
+    ))
 }
 
 pub(super) fn retouch_render_key(retouch: &RetouchSettings) -> Option<String> {
@@ -2241,7 +2307,7 @@ pub(super) fn profile_render_key_value(retouch: &RetouchSettings, bw_filter: BwF
     }
     let mut hasher = Sha1::new();
     hasher.update(normalized.render_key());
-    hasher.update("|bw=");
+    hasher.update("|bw-filter-v2=");
     hasher.update(bw_filter.as_str());
     let digest = hasher.finalize();
     digest
@@ -2290,6 +2356,71 @@ fn bw_filter_summary(filter: BwFilter) -> String {
     match filter {
         BwFilter::None => String::new(),
         _ => format!(" bw_filter={}", filter.as_str()),
+    }
+}
+
+fn profile_retouch_uses_base_output(retouch: &RetouchSettings, bw_filter: BwFilter) -> bool {
+    retouch.clone().normalized() == RetouchSettings::default() && bw_filter == BwFilter::None
+}
+
+fn profile_retouch_output(output: &Path, render_key: &str, use_base_output: bool) -> PathBuf {
+    let base_output = retouch_base_output(output);
+    if use_base_output {
+        base_output
+    } else {
+        retouch_cache_output(&base_output, render_key)
+    }
+}
+
+fn apply_cached_profile_output(
+    render: &mut ReviewProfileRender,
+    output: &Path,
+    render_key: &str,
+    use_base_output: bool,
+) -> bool {
+    let output = profile_retouch_output(output, render_key, use_base_output);
+    if !output.is_file() {
+        return false;
+    }
+    render.status = ReviewRenderStatus::Done;
+    render.render_key = None;
+    render.output_path = Some(output.clone());
+    render.error = None;
+    render.duration_ms = Some(0);
+    refresh_review_render_dimensions(render, &output);
+    true
+}
+
+fn queue_profile_retouch_render(
+    image: &mut ReviewImage,
+    render_index: usize,
+    render_key: String,
+    use_base_output: bool,
+    retouch_jobs: &mut Vec<(PathBuf, Option<usize>, PathBuf, String)>,
+) {
+    let output = image.profiles[render_index]
+        .output_path
+        .as_ref()
+        .map(|output| retouch_base_output(output));
+    let render = &mut image.profiles[render_index];
+    if let Some(output) = output.as_deref()
+        && apply_cached_profile_output(render, output, &render_key, use_base_output)
+    {
+        render.updated_at = now_string();
+        return;
+    }
+    render.status = ReviewRenderStatus::Queued;
+    render.error = None;
+    render.duration_ms = None;
+    render.render_key = Some(render_key.clone());
+    render.updated_at = now_string();
+    if let Some(output) = output {
+        retouch_jobs.push((
+            image.raw_path.clone(),
+            Some(render.profile_index),
+            output,
+            render_key,
+        ));
     }
 }
 

@@ -800,6 +800,78 @@ fn base_render_done_triggers_pending_retouch_without_marking_done() {
 }
 
 #[test]
+fn retouch_cache_output_is_stable_from_base_or_cached_path() {
+    let base = PathBuf::from("/out/Classic/frame.jpg");
+    let cache = retouch_cache_output(&base, "abc123");
+
+    assert_eq!(
+        cache,
+        PathBuf::from("/out/Classic/.frame.retouch-cache-abc123.jpg")
+    );
+    assert_eq!(retouch_base_output(&cache), base);
+    assert_eq!(
+        retouch_cache_output(&cache, "def456"),
+        PathBuf::from("/out/Classic/.frame.retouch-cache-def456.jpg")
+    );
+    assert_eq!(
+        retouch_temp_output(&cache, "def456"),
+        PathBuf::from("/out/Classic/.frame.retouch-def456.jpg")
+    );
+}
+
+#[test]
+fn base_render_done_uses_cached_retouch_output_without_scheduling() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let raw = input.join("frame.NEF");
+    let rendered = output.join("Classic").join("frame.jpg");
+    fs::create_dir_all(rendered.parent().unwrap()).unwrap();
+    fs::write(&raw, b"raw").unwrap();
+    fs::write(&rendered, b"base").unwrap();
+
+    let handle = test_handle(input, output, vec![profile(0, "Classic")]);
+    handle.record_discovered_raw(&raw).unwrap();
+    let saved_retouch = RetouchSettings {
+        adjustments: BasicRetouchAdjustments {
+            exposure: 0.35,
+            clarity: 12.0,
+            ..BasicRetouchAdjustments::default()
+        },
+        ..RetouchSettings::default()
+    }
+    .normalized();
+    let expected_key = saved_retouch.render_key();
+    let cached = retouch_cache_output(&rendered, &expected_key);
+    fs::write(&cached, b"cached").unwrap();
+    handle
+        .update_store(|store| {
+            let image = store
+                .images
+                .iter_mut()
+                .find(|image| image.raw_path == raw)
+                .unwrap();
+            image.retouch = saved_retouch.clone();
+            Ok(())
+        })
+        .unwrap();
+
+    handle.record_profile_queued(&raw, 0, &rendered).unwrap();
+    handle
+        .record_profile_done(&raw, 0, &rendered, Duration::from_millis(42))
+        .unwrap();
+
+    let store = handle.store_snapshot();
+    let render = &store.images[0].profiles[0];
+    assert_eq!(render.status, ReviewRenderStatus::Done);
+    assert_eq!(render.output_path.as_deref(), Some(cached.as_path()));
+    assert_eq!(render.render_key, None);
+    assert!(handle.retouch_scheduler.pending.load_full().is_empty());
+}
+
+#[test]
 fn queued_missing_output_reuses_saved_retouch_settings() {
     let temp = tempfile::tempdir().unwrap();
     let input = temp.path().join("in");
@@ -853,6 +925,60 @@ fn queued_missing_output_reuses_saved_retouch_settings() {
     assert_eq!(job.profile_index, Some(0));
     assert_eq!(job.output, rendered);
     assert_eq!(job.render_key, expected_key);
+}
+
+#[test]
+fn review_update_uses_cached_bw_filter_output_without_scheduling() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let raw = input.join("frame.NEF");
+    let rendered = output.join("BW").join("frame.jpg");
+    fs::create_dir_all(rendered.parent().unwrap()).unwrap();
+    fs::write(&raw, b"raw").unwrap();
+    fs::write(&rendered, b"base").unwrap();
+
+    let handle = test_handle(input, output, vec![bw_profile(0, "BW", -100.0, 0.0)]);
+    handle.record_discovered_raw(&raw).unwrap();
+    handle
+        .record_profile_done(&raw, 0, &rendered, Duration::from_millis(42))
+        .unwrap();
+    let render_key = profile_render_key_value(&RetouchSettings::default(), BwFilter::Yellow);
+    let cached = retouch_cache_output(&rendered, &render_key);
+    fs::write(&cached, b"yellow").unwrap();
+
+    handle
+        .apply_review_update(ReviewUpdateRequest {
+            image_id: 1,
+            rating: 0,
+            label: ReviewLabel::None,
+            labels: Vec::new(),
+            tags: Vec::new(),
+            notes: String::new(),
+            retouch: None,
+            selected_profile_index: Some(0),
+            publish_profile_indexes: Some(vec![0]),
+            profile_bw_filters: Some(vec![ReviewProfileBwFilter {
+                profile_index: 0,
+                filter: BwFilter::Yellow,
+            }]),
+            advance_after_update: false,
+        })
+        .unwrap();
+
+    let store = handle.store_snapshot();
+    let image = &store.images[0];
+    assert_eq!(
+        effective_bw_filter_for_profile(image, &store.profiles[0]),
+        BwFilter::Yellow
+    );
+    let render = &image.profiles[0];
+    assert_eq!(render.status, ReviewRenderStatus::Done);
+    assert_eq!(render.output_path.as_deref(), Some(cached.as_path()));
+    assert_eq!(render.render_key, None);
+    assert!(handle.retouch_scheduler.pending.load_full().is_empty());
 }
 
 #[test]
