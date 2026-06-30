@@ -1015,6 +1015,7 @@ mod tests {
                 progressive_jpeg: false,
             },
             retouch: None,
+            bw_filter: crate::app::retouch::BwFilter::None,
         }
     }
 

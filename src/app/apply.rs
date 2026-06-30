@@ -23,7 +23,10 @@ use crate::app::progress::{
     ApplyProgress, file_progress_style, progress_length, progress_stage_adaptive, progress_step,
 };
 use crate::app::raw::{run_raw_develop, run_raw_develop_jpeg};
-use crate::app::retouch::{RetouchSettings, write_rawtherapee_retouch_profile};
+use crate::app::retouch::{
+    BwFilter, RetouchSettings, write_rawtherapee_bw_filter_profile,
+    write_rawtherapee_retouch_profile,
+};
 use crate::app::util::{
     OutputEditMetadata, extract_capture_iso, is_jpeg_input_file, remove_temp_file,
     sync_output_metadata_from_image_with_color_profile,
@@ -53,6 +56,7 @@ pub(crate) struct ApplyArgs {
     pub(crate) grain_engine: GrainEngine,
     pub(crate) export: ExportOptions,
     pub(crate) retouch: Option<RetouchSettings>,
+    pub(crate) bw_filter: BwFilter,
 }
 
 pub(crate) struct ApplyJob<'a> {
@@ -70,6 +74,7 @@ pub(crate) struct ApplyJob<'a> {
     pub(crate) quiet: bool,
     pub(crate) exif_comment: Option<String>,
     pub(crate) retouch: Option<&'a RetouchSettings>,
+    pub(crate) bw_filter: BwFilter,
 }
 
 pub(crate) struct CompressedApplyJob<'a> {
@@ -185,6 +190,7 @@ pub(crate) fn run_apply(args: ApplyArgs) -> Result<()> {
             quiet: true,
             exif_comment: Some(exif_comment_for_command("apply", args.profile.as_deref())),
             retouch: args.retouch.as_ref(),
+            bw_filter: args.bw_filter,
         },
         &resolved,
         grain_seed,
@@ -324,7 +330,8 @@ pub(crate) fn apply_resolved(
         });
     let cleanup_intermediate = job.keep_intermediate.is_none();
 
-    let rawtherapee_profiles = rawtherapee_profiles_for_apply(resolved, temp_dir, job.retouch)?;
+    let rawtherapee_profiles =
+        rawtherapee_profiles_for_apply(resolved, temp_dir, job.retouch, job.bw_filter)?;
     let rawtherapee_profiles = with_optional_color_noise_profile(
         job.raw,
         &rawtherapee_profiles,
@@ -528,6 +535,7 @@ fn rawtherapee_profiles_for_apply(
     resolved: &ResolvedProfile,
     temp_dir: &Path,
     retouch: Option<&RetouchSettings>,
+    bw_filter: BwFilter,
 ) -> Result<Vec<PathBuf>> {
     let mut profiles = resolved.rawtherapee_profiles.clone();
     if let Some(retouch) = retouch
@@ -536,6 +544,11 @@ fn rawtherapee_profiles_for_apply(
             resolved.retouch_base,
             retouch,
         )?
+    {
+        profiles.push(profile);
+    }
+    if let Some(profile) =
+        write_rawtherapee_bw_filter_profile(&temp_dir.join("bw-filter.pp3"), bw_filter)?
     {
         profiles.push(profile);
     }
@@ -899,6 +912,7 @@ mod tests {
                 quiet: true,
                 exif_comment: Some("mini-film test".to_string()),
                 retouch: None,
+                bw_filter: BwFilter::None,
             },
             &resolved,
             0,
@@ -953,6 +967,7 @@ mod tests {
                 quiet: true,
                 exif_comment: Some("mini-film test".to_string()),
                 retouch: None,
+                bw_filter: BwFilter::None,
             },
             &resolved,
             1,
@@ -1009,6 +1024,7 @@ mod tests {
                 quiet: true,
                 exif_comment: Some("mini-film test".to_string()),
                 retouch: None,
+                bw_filter: BwFilter::None,
             },
             &resolved,
             2,

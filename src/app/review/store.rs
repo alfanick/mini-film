@@ -129,6 +129,7 @@ impl ReviewStore {
             codex: ReviewCodexAnalysis::default(),
             retouch: RetouchSettings::default(),
             publish_profile_indexes: None,
+            profile_bw_filters: Vec::new(),
             profiles: Vec::new(),
             updated_at: now_string(),
         };
@@ -315,6 +316,7 @@ pub(super) fn sync_image_profile_renders(
         image.profiles.clear();
         image.selected_profile_index = 0;
         image.publish_profile_indexes = Some(Vec::new());
+        image.profile_bw_filters.clear();
         return;
     }
 
@@ -398,6 +400,8 @@ pub(super) fn sync_image_profile_renders(
     } else {
         image.publish_profile_indexes = Some(effective_publish_profile_indexes(image));
     }
+    image.profile_bw_filters =
+        normalize_profile_bw_filters(&image.profile_bw_filters, &image.profiles);
 }
 
 pub(super) fn effective_publish_profile_indexes(image: &ReviewImage) -> Vec<usize> {

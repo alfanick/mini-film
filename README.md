@@ -492,7 +492,11 @@ color temperature, clarity, rotation, and crop. JPEG/HEIC inputs support crop an
 rotation only. The browser applies a fast draft preview while edits are being
 made, then queues a high-quality mini-film render and swaps in the finished
 output when it is ready. Crop and rotation are persisted with the review state
-and are used by publish rerenders.
+and are used by publish rerenders. RAW profiles whose combined source and
+emulation saturation is effectively black-and-white show `None`, `Y`, `O`, `R`,
+and `G` filter controls beside the selected profile name. Those black-and-white
+filter choices are stored per picture/profile variant and are used by review and
+publish rerenders.
 
 Optional Codex analysis can run after each RAW has a camera preview and its
 configured profile renders have finished:

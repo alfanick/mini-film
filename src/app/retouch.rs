@@ -9,6 +9,39 @@ use sha1::{Digest, Sha1};
 
 use mini_film::ProfileAdjustments;
 
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum BwFilter {
+    #[default]
+    None,
+    Yellow,
+    Orange,
+    Red,
+    Green,
+}
+
+impl BwFilter {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Yellow => "yellow",
+            Self::Orange => "orange",
+            Self::Red => "red",
+            Self::Green => "green",
+        }
+    }
+
+    fn rawtherapee_filter(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::Yellow => Some("Yellow"),
+            Self::Orange => Some("Orange"),
+            Self::Red => Some("Red"),
+            Self::Green => Some("Green"),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub(crate) struct BasicRetouchAdjustments {
     #[serde(default)]
@@ -251,6 +284,47 @@ pub(crate) fn write_rawtherapee_retouch_profile(
     Ok(Some(path.to_path_buf()))
 }
 
+pub(crate) fn write_rawtherapee_bw_filter_profile(
+    path: &Path,
+    filter: BwFilter,
+) -> Result<Option<PathBuf>> {
+    let Some(rawtherapee_filter) = filter.rawtherapee_filter() else {
+        return Ok(None);
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    let mut out = String::new();
+    let _ = writeln!(out, "[Black & White]");
+    let _ = writeln!(out, "Enabled=true");
+    let _ = writeln!(out, "Method=ChannelMixer");
+    let _ = writeln!(out, "Auto=false");
+    let _ = writeln!(out, "ComplementaryColors=true");
+    let _ = writeln!(out, "Setting=RGB-Rel");
+    let _ = writeln!(out, "Filter={rawtherapee_filter}");
+    let _ = writeln!(out, "MixerRed=-100");
+    let _ = writeln!(out, "MixerOrange=33");
+    let _ = writeln!(out, "MixerYellow=33");
+    let _ = writeln!(out, "MixerGreen=-100");
+    let _ = writeln!(out, "MixerCyan=33");
+    let _ = writeln!(out, "MixerBlue=0");
+    let _ = writeln!(out, "MixerMagenta=33");
+    let _ = writeln!(out, "MixerPurple=33");
+    let _ = writeln!(out, "GammaRed=0");
+    let _ = writeln!(out, "GammaGreen=0");
+    let _ = writeln!(out, "GammaBlue=0");
+    let _ = writeln!(out, "Algorithm=SP");
+    let _ = writeln!(out, "LuminanceCurve=0;");
+    let _ = writeln!(out, "BeforeCurveMode=Standard");
+    let _ = writeln!(out, "AfterCurveMode=Standard");
+    let _ = writeln!(out, "BeforeCurve=0;");
+    let _ = writeln!(out, "AfterCurve=0;");
+    let _ = writeln!(out);
+    std::fs::write(path, out).with_context(|| format!("writing {}", path.display()))?;
+    Ok(Some(path.to_path_buf()))
+}
+
 fn fmt_f32(value: f32) -> String {
     let rounded = (value * 1000.0).round() / 1000.0;
     if rounded == 0.0 {
@@ -369,6 +443,27 @@ mod tests {
         assert!(text.contains("TemperatureBias=450"));
         assert!(text.contains("Green=1.07"));
         assert!(text.contains("Contrast=12"));
+    }
+
+    #[test]
+    fn rawtherapee_bw_filter_profile_writes_channel_mixer_filter() {
+        let dir = tempfile::tempdir().unwrap();
+        let none = dir.path().join("none.pp3");
+        assert_eq!(
+            write_rawtherapee_bw_filter_profile(&none, BwFilter::None).unwrap(),
+            None
+        );
+        assert!(!none.exists());
+
+        let output = dir.path().join("yellow.pp3");
+        let written = write_rawtherapee_bw_filter_profile(&output, BwFilter::Yellow).unwrap();
+
+        assert_eq!(written, Some(output.clone()));
+        let text = std::fs::read_to_string(output).unwrap();
+        assert!(text.contains("[Black & White]"));
+        assert!(text.contains("Enabled=true"));
+        assert!(text.contains("Method=ChannelMixer"));
+        assert!(text.contains("Filter=Yellow"));
     }
 
     #[test]

@@ -1058,6 +1058,7 @@ fn resolve_daemon_profiles(args: &BatchDaemonArgs, temp_dir: &Path) -> Result<Ve
                 grain_engine: args.grain_engine,
                 export: args.export.clone(),
                 retouch: None,
+                bw_filter: crate::app::retouch::BwFilter::None,
             };
             let mut resolved = resolve_profile(&apply_args, &profile_tmp_dir)
                 .with_context(|| format!("resolving profile {selector}"))?;
@@ -1405,6 +1406,7 @@ fn process_single_profile(
                 }
             )),
             retouch: None,
+            bw_filter: crate::app::retouch::BwFilter::None,
         },
         &profile.resolved,
         seed,

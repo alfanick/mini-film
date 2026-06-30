@@ -429,8 +429,17 @@ pub(super) struct ReviewImage {
     pub(super) retouch: RetouchSettings,
     #[serde(default)]
     pub(super) publish_profile_indexes: Option<Vec<usize>>,
+    #[serde(default)]
+    pub(super) profile_bw_filters: Vec<ReviewProfileBwFilter>,
     pub(super) profiles: Vec<ReviewProfileRender>,
     pub(super) updated_at: String,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct ReviewProfileBwFilter {
+    pub(super) profile_index: usize,
+    #[serde(default)]
+    pub(super) filter: BwFilter,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -569,6 +578,53 @@ pub(super) struct ReviewProfileRender {
     pub(super) updated_at: String,
 }
 
+pub(super) fn review_profile_bw_filter_eligible(profile: &ReviewProfile) -> bool {
+    profile.metadata.as_ref().is_some_and(|metadata| {
+        metadata.source_adjustments.saturation + metadata.emulation_adjustments.saturation <= -99.0
+    })
+}
+
+pub(super) fn bw_filter_for_profile_index(image: &ReviewImage, profile_index: usize) -> BwFilter {
+    image
+        .profile_bw_filters
+        .iter()
+        .find(|entry| entry.profile_index == profile_index)
+        .map(|entry| entry.filter)
+        .unwrap_or_default()
+}
+
+pub(super) fn effective_bw_filter_for_profile(
+    image: &ReviewImage,
+    profile: &ReviewProfile,
+) -> BwFilter {
+    if review_profile_bw_filter_eligible(profile) {
+        bw_filter_for_profile_index(image, profile.index)
+    } else {
+        BwFilter::None
+    }
+}
+
+pub(super) fn normalize_profile_bw_filters(
+    filters: &[ReviewProfileBwFilter],
+    renders: &[ReviewProfileRender],
+) -> Vec<ReviewProfileBwFilter> {
+    renders
+        .iter()
+        .filter_map(|render| {
+            filters
+                .iter()
+                .rev()
+                .find(|entry| entry.profile_index == render.profile_index)
+                .and_then(|entry| {
+                    (entry.filter != BwFilter::None).then_some(ReviewProfileBwFilter {
+                        profile_index: render.profile_index,
+                        filter: entry.filter,
+                    })
+                })
+        })
+        .collect()
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub(super) enum ReviewRenderStatus {
@@ -596,6 +652,8 @@ pub(super) struct ReviewUpdateRequest {
     pub(super) selected_profile_index: Option<usize>,
     #[serde(default)]
     pub(super) publish_profile_indexes: Option<Vec<usize>>,
+    #[serde(default)]
+    pub(super) profile_bw_filters: Option<Vec<ReviewProfileBwFilter>>,
     #[serde(default)]
     pub(super) advance_after_update: bool,
 }

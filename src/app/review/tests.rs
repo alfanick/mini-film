@@ -15,6 +15,20 @@ fn profile(index: usize, stem: &str) -> ReviewProfile {
     }
 }
 
+fn bw_profile(
+    index: usize,
+    stem: &str,
+    source_saturation: f32,
+    emulation_saturation: f32,
+) -> ReviewProfile {
+    let mut profile = profile(index, stem);
+    let mut metadata = ReviewProfileMetadata::default();
+    metadata.source_adjustments.saturation = source_saturation;
+    metadata.emulation_adjustments.saturation = emulation_saturation;
+    profile.metadata = Some(metadata);
+    profile
+}
+
 fn test_export_options() -> ExportOptions {
     ExportOptions {
         jpg_quality: 90,
@@ -119,6 +133,81 @@ fn profile_render(index: usize, stem: &str) -> ReviewProfileRender {
 }
 
 #[test]
+fn profile_bw_filter_eligibility_uses_combined_saturation() {
+    let eligible = bw_profile(0, "BW", -60.0, -40.0);
+    let ineligible = bw_profile(1, "Color", -98.0, 0.0);
+    let renders = vec![profile_render(0, "BW"), profile_render(1, "Color")];
+    let image = ReviewImage {
+        id: 1,
+        raw_path: PathBuf::from("/in/frame.NEF"),
+        sooc_sidecar_path: None,
+        relative_path: "frame.NEF".to_string(),
+        file_name: "frame.NEF".to_string(),
+        exif: GalleryExifData::default(),
+        selected_profile_index: 0,
+        rating: 0,
+        label: ReviewLabel::None,
+        labels: Vec::new(),
+        tags: Vec::new(),
+        notes: String::new(),
+        rating_source: ReviewMetadataSource::Default,
+        tags_source: ReviewMetadataSource::Default,
+        notes_source: ReviewMetadataSource::Default,
+        codex: ReviewCodexAnalysis::default(),
+        retouch: RetouchSettings::default(),
+        publish_profile_indexes: Some(vec![0, 1]),
+        profile_bw_filters: normalize_profile_bw_filters(
+            &[
+                ReviewProfileBwFilter {
+                    profile_index: 2,
+                    filter: BwFilter::Red,
+                },
+                ReviewProfileBwFilter {
+                    profile_index: 0,
+                    filter: BwFilter::None,
+                },
+                ReviewProfileBwFilter {
+                    profile_index: 1,
+                    filter: BwFilter::Orange,
+                },
+                ReviewProfileBwFilter {
+                    profile_index: 0,
+                    filter: BwFilter::Yellow,
+                },
+            ],
+            &renders,
+        ),
+        preview: ReviewPreview::default(),
+        profiles: renders,
+        updated_at: now_string(),
+    };
+
+    assert!(review_profile_bw_filter_eligible(&eligible));
+    assert!(!review_profile_bw_filter_eligible(&ineligible));
+    assert_eq!(
+        image.profile_bw_filters,
+        vec![
+            ReviewProfileBwFilter {
+                profile_index: 0,
+                filter: BwFilter::Yellow,
+            },
+            ReviewProfileBwFilter {
+                profile_index: 1,
+                filter: BwFilter::Orange,
+            },
+        ]
+    );
+    assert_eq!(
+        effective_bw_filter_for_profile(&image, &eligible),
+        BwFilter::Yellow
+    );
+    assert_eq!(
+        effective_bw_filter_for_profile(&image, &ineligible),
+        BwFilter::None
+    );
+}
+
+#[test]
 fn preferred_preview_profile_keeps_selected_profile_even_when_publish_unchecked() {
     let image = ReviewImage {
         id: 1,
@@ -139,6 +228,7 @@ fn preferred_preview_profile_keeps_selected_profile_even_when_publish_unchecked(
         codex: ReviewCodexAnalysis::default(),
         retouch: RetouchSettings::default(),
         publish_profile_indexes: Some(vec![1]),
+        profile_bw_filters: Vec::new(),
         preview: ReviewPreview::default(),
         profiles: vec![
             profile_render(0, "A"),
@@ -219,6 +309,7 @@ fn review_visible_order_uses_exif_capture_time_before_path() {
         codex: ReviewCodexAnalysis::default(),
         retouch: RetouchSettings::default(),
         publish_profile_indexes: Some(vec![0]),
+        profile_bw_filters: Vec::new(),
         profiles: vec![profile_render(0, "Classic")],
         updated_at: now_string(),
     });
@@ -245,6 +336,7 @@ fn review_visible_order_uses_exif_capture_time_before_path() {
         codex: ReviewCodexAnalysis::default(),
         retouch: RetouchSettings::default(),
         publish_profile_indexes: Some(vec![0]),
+        profile_bw_filters: Vec::new(),
         profiles: vec![profile_render(0, "Classic")],
         updated_at: now_string(),
     });
@@ -268,6 +360,7 @@ fn review_visible_order_uses_exif_capture_time_before_path() {
         codex: ReviewCodexAnalysis::default(),
         retouch: RetouchSettings::default(),
         publish_profile_indexes: Some(vec![0]),
+        profile_bw_filters: Vec::new(),
         profiles: vec![profile_render(0, "Classic")],
         updated_at: now_string(),
     });
@@ -304,6 +397,7 @@ fn sync_profiles_drops_stale_renders_when_wizard_profile_changes() {
         codex: ReviewCodexAnalysis::default(),
         retouch: RetouchSettings::default(),
         publish_profile_indexes: Some(vec![0]),
+        profile_bw_filters: Vec::new(),
         profiles: vec![ReviewProfileRender {
             output_path: Some(PathBuf::from("/out/Old/frame.jpg")),
             ..profile_render(0, "Old")
@@ -349,6 +443,7 @@ fn sync_profiles_selects_all_wizard_profiles_when_profile_set_changes() {
         codex: ReviewCodexAnalysis::default(),
         retouch: RetouchSettings::default(),
         publish_profile_indexes: Some(vec![0]),
+        profile_bw_filters: Vec::new(),
         profiles: vec![ReviewProfileRender {
             output_path: Some(PathBuf::from("/out/Classic/frame.jpg")),
             ..profile_render(0, "Classic")
@@ -395,6 +490,7 @@ fn sync_profiles_drops_same_stem_render_when_profile_identity_changes() {
         codex: ReviewCodexAnalysis::default(),
         retouch: RetouchSettings::default(),
         publish_profile_indexes: Some(vec![0]),
+        profile_bw_filters: Vec::new(),
         profiles: vec![ReviewProfileRender {
             output_path: Some(PathBuf::from("/out/Classic/frame.jpg")),
             ..profile_render(0, "Classic")
@@ -436,6 +532,7 @@ fn sync_profiles_preserves_publish_selection_when_profiles_are_unchanged() {
         codex: ReviewCodexAnalysis::default(),
         retouch: RetouchSettings::default(),
         publish_profile_indexes: Some(vec![1]),
+        profile_bw_filters: Vec::new(),
         profiles: vec![profile_render(0, "Classic"), profile_render(1, "Fade")],
         updated_at: now_string(),
     });
@@ -477,6 +574,7 @@ fn sync_profiles_preserves_publish_selection_after_restart_with_metadata_changes
         codex: ReviewCodexAnalysis::default(),
         retouch: RetouchSettings::default(),
         publish_profile_indexes: Some(vec![1]),
+        profile_bw_filters: Vec::new(),
         profiles: vec![profile_render(0, "Classic"), profile_render(1, "Fade")],
         updated_at: now_string(),
     });
@@ -529,6 +627,10 @@ fn review_state_sqlite_round_trips_and_populates_query_tables() {
         codex: ReviewCodexAnalysis::default(),
         retouch: RetouchSettings::default(),
         publish_profile_indexes: Some(vec![0]),
+        profile_bw_filters: vec![ReviewProfileBwFilter {
+            profile_index: 0,
+            filter: BwFilter::Yellow,
+        }],
         profiles: vec![profile_render(0, "Classic")],
         updated_at: now_string(),
     });
@@ -546,6 +648,10 @@ fn review_state_sqlite_round_trips_and_populates_query_tables() {
     assert_eq!(table_count(&state_path, "image_tags").unwrap(), 1);
     assert_eq!(
         table_count(&state_path, "image_profile_renders").unwrap(),
+        1
+    );
+    assert_eq!(
+        table_count(&state_path, "image_profile_bw_filters").unwrap(),
         1
     );
 }
@@ -644,6 +750,7 @@ fn schedule_ready_codex_jobs_does_not_reschedule_done_images() {
                 },
                 retouch: RetouchSettings::default(),
                 publish_profile_indexes: Some(vec![0]),
+                profile_bw_filters: Vec::new(),
                 profiles: Vec::new(),
                 updated_at: now_string(),
             });
@@ -818,6 +925,7 @@ fn review_update_advances_shared_server_ui_state() {
             retouch: None,
             selected_profile_index: Some(0),
             publish_profile_indexes: Some(vec![0, 1]),
+            profile_bw_filters: None,
             advance_after_update: true,
         })
         .unwrap();
@@ -838,6 +946,7 @@ fn review_update_advances_shared_server_ui_state() {
             retouch: None,
             selected_profile_index: Some(0),
             publish_profile_indexes: Some(vec![0, 1]),
+            profile_bw_filters: None,
             advance_after_update: true,
         })
         .unwrap();
@@ -875,6 +984,7 @@ fn review_update_without_profile_selection_preserves_current_profile() {
             retouch: None,
             selected_profile_index: Some(1),
             publish_profile_indexes: Some(vec![0, 1]),
+            profile_bw_filters: None,
             advance_after_update: false,
         })
         .unwrap();
@@ -890,6 +1000,7 @@ fn review_update_without_profile_selection_preserves_current_profile() {
             retouch: None,
             selected_profile_index: None,
             publish_profile_indexes: Some(vec![0, 1]),
+            profile_bw_filters: None,
             advance_after_update: false,
         })
         .unwrap();
@@ -929,6 +1040,7 @@ fn review_history_records_review_and_publish_state_changes() {
             retouch: None,
             selected_profile_index: Some(1),
             publish_profile_indexes: Some(vec![1]),
+            profile_bw_filters: None,
             advance_after_update: false,
         })
         .unwrap();
@@ -1134,6 +1246,7 @@ fn publish_flat_album_filters_rating_label_and_tag() {
         codex: ReviewCodexAnalysis::default(),
         retouch: RetouchSettings::default(),
         publish_profile_indexes: Some(vec![0]),
+        profile_bw_filters: Vec::new(),
         preview: ReviewPreview::default(),
         profiles: vec![ReviewProfileRender {
             profile_index: 0,
@@ -1191,6 +1304,7 @@ fn publish_flat_album_suffixes_non_default_profiles() {
         codex: ReviewCodexAnalysis::default(),
         retouch: RetouchSettings::default(),
         publish_profile_indexes: Some(vec![1]),
+        profile_bw_filters: Vec::new(),
         preview: ReviewPreview::default(),
         profiles: vec![
             ReviewProfileRender {
@@ -1261,6 +1375,7 @@ fn publish_store_reports_realtime_progress() {
         codex: ReviewCodexAnalysis::default(),
         retouch: RetouchSettings::default(),
         publish_profile_indexes: Some(vec![0, 1]),
+        profile_bw_filters: Vec::new(),
         preview: ReviewPreview::default(),
         profiles: vec![
             ReviewProfileRender {

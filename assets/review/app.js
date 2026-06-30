@@ -46,6 +46,21 @@ const WHEEL_NAV_RESET_MS = 220;
 const WHEEL_NAV_COOLDOWN_MS = 260;
 const RATING_VALUES = [0, 1, 2, 3, 4, 5];
 const COLOR_LABELS = ["red", "yellow", "green", "blue", "purple"];
+const BW_FILTERS = ["none", "yellow", "orange", "red", "green"];
+const BW_FILTER_LABELS = new Map([
+  ["none", "None"],
+  ["yellow", "Y"],
+  ["orange", "O"],
+  ["red", "R"],
+  ["green", "G"],
+]);
+const BW_FILTER_NAMES = new Map([
+  ["none", "No"],
+  ["yellow", "Yellow"],
+  ["orange", "Orange"],
+  ["red", "Red"],
+  ["green", "Green"],
+]);
 
 let wheelNavigation = {
   axis: null,
@@ -1762,7 +1777,7 @@ function renderProfileStateSummary(image, selected, selectedState, previewNote, 
   preactRender(
     h(
       "span",
-      null,
+      { class: "profile-state-summary" },
       h(
         "button",
         {
@@ -1772,9 +1787,38 @@ function renderProfileStateSummary(image, selected, selectedState, previewNote, 
         },
         selectedName,
       ),
+      selected.bw_filter_eligible ? h(BwFilterControls, { image, profile: selected }) : null,
       `: ${suffix}`,
     ),
     els.profileState,
+  );
+}
+
+function BwFilterControls({ image, profile }) {
+  const active = normalizeBwFilter(profile.bw_filter);
+  return h(
+    "span",
+    { class: "bw-filter-controls", role: "group", "aria-label": "Black-and-white filter" },
+    BW_FILTERS.map((filter) =>
+      h(
+        "button",
+        {
+          key: filter,
+          type: "button",
+          class: normalizeBwFilter(filter) === active ? "active" : "",
+          title: `${BW_FILTER_NAMES.get(filter)} black-and-white filter`,
+          "aria-label": filter === "none" ? "No black-and-white filter" : `${filter} black-and-white filter`,
+          "aria-pressed": normalizeBwFilter(filter) === active ? "true" : "false",
+          onClick: (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (normalizeBwFilter(filter) === active) return;
+            setProfileBwFilter(image, profile.profile_index, filter).catch((error) => console.error(error));
+          },
+        },
+        BW_FILTER_LABELS.get(filter),
+      ),
+    ),
   );
 }
 
@@ -2025,6 +2069,56 @@ function togglePublishProfile(image, profileIndex) {
   return (image.profiles || [])
     .map((profile) => profile.profile_index)
     .filter((profileIndex) => selected.has(profileIndex));
+}
+
+function normalizeBwFilter(value) {
+  return BW_FILTERS.includes(value) ? value : "none";
+}
+
+function profileBwFilters(image) {
+  const byIndex = new Map();
+  const available = new Set((image?.profiles || []).map((profile) => profile.profile_index));
+  for (const entry of image?.profile_bw_filters || []) {
+    const profileIndex = Number(entry?.profile_index);
+    const filter = normalizeBwFilter(entry?.filter);
+    if (!Number.isInteger(profileIndex) || !available.has(profileIndex) || filter === "none") continue;
+    byIndex.set(profileIndex, filter);
+  }
+  return (image?.profiles || [])
+    .map((profile) => {
+      const filter = byIndex.get(profile.profile_index);
+      return filter ? { profile_index: profile.profile_index, filter } : null;
+    })
+    .filter(Boolean);
+}
+
+function nextProfileBwFilters(image, profileIndex, filter) {
+  const byIndex = new Map(profileBwFilters(image).map((entry) => [entry.profile_index, entry.filter]));
+  const normalized = normalizeBwFilter(filter);
+  if (normalized === "none") {
+    byIndex.delete(profileIndex);
+  } else {
+    byIndex.set(profileIndex, normalized);
+  }
+  return (image?.profiles || [])
+    .map((profile) => {
+      const filter = byIndex.get(profile.profile_index);
+      return filter ? { profile_index: profile.profile_index, filter } : null;
+    })
+    .filter(Boolean);
+}
+
+async function setProfileBwFilter(image, profileIndex, filter) {
+  const next = nextProfileBwFilters(image, profileIndex, filter);
+  image.profile_bw_filters = next;
+  const profile = (image.profiles || []).find((profile) => profile.profile_index === profileIndex);
+  if (profile) {
+    profile.bw_filter = normalizeBwFilter(filter);
+    profile.retouch_pending = true;
+    profile.status = "queued";
+  }
+  render();
+  await saveReview({ profile_bw_filters: next });
 }
 
 function renderProfiles(image) {
@@ -3320,6 +3414,7 @@ function reviewRequestBody(image, patch = {}, options = {}) {
     retouch: patch.retouch ?? (options.useInputs ? retouchFromInputs(image) : image.retouch || defaultRetouch()),
     selected_profile_index: patch.selected_profile_index,
     publish_profile_indexes: patch.publish_profile_indexes ?? publishProfileIndexes(image),
+    profile_bw_filters: patch.profile_bw_filters ?? profileBwFilters(image),
     advance_after_update: Boolean(patch.advance_after_update),
   };
 }

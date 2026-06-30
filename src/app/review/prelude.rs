@@ -33,7 +33,7 @@ pub(super) use crate::{
     app::codex::{CodexAnalysisOptions, CodexAnalysisResult, run_codex_image_analysis},
     app::export::validate_export_options,
     app::profile::resolve_profile,
-    app::retouch::{BasicRetouchAdjustments, RetouchSettings},
+    app::retouch::{BasicRetouchAdjustments, BwFilter, RetouchSettings},
     app::timestamps::{GalleryExifData, extract_gallery_exif},
     app::util::is_jpeg_input_file,
     cli::{BatchOutputFormat, CodexAnalysisFlags, ExportOptions, GalleryTemplate, LensCorrections},

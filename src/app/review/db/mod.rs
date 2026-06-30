@@ -10,11 +10,18 @@ struct ReviewMigration {
     sql: &'static str,
 }
 
-const MIGRATIONS: &[ReviewMigration] = &[ReviewMigration {
-    version: 1,
-    name: "initial_review_state",
-    sql: INITIAL_SCHEMA,
-}];
+const MIGRATIONS: &[ReviewMigration] = &[
+    ReviewMigration {
+        version: 1,
+        name: "initial_review_state",
+        sql: INITIAL_SCHEMA,
+    },
+    ReviewMigration {
+        version: 2,
+        name: "profile_bw_filters",
+        sql: PROFILE_BW_FILTERS_SCHEMA,
+    },
+];
 
 const INITIAL_SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -235,6 +242,18 @@ CREATE INDEX IF NOT EXISTS idx_image_exif_tags_tag ON image_exif_tags(tag);
 CREATE INDEX IF NOT EXISTS idx_image_labels_label ON image_labels(label);
 CREATE INDEX IF NOT EXISTS idx_image_publish_profiles_profile ON image_publish_profiles(profile_index);
 CREATE INDEX IF NOT EXISTS idx_image_profile_renders_profile ON image_profile_renders(profile_index);
+"#;
+
+const PROFILE_BW_FILTERS_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS image_profile_bw_filters (
+    image_id INTEGER NOT NULL REFERENCES images(image_id) ON DELETE CASCADE,
+    profile_index INTEGER NOT NULL,
+    bw_filter TEXT NOT NULL CHECK (bw_filter IN ('yellow', 'orange', 'red', 'green')),
+    PRIMARY KEY (image_id, profile_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_image_profile_bw_filters_profile
+    ON image_profile_bw_filters(profile_index);
 "#;
 
 pub(super) fn review_state_path(output_root: &Path) -> PathBuf {
@@ -493,6 +512,7 @@ fn replace_store(connection: &mut Connection, store: &ReviewStore) -> Result<()>
         .context("starting review state transaction")?;
     tx.execute_batch(
         "DELETE FROM image_profile_renders;
+         DELETE FROM image_profile_bw_filters;
          DELETE FROM image_publish_profiles;
          DELETE FROM image_labels;
          DELETE FROM image_tags;
@@ -873,6 +893,21 @@ fn insert_image(tx: &Transaction<'_>, position: usize, image: &ReviewImage) -> R
             .context("writing review image publish profile")?;
         }
     }
+    for entry in &image.profile_bw_filters {
+        if entry.filter == BwFilter::None {
+            continue;
+        }
+        tx.execute(
+            "INSERT INTO image_profile_bw_filters(image_id, profile_index, bw_filter)
+             VALUES (?1, ?2, ?3)",
+            params![
+                u64_to_i64(image.id, "image id")?,
+                usize_to_i64(entry.profile_index, "profile bw filter index")?,
+                entry.filter.as_str(),
+            ],
+        )
+        .context("writing review image profile bw filter")?;
+    }
     for (position, render) in image.profiles.iter().enumerate() {
         insert_profile_render(tx, image.id, position, render)?;
     }
@@ -1019,6 +1054,7 @@ pub(super) fn table_count(path: &Path, table: &str) -> Result<u64> {
                 | "images"
                 | "image_labels"
                 | "image_publish_profiles"
+                | "image_profile_bw_filters"
                 | "image_profile_renders"
         )
     {

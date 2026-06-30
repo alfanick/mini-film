@@ -394,8 +394,17 @@ impl ReviewHandle {
         expected_output: &Path,
     ) -> Result<()> {
         let history_entry = self.update_store(|store| {
+            let profile = store
+                .profiles
+                .iter()
+                .find(|profile| profile.index == profile_index)
+                .cloned();
             let image = store.ensure_image(&self.input_root, raw)?;
-            let render_key = retouch_render_key(&image.retouch);
+            let bw_filter = profile
+                .as_ref()
+                .map(|profile| effective_bw_filter_for_profile(image, profile))
+                .unwrap_or_default();
+            let render_key = profile_render_key(&image.retouch, bw_filter);
             let Some(render) = image
                 .profiles
                 .iter_mut()
@@ -567,7 +576,7 @@ impl ReviewHandle {
         raw: &Path,
         profile_index: usize,
         render_key: &str,
-    ) -> Result<Option<(ReviewProfile, RetouchSettings)>> {
+    ) -> Result<Option<(ReviewProfile, RetouchSettings, BwFilter)>> {
         let store = self.store_snapshot();
         let Some(image) = store.images.iter().find(|image| image.raw_path == raw) else {
             return Ok(None);
@@ -590,7 +599,8 @@ impl ReviewHandle {
         else {
             return Ok(None);
         };
-        Ok(Some((profile, image.retouch.clone())))
+        let bw_filter = effective_bw_filter_for_profile(image, &profile);
+        Ok(Some((profile, image.retouch.clone(), bw_filter)))
     }
 
     pub(super) fn sooc_retouch_task_snapshot(
@@ -911,7 +921,7 @@ impl ReviewHandle {
             return;
         }
         let profile_index = job.profile_index.expect("profile retouch job has an index");
-        let Ok(Some((profile, retouch))) =
+        let Ok(Some((profile, retouch, bw_filter))) =
             self.retouch_task_snapshot(&job.raw, profile_index, &job.render_key)
         else {
             return;
@@ -922,8 +932,14 @@ impl ReviewHandle {
             render.error = None;
         });
         let temp_output = retouch_temp_output(&job.output, &job.render_key);
-        let result =
-            self.render_retouch_output(&job.raw, &profile, profile_index, &retouch, &temp_output);
+        let result = self.render_retouch_output(
+            &job.raw,
+            &profile,
+            profile_index,
+            &retouch,
+            bw_filter,
+            &temp_output,
+        );
         match result {
             Ok(()) => match self.retouch_task_snapshot(&job.raw, profile_index, &job.render_key) {
                 Ok(Some(_)) => {
@@ -1131,6 +1147,7 @@ impl ReviewHandle {
         profile: &ReviewProfile,
         profile_index: usize,
         retouch: &RetouchSettings,
+        bw_filter: BwFilter,
         output: &Path,
     ) -> Result<()> {
         let raw = safe_existing_raw_source(raw, &self.input_root)?;
@@ -1157,6 +1174,7 @@ impl ReviewHandle {
             grain_engine: self.grain_engine,
             export: self.export.clone(),
             retouch: None,
+            bw_filter,
         };
         let mut resolved = resolve_profile(&apply_args, temp_dir.path())?;
         if let Some(grain) =
@@ -1183,16 +1201,18 @@ impl ReviewHandle {
                 export: &self.export,
                 quiet: true,
                 exif_comment: Some(format!(
-                    "mini-film {} usage=review profile={} {}",
+                    "mini-film {} usage=review profile={} {}{}",
                     env!("CARGO_PKG_VERSION"),
                     if profile.stem.trim().is_empty() {
                         "none"
                     } else {
                         &profile.stem
                     },
-                    retouch.summary()
+                    retouch.summary(),
+                    bw_filter_summary(bw_filter)
                 )),
                 retouch: Some(retouch),
+                bw_filter,
             },
             &resolved,
             seed,
@@ -1254,6 +1274,12 @@ impl ReviewHandle {
             let mut retouch_jobs = Vec::new();
             let mut history_entries = Vec::new();
             let before_ui = store.ui.clone();
+            let profiles_by_index = store
+                .profiles
+                .iter()
+                .cloned()
+                .map(|profile| (profile.index, profile))
+                .collect::<HashMap<_, _>>();
             let advance = update
                 .advance_after_update
                 .then(|| store.planned_advance_after(update.image_id));
@@ -1265,8 +1291,9 @@ impl ReviewHandle {
                 else {
                     bail!("review image {} does not exist", update.image_id);
                 };
+                let compressed = is_jpeg_input_file(&image.raw_path);
                 if let Some(selected_profile_index) = update.selected_profile_index
-                    && !is_jpeg_input_file(&image.raw_path)
+                    && !compressed
                     && !image
                         .profiles
                         .iter()
@@ -1307,14 +1334,13 @@ impl ReviewHandle {
                 if let Some(retouch) = update.retouch.clone() {
                     image.retouch = retouch.normalized();
                 }
-                if let Some(selected_profile_index) = update
-                    .selected_profile_index
-                    .filter(|_| !is_jpeg_input_file(&image.raw_path))
+                if let Some(selected_profile_index) =
+                    update.selected_profile_index.filter(|_| !compressed)
                 {
                     image.selected_profile_index = selected_profile_index;
                 }
                 if let Some(indexes) = update.publish_profile_indexes.clone() {
-                    if is_jpeg_input_file(&image.raw_path) {
+                    if compressed {
                         image.publish_profile_indexes = Some(Vec::new());
                     } else {
                         validate_publish_profile_indexes(&indexes, &image.profiles)?;
@@ -1322,9 +1348,26 @@ impl ReviewHandle {
                             Some(normalize_publish_profile_indexes(&indexes, &image.profiles));
                     }
                 }
+                let mut changed_bw_profile_indexes = Vec::new();
+                if let Some(filters) = update.profile_bw_filters.clone() {
+                    let normalized_filters = if compressed {
+                        Vec::new()
+                    } else {
+                        normalize_profile_bw_filters(&filters, &image.profiles)
+                    };
+                    if normalized_filters != image.profile_bw_filters {
+                        changed_bw_profile_indexes = changed_bw_filter_profile_indexes(
+                            &image.profile_bw_filters,
+                            &normalized_filters,
+                            &image.profiles,
+                            &profiles_by_index,
+                        );
+                        image.profile_bw_filters = normalized_filters;
+                    }
+                }
                 if retouch_changed {
-                    let render_key = image.retouch.render_key();
-                    if is_jpeg_input_file(&image.raw_path) {
+                    if compressed {
+                        let render_key = image.retouch.render_key();
                         image.preview.status = ReviewRenderStatus::Queued;
                         image.preview.error = None;
                         image.preview.duration_ms = None;
@@ -1362,6 +1405,12 @@ impl ReviewHandle {
                             .collect::<Vec<_>>();
                         render_order.sort_by_key(|(priority, index)| (*priority, *index));
                         for (_, index) in render_order {
+                            let profile_index = image.profiles[index].profile_index;
+                            let bw_filter = profiles_by_index
+                                .get(&profile_index)
+                                .map(|profile| effective_bw_filter_for_profile(image, profile))
+                                .unwrap_or_default();
+                            let render_key = profile_render_key_value(&image.retouch, bw_filter);
                             let render = &mut image.profiles[index];
                             render.status = ReviewRenderStatus::Queued;
                             render.error = None;
@@ -1373,9 +1422,39 @@ impl ReviewHandle {
                                     image.raw_path.clone(),
                                     Some(render.profile_index),
                                     output.clone(),
-                                    render_key.clone(),
+                                    render_key,
                                 ));
                             }
+                        }
+                    }
+                } else if !changed_bw_profile_indexes.is_empty() && !compressed {
+                    let changed_indexes = changed_bw_profile_indexes
+                        .iter()
+                        .copied()
+                        .collect::<HashSet<_>>();
+                    for index in 0..image.profiles.len() {
+                        let profile_index = image.profiles[index].profile_index;
+                        if !changed_indexes.contains(&profile_index) {
+                            continue;
+                        }
+                        let Some(profile) = profiles_by_index.get(&profile_index) else {
+                            continue;
+                        };
+                        let bw_filter = effective_bw_filter_for_profile(image, profile);
+                        let render_key = profile_render_key_value(&image.retouch, bw_filter);
+                        let render = &mut image.profiles[index];
+                        render.status = ReviewRenderStatus::Queued;
+                        render.error = None;
+                        render.duration_ms = None;
+                        render.render_key = Some(render_key.clone());
+                        render.updated_at = now_string();
+                        if let Some(output) = &render.output_path {
+                            retouch_jobs.push((
+                                image.raw_path.clone(),
+                                Some(render.profile_index),
+                                output.clone(),
+                                render_key,
+                            ));
                         }
                     }
                 }
@@ -1435,6 +1514,15 @@ impl ReviewHandle {
                     .profiles
                     .iter()
                     .map(|render| {
+                        let profile = store
+                            .profiles
+                            .iter()
+                            .find(|profile| profile.index == render.profile_index);
+                        let bw_filter_eligible =
+                            profile.is_some_and(review_profile_bw_filter_eligible);
+                        let bw_filter = profile
+                            .map(|profile| effective_bw_filter_for_profile(image, profile))
+                            .unwrap_or_default();
                         json!({
                             "profile_index": render.profile_index,
                             "profile_stem": render.profile_stem,
@@ -1450,6 +1538,8 @@ impl ReviewHandle {
                             "width": render.width,
                             "height": render.height,
                             "retouch_pending": render.render_key.is_some(),
+                            "bw_filter_eligible": bw_filter_eligible,
+                            "bw_filter": bw_filter,
                             "updated_at": render.updated_at,
                         })
                     })
@@ -1488,6 +1578,7 @@ impl ReviewHandle {
                     },
                     "retouch": image.retouch,
                     "publish_profile_indexes": effective_publish_profile_indexes(image),
+                    "profile_bw_filters": image.profile_bw_filters,
                     "profiles": profiles,
                     "updated_at": image.updated_at,
                 })
@@ -2135,6 +2226,71 @@ pub(super) fn retouch_temp_output(output: &Path, render_key: &str) -> PathBuf {
 pub(super) fn retouch_render_key(retouch: &RetouchSettings) -> Option<String> {
     let normalized = retouch.clone().normalized();
     (normalized != RetouchSettings::default()).then(|| normalized.render_key())
+}
+
+pub(super) fn profile_render_key(retouch: &RetouchSettings, bw_filter: BwFilter) -> Option<String> {
+    let normalized = retouch.clone().normalized();
+    (normalized != RetouchSettings::default() || bw_filter != BwFilter::None)
+        .then(|| profile_render_key_value(&normalized, bw_filter))
+}
+
+pub(super) fn profile_render_key_value(retouch: &RetouchSettings, bw_filter: BwFilter) -> String {
+    let normalized = retouch.clone().normalized();
+    if bw_filter == BwFilter::None {
+        return normalized.render_key();
+    }
+    let mut hasher = Sha1::new();
+    hasher.update(normalized.render_key());
+    hasher.update("|bw=");
+    hasher.update(bw_filter.as_str());
+    let digest = hasher.finalize();
+    digest
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn changed_bw_filter_profile_indexes(
+    before: &[ReviewProfileBwFilter],
+    after: &[ReviewProfileBwFilter],
+    renders: &[ReviewProfileRender],
+    profiles_by_index: &HashMap<usize, ReviewProfile>,
+) -> Vec<usize> {
+    renders
+        .iter()
+        .filter_map(|render| {
+            let profile_index = render.profile_index;
+            let before = effective_bw_filter_from_entries(before, profile_index, profiles_by_index);
+            let after = effective_bw_filter_from_entries(after, profile_index, profiles_by_index);
+            (before != after).then_some(profile_index)
+        })
+        .collect()
+}
+
+fn effective_bw_filter_from_entries(
+    entries: &[ReviewProfileBwFilter],
+    profile_index: usize,
+    profiles_by_index: &HashMap<usize, ReviewProfile>,
+) -> BwFilter {
+    if !profiles_by_index
+        .get(&profile_index)
+        .is_some_and(review_profile_bw_filter_eligible)
+    {
+        return BwFilter::None;
+    }
+    entries
+        .iter()
+        .find(|entry| entry.profile_index == profile_index)
+        .map(|entry| entry.filter)
+        .unwrap_or_default()
+}
+
+fn bw_filter_summary(filter: BwFilter) -> String {
+    match filter {
+        BwFilter::None => String::new(),
+        _ => format!(" bw_filter={}", filter.as_str()),
+    }
 }
 
 pub(super) fn retouch_without_adjustments(retouch: &RetouchSettings) -> RetouchSettings {

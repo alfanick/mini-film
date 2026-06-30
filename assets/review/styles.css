@@ -837,6 +837,53 @@ button:disabled {
   text-decoration-thickness: 1px;
 }
 
+.profile-state-summary {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  min-width: 0;
+  gap: 3px;
+  vertical-align: middle;
+}
+
+.bw-filter-controls {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 2px;
+  margin: 0 2px 0 1px;
+  vertical-align: middle;
+}
+
+.bw-filter-controls button {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border: 1px solid #d5d5ce;
+  border-radius: 4px;
+  background: #f7f7f2;
+  color: #55554e;
+  cursor: pointer;
+  font: inherit;
+  font-size: 9px;
+  line-height: 16px;
+}
+
+.bw-filter-controls button:first-child {
+  min-width: 31px;
+}
+
+.bw-filter-controls button:hover,
+.bw-filter-controls button:focus-visible {
+  border-color: #171717;
+  color: #171717;
+}
+
+.bw-filter-controls button.active {
+  border-color: #171717;
+  background: #171717;
+  color: #fbfbf8;
+}
+
 .mobile-actions {
   display: none;
 }

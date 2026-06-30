@@ -740,6 +740,7 @@ pub(super) fn rerender_review_output(
         grain_engine: options.grain_engine,
         export: options.export.clone(),
         retouch: Some(image.retouch.clone()),
+        bw_filter: effective_bw_filter_for_profile(image, profile),
     })
 }
 

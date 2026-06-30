@@ -222,6 +222,11 @@ pub(super) fn history_review_changed(
             publish_profiles_text(before),
             publish_profiles_text(after),
         );
+        entry.change(
+            "bw filters",
+            bw_filters_text(before),
+            bw_filters_text(after),
+        );
     }
     if before.retouch != after.retouch {
         entry.line(format!(
@@ -332,6 +337,21 @@ fn publish_profiles_text(image: &ReviewImage) -> String {
         .map(|index| profile_index_text(index, image))
         .collect::<Vec<_>>();
     list_text(&indexes)
+}
+
+fn bw_filters_text(image: &ReviewImage) -> String {
+    let filters = image
+        .profile_bw_filters
+        .iter()
+        .map(|entry| {
+            format!(
+                "{}:{}",
+                profile_index_text(entry.profile_index, image),
+                entry.filter.as_str()
+            )
+        })
+        .collect::<Vec<_>>();
+    list_text(&filters)
 }
 
 fn profile_index_text(index: usize, image: &ReviewImage) -> String {
