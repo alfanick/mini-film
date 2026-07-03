@@ -16,7 +16,8 @@ use crate::app::export::{
     validate_export_options, validate_output_format,
 };
 use crate::app::pp3::{
-    write_rawtherapee_color_noise_profile, write_rawtherapee_lens_corrections_profile,
+    write_rawtherapee_active_d_lighting_profile, write_rawtherapee_color_noise_profile,
+    write_rawtherapee_lens_corrections_profile,
 };
 use crate::app::profile::{ResolvedProfile, normalize_name, resolve_profile};
 use crate::app::progress::{
@@ -332,6 +333,8 @@ pub(crate) fn apply_resolved(
 
     let rawtherapee_profiles =
         rawtherapee_profiles_for_apply(resolved, temp_dir, job.retouch, job.bw_filter)?;
+    let rawtherapee_profiles =
+        with_optional_active_d_lighting_profile(job.raw, &rawtherapee_profiles, temp_dir)?;
     let rawtherapee_profiles = with_optional_color_noise_profile(
         job.raw,
         &rawtherapee_profiles,
@@ -557,6 +560,20 @@ fn rawtherapee_profiles_for_apply(
         std::fs::write(&lut_profile, rawtherapee_hald_clut_profile_text(hald_path))
             .with_context(|| format!("writing {}", lut_profile.display()))?;
         profiles.push(lut_profile);
+    }
+    Ok(profiles)
+}
+
+fn with_optional_active_d_lighting_profile(
+    raw: &Path,
+    base_profiles: &[PathBuf],
+    temp_dir: &Path,
+) -> Result<Vec<PathBuf>> {
+    let mut profiles = Vec::from(base_profiles);
+    if let Some(path) =
+        write_rawtherapee_active_d_lighting_profile(&temp_dir.join("active-d-lighting.pp3"), raw)?
+    {
+        profiles.insert(0, path);
     }
     Ok(profiles)
 }

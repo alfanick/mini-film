@@ -1,6 +1,8 @@
 use super::model::*;
 use super::prelude::*;
 
+const SOOC_RENDER_PIPELINE_KEY: &str = "sooc-sidecar-v1";
+
 impl ReviewStore {
     const EXIF_SCHEMA_VERSION: u32 = 2;
 
@@ -487,46 +489,48 @@ pub(super) fn sync_image_profile_renders(
     image.profiles = profiles
         .iter()
         .map(|profile| {
+            let processing_key = review_render_processing_key(profile.index);
             existing
                 .get(&profile.index)
                 .filter(|render| {
                     render.profile_stem == profile.stem
+                        && render.processing_key.as_deref() == Some(processing_key)
                         && (!profiles_changed || unchanged_profile_indexes.contains(&profile.index))
                 })
                 .cloned()
-                .unwrap_or_else(|| ReviewProfileRender {
-                    profile_index: profile.index,
-                    profile_stem: profile.stem.clone(),
-                    display_name: None,
-                    status: ReviewRenderStatus::Missing,
-                    output_path: None,
-                    error: None,
-                    duration_ms: None,
-                    render_key: None,
-                    width: None,
-                    height: None,
-                    updated_at: now_string(),
+                .map(|mut render| {
+                    render.processing_key = Some(processing_key.to_string());
+                    render
+                })
+                .unwrap_or_else(|| {
+                    missing_profile_render(
+                        profile.index,
+                        profile.stem.clone(),
+                        None,
+                        processing_key,
+                    )
                 })
         })
         .collect();
     if image.sooc_sidecar_path.is_some() {
+        let processing_key = review_render_processing_key(SOOC_PROFILE_INDEX);
         image.profiles.push(
             existing
                 .get(&SOOC_PROFILE_INDEX)
                 .filter(|render| render.profile_stem == SOOC_PROFILE_STEM)
+                .filter(|render| render.processing_key.as_deref() == Some(processing_key))
                 .cloned()
-                .unwrap_or_else(|| ReviewProfileRender {
-                    profile_index: SOOC_PROFILE_INDEX,
-                    profile_stem: SOOC_PROFILE_STEM.to_string(),
-                    display_name: Some(SOOC_PROFILE_DISPLAY_NAME.to_string()),
-                    status: ReviewRenderStatus::Missing,
-                    output_path: None,
-                    error: None,
-                    duration_ms: None,
-                    render_key: None,
-                    width: None,
-                    height: None,
-                    updated_at: now_string(),
+                .map(|mut render| {
+                    render.processing_key = Some(processing_key.to_string());
+                    render
+                })
+                .unwrap_or_else(|| {
+                    missing_profile_render(
+                        SOOC_PROFILE_INDEX,
+                        SOOC_PROFILE_STEM.to_string(),
+                        Some(SOOC_PROFILE_DISPLAY_NAME.to_string()),
+                        processing_key,
+                    )
                 }),
         );
         if let Some(render) = image
@@ -536,6 +540,7 @@ pub(super) fn sync_image_profile_renders(
         {
             render.profile_stem = SOOC_PROFILE_STEM.to_string();
             render.display_name = Some(SOOC_PROFILE_DISPLAY_NAME.to_string());
+            render.processing_key = Some(processing_key.to_string());
         }
     }
     if profiles_changed {
@@ -560,6 +565,36 @@ pub(super) fn sync_image_profile_renders(
     }
     image.profile_bw_filters =
         normalize_profile_bw_filters(&image.profile_bw_filters, &image.profiles);
+}
+
+pub(super) fn review_render_processing_key(profile_index: usize) -> &'static str {
+    if profile_index == SOOC_PROFILE_INDEX {
+        SOOC_RENDER_PIPELINE_KEY
+    } else {
+        RAW_RENDER_PIPELINE_KEY
+    }
+}
+
+fn missing_profile_render(
+    profile_index: usize,
+    profile_stem: String,
+    display_name: Option<String>,
+    processing_key: &str,
+) -> ReviewProfileRender {
+    ReviewProfileRender {
+        profile_index,
+        profile_stem,
+        display_name,
+        status: ReviewRenderStatus::Missing,
+        output_path: None,
+        error: None,
+        duration_ms: None,
+        render_key: None,
+        processing_key: Some(processing_key.to_string()),
+        width: None,
+        height: None,
+        updated_at: now_string(),
+    }
 }
 
 pub(super) fn effective_publish_profile_indexes(image: &ReviewImage) -> Vec<usize> {

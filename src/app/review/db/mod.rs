@@ -21,6 +21,11 @@ const MIGRATIONS: &[ReviewMigration] = &[
         name: "profile_bw_filters",
         sql: PROFILE_BW_FILTERS_SCHEMA,
     },
+    ReviewMigration {
+        version: 3,
+        name: "profile_render_processing_key",
+        sql: PROFILE_RENDER_PROCESSING_KEY_SCHEMA,
+    },
 ];
 
 const INITIAL_SCHEMA: &str = r#"
@@ -254,6 +259,10 @@ CREATE TABLE IF NOT EXISTS image_profile_bw_filters (
 
 CREATE INDEX IF NOT EXISTS idx_image_profile_bw_filters_profile
     ON image_profile_bw_filters(profile_index);
+"#;
+
+const PROFILE_RENDER_PROCESSING_KEY_SCHEMA: &str = r#"
+ALTER TABLE image_profile_renders ADD COLUMN processing_key TEXT;
 "#;
 
 pub(super) fn review_state_path(output_root: &Path) -> PathBuf {
@@ -946,9 +955,9 @@ fn insert_profile_render(
     tx.execute(
         "INSERT INTO image_profile_renders(
             image_id, position, profile_index, profile_stem, display_name, status,
-            output_path, error, duration_ms, render_key, width, height, updated_at,
+            output_path, error, duration_ms, render_key, processing_key, width, height, updated_at,
             render_json
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         params![
             u64_to_i64(image_id, "image id")?,
             usize_to_i64(position, "profile render position")?,
@@ -960,6 +969,7 @@ fn insert_profile_render(
             render.error,
             optional_u64_to_i64(render.duration_ms, "profile render duration")?,
             render.render_key,
+            render.processing_key,
             render.width.map(u32_to_i64),
             render.height.map(u32_to_i64),
             render.updated_at,

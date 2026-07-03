@@ -1200,7 +1200,7 @@ fn enqueue_profile_jobs(
             &raw,
             &profile.stem,
         )?;
-        if context.skip_existing && expected_output.exists() {
+        if should_skip_existing_profile_output(context, &raw, profile_index, &expected_output) {
             if let Some(review) = context.review {
                 review.record_profile_done(
                     &raw,
@@ -1272,7 +1272,7 @@ fn enqueue_sooc_job(
     if let Some(review) = context.review {
         review.record_profile_queued(&raw, SOOC_PROFILE_INDEX, &expected_output)?;
     }
-    if context.skip_existing && expected_output.exists() {
+    if should_skip_existing_profile_output(context, &raw, SOOC_PROFILE_INDEX, &expected_output) {
         if let Some(review) = context.review {
             review.record_profile_done(
                 &raw,
@@ -1289,6 +1289,20 @@ fn enqueue_sooc_job(
         kind: DaemonTaskKind::SoocSidecar { sidecar },
     });
     Ok(1)
+}
+
+fn should_skip_existing_profile_output(
+    context: &ProfileScheduleContext<'_>,
+    raw: &Path,
+    profile_index: usize,
+    expected_output: &Path,
+) -> bool {
+    if !context.skip_existing || !expected_output.exists() {
+        return false;
+    }
+    context
+        .review
+        .is_none_or(|review| review.profile_render_current(raw, profile_index, expected_output))
 }
 
 fn collect_batch_inputs(input: &Path, filter: InputFileFilter) -> Result<Vec<PathBuf>> {

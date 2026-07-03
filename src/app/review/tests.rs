@@ -126,6 +126,7 @@ fn profile_render(index: usize, stem: &str) -> ReviewProfileRender {
         error: None,
         duration_ms: Some(1),
         render_key: None,
+        processing_key: Some(review_render_processing_key(index).to_string()),
         width: None,
         height: None,
         updated_at: now_string(),
@@ -545,6 +546,49 @@ fn sync_profiles_preserves_publish_selection_when_profiles_are_unchanged() {
 }
 
 #[test]
+fn sync_profiles_invalidates_renders_from_old_processing_pipeline() {
+    let profiles = vec![profile(0, "Classic")];
+    let mut render = profile_render(0, "Classic");
+    render.output_path = Some(PathBuf::from("/out/Classic/frame.jpg"));
+    render.processing_key = Some("raw-render-v1".to_string());
+    let mut store = ReviewStore::new(profiles.clone());
+    store.images.push(ReviewImage {
+        id: 1,
+        raw_path: PathBuf::from("/in/frame.NEF"),
+        sooc_sidecar_path: None,
+        relative_path: "frame.NEF".to_string(),
+        file_name: "frame.NEF".to_string(),
+        exif: GalleryExifData::default(),
+        preview: ReviewPreview::default(),
+        selected_profile_index: 0,
+        rating: 0,
+        label: ReviewLabel::None,
+        labels: Vec::new(),
+        tags: Vec::new(),
+        notes: String::new(),
+        rating_source: ReviewMetadataSource::Default,
+        tags_source: ReviewMetadataSource::Default,
+        notes_source: ReviewMetadataSource::Default,
+        codex: ReviewCodexAnalysis::default(),
+        retouch: RetouchSettings::default(),
+        publish_profile_indexes: Some(vec![0]),
+        profile_bw_filters: Vec::new(),
+        profiles: vec![render],
+        updated_at: now_string(),
+    });
+
+    store.sync_profiles(profiles);
+
+    let render = &store.images[0].profiles[0];
+    assert_eq!(render.status, ReviewRenderStatus::Missing);
+    assert_eq!(render.output_path, None);
+    assert_eq!(
+        render.processing_key.as_deref(),
+        Some(review_render_processing_key(0))
+    );
+}
+
+#[test]
 fn sync_profiles_preserves_publish_selection_after_restart_with_metadata_changes() {
     let base_profiles = vec![profile(0, "Classic"), profile(1, "Fade")];
     let mut changed_profiles = base_profiles.clone();
@@ -889,6 +933,7 @@ fn base_render_done_triggers_pending_retouch_without_marking_done() {
         error: Some("old".to_string()),
         duration_ms: None,
         render_key: Some("retouch-key".to_string()),
+        processing_key: Some(review_render_processing_key(0).to_string()),
         width: None,
         height: None,
         updated_at: now_string(),
@@ -1493,6 +1538,7 @@ fn publish_flat_album_filters_rating_label_and_tag() {
             error: None,
             duration_ms: Some(1),
             render_key: None,
+            processing_key: Some(review_render_processing_key(0).to_string()),
             width: None,
             height: None,
             updated_at: now_string(),
@@ -1552,6 +1598,7 @@ fn publish_flat_album_suffixes_non_default_profiles() {
                 error: None,
                 duration_ms: Some(1),
                 render_key: None,
+                processing_key: Some(review_render_processing_key(0).to_string()),
                 width: None,
                 height: None,
                 updated_at: now_string(),
@@ -1565,6 +1612,7 @@ fn publish_flat_album_suffixes_non_default_profiles() {
                 error: None,
                 duration_ms: Some(1),
                 render_key: None,
+                processing_key: Some(review_render_processing_key(1).to_string()),
                 width: None,
                 height: None,
                 updated_at: now_string(),
@@ -1623,6 +1671,7 @@ fn publish_store_reports_realtime_progress() {
                 error: None,
                 duration_ms: Some(1),
                 render_key: None,
+                processing_key: Some(review_render_processing_key(0).to_string()),
                 width: None,
                 height: None,
                 updated_at: now_string(),
@@ -1636,6 +1685,7 @@ fn publish_store_reports_realtime_progress() {
                 error: None,
                 duration_ms: Some(1),
                 render_key: None,
+                processing_key: Some(review_render_processing_key(1).to_string()),
                 width: None,
                 height: None,
                 updated_at: now_string(),

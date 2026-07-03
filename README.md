@@ -722,6 +722,7 @@ This is necessarily lossy. Nikon classic NCP does not store a full 3D LUT, RGBTa
 RawTherapee handles:
 
 - RAW development and Hald CLUT application through Film Simulation
+- Nikon Active D-Lighting MakerNote hints via a generated RawTherapee tone-mapping approximation
 - `Exposure2012`, `Contrast2012`, `Highlights2012`, `Shadows2012`, `Whites2012`, `Blacks2012`
 - `Saturation`, `Vibrance`
 - `ToneCurvePV2012` and per-channel `ToneCurvePV2012Red/Green/Blue`
@@ -758,6 +759,8 @@ rawtherapee-cli -q -Y [-p generated.pp3 ...] -o intermediate.jpg -j95 -js3 -c in
 ```
 
 Sampler also adds a temporary RawTherapee resize profile so each RAW development produces a thumbnail-sized JPEG instead of a full-size TIFF.
+
+When a Nikon RAW carries `ActiveD-Lighting`, mini-film adds a temporary RawTherapee profile before the selected emulation/profile stack. It approximates Nikon's proprietary D-Lighting curve with highlight recovery, shadow/highlight compression, and RawTherapee EPD tone mapping; `Off` or missing metadata keeps the previous neutral behavior.
 
 Use a non-default RawTherapee binary path with:
 

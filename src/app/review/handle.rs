@@ -431,6 +431,7 @@ impl ReviewHandle {
             render.error = None;
             render.duration_ms = None;
             render.render_key = render_key;
+            render.processing_key = Some(review_render_processing_key(profile_index).to_string());
             render.width = None;
             render.height = None;
             render.updated_at = now_string();
@@ -442,6 +443,26 @@ impl ReviewHandle {
             self.append_history(entry)?;
         }
         self.broadcast_state()
+    }
+
+    pub(crate) fn profile_render_current(
+        &self,
+        raw: &Path,
+        profile_index: usize,
+        expected_output: &Path,
+    ) -> bool {
+        let store = self.store_snapshot();
+        let Some(image) = store.images.iter().find(|image| image.raw_path == raw) else {
+            return false;
+        };
+        image.profiles.iter().any(|render| {
+            render.profile_index == profile_index
+                && render.processing_key.as_deref()
+                    == Some(review_render_processing_key(profile_index))
+                && render.output_path.as_deref() == Some(expected_output)
+                && matches!(render.status, ReviewRenderStatus::Done)
+                && render.render_key.is_none()
+        })
     }
 
     pub(crate) fn record_profile_processing(&self, raw: &Path, profile_index: usize) -> Result<()> {

@@ -572,6 +572,8 @@ pub(super) struct ReviewProfileRender {
     #[serde(default)]
     pub(super) render_key: Option<String>,
     #[serde(default)]
+    pub(super) processing_key: Option<String>,
+    #[serde(default)]
     pub(super) width: Option<u32>,
     #[serde(default)]
     pub(super) height: Option<u32>,

@@ -26,6 +26,7 @@ use walkdir::WalkDir;
 
 use crate::app::export::{add_convert_thread_limit, finalize_output, output_ext};
 use crate::app::pp3::{
+    RAW_RENDER_PIPELINE_KEY, write_rawtherapee_active_d_lighting_profile,
     write_rawtherapee_color_noise_profile, write_rawtherapee_lens_corrections_profile,
 };
 use crate::app::profile::{profile_from_xmp_quiet, rawtherapee_profiles_with_hald};
@@ -387,9 +388,10 @@ impl ThumbnailCache {
             )
         };
         Ok(self.dir.join(format!(
-            "{}-{}-l{}-{}px-lc{}-q{}-{}-{}-sg2-strip{}-prog{}.jpg",
+            "{}-{}-{}-l{}-{}px-lc{}-q{}-{}-{}-sg2-strip{}-prog{}.jpg",
             self.raw_sha1,
             xmp_sha1,
+            RAW_RENDER_PIPELINE_KEY,
             args.hald_level,
             args.thumbnail_long_edge,
             lens_corrections,
@@ -538,6 +540,11 @@ fn render_profile_thumbnail(
     .with_context(|| format!("resolving profile {}", profile.display()))?;
     let developed = profile_temp.join("rawtherapee.jpg");
     let mut rawtherapee_profiles = rawtherapee_profiles_with_hald(&resolved, &profile_temp)?;
+    prepend_active_d_lighting_if_present(
+        &context.args.raw,
+        &mut rawtherapee_profiles,
+        &profile_temp,
+    )?;
     append_color_noise_if_qualified(
         &context.args.raw,
         context.args.color_noise_iso_threshold,
@@ -704,6 +711,19 @@ fn append_color_noise_if_qualified(
     Ok(())
 }
 
+fn prepend_active_d_lighting_if_present(
+    raw: &Path,
+    rawtherapee_profiles: &mut Vec<PathBuf>,
+    temp_dir: &Path,
+) -> Result<()> {
+    if let Some(path) =
+        write_rawtherapee_active_d_lighting_profile(&temp_dir.join("active-d-lighting.pp3"), raw)?
+    {
+        rawtherapee_profiles.insert(0, path);
+    }
+    Ok(())
+}
+
 fn append_lens_corrections_if_requested(
     lens_corrections: LensCorrections,
     rawtherapee_profiles: &mut Vec<PathBuf>,
@@ -726,6 +746,16 @@ fn append_color_noise_to_profiles(
 ) -> Result<Vec<PathBuf>> {
     let mut profiles = rawtherapee_profiles;
     append_color_noise_if_qualified(raw, color_noise_iso_threshold, &mut profiles, temp_dir)?;
+    Ok(profiles)
+}
+
+fn prepend_active_d_lighting_to_profiles(
+    rawtherapee_profiles: Vec<PathBuf>,
+    temp_dir: &Path,
+    raw: &Path,
+) -> Result<Vec<PathBuf>> {
+    let mut profiles = rawtherapee_profiles;
+    prepend_active_d_lighting_if_present(raw, &mut profiles, temp_dir)?;
     Ok(profiles)
 }
 
@@ -922,6 +952,8 @@ fn write_html_sampler_sidecars(
         .as_ref()
         .context("resolved emulation did not produce a HALD path")?;
     let rawtherapee_profiles = rawtherapee_profiles_with_hald(&resolved, temp_dir.path())?;
+    let rawtherapee_profiles =
+        prepend_active_d_lighting_to_profiles(rawtherapee_profiles, temp_dir.path(), context.raw)?;
     let rawtherapee_profiles = append_color_noise_to_profiles(
         rawtherapee_profiles,
         temp_dir.path(),
@@ -2422,6 +2454,7 @@ mod tests {
         assert!(cached.starts_with(env::temp_dir().join("mini-film-sampler-cache")));
         assert!(name.contains(&sha1_file(&raw).unwrap()));
         assert!(name.contains(&sha1_file(&xmp).unwrap()));
+        assert!(name.contains(RAW_RENDER_PIPELINE_KEY));
         assert!(name.contains("512px"));
 
         args.thumbnail_long_edge = 1024;

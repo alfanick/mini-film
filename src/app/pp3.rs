@@ -1,7 +1,13 @@
-use std::{fmt::Write as _, fs, path::PathBuf};
+use std::{
+    fmt::Write as _,
+    fs,
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+};
 
 use anyhow::{Context, Result};
 use mini_film::{rawtherapee_hald_clut_profile_text, rawtherapee_profile_text};
+use serde_json::Value;
 
 const BASE_COLOR_NOISE_LUMA: u16 = 14;
 const BASE_COLOR_NOISE_LDETAIL: u16 = 34;
@@ -12,6 +18,7 @@ const HIGH_COLOR_NOISE_CHROMA: u16 = 18;
 const VERY_HIGH_COLOR_NOISE_LUMA: u16 = 44;
 const VERY_HIGH_COLOR_NOISE_LDETAIL: u16 = 64;
 const VERY_HIGH_COLOR_NOISE_CHROMA: u16 = 28;
+pub(crate) const RAW_RENDER_PIPELINE_KEY: &str = "raw-render-v2-active-d-lighting";
 
 use crate::app::profile::{ProfileInfo, inspect_profile};
 use crate::cli::LensCorrections;
@@ -20,6 +27,28 @@ pub(crate) struct NoiseRemovalSettings {
     luma: u16,
     ldetail: u16,
     chroma: u16,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ActiveDLighting {
+    Low,
+    Normal,
+    High,
+    ExtraHigh,
+    ExtraHigh1,
+    ExtraHigh2,
+    ExtraHigh3,
+    ExtraHigh4,
+    Auto,
+}
+
+struct ActiveDLightingSettings {
+    compensation: f32,
+    brightness: i16,
+    contrast: i16,
+    highlight_compression: u16,
+    shadow_compression: u16,
+    epd_strength: f32,
 }
 
 pub(crate) struct Pp3Args {
@@ -191,6 +220,191 @@ fn rawtherapee_lens_corrections_profile_text(lens: &LensCorrections) -> String {
     out
 }
 
+pub(crate) fn write_rawtherapee_active_d_lighting_profile(
+    path: &PathBuf,
+    raw: &Path,
+) -> Result<Option<PathBuf>> {
+    let Some(active_d_lighting) = extract_nikon_active_d_lighting(raw)? else {
+        return Ok(None);
+    };
+
+    let parent = path
+        .parent()
+        .context("Active D-Lighting profile has no parent")?;
+    fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    fs::write(
+        path,
+        rawtherapee_active_d_lighting_profile_text(active_d_lighting),
+    )
+    .with_context(|| format!("writing {}", path.display()))?;
+    Ok(Some(path.to_path_buf()))
+}
+
+fn extract_nikon_active_d_lighting(raw: &Path) -> Result<Option<ActiveDLighting>> {
+    let output = Command::new("exiftool")
+        .arg("-q")
+        .arg("-q")
+        .arg("-j")
+        .arg("-n")
+        .arg("-Nikon:ActiveD-Lighting")
+        .arg(raw)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .with_context(|| format!("running exiftool for {}", raw.display()))?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let mut values = serde_json::from_slice::<Vec<Value>>(&output.stdout)
+        .with_context(|| format!("parsing exiftool JSON for {}", raw.display()))?;
+    let Some(object) = values.pop().and_then(|value| value.as_object().cloned()) else {
+        return Ok(None);
+    };
+    Ok(active_d_lighting_from_json(object.get("ActiveD-Lighting")))
+}
+
+fn active_d_lighting_from_json(value: Option<&Value>) -> Option<ActiveDLighting> {
+    match value {
+        Some(Value::Number(number)) => number.as_u64().and_then(active_d_lighting_from_code),
+        Some(Value::String(text)) => active_d_lighting_from_text(text),
+        _ => None,
+    }
+}
+
+fn active_d_lighting_from_code(code: u64) -> Option<ActiveDLighting> {
+    match code {
+        0 => None,
+        1 => Some(ActiveDLighting::Low),
+        3 => Some(ActiveDLighting::Normal),
+        5 => Some(ActiveDLighting::High),
+        7 => Some(ActiveDLighting::ExtraHigh),
+        8 => Some(ActiveDLighting::ExtraHigh1),
+        9 => Some(ActiveDLighting::ExtraHigh2),
+        10 => Some(ActiveDLighting::ExtraHigh3),
+        11 => Some(ActiveDLighting::ExtraHigh4),
+        65_535 => Some(ActiveDLighting::Auto),
+        _ => None,
+    }
+}
+
+fn active_d_lighting_from_text(text: &str) -> Option<ActiveDLighting> {
+    match text.trim().to_ascii_lowercase().as_str() {
+        "off" => None,
+        "low" => Some(ActiveDLighting::Low),
+        "normal" => Some(ActiveDLighting::Normal),
+        "high" => Some(ActiveDLighting::High),
+        "extra high" => Some(ActiveDLighting::ExtraHigh),
+        "extra high 1" => Some(ActiveDLighting::ExtraHigh1),
+        "extra high 2" => Some(ActiveDLighting::ExtraHigh2),
+        "extra high 3" => Some(ActiveDLighting::ExtraHigh3),
+        "extra high 4" => Some(ActiveDLighting::ExtraHigh4),
+        "auto" => Some(ActiveDLighting::Auto),
+        _ => None,
+    }
+}
+
+fn rawtherapee_active_d_lighting_profile_text(active_d_lighting: ActiveDLighting) -> String {
+    let settings = active_d_lighting_settings(active_d_lighting);
+    let mut out = String::new();
+    let _ = writeln!(out, "[Exposure]");
+    let _ = writeln!(out, "Auto=false");
+    let _ = writeln!(out, "Clip=0.02");
+    let _ = writeln!(out, "Compensation={}", fmt_adl_f32(settings.compensation));
+    let _ = writeln!(out, "Brightness={}", settings.brightness);
+    let _ = writeln!(out, "Contrast={}", settings.contrast);
+    let _ = writeln!(out, "HighlightCompr={}", settings.highlight_compression);
+    let _ = writeln!(out, "ShadowCompr={}", settings.shadow_compression);
+    let _ = writeln!(out, "HighlightComprThreshold=0");
+    let _ = writeln!(out, "CurveFromHistogramMatching=false");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "[HLRecovery]");
+    let _ = writeln!(out, "Enabled=true");
+    let _ = writeln!(out, "Method=Coloropp");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "[EPD]");
+    let _ = writeln!(out, "Enabled=true");
+    let _ = writeln!(out, "Strength={}", fmt_adl_f32(settings.epd_strength));
+    let _ = writeln!(out, "Gamma=1");
+    let _ = writeln!(out, "EdgeStopping=1.4");
+    let _ = writeln!(out, "Scale=0.5");
+    let _ = writeln!(out, "ReweightingIterates=0");
+    let _ = writeln!(out);
+    out
+}
+
+fn active_d_lighting_settings(active_d_lighting: ActiveDLighting) -> ActiveDLightingSettings {
+    match active_d_lighting {
+        ActiveDLighting::Low => ActiveDLightingSettings {
+            compensation: 0.08,
+            brightness: 1,
+            contrast: -2,
+            highlight_compression: 18,
+            shadow_compression: 14,
+            epd_strength: 0.08,
+        },
+        ActiveDLighting::Normal | ActiveDLighting::Auto => ActiveDLightingSettings {
+            compensation: 0.16,
+            brightness: 2,
+            contrast: -4,
+            highlight_compression: 30,
+            shadow_compression: 26,
+            epd_strength: 0.14,
+        },
+        ActiveDLighting::High => ActiveDLightingSettings {
+            compensation: 0.24,
+            brightness: 3,
+            contrast: -7,
+            highlight_compression: 45,
+            shadow_compression: 40,
+            epd_strength: 0.22,
+        },
+        ActiveDLighting::ExtraHigh | ActiveDLighting::ExtraHigh1 => ActiveDLightingSettings {
+            compensation: 0.32,
+            brightness: 4,
+            contrast: -10,
+            highlight_compression: 58,
+            shadow_compression: 52,
+            epd_strength: 0.30,
+        },
+        ActiveDLighting::ExtraHigh2 => ActiveDLightingSettings {
+            compensation: 0.40,
+            brightness: 5,
+            contrast: -12,
+            highlight_compression: 68,
+            shadow_compression: 62,
+            epd_strength: 0.38,
+        },
+        ActiveDLighting::ExtraHigh3 => ActiveDLightingSettings {
+            compensation: 0.48,
+            brightness: 6,
+            contrast: -15,
+            highlight_compression: 78,
+            shadow_compression: 72,
+            epd_strength: 0.48,
+        },
+        ActiveDLighting::ExtraHigh4 => ActiveDLightingSettings {
+            compensation: 0.56,
+            brightness: 7,
+            contrast: -18,
+            highlight_compression: 88,
+            shadow_compression: 82,
+            epd_strength: 0.60,
+        },
+    }
+}
+
+fn fmt_adl_f32(value: f32) -> String {
+    let rounded = (value * 100.0).round() / 100.0;
+    if rounded == 0.0 {
+        "0".to_string()
+    } else {
+        format!("{rounded:.2}")
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
+    }
+}
+
 fn push_adjustment_profile(
     out: &mut String,
     adjustments: &mini_film::ProfileAdjustments,
@@ -262,5 +476,32 @@ mod tests {
         assert!(text.contains("UseDistortion=true"));
         assert!(text.contains("UseCA=false"));
         assert!(text.contains("UseVignette=true"));
+    }
+
+    #[test]
+    fn active_d_lighting_parser_accepts_nikon_codes_and_names() {
+        assert_eq!(active_d_lighting_from_code(0), None);
+        assert_eq!(active_d_lighting_from_code(1), Some(ActiveDLighting::Low));
+        assert_eq!(
+            active_d_lighting_from_code(65_535),
+            Some(ActiveDLighting::Auto)
+        );
+        assert_eq!(
+            active_d_lighting_from_text("Extra High 2"),
+            Some(ActiveDLighting::ExtraHigh2)
+        );
+    }
+
+    #[test]
+    fn active_d_lighting_profile_writes_rt_tone_mapping_approximation() {
+        let text = rawtherapee_active_d_lighting_profile_text(ActiveDLighting::Low);
+
+        assert!(text.contains("[Exposure]\n"));
+        assert!(text.contains("Compensation=0.08\n"));
+        assert!(text.contains("HighlightCompr=18\n"));
+        assert!(text.contains("ShadowCompr=14\n"));
+        assert!(text.contains("[HLRecovery]\nEnabled=true\n"));
+        assert!(text.contains("[EPD]\n"));
+        assert!(text.contains("Strength=0.08\n"));
     }
 }
