@@ -38,6 +38,8 @@ pub(crate) struct GalleryExifData {
     pub(crate) exposure_compensation: Option<String>,
     pub(crate) flash: Option<String>,
     #[serde(default)]
+    pub(crate) active_d_lighting: Option<String>,
+    #[serde(default)]
     pub(crate) tags: Vec<String>,
     #[serde(default)]
     pub(crate) note: Option<String>,
@@ -56,6 +58,7 @@ impl GalleryExifData {
             && self.shooting_mode.is_none()
             && self.exposure_compensation.is_none()
             && self.flash.is_none()
+            && self.active_d_lighting.is_none()
             && self.tags.is_empty()
             && self.note.is_none()
     }
@@ -70,6 +73,7 @@ impl GalleryExifData {
         clean_optional_exif_text(&mut self.shooting_mode);
         clean_optional_exif_text(&mut self.exposure_compensation);
         clean_optional_exif_text(&mut self.flash);
+        clean_optional_exif_text(&mut self.active_d_lighting);
         clean_optional_exif_text(&mut self.note);
         self.tags = normalize_gallery_tags(std::mem::take(&mut self.tags));
     }
@@ -712,6 +716,7 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
                 data.rating = metadata.rating;
                 data.exposure_compensation = metadata.exposure_compensation;
                 data.flash = metadata.flash;
+                data.active_d_lighting = metadata.active_d_lighting;
             }
             data.sanitize_text_fields();
             return Ok(data);
@@ -736,10 +741,12 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
         .as_ref()
         .and_then(|value| parse_exposure_compensation_text(value));
     let mut flash = extract_firing_flash_details(&exif);
+    let mut active_d_lighting = None;
     if let Some(metadata) = extract_gallery_text_metadata_with_exiftool(file) {
         tags = metadata.tags;
         rating = metadata.rating;
         exposure_compensation = exposure_compensation.or(metadata.exposure_compensation);
+        active_d_lighting = metadata.active_d_lighting;
         if flash.is_none() {
             flash = metadata
                 .flash
@@ -764,6 +771,7 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
         shooting_mode,
         exposure_compensation,
         flash,
+        active_d_lighting,
         tags,
         note,
     };
@@ -778,6 +786,7 @@ struct GalleryTextMetadata {
     rating: Option<u8>,
     exposure_compensation: Option<String>,
     flash: Option<String>,
+    active_d_lighting: Option<String>,
 }
 
 fn extract_gallery_text_metadata_with_exiftool(file: &Path) -> Option<GalleryTextMetadata> {
@@ -791,6 +800,7 @@ fn extract_gallery_text_metadata_with_exiftool(file: &Path) -> Option<GalleryTex
         .arg("-ImageDescription")
         .arg("-Flash")
         .arg("-ExposureBiasValue")
+        .arg("-Nikon:ActiveD-Lighting")
         .arg("-Rating")
         .arg("-XMP-xmp:Rating")
         .arg("-XMP-nine:Rating")
@@ -818,6 +828,10 @@ fn extract_gallery_text_metadata_with_exiftool(file: &Path) -> Option<GalleryTex
     let flash = json_first_string(object.get("Flash"))
         .map(clean_exif_display_text)
         .filter(|value| !value.is_empty());
+    let active_d_lighting = json_first_string(object.get("ActiveD-Lighting"))
+        .or_else(|| json_first_string(object.get("Nikon:ActiveD-Lighting")))
+        .map(clean_exif_display_text)
+        .filter(|value| !value.is_empty());
     let exposure_compensation = json_exposure_compensation_value(object.get("ExposureBiasValue"))
         .or_else(|| json_exposure_compensation_value(object.get("XMP-exif:ExposureBiasValue")))
         .or_else(|| json_exposure_compensation_value(object.get("XMP:ExposureBiasValue")))
@@ -834,6 +848,7 @@ fn extract_gallery_text_metadata_with_exiftool(file: &Path) -> Option<GalleryTex
         rating,
         exposure_compensation,
         flash,
+        active_d_lighting,
     })
 }
 

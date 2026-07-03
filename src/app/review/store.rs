@@ -4,7 +4,7 @@ use super::prelude::*;
 const SOOC_RENDER_PIPELINE_KEY: &str = "sooc-sidecar-v1";
 
 impl ReviewStore {
-    const EXIF_SCHEMA_VERSION: u32 = 2;
+    const EXIF_SCHEMA_VERSION: u32 = 3;
 
     pub(super) fn new(profiles: Vec<ReviewProfile>) -> Self {
         Self {
@@ -452,6 +452,9 @@ fn refresh_image_exif_data(image: &mut ReviewImage, force: bool) {
         }
         if image.exif.flash.is_none() {
             image.exif.flash = refreshed.flash;
+        }
+        if image.exif.active_d_lighting.is_none() {
+            image.exif.active_d_lighting = refreshed.active_d_lighting;
         }
         image.exif.capture_timestamp = image.exif.capture_timestamp.or(refreshed.capture_timestamp);
         image.exif.rating = image.exif.rating.or(refreshed.rating);

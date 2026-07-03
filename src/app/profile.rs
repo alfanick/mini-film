@@ -37,12 +37,26 @@ pub(crate) struct ResolvedProfileMetadata {
     pub(crate) source_profile_uuid: Option<String>,
     pub(crate) hald_path: Option<PathBuf>,
     pub(crate) pp3_path: Option<PathBuf>,
+    pub(crate) pp3_adjustments: Vec<Pp3AdjustmentSection>,
     pub(crate) grain: GrainSettings,
     pub(crate) source_adjustments: ProfileAdjustments,
     pub(crate) source_sharpening: SharpeningSettings,
     pub(crate) emulation_adjustments: ProfileAdjustments,
     pub(crate) emulation_sharpening: SharpeningSettings,
     pub(crate) has_camera_raw_settings: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Pp3AdjustmentSection {
+    pub(crate) source: String,
+    pub(crate) section: String,
+    pub(crate) entries: Vec<Pp3AdjustmentEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Pp3AdjustmentEntry {
+    pub(crate) key: String,
+    pub(crate) value: String,
 }
 
 impl ResolvedProfileMetadata {
@@ -56,6 +70,7 @@ impl ResolvedProfileMetadata {
             source_profile_uuid: None,
             hald_path,
             pp3_path,
+            pp3_adjustments: Vec::new(),
             grain: GrainSettings::default(),
             source_adjustments: ProfileAdjustments::default(),
             source_sharpening: SharpeningSettings::default(),
@@ -64,6 +79,152 @@ impl ResolvedProfileMetadata {
             has_camera_raw_settings: false,
         }
     }
+}
+
+const PP3_ADJUSTMENT_MAX_SECTIONS: usize = 24;
+const PP3_ADJUSTMENT_MAX_ENTRIES: usize = 120;
+const PP3_ADJUSTMENT_MAX_VALUE_CHARS: usize = 180;
+
+fn pp3_profile_metadata(profile_name: String, path: &Path) -> ResolvedProfileMetadata {
+    let mut metadata = ResolvedProfileMetadata::basic(profile_name, None, Some(path.to_path_buf()));
+    metadata.pp3_adjustments = pp3_adjustments_from_path("Profile PP3", path);
+    metadata
+}
+
+fn pp3_adjustments_from_path(source: &str, path: &Path) -> Vec<Pp3AdjustmentSection> {
+    fs::read_to_string(path)
+        .map(|text| pp3_adjustments_from_text(source, &text))
+        .unwrap_or_default()
+}
+
+fn pp3_adjustments_from_text(source: &str, text: &str) -> Vec<Pp3AdjustmentSection> {
+    let mut sections = Vec::new();
+    let mut current: Option<Pp3AdjustmentSection> = None;
+    let mut entry_count = 0usize;
+
+    for raw_line in text.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        if let Some(section) = pp3_section_name(line) {
+            push_pp3_adjustment_section(&mut sections, current.take());
+            if pp3_section_is_ignored(section) {
+                current = None;
+                continue;
+            }
+            current = Some(Pp3AdjustmentSection {
+                source: source.to_string(),
+                section: section.to_string(),
+                entries: Vec::new(),
+            });
+            if sections.len() >= PP3_ADJUSTMENT_MAX_SECTIONS {
+                break;
+            }
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        let value = value.trim();
+        let Some(section) = current.as_mut() else {
+            continue;
+        };
+        if !pp3_value_is_adjustment(&section.section, key, value) {
+            continue;
+        }
+        section.entries.push(Pp3AdjustmentEntry {
+            key: key.to_string(),
+            value: truncate_pp3_value(value),
+        });
+        entry_count += 1;
+        if entry_count >= PP3_ADJUSTMENT_MAX_ENTRIES {
+            break;
+        }
+    }
+
+    push_pp3_adjustment_section(&mut sections, current);
+    sections
+}
+
+fn pp3_section_name(line: &str) -> Option<&str> {
+    line.strip_prefix('[')
+        .and_then(|line| line.strip_suffix(']'))
+        .map(str::trim)
+        .filter(|section| !section.is_empty())
+}
+
+fn pp3_section_is_ignored(section: &str) -> bool {
+    matches!(section, "Version" | "General" | "Color Management" | "RAW")
+}
+
+fn push_pp3_adjustment_section(
+    sections: &mut Vec<Pp3AdjustmentSection>,
+    section: Option<Pp3AdjustmentSection>,
+) {
+    let Some(section) = section else {
+        return;
+    };
+    if !section.entries.is_empty() && sections.len() < PP3_ADJUSTMENT_MAX_SECTIONS {
+        sections.push(section);
+    }
+}
+
+fn pp3_value_is_adjustment(section: &str, key: &str, value: &str) -> bool {
+    let value = value.trim();
+    if value.is_empty() {
+        return false;
+    }
+    let lower = value.to_ascii_lowercase();
+    if pp3_key_value_is_generated_default(section, key, &lower) {
+        return false;
+    }
+    if matches!(
+        lower.as_str(),
+        "false" | "none" | "unchanged" | "standard" | "0;" | "0"
+    ) {
+        return false;
+    }
+    if let Ok(number) = value.parse::<f64>() {
+        return number != 0.0;
+    }
+    true
+}
+
+fn pp3_key_value_is_generated_default(section: &str, key: &str, lower_value: &str) -> bool {
+    matches!(
+        (section, key, lower_value),
+        ("Exposure", "Clip", "0.02")
+            | ("Exposure", "HighlightComprThreshold", "0")
+            | ("Exposure", "CurveFromHistogramMatching", "false")
+            | ("Exposure", "CurveMode", "standard")
+            | ("Exposure", "CurveMode2", "standard")
+            | ("Luminance Curve", "Brightness", "0")
+            | ("Luminance Curve", "Chromaticity", "0")
+            | ("Luminance Curve", "AvoidColorShift", "false")
+            | ("Luminance Curve", "RedAndSkinTonesProtection", "0")
+            | ("Luminance Curve", "LCredsk", "true")
+            | ("RGB Curves", "LumaMode", "false")
+            | ("Vibrance", "ProtectSkins", "false")
+            | ("Vibrance", "AvoidColorShift", "true")
+            | ("Sharpening", "OnlyEdges", "false")
+            | ("Sharpening", "EdgedetectionRadius", "1.9")
+            | ("Sharpening", "HalocontrolEnabled", "true")
+            | ("Sharpening", "HalocontrolAmount", "50")
+    )
+}
+
+fn truncate_pp3_value(value: &str) -> String {
+    let mut truncated = String::new();
+    for (index, character) in value.chars().enumerate() {
+        if index >= PP3_ADJUSTMENT_MAX_VALUE_CHARS {
+            truncated.push_str("...");
+            return truncated;
+        }
+        truncated.push(character);
+    }
+    truncated
 }
 
 pub(crate) enum ProfileInfo {
@@ -330,7 +491,7 @@ fn profile_from_path(
             sharpening_applied: false,
             resolved_stem: resolved_stem.clone(),
             retouch_base: BasicRetouchAdjustments::default(),
-            metadata: ResolvedProfileMetadata::basic(resolved_stem, None, Some(path.to_path_buf())),
+            metadata: pp3_profile_metadata(resolved_stem, path),
         }),
         Some(ext) => {
             bail!("unsupported profile path extension .{ext}; expected .png, .xmp, or .pp3")
@@ -485,11 +646,13 @@ fn profile_from_xmp_inner(
         eprintln!("{}", profile_info_line(&converted));
     }
     let mut rawtherapee_profiles = Vec::new();
+    let mut pp3_adjustments = Vec::new();
     if let Some(path) = write_rawtherapee_profile(
         &temp_dir.join("source.pp3"),
         &converted.adjustments,
         converted.sharpening,
     )? {
+        pp3_adjustments.extend(pp3_adjustments_from_path("Source PP3", &path));
         rawtherapee_profiles.push(path);
     }
     if let Some(path) = write_rawtherapee_profile(
@@ -497,6 +660,7 @@ fn profile_from_xmp_inner(
         &recipe.adjustments,
         recipe.sharpening,
     )? {
+        pp3_adjustments.extend(pp3_adjustments_from_path("Emulation PP3", &path));
         rawtherapee_profiles.push(path);
     }
     Ok(ResolvedProfile {
@@ -522,6 +686,7 @@ fn profile_from_xmp_inner(
             source_profile_uuid: converted.profile.uuid.clone(),
             hald_path: Some(output),
             pp3_path: None,
+            pp3_adjustments,
             grain: recipe.grain,
             source_adjustments: converted.adjustments.clone(),
             source_sharpening: converted.sharpening,
@@ -1080,7 +1245,7 @@ mod tests {
     fn pp3_path_resolves_as_rawtherapee_only_profile() {
         let dir = tempfile::tempdir().unwrap();
         let pp3 = dir.path().join("edited.pp3");
-        std::fs::write(&pp3, "[Exposure]\nCompensation=1\n").unwrap();
+        std::fs::write(&pp3, "[Exposure]\nCompensation=1\nAuto=false\n").unwrap();
         let args = apply_args(
             pp3.display().to_string(),
             dir.path().to_path_buf(),
@@ -1091,6 +1256,30 @@ mod tests {
         assert!(resolved.hald_path.is_none());
         assert_eq!(resolved.rawtherapee_profiles, vec![pp3]);
         assert!(!resolved.grain.is_enabled());
+        assert_eq!(resolved.metadata.pp3_adjustments.len(), 1);
+        assert_eq!(resolved.metadata.pp3_adjustments[0].source, "Profile PP3");
+        assert_eq!(resolved.metadata.pp3_adjustments[0].section, "Exposure");
+        assert_eq!(
+            resolved.metadata.pp3_adjustments[0].entries[0].key,
+            "Compensation"
+        );
+    }
+
+    #[test]
+    fn pp3_adjustments_summary_groups_non_neutral_values() {
+        let sections = pp3_adjustments_from_text(
+            "Generated PP3",
+            "[Exposure]\nAuto=false\nCompensation=0.5\nBlack=0\nCurve=0;\n\n[Sharpening]\nEnabled=true\nRadius=0.7\n",
+        );
+
+        assert_eq!(sections.len(), 2);
+        assert_eq!(sections[0].source, "Generated PP3");
+        assert_eq!(sections[0].section, "Exposure");
+        assert_eq!(sections[0].entries.len(), 1);
+        assert_eq!(sections[0].entries[0].key, "Compensation");
+        assert_eq!(sections[0].entries[0].value, "0.5");
+        assert_eq!(sections[1].section, "Sharpening");
+        assert_eq!(sections[1].entries[0].key, "Enabled");
     }
 
     #[test]

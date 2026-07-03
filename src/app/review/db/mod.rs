@@ -26,6 +26,11 @@ const MIGRATIONS: &[ReviewMigration] = &[
         name: "profile_render_processing_key",
         sql: PROFILE_RENDER_PROCESSING_KEY_SCHEMA,
     },
+    ReviewMigration {
+        version: 4,
+        name: "active_d_lighting_and_pp3_adjustments",
+        sql: ACTIVE_D_LIGHTING_AND_PP3_ADJUSTMENTS_SCHEMA,
+    },
 ];
 
 const INITIAL_SCHEMA: &str = r#"
@@ -263,6 +268,24 @@ CREATE INDEX IF NOT EXISTS idx_image_profile_bw_filters_profile
 
 const PROFILE_RENDER_PROCESSING_KEY_SCHEMA: &str = r#"
 ALTER TABLE image_profile_renders ADD COLUMN processing_key TEXT;
+"#;
+
+const ACTIVE_D_LIGHTING_AND_PP3_ADJUSTMENTS_SCHEMA: &str = r#"
+ALTER TABLE images ADD COLUMN exif_active_d_lighting TEXT;
+
+CREATE TABLE IF NOT EXISTS profile_pp3_adjustments (
+    profile_index INTEGER NOT NULL REFERENCES profiles(profile_index) ON DELETE CASCADE,
+    section_position INTEGER NOT NULL,
+    entry_position INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    section TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY (profile_index, section_position, entry_position)
+);
+
+CREATE INDEX IF NOT EXISTS idx_profile_pp3_adjustments_section
+    ON profile_pp3_adjustments(section);
 "#;
 
 pub(super) fn review_state_path(output_root: &Path) -> PathBuf {
@@ -527,6 +550,7 @@ fn replace_store(connection: &mut Connection, store: &ReviewStore) -> Result<()>
          DELETE FROM image_tags;
          DELETE FROM image_exif_tags;
          DELETE FROM images;
+         DELETE FROM profile_pp3_adjustments;
          DELETE FROM profile_tone_curve_points;
          DELETE FROM profile_hsl_values;
          DELETE FROM profile_sharpening;
@@ -652,7 +676,35 @@ fn insert_profile_metadata(
         "emulation",
         &metadata.emulation_adjustments,
         &metadata.emulation_sharpening,
-    )
+    )?;
+    insert_profile_pp3_adjustments(tx, profile_index, &metadata.pp3_adjustments)
+}
+
+fn insert_profile_pp3_adjustments(
+    tx: &Transaction<'_>,
+    profile_index: usize,
+    sections: &[ReviewProfilePp3Section],
+) -> Result<()> {
+    for (section_position, section) in sections.iter().enumerate() {
+        for (entry_position, entry) in section.entries.iter().enumerate() {
+            tx.execute(
+                "INSERT INTO profile_pp3_adjustments(
+                    profile_index, section_position, entry_position, source, section, key, value
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    usize_to_i64(profile_index, "profile index")?,
+                    usize_to_i64(section_position, "pp3 section position")?,
+                    usize_to_i64(entry_position, "pp3 entry position")?,
+                    section.source.as_str(),
+                    section.section.as_str(),
+                    entry.key.as_str(),
+                    entry.value.as_str(),
+                ],
+            )
+            .context("writing profile pp3 adjustment")?;
+        }
+    }
+    Ok(())
 }
 
 fn insert_profile_adjustments(
@@ -791,7 +843,7 @@ fn insert_image(tx: &Transaction<'_>, position: usize, image: &ReviewImage) -> R
             exif_capture_timestamp, exif_rating, exif_focal_length, exif_aperture,
             exif_shutter_speed, exif_iso, exif_camera_model, exif_lens_model,
             exif_shooting_mode, exif_exposure_compensation, exif_flash, exif_note,
-            preview_status, preview_path, preview_error, preview_duration_ms,
+            exif_active_d_lighting, preview_status, preview_path, preview_error, preview_duration_ms,
             preview_render_key, preview_updated_at, selected_profile_index, rating,
             label, notes, rating_source, tags_source, notes_source, codex_status,
             codex_flags_tags, codex_flags_note, codex_flags_rating, codex_model,
@@ -805,7 +857,7 @@ fn insert_image(tx: &Transaction<'_>, position: usize, image: &ReviewImage) -> R
             :exif_capture_timestamp, :exif_rating, :exif_focal_length, :exif_aperture,
             :exif_shutter_speed, :exif_iso, :exif_camera_model, :exif_lens_model,
             :exif_shooting_mode, :exif_exposure_compensation, :exif_flash, :exif_note,
-            :preview_status, :preview_path, :preview_error, :preview_duration_ms,
+            :exif_active_d_lighting, :preview_status, :preview_path, :preview_error, :preview_duration_ms,
             :preview_render_key, :preview_updated_at, :selected_profile_index, :rating,
             :label, :notes, :rating_source, :tags_source, :notes_source, :codex_status,
             :codex_flags_tags, :codex_flags_note, :codex_flags_rating, :codex_model,
@@ -834,6 +886,7 @@ fn insert_image(tx: &Transaction<'_>, position: usize, image: &ReviewImage) -> R
             ":exif_exposure_compensation": image.exif.exposure_compensation,
             ":exif_flash": image.exif.flash,
             ":exif_note": image.exif.note,
+            ":exif_active_d_lighting": image.exif.active_d_lighting,
             ":preview_status": preview_status,
             ":preview_path": option_path_text(image.preview.path.as_deref()),
             ":preview_error": image.preview.error,
@@ -1061,6 +1114,7 @@ pub(super) fn table_count(path: &Path, table: &str) -> Result<u64> {
                 | "profile_sharpening"
                 | "profile_hsl_values"
                 | "profile_tone_curve_points"
+                | "profile_pp3_adjustments"
                 | "images"
                 | "image_labels"
                 | "image_publish_profiles"

@@ -207,6 +207,8 @@ function ProfileInfoOverlay() {
   const profile = profileByIndex(state.profileInfoProfileIndex);
   if (!profile) return null;
   const metadata = profile.metadata || {};
+  const image = findImage(state.currentId);
+  const exif = image?.exif || {};
   const haldImage = metadata.has_hald ? `api/profile/${profile.index}/hald` : null;
   return h(
     "section",
@@ -238,10 +240,12 @@ function ProfileInfoOverlay() {
       ProfileInfoRow("Look UUID", metadata.look_uuid || "—"),
       ProfileInfoRow("Source profile", metadata.source_profile_name || "—"),
       ProfileInfoRow("Source UUID", metadata.source_profile_uuid || "—"),
+      ProfileInfoRow("Active D-Lighting", exif.active_d_lighting || "—"),
       ProfileInfoRow("Source adjustments", renderAdjustments(metadata.source_adjustments || {}), true),
       ProfileInfoRow("Emulation adjustments", renderAdjustments(metadata.emulation_adjustments || {}), true),
       ProfileInfoRow("Source sharpening", renderSharpening(metadata.source_sharpening || {}), true),
       ProfileInfoRow("Emulation sharpening", renderSharpening(metadata.emulation_sharpening || {}), true),
+      ProfileInfoRow("PP3 adjustments", renderPp3Adjustments(metadata.pp3_adjustments || []), true),
       ProfileInfoRow("Has Camera Raw settings", metadata.has_camera_raw_settings ? "Yes" : "No"),
       ProfileInfoRow("Has HALD LUT", metadata.has_hald ? "Yes" : "No"),
       ProfileInfoRow("Has PP3", metadata.has_pp3 ? "Yes" : "No"),
@@ -320,6 +324,25 @@ function renderSharpening(sharpening) {
     ["masking", sharpening.masking],
   ].map(([key, value]) => `${key}: ${formatNumberField(value, 2)}`);
   return values.join("\n");
+}
+
+function renderPp3Adjustments(sections) {
+  if (!Array.isArray(sections) || sections.length === 0) {
+    return "—";
+  }
+  return sections
+    .map((section) => {
+      const source = section.source ? `${section.source} ` : "";
+      const entries = Array.isArray(section.entries)
+        ? section.entries
+            .filter((entry) => entry?.key && entry?.value)
+            .map((entry) => `${entry.key}=${entry.value}`)
+            .join(", ")
+        : "";
+      return entries ? `${source}[${section.section}]\n${entries}` : "";
+    })
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 function formatNumberField(value, digits = 2) {

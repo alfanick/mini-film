@@ -745,7 +745,19 @@ fn discovered_raw_merges_existing_standalone_sidecar_and_ignores_stale_jpeg_call
 fn review_state_sqlite_round_trips_and_populates_query_tables() {
     let temp = tempfile::tempdir().unwrap();
     let state_path = temp.path().join(SQLITE_STATE_FILE);
-    let mut store = ReviewStore::new(vec![profile(0, "Classic")]);
+    let mut review_profile = profile(0, "Classic");
+    review_profile.metadata = Some(ReviewProfileMetadata {
+        pp3_adjustments: vec![ReviewProfilePp3Section {
+            source: "Profile PP3".to_string(),
+            section: "Exposure".to_string(),
+            entries: vec![ReviewProfilePp3Entry {
+                key: "Compensation".to_string(),
+                value: "0.5".to_string(),
+            }],
+        }],
+        ..ReviewProfileMetadata::default()
+    });
+    let mut store = ReviewStore::new(vec![review_profile]);
     store.ui.current_image_id = Some(1);
     store.ui.min_rating = 2;
     store.images.push(ReviewImage {
@@ -806,6 +818,10 @@ fn review_state_sqlite_round_trips_and_populates_query_tables() {
     );
     assert_eq!(
         table_count(&state_path, "image_profile_bw_filters").unwrap(),
+        1
+    );
+    assert_eq!(
+        table_count(&state_path, "profile_pp3_adjustments").unwrap(),
         1
     );
 }

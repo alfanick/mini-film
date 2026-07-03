@@ -888,6 +888,7 @@ mod tests {
                 source_profile_uuid: None,
                 hald_path: None,
                 pp3_path: None,
+                pp3_adjustments: Vec::new(),
                 grain,
                 source_adjustments: Default::default(),
                 source_sharpening: Default::default(),

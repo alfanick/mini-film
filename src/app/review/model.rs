@@ -1,7 +1,7 @@
 use super::prelude::*;
 use super::scheduler::ReviewRetouchScheduler;
 use super::store::now_string;
-use crate::app::profile::ResolvedProfileMetadata;
+use crate::app::profile::{Pp3AdjustmentSection, ResolvedProfileMetadata};
 
 use mini_film::{
     CalibrationAdjustments, GrainEngine, GrainSettings, HslAdjustments, ParametricTone,
@@ -94,6 +94,26 @@ pub(crate) struct ReviewProfileMetadata {
     pub(crate) has_pp3: bool,
     #[serde(default)]
     pub(crate) pp3_name: Option<String>,
+    #[serde(default)]
+    pub(crate) pp3_adjustments: Vec<ReviewProfilePp3Section>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub(crate) struct ReviewProfilePp3Section {
+    #[serde(default)]
+    pub(crate) source: String,
+    #[serde(default)]
+    pub(crate) section: String,
+    #[serde(default)]
+    pub(crate) entries: Vec<ReviewProfilePp3Entry>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub(crate) struct ReviewProfilePp3Entry {
+    #[serde(default)]
+    pub(crate) key: String,
+    #[serde(default)]
+    pub(crate) value: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -258,6 +278,28 @@ impl From<&ResolvedProfileMetadata> for ReviewProfileMetadata {
                     .and_then(|name| name.to_str())
                     .map(String::from)
             }),
+            pp3_adjustments: metadata
+                .pp3_adjustments
+                .iter()
+                .map(ReviewProfilePp3Section::from)
+                .collect(),
+        }
+    }
+}
+
+impl From<&Pp3AdjustmentSection> for ReviewProfilePp3Section {
+    fn from(section: &Pp3AdjustmentSection) -> Self {
+        Self {
+            source: section.source.clone(),
+            section: section.section.clone(),
+            entries: section
+                .entries
+                .iter()
+                .map(|entry| ReviewProfilePp3Entry {
+                    key: entry.key.clone(),
+                    value: entry.value.clone(),
+                })
+                .collect(),
         }
     }
 }

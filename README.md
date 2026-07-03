@@ -501,6 +501,9 @@ filter choices are stored per picture/profile variant and are used by review and
 publish rerenders. Generated retouch and black-and-white filter variants are
 cached as hidden sibling outputs so returning to an already rendered variant
 swaps immediately.
+Click the selected profile name to open the film simulation info overlay; it
+shows profile identity, camera Active D-Lighting metadata for the current RAW,
+and a compact summary of generated or direct PP3 adjustment sections.
 
 Optional Codex analysis can run after each RAW has a camera preview and its
 configured profile renders have finished:
