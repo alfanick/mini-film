@@ -588,6 +588,116 @@ fn sync_profiles_preserves_publish_selection_after_restart_with_metadata_changes
 }
 
 #[test]
+fn sync_profiles_merges_standalone_sooc_sidecar_after_restart() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let raw = input.join("frame.NEF");
+    let sidecar = input.join("frame.JPG");
+    fs::write(&raw, b"raw").unwrap();
+    fs::write(&sidecar, b"jpg").unwrap();
+
+    let state_path = output.join(SQLITE_STATE_FILE);
+    let mut store = ReviewStore::new(vec![profile(0, "Classic")]);
+    let raw_id = store.ensure_image(&input, &raw).unwrap().id;
+    let sidecar_id = store.ensure_image(&input, &sidecar).unwrap().id;
+    {
+        let sidecar_image = store
+            .images
+            .iter_mut()
+            .find(|image| image.id == sidecar_id)
+            .unwrap();
+        sidecar_image.rating = 4;
+        sidecar_image.rating_source = ReviewMetadataSource::Manual;
+        sidecar_image.label = ReviewLabel::Yellow;
+        sidecar_image.labels = vec![ReviewLabel::Yellow];
+        sidecar_image.tags = vec!["camera-jpeg".to_string()];
+        sidecar_image.tags_source = ReviewMetadataSource::Manual;
+        sidecar_image.notes = "sidecar note".to_string();
+        sidecar_image.notes_source = ReviewMetadataSource::Manual;
+    }
+    store.ui.current_image_id = Some(sidecar_id);
+    save_store(&state_path, &store).unwrap();
+
+    let mut loaded = load_store(&state_path).unwrap().unwrap();
+    loaded.sync_profiles(vec![profile(0, "Classic")]);
+
+    assert_eq!(loaded.images.len(), 1);
+    let image = &loaded.images[0];
+    assert_eq!(image.id, raw_id);
+    assert_eq!(image.raw_path, raw);
+    assert_eq!(image.sooc_sidecar_path.as_deref(), Some(sidecar.as_path()));
+    assert_eq!(image.rating, 4);
+    assert_eq!(image.rating_source, ReviewMetadataSource::Manual);
+    assert_eq!(image.labels, vec![ReviewLabel::Yellow]);
+    assert_eq!(image.tags, vec!["camera-jpeg"]);
+    assert_eq!(image.notes, "sidecar note");
+    assert_eq!(loaded.ui.current_image_id, Some(raw_id));
+    assert!(
+        image
+            .profiles
+            .iter()
+            .any(|render| render.profile_index == SOOC_PROFILE_INDEX)
+    );
+}
+
+#[test]
+fn discovered_raw_merges_existing_standalone_sidecar_and_ignores_stale_jpeg_callbacks() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let raw = input.join("frame.NEF");
+    let sidecar = input.join("frame.JPG");
+    let standalone_output = output.join("standalone-frame.jpg");
+    fs::write(&raw, b"raw").unwrap();
+    fs::write(&sidecar, b"jpg").unwrap();
+
+    let handle = test_handle(input, output, vec![profile(0, "Classic")]);
+    handle
+        .record_compressed_queued(&sidecar, &standalone_output)
+        .unwrap();
+    {
+        let state = handle.store_snapshot();
+        assert_eq!(state.images.len(), 1);
+        assert_eq!(state.images[0].raw_path, sidecar);
+    }
+
+    handle
+        .record_discovered_raw_with_sidecar(&raw, Some(&sidecar))
+        .unwrap();
+    {
+        let state = handle.store_snapshot();
+        assert_eq!(state.images.len(), 1);
+        let image = &state.images[0];
+        assert_eq!(image.raw_path, raw);
+        assert_eq!(image.sooc_sidecar_path.as_deref(), Some(sidecar.as_path()));
+        assert!(
+            image
+                .profiles
+                .iter()
+                .any(|render| render.profile_index == SOOC_PROFILE_INDEX)
+        );
+    }
+
+    handle.record_compressed_processing(&sidecar).unwrap();
+    handle
+        .record_compressed_done(&sidecar, &standalone_output, Duration::from_millis(5))
+        .unwrap();
+
+    let state = handle.store_snapshot();
+    assert_eq!(state.images.len(), 1);
+    assert_eq!(state.images[0].raw_path, raw);
+    assert_eq!(
+        state.images[0].sooc_sidecar_path.as_deref(),
+        Some(sidecar.as_path())
+    );
+}
+
+#[test]
 fn review_state_sqlite_round_trips_and_populates_query_tables() {
     let temp = tempfile::tempdir().unwrap();
     let state_path = temp.path().join(SQLITE_STATE_FILE);

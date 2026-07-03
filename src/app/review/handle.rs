@@ -150,40 +150,44 @@ impl ReviewHandle {
             let mut history_entry = None;
             let discovered = !store.images.iter().any(|image| image.raw_path == raw);
             let profiles = store.profiles.clone();
-            let image = store.ensure_image(&self.input_root, raw)?;
-            let old_sidecar = image.sooc_sidecar_path.clone();
-            image.sooc_sidecar_path = sooc_sidecar.map(Path::to_path_buf);
-            if image.sooc_sidecar_path != old_sidecar {
-                sync_image_profile_renders(image, &profiles, false, &HashSet::new());
-            }
-            let preview_path = self.preview_path_for(raw, image.id);
-            let mut preview_queued = false;
-            if !matches!(
-                image.preview.status,
-                ReviewRenderStatus::Queued | ReviewRenderStatus::Processing
-            ) && preview_path.is_file()
             {
-                image.preview.status = ReviewRenderStatus::Done;
-                image.preview.path = Some(preview_path.clone());
-                image.preview.error = None;
-                image.preview.updated_at = now_string();
-            } else if !preview_path.is_file()
-                && !matches!(
+                let image = store.ensure_image(&self.input_root, raw)?;
+                let old_sidecar = image.sooc_sidecar_path.clone();
+                image.sooc_sidecar_path = sooc_sidecar.map(Path::to_path_buf);
+                if image.sooc_sidecar_path != old_sidecar {
+                    sync_image_profile_renders(image, &profiles, false, &HashSet::new());
+                }
+                let preview_path = self.preview_path_for(raw, image.id);
+                let mut preview_queued = false;
+                if !matches!(
                     image.preview.status,
                     ReviewRenderStatus::Queued | ReviewRenderStatus::Processing
-                )
-            {
-                image.preview.status = ReviewRenderStatus::Queued;
-                image.preview.path = Some(preview_path.clone());
-                image.preview.error = None;
-                image.preview.updated_at = now_string();
-                image.updated_at = now_string();
-                preview_job = Some((raw.to_path_buf(), preview_path));
-                preview_queued = true;
+                ) && preview_path.is_file()
+                {
+                    image.preview.status = ReviewRenderStatus::Done;
+                    image.preview.path = Some(preview_path.clone());
+                    image.preview.error = None;
+                    image.preview.updated_at = now_string();
+                } else if !preview_path.is_file()
+                    && !matches!(
+                        image.preview.status,
+                        ReviewRenderStatus::Queued | ReviewRenderStatus::Processing
+                    )
+                {
+                    image.preview.status = ReviewRenderStatus::Queued;
+                    image.preview.path = Some(preview_path.clone());
+                    image.preview.error = None;
+                    image.preview.updated_at = now_string();
+                    image.updated_at = now_string();
+                    preview_job = Some((raw.to_path_buf(), preview_path));
+                    preview_queued = true;
+                }
+                if discovered || preview_queued || image.sooc_sidecar_path != old_sidecar {
+                    history_entry =
+                        Some(history_image_discovered(image, discovered, preview_queued));
+                }
             }
-            if discovered || preview_queued || image.sooc_sidecar_path != old_sidecar {
-                history_entry = Some(history_image_discovered(image, discovered, preview_queued));
-            }
+            store.merge_standalone_sooc_sidecars();
             Ok((history_entry, preview_job))
         })?;
         if let Some(entry) = history_entry {
@@ -203,6 +207,9 @@ impl ReviewHandle {
     ) -> Result<()> {
         let history_entries = self.update_store(|store| {
             let mut history_entries = Vec::new();
+            if store.claim_sooc_sidecar(input) {
+                return Ok(history_entries);
+            }
             let discovered = !store.images.iter().any(|image| image.raw_path == input);
             let image = store.ensure_image(&self.input_root, input)?;
             let before = image.preview.clone();
@@ -342,6 +349,9 @@ impl ReviewHandle {
         F: FnMut(&mut ReviewPreview),
     {
         let history_entry = self.update_store(|store| {
+            if store.claim_sooc_sidecar(raw) {
+                return Ok(None);
+            }
             let image = store.ensure_image(&self.input_root, raw)?;
             let before = image.preview.clone();
             update(&mut image.preview);
@@ -367,6 +377,9 @@ impl ReviewHandle {
         let (updated, history_entry) = self.update_store(|store| {
             let mut updated = false;
             let mut history_entry = None;
+            if store.claim_sooc_sidecar(raw) {
+                return Ok((true, None));
+            }
             let image = store.ensure_image(&self.input_root, raw)?;
             if image.preview.render_key.as_deref() == Some(render_key) {
                 let before = image.preview.clone();

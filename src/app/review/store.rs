@@ -53,6 +53,7 @@ impl ReviewStore {
                 &unchanged_profile_indexes,
             );
         }
+        self.merge_standalone_sooc_sidecars();
         self.normalize_ui();
     }
 
@@ -140,6 +141,96 @@ impl ReviewStore {
         Ok(&mut self.images[index])
     }
 
+    pub(super) fn claim_sooc_sidecar(&mut self, sidecar: &Path) -> bool {
+        if !is_jpeg_input_file(sidecar) {
+            return false;
+        }
+        let Some(raw_index) = self.matching_raw_image_index_for_sidecar(sidecar) else {
+            return false;
+        };
+        let profiles = self.profiles.clone();
+        let image = &mut self.images[raw_index];
+        if image.sooc_sidecar_path.as_deref() == Some(sidecar) {
+            return true;
+        }
+        if image.sooc_sidecar_path.is_some() {
+            return false;
+        }
+        image.sooc_sidecar_path = Some(sidecar.to_path_buf());
+        sync_image_profile_renders(image, &profiles, false, &HashSet::new());
+        image.updated_at = now_string();
+        self.normalize_ui();
+        true
+    }
+
+    pub(super) fn merge_standalone_sooc_sidecars(&mut self) -> usize {
+        let candidates = self
+            .images
+            .iter()
+            .enumerate()
+            .filter(|(_, image)| is_jpeg_input_file(&image.raw_path))
+            .map(|(index, image)| (index, image.raw_path.clone()))
+            .collect::<Vec<_>>();
+        let profiles = self.profiles.clone();
+        let mut remove_ids = HashSet::new();
+        let mut redirect_ids = HashMap::new();
+
+        for (sidecar_index, sidecar_path) in candidates {
+            if remove_ids.contains(&self.images[sidecar_index].id) {
+                continue;
+            }
+            let Some(raw_index) = self.matching_raw_image_index_for_sidecar(&sidecar_path) else {
+                continue;
+            };
+            if raw_index == sidecar_index {
+                continue;
+            }
+            if self.images[raw_index]
+                .sooc_sidecar_path
+                .as_deref()
+                .is_some_and(|existing| existing != sidecar_path)
+            {
+                continue;
+            }
+
+            let sidecar = self.images[sidecar_index].clone();
+            let raw = &mut self.images[raw_index];
+            raw.sooc_sidecar_path = Some(sidecar.raw_path.clone());
+            merge_sidecar_review_metadata(raw, &sidecar);
+            sync_image_profile_renders(raw, &profiles, false, &HashSet::new());
+            raw.updated_at = now_string();
+            remove_ids.insert(sidecar.id);
+            redirect_ids.insert(sidecar.id, raw.id);
+        }
+
+        if remove_ids.is_empty() {
+            return 0;
+        }
+        if let Some(current) = self
+            .ui
+            .current_image_id
+            .and_then(|id| redirect_ids.get(&id).copied())
+        {
+            self.ui.current_image_id = Some(current);
+        }
+        self.images.retain(|image| !remove_ids.contains(&image.id));
+        self.normalize_ui();
+        remove_ids.len()
+    }
+
+    fn matching_raw_image_index_for_sidecar(&self, sidecar: &Path) -> Option<usize> {
+        if let Some(index) = self.images.iter().position(|image| {
+            !is_jpeg_input_file(&image.raw_path)
+                && image.sooc_sidecar_path.as_deref() == Some(sidecar)
+        }) {
+            return Some(index);
+        }
+        let raw = matching_raw_for_sidecar(sidecar)?;
+        self.images
+            .iter()
+            .position(|image| !is_jpeg_input_file(&image.raw_path) && image.raw_path == raw)
+    }
+
     pub(super) fn normalize_ui(&mut self) {
         self.ui.min_rating = self.ui.min_rating.min(5);
         let visible = self.visible_image_ids_at(self.ui.min_rating);
@@ -221,6 +312,73 @@ fn normalize_review_metadata_sources(image: &mut ReviewImage) {
     }
     if image.notes_source == ReviewMetadataSource::Default && !image.notes.trim().is_empty() {
         image.notes_source = ReviewMetadataSource::Manual;
+    }
+}
+
+fn merge_sidecar_review_metadata(raw: &mut ReviewImage, sidecar: &ReviewImage) {
+    if sidecar.rating > 0
+        && metadata_source_rank(sidecar.rating_source) > metadata_source_rank(raw.rating_source)
+    {
+        raw.rating = sidecar.rating;
+        raw.rating_source = sidecar.rating_source;
+    }
+
+    let labels = image_review_labels(raw)
+        .into_iter()
+        .chain(image_review_labels(sidecar))
+        .collect::<Vec<_>>();
+    raw.labels = normalize_review_labels(labels);
+    raw.label = first_review_label(&raw.labels);
+
+    if !sidecar.tags.is_empty() {
+        let mut tags = raw.tags.clone();
+        tags.extend(sidecar.tags.clone());
+        raw.tags = normalize_tags(tags);
+        if metadata_source_rank(sidecar.tags_source) > metadata_source_rank(raw.tags_source) {
+            raw.tags_source = sidecar.tags_source;
+        }
+    }
+
+    let sidecar_notes = sidecar.notes.trim();
+    if !sidecar_notes.is_empty() {
+        let raw_notes = raw.notes.trim();
+        if raw_notes.is_empty() {
+            raw.notes = sidecar_notes.to_string();
+            raw.notes_source = sidecar.notes_source;
+        } else if raw_notes != sidecar_notes && !raw_notes.contains(sidecar_notes) {
+            raw.notes = format!(
+                "{}\n\nSOOC sidecar note:\n{}",
+                raw.notes.trim_end(),
+                sidecar_notes
+            );
+            raw.notes_source = stronger_metadata_source(raw.notes_source, sidecar.notes_source);
+        }
+    }
+
+    if raw.retouch.clone().normalized() == RetouchSettings::default()
+        && sidecar.retouch.clone().normalized() != RetouchSettings::default()
+    {
+        raw.retouch = sidecar.retouch.clone().normalized();
+    }
+}
+
+fn metadata_source_rank(source: ReviewMetadataSource) -> u8 {
+    match source {
+        ReviewMetadataSource::Default => 0,
+        ReviewMetadataSource::Codex => 1,
+        ReviewMetadataSource::Camera => 2,
+        ReviewMetadataSource::Manual => 3,
+    }
+}
+
+fn stronger_metadata_source(
+    left: ReviewMetadataSource,
+    right: ReviewMetadataSource,
+) -> ReviewMetadataSource {
+    if metadata_source_rank(right) > metadata_source_rank(left) {
+        right
+    } else {
+        left
     }
 }
 

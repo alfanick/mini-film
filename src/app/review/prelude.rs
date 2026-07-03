@@ -35,6 +35,6 @@ pub(super) use crate::{
     app::profile::resolve_profile,
     app::retouch::{BasicRetouchAdjustments, BwFilter, RetouchSettings},
     app::timestamps::{GalleryExifData, extract_gallery_exif},
-    app::util::is_jpeg_input_file,
+    app::util::{is_jpeg_input_file, matching_raw_for_sidecar},
     cli::{BatchOutputFormat, CodexAnalysisFlags, ExportOptions, GalleryTemplate, LensCorrections},
 };

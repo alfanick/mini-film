@@ -110,7 +110,9 @@ folder as a RAW is treated as that RAW's straight-out-of-camera sidecar instead
 of a separate picture. A trailing dash-number suffix is ignored for this match,
 so `DSC_8313-1.jpg` pairs with `DSC_8313-2.dng`. The review UI shows it as an
 unchecked `straight out of camera` profile thumbnail; if selected for publish,
-its output uses the `-sooc` suffix.
+its output uses the `-sooc` suffix. If the JPEG/HEIC reaches the review state
+before the RAW, mini-film folds it into the RAW as soon as the RAW appears, and
+performs the same cleanup when an existing SQLite review database is reopened.
 
 Image files that are symlinks inside the input folder are treated like normal
 input files, including review and publish rerenders.
