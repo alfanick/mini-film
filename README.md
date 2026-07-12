@@ -51,7 +51,7 @@ Available shortcuts:
 - **Mixed RAW and processed-file input**: batch, daemon, review, and publish can
   take RAW files plus existing JPEG/HEIC files. RAWs get profiles and adjustment
   sliders; JPEG/HEIC inputs keep their existing look and expose rating, labels,
-  tags, notes, crop, and rotation only.
+  tags, notes, and original-file saving without unavailable retouch controls.
 - **Optional Codex review assist**: let Codex analyze small embedded RAW
   previews after rendering finishes and fill tags, notes, or initial ratings
   while the live review UI shows the same queued/processing status indicators.
@@ -453,13 +453,18 @@ available, then updates the browser over server-sent events as each render moves
 from queued to processing to done. When no profiles are configured, the review UI
 shows the developed RawTherapee-default output without a profile rail. JPEG/HEIC
 inputs also hide the profile rail because they are already processed. In the
-phone layout, JPEG/HEIC inputs hide the unavailable Retouch action and expose a
-Save Photo action for the untouched source file. On secure origins it opens the
-native file-share sheet, including iOS's Save Image action; on plain LAN HTTP it
-opens the correctly typed original image for Safari's image-save actions. The
-first `--profile` is the default selected look for RAW files when profiles are configured. All configured profile variants are selected for publish by default; use
-the checkbox on each profile thumbnail to exclude or re-include a variant while
-reviewing.
+desktop and tablet layouts, standalone JPEG/HEIC inputs also hide the unavailable
+Retouch section. RAW inputs paired with a straight-out-of-camera JPEG/HEIC keep
+that section in place and disable it while the straight-out-of-camera profile is
+selected, so switching profiles does not shift the page layout. In the phone
+layout, JPEG/HEIC inputs hide the unavailable Retouch action and expose a Save
+Photo action for the untouched source file. On secure origins it opens the native
+file-share sheet, including iOS's Save Image action; on plain LAN HTTP it opens
+the correctly typed original image for Safari's image-save actions. The first
+`--profile` is the default selected look for RAW files when profiles are
+configured. All configured profile variants are selected for publish by default;
+use the checkbox on each profile thumbnail to exclude or re-include a variant
+while reviewing.
 
 Multiple browsers can use the review page at the same time. The current picture
 and minimum rating filter are server-owned shared state, so every browser shows
@@ -494,17 +499,17 @@ them onto another picture.
 The review UI stores rating, label, tags, notes, active preview profile, and the
 set of profile variants selected for publish. RAW inputs support per-picture
 retouch controls for exposure, highlights, shadows, whites, blacks, relative
-color temperature, clarity, rotation, and crop. JPEG/HEIC inputs support crop and
-rotation only. The browser applies a fast draft preview while edits are being
-made, then queues a high-quality mini-film render and swaps in the finished
-output when it is ready. Crop and rotation are persisted with the review state
-and are used by publish rerenders. RAW profiles whose combined source and
-emulation saturation is effectively black-and-white show `None`, `Y`, `O`, `R`,
-and `G` filter controls beside the selected profile name. Those black-and-white
-filter choices are stored per picture/profile variant and are used by review and
-publish rerenders. Generated retouch and black-and-white filter variants are
-cached as hidden sibling outputs so returning to an already rendered variant
-swaps immediately.
+color temperature, clarity, rotation, and crop. Standalone JPEG/HEIC inputs do
+not expose retouch controls. The browser applies a fast draft preview while
+edits are being made, then queues a high-quality mini-film render and swaps in
+the finished output when it is ready. Crop and rotation are persisted with the
+review state and are used by publish rerenders. RAW profiles whose combined
+source and emulation saturation is effectively black-and-white show `None`, `Y`,
+`O`, `R`, and `G` filter controls beside the selected profile name. Those
+black-and-white filter choices are stored per picture/profile variant and are
+used by review and publish rerenders. Generated retouch and black-and-white
+filter variants are cached as hidden sibling outputs so returning to an already
+rendered variant swaps immediately.
 Click the selected profile name to open the film simulation info overlay; it
 shows profile identity, camera Active D-Lighting metadata for the current RAW,
 and a compact summary of generated or direct PP3 adjustment sections.

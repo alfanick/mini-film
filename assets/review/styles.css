@@ -1148,6 +1148,10 @@ button:disabled {
   border-top: 1px solid rgba(120, 120, 112, 0.24);
 }
 
+.app.compressed-image .controls > .retouch {
+  display: none;
+}
+
 .retouch-header,
 .retouch-actions {
   display: flex;
