@@ -454,8 +454,10 @@ from queued to processing to done. When no profiles are configured, the review U
 shows the developed RawTherapee-default output without a profile rail. JPEG/HEIC
 inputs also hide the profile rail because they are already processed. In the
 phone layout, JPEG/HEIC inputs hide the unavailable Retouch action and expose a
-Download action that returns the untouched source file. The first
-`--profile` is the default selected look for RAW files when profiles are configured. All configured profile variants are selected for publish by default; use
+Save Photo action for the untouched source file. On secure origins it opens the
+native file-share sheet, including iOS's Save Image action; on plain LAN HTTP it
+opens the correctly typed original image for Safari's image-save actions. The
+first `--profile` is the default selected look for RAW files when profiles are configured. All configured profile variants are selected for publish by default; use
 the checkbox on each profile thumbnail to exclude or re-include a variant while
 reviewing.
 

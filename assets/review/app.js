@@ -30,6 +30,14 @@ const state = {
   histogramOpen: false,
   histogramRequestId: 0,
   histogramTimer: null,
+  originalShare: {
+    imageId: null,
+    file: null,
+    promise: null,
+    busyImageId: null,
+    retryImageId: null,
+    openImageId: null,
+  },
 };
 
 const RETOUCH_SAVE_DEBOUNCE_MS = 1200;
@@ -188,17 +196,7 @@ function ReviewShell() {
             { class: "mobile-actions", "aria-label": "Review tools" },
             h("button", { "data-mobile-drawer": "profiles", type: "button" }, "Profiles"),
             h("button", { "data-mobile-drawer": "retouch", type: "button" }, "Retouch"),
-            h(
-              "a",
-              {
-                id: "mobile-download-original",
-                class: "mobile-download",
-                hidden: true,
-                target: "_blank",
-                rel: "noopener",
-              },
-              "Download",
-            ),
+            h("button", { id: "mobile-save-original", type: "button", hidden: true }, "Save Photo"),
             h("button", { "data-mobile-drawer": "metadata", type: "button" }, "Meta"),
             h("button", { id: "mobile-publish", type: "button" }, "Publish"),
           ),
@@ -1160,7 +1158,7 @@ const els = {
   app: document.querySelector(".app"),
   shortcutsHelp: document.getElementById("shortcuts-help"),
   mobileDrawerButtons: document.querySelectorAll("[data-mobile-drawer]"),
-  mobileDownloadOriginal: document.getElementById("mobile-download-original"),
+  mobileSaveOriginal: document.getElementById("mobile-save-original"),
   mobilePublish: document.getElementById("mobile-publish"),
   shortcutsOverlay: document.getElementById("shortcuts-overlay"),
   shortcutsClose: document.getElementById("shortcuts-close"),
@@ -2349,18 +2347,7 @@ function updateMobileActionLabels(image) {
   const hasNotes = Boolean(image?.notes);
   const compressed = isCompressedImage(image);
   if (compressed && state.mobileDrawer === "retouch") setMobileDrawer(null);
-  els.mobileDownloadOriginal.hidden = !compressed;
-  if (compressed) {
-    els.mobileDownloadOriginal.href = reviewUrl(`original/${image.id}`);
-    els.mobileDownloadOriginal.download = image.file_name || "original";
-    els.mobileDownloadOriginal.title = `Download original ${image.file_name || "image"}`;
-    els.mobileDownloadOriginal.setAttribute("aria-label", els.mobileDownloadOriginal.title);
-  } else {
-    els.mobileDownloadOriginal.removeAttribute("href");
-    els.mobileDownloadOriginal.removeAttribute("download");
-    els.mobileDownloadOriginal.removeAttribute("title");
-    els.mobileDownloadOriginal.removeAttribute("aria-label");
-  }
+  syncMobileSaveOriginal(image);
   const retouchActive = image
     ? compressed
       ? hasCropAdjustment(image)
@@ -2381,6 +2368,118 @@ function updateMobileActionLabels(image) {
       button.title = `${tagsCount} ${plural(tagsCount, "tag")}${hasNotes ? ", notes present" : ""}`;
     }
   });
+}
+
+function syncMobileSaveOriginal(image) {
+  const button = els.mobileSaveOriginal;
+  const compressed = isCompressedImage(image);
+  button.hidden = !compressed;
+  button.disabled = !compressed || state.originalShare.busyImageId === image.id;
+  if (!compressed) {
+    button.textContent = "Save Photo";
+    button.removeAttribute("title");
+    button.removeAttribute("aria-label");
+    return;
+  }
+
+  if (state.originalShare.busyImageId === image.id) {
+    button.textContent = "Preparing";
+  } else if (state.originalShare.openImageId === image.id) {
+    button.textContent = "Open Photo";
+  } else if (state.originalShare.retryImageId === image.id) {
+    button.textContent = "Save Again";
+  } else {
+    button.textContent = "Save Photo";
+  }
+  const action = state.originalShare.openImageId === image.id ? "Open" : "Save";
+  button.title = `${action} original ${image.file_name || "photo"}`;
+  button.setAttribute("aria-label", button.title);
+}
+
+function originalPhotoUrl(image) {
+  return reviewUrl(`original/${image.id}`);
+}
+
+function openOriginalPhoto(image) {
+  window.open(originalPhotoUrl(image), "_blank", "noopener");
+}
+
+function supportsOriginalFileShare() {
+  return (
+    typeof File === "function" && typeof navigator.share === "function" && typeof navigator.canShare === "function"
+  );
+}
+
+async function originalFileForShare(image) {
+  const share = state.originalShare;
+  if (share.imageId === image.id && share.file) return share.file;
+  if (share.imageId === image.id && share.promise) return share.promise;
+
+  share.imageId = image.id;
+  share.file = null;
+  const promise = (async () => {
+    const response = await fetch(originalPhotoUrl(image), { cache: "no-store" });
+    if (!response.ok) throw new Error(`original ${response.status}`);
+    const contentType = (response.headers.get("content-type") || "").split(";", 1)[0].trim().toLowerCase();
+    if (!["image/jpeg", "image/heic", "image/heif"].includes(contentType)) {
+      throw new Error(`unexpected original content type: ${contentType || "missing"}`);
+    }
+    const bytes = await response.blob();
+    const fallbackName = contentType === "image/jpeg" ? "photo.jpg" : "photo.heic";
+    return new File([bytes], image.file_name || fallbackName, { type: contentType });
+  })();
+  share.promise = promise;
+  try {
+    const file = await promise;
+    if (share.imageId === image.id) share.file = file;
+    return file;
+  } finally {
+    if (share.imageId === image.id) share.promise = null;
+  }
+}
+
+async function saveOriginalPhoto() {
+  const image = findImage(state.currentId);
+  if (!isCompressedImage(image)) return;
+  const share = state.originalShare;
+  if (share.openImageId === image.id) {
+    share.openImageId = null;
+    syncMobileSaveOriginal(image);
+    openOriginalPhoto(image);
+    return;
+  }
+  if (!supportsOriginalFileShare()) {
+    openOriginalPhoto(image);
+    return;
+  }
+
+  share.busyImageId = image.id;
+  share.retryImageId = null;
+  syncMobileSaveOriginal(image);
+  try {
+    const file = await originalFileForShare(image);
+    const shareData = { files: [file] };
+    if (!navigator.canShare(shareData)) {
+      share.openImageId = image.id;
+      showGestureFeedback("open photo");
+      return;
+    }
+    await navigator.share(shareData);
+    share.openImageId = null;
+  } catch (error) {
+    if (error?.name === "AbortError") return;
+    if (error?.name === "NotAllowedError" && share.imageId === image.id && share.file) {
+      share.retryImageId = image.id;
+      showGestureFeedback("photo ready");
+      return;
+    }
+    console.error(error);
+    share.openImageId = image.id;
+    showGestureFeedback("open photo");
+  } finally {
+    if (share.busyImageId === image.id) share.busyImageId = null;
+    syncMobileSaveOriginal(findImage(state.currentId));
+  }
 }
 
 function preloadNearbyImages(image) {
@@ -3995,6 +4094,9 @@ function clearRetouchSaveTimer() {
 
 els.publish.addEventListener("click", () => togglePublishWizard(true));
 els.mobilePublish.addEventListener("click", () => togglePublishWizard(true));
+els.mobileSaveOriginal.addEventListener("click", () => {
+  saveOriginalPhoto().catch((error) => console.error(error));
+});
 els.appVersion?.addEventListener("click", (event) => {
   event.preventDefault();
   openCommandInvocation();

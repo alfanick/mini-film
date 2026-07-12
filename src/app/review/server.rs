@@ -8,7 +8,7 @@ use axum::{
     Router,
     body::{Body, Bytes, to_bytes},
     extract::State,
-    http::{HeaderValue, Method, Request, StatusCode, header},
+    http::{Method, Request, StatusCode, header},
     response::{
         IntoResponse, Response,
         sse::{Event, KeepAlive, Sse},
@@ -243,8 +243,24 @@ pub(super) async fn original_response(path: &str, handle: &ReviewHandle) -> Resp
         }
     };
     match handle.original_media_path(image_id) {
-        Ok(path) => serve_review_download(path).await,
+        Ok(path) => {
+            let content_type = original_media_content_type(&path);
+            serve_review_file(path, content_type).await
+        }
         Err(error) => json_error(404, error).into_response(),
+    }
+}
+
+fn original_media_content_type(path: &Path) -> &'static str {
+    match path.extension().and_then(|extension| extension.to_str()) {
+        Some(extension)
+            if extension.eq_ignore_ascii_case("jpg") || extension.eq_ignore_ascii_case("jpeg") =>
+        {
+            "image/jpeg"
+        }
+        Some(extension) if extension.eq_ignore_ascii_case("heic") => "image/heic",
+        Some(extension) if extension.eq_ignore_ascii_case("heif") => "image/heif",
+        _ => "application/octet-stream",
     }
 }
 
@@ -377,61 +393,6 @@ async fn serve_review_file(path: PathBuf, content_type: &'static str) -> Respons
             json_error(500, anyhow!("serving review media from disk: {error}")).into_response()
         }
     }
-}
-
-async fn serve_review_download(path: PathBuf) -> Response {
-    let disposition = download_content_disposition(&path);
-    let mut response = serve_review_path(path).await;
-    let value = match HeaderValue::from_str(&disposition) {
-        Ok(value) => value,
-        Err(error) => {
-            return json_error(500, anyhow!("building download filename header: {error}"))
-                .into_response();
-        }
-    };
-    response
-        .headers_mut()
-        .insert(header::CONTENT_DISPOSITION, value);
-    response
-}
-
-fn download_content_disposition(path: &Path) -> String {
-    let name = path
-        .file_name()
-        .map(|name| name.to_string_lossy())
-        .unwrap_or_else(|| "download".into());
-    let fallback = name
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, ' ' | '.' | '-' | '_') {
-                character
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    let fallback = if fallback.is_empty() {
-        "download"
-    } else {
-        &fallback
-    };
-    let mut encoded = String::with_capacity(name.len());
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    for byte in name.as_bytes() {
-        if byte.is_ascii_alphanumeric()
-            || matches!(
-                byte,
-                b'!' | b'#' | b'$' | b'&' | b'+' | b'-' | b'.' | b'^' | b'_' | b'`' | b'|' | b'~'
-            )
-        {
-            encoded.push(char::from(*byte));
-        } else {
-            encoded.push('%');
-            encoded.push(char::from(HEX[(byte >> 4) as usize]));
-            encoded.push(char::from(HEX[(byte & 0x0f) as usize]));
-        }
-    }
-    format!("attachment; filename=\"{fallback}\"; filename*=UTF-8''{encoded}")
 }
 
 pub(super) fn parse_publish_request(body: &[u8]) -> Result<PublishRequest> {

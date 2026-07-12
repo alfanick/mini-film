@@ -1507,7 +1507,7 @@ fn review_route_path_accepts_reverse_proxy_prefixes() {
 }
 
 #[tokio::test]
-async fn original_response_downloads_only_compressed_source_files() {
+async fn original_response_serves_typed_compressed_source_files_inline() {
     let temp = tempfile::tempdir().unwrap();
     let input = temp.path().join("in");
     let output = temp.path().join("out");
@@ -1532,16 +1532,43 @@ async fn original_response_downloads_only_compressed_source_files() {
     assert_eq!(
         response
             .headers()
-            .get(axum::http::header::CONTENT_DISPOSITION)
+            .get(axum::http::header::CONTENT_TYPE)
             .unwrap(),
-        "attachment; filename=\"frame.JPG\"; filename*=UTF-8''frame.JPG"
+        "image/jpeg"
+    );
+    assert!(
+        response
+            .headers()
+            .get(axum::http::header::CONTENT_DISPOSITION)
+            .is_none()
     );
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
     assert_eq!(&body[..], b"original jpeg bytes");
 
-    let raw = input.join("frame-2.NEF");
+    let heic = input.join("frame-2.HEIC");
+    fs::write(&heic, b"original heic bytes").unwrap();
+    handle
+        .record_compressed_queued(&heic, &output.join("frame-2.jpg"))
+        .unwrap();
+    let response = route_request(
+        axum::http::Method::GET,
+        "/original/2",
+        axum::body::Bytes::new(),
+        &handle,
+    )
+    .await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .unwrap(),
+        "image/heic"
+    );
+
+    let raw = input.join("frame-3.NEF");
     fs::write(&raw, b"raw bytes").unwrap();
     handle
         .update_store(|store| {
@@ -1551,7 +1578,7 @@ async fn original_response_downloads_only_compressed_source_files() {
         .unwrap();
     let response = route_request(
         axum::http::Method::GET,
-        "/original/2",
+        "/original/3",
         axum::body::Bytes::new(),
         &handle,
     )
