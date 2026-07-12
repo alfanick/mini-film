@@ -12,14 +12,21 @@ use serde::Deserialize;
 use serde_json::json;
 use tempfile::Builder;
 
+use crate::app::export::add_convert_thread_limit;
 use crate::cli::CodexAnalysisFlags;
+
+const CODEX_COMPRESSED_PREVIEW_LONG_EDGE: u32 = 640;
+const CODEX_JPEG_QUALITY: u8 = 85;
+const CODEX_REASONING_EFFORT: &str = "low";
 
 #[derive(Clone, Debug)]
 pub(crate) struct CodexAnalysisOptions {
     pub(crate) codex_binary: PathBuf,
+    pub(crate) convert_binary: PathBuf,
     pub(crate) model: String,
     pub(crate) timeout: Duration,
     pub(crate) flags: CodexAnalysisFlags,
+    pub(crate) resize_preview: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -41,12 +48,11 @@ struct RawCodexAnalysis {
 
 /// Run Codex on a small camera preview and normalize the structured answer.
 ///
-/// The daemon already extracts embedded JPEG previews for review thumbnails, so
-/// image analysis uses that small file instead of making Codex read the RAW. The
-/// prompt is intentionally narrow and the output is constrained with Codex
-/// CLI's JSON-schema option. The returned text is still validated locally
-/// because command-line model output is an external process boundary and should
-/// not be trusted to be perfectly shaped.
+/// RAW analysis uses the embedded camera preview, while compressed inputs are
+/// resized to a similarly small temporary JPEG. The prompt is intentionally
+/// narrow and the output is constrained with Codex CLI's JSON-schema option.
+/// The returned text is still validated locally because command-line model
+/// output is an external process boundary and should not be trusted blindly.
 pub(crate) fn run_codex_image_analysis(
     preview: &Path,
     options: &CodexAnalysisOptions,
@@ -63,27 +69,18 @@ pub(crate) fn run_codex_image_analysis(
     let output_path = temp_dir.path().join("analysis.json");
     fs::write(&schema_path, codex_output_schema())
         .with_context(|| format!("writing {}", schema_path.display()))?;
+    let analysis_preview = prepare_codex_preview(preview, temp_dir.path(), options)?;
 
     let prompt = codex_prompt(options.flags);
-    let mut child = Command::new(&options.codex_binary)
-        .arg("exec")
-        .arg("--ephemeral")
-        .arg("--skip-git-repo-check")
-        .arg("--sandbox")
-        .arg("read-only")
-        .arg("-m")
-        .arg(&options.model)
-        .arg("-i")
-        .arg(preview)
-        .arg("--output-schema")
-        .arg(&schema_path)
-        .arg("--output-last-message")
-        .arg(&output_path)
-        .arg(prompt)
-        .current_dir(temp_dir.path())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+    let mut command = codex_analysis_command(
+        &analysis_preview,
+        options,
+        &schema_path,
+        &output_path,
+        &prompt,
+        temp_dir.path(),
+    );
+    let mut child = command
         .spawn()
         .with_context(|| format!("starting Codex at {}", options.codex_binary.display()))?;
 
@@ -112,6 +109,86 @@ pub(crate) fn run_codex_image_analysis(
     let text = fs::read_to_string(&output_path)
         .with_context(|| format!("reading Codex analysis {}", output_path.display()))?;
     parse_codex_analysis_output(&text, options.flags)
+}
+
+fn prepare_codex_preview(
+    preview: &Path,
+    temp_dir: &Path,
+    options: &CodexAnalysisOptions,
+) -> Result<PathBuf> {
+    if !options.resize_preview {
+        return Ok(preview.to_path_buf());
+    }
+    let output = temp_dir.join("preview.jpg");
+    let mut command = Command::new(&options.convert_binary);
+    add_convert_thread_limit(&mut command, &options.convert_binary);
+    add_codex_preview_resize_args(&mut command, preview, &output);
+    let result = command.output().with_context(|| {
+        format!(
+            "resizing Codex preview with {}",
+            options.convert_binary.display()
+        )
+    })?;
+    if !result.status.success() {
+        bail!(
+            "Codex preview resize failed with status {}: {}",
+            result.status,
+            String::from_utf8_lossy(&result.stderr).trim()
+        );
+    }
+    if !output.is_file() {
+        bail!("Codex preview resize did not create {}", output.display());
+    }
+    Ok(output)
+}
+
+fn add_codex_preview_resize_args(command: &mut Command, input: &Path, output: &Path) {
+    command
+        .arg(input)
+        .arg("-resize")
+        .arg(format!(
+            "{CODEX_COMPRESSED_PREVIEW_LONG_EDGE}x{CODEX_COMPRESSED_PREVIEW_LONG_EDGE}>"
+        ))
+        .arg("-strip")
+        .arg("-quality")
+        .arg(CODEX_JPEG_QUALITY.to_string())
+        .arg(output);
+}
+
+fn codex_analysis_command(
+    preview: &Path,
+    options: &CodexAnalysisOptions,
+    schema_path: &Path,
+    output_path: &Path,
+    prompt: &str,
+    working_dir: &Path,
+) -> Command {
+    let mut command = Command::new(&options.codex_binary);
+    command
+        .arg("exec")
+        .arg("--ignore-user-config")
+        .arg("--ephemeral")
+        .arg("--skip-git-repo-check")
+        .arg("--sandbox")
+        .arg("read-only")
+        .arg("-m")
+        .arg(&options.model)
+        .arg("-c")
+        .arg(format!(
+            "model_reasoning_effort=\"{CODEX_REASONING_EFFORT}\""
+        ))
+        .arg("-i")
+        .arg(preview)
+        .arg("--output-schema")
+        .arg(schema_path)
+        .arg("--output-last-message")
+        .arg(output_path)
+        .arg(prompt)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    command.current_dir(working_dir);
+    command
 }
 
 pub(crate) fn parse_codex_analysis_output(
@@ -240,6 +317,73 @@ fn codex_prompt(flags: CodexAnalysisFlags) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_options() -> CodexAnalysisOptions {
+        CodexAnalysisOptions {
+            codex_binary: PathBuf::from("codex"),
+            convert_binary: PathBuf::from("convert"),
+            model: "gpt-5.4-mini".to_string(),
+            timeout: Duration::from_secs(45),
+            flags: CodexAnalysisFlags {
+                tags: true,
+                note: false,
+                rating: false,
+            },
+            resize_preview: true,
+        }
+    }
+
+    #[test]
+    fn codex_command_uses_isolated_low_reasoning() {
+        let options = test_options();
+        let command = codex_analysis_command(
+            Path::new("preview.jpg"),
+            &options,
+            Path::new("schema.json"),
+            Path::new("analysis.json"),
+            "prompt",
+            Path::new("work"),
+        );
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(args.iter().any(|arg| arg == "--ignore-user-config"));
+        assert!(args.windows(2).any(|args| {
+            args[0] == "-c"
+                && args[1] == format!("model_reasoning_effort=\"{CODEX_REASONING_EFFORT}\"")
+        }));
+        assert!(
+            args.windows(2)
+                .any(|args| args[0] == "-m" && args[1] == "gpt-5.4-mini")
+        );
+    }
+
+    #[test]
+    fn compressed_preview_resize_is_bounded_and_stripped() {
+        let mut command = Command::new("convert");
+        add_codex_preview_resize_args(
+            &mut command,
+            Path::new("input.jpg"),
+            Path::new("preview.jpg"),
+        );
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            args,
+            [
+                "input.jpg",
+                "-resize",
+                "640x640>",
+                "-strip",
+                "-quality",
+                "85",
+                "preview.jpg",
+            ]
+        );
+    }
 
     #[test]
     fn codex_tags_are_normalized_deduped_and_capped() {

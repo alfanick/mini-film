@@ -509,8 +509,10 @@ Click the selected profile name to open the film simulation info overlay; it
 shows profile identity, camera Active D-Lighting metadata for the current RAW,
 and a compact summary of generated or direct PP3 adjustment sections.
 
-Optional Codex analysis can run after each RAW has a camera preview and its
-configured profile renders have finished:
+Optional Codex analysis can run after each image has a review preview and its
+configured renders have finished. RAW inputs use the embedded camera preview;
+JPEG/HEIC inputs get a temporary 640-pixel analysis preview instead of sending
+the full-resolution output. Two Codex analyses run in parallel:
 
 ```sh
 mini-film daemon \
@@ -534,7 +536,9 @@ Nikon/XMP rating tags, are protected from Codex rating updates too. While
 analysis is queued or running, the existing review sidebar status dot/text and
 the main profile status line show the Codex state.
 
-The default model is `gpt-5.4-mini`; override it or the binary path with:
+The default model is `gpt-5.4-mini`, and review analysis runs it with isolated
+low reasoning so unrelated user Codex settings do not make tagging slower or
+incompatible. Override the model or binary path with:
 
 ```sh
 --codex-model gpt-5.4-mini

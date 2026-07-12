@@ -3,6 +3,8 @@ use super::{
     store::*,
 };
 
+pub(super) const REVIEW_CODEX_WORKERS: usize = 2;
+
 /// Start the embedded review server and return a handle daemon workers can update.
 ///
 /// The server is an async Axum/Tokio HTTP listener running on its own thread.
@@ -718,16 +720,18 @@ impl ReviewHandle {
         if self.codex.is_none() {
             return Ok(());
         }
-        let handle = self.clone();
-        thread::Builder::new()
-            .name("mini-film-review-codex".to_string())
-            .spawn(move || {
-                loop {
-                    let job = handle.codex_scheduler.next_job();
-                    handle.run_scheduled_codex_job(job);
-                }
-            })
-            .context("starting review Codex scheduler thread")?;
+        for worker in 1..=REVIEW_CODEX_WORKERS {
+            let handle = self.clone();
+            thread::Builder::new()
+                .name(format!("mini-film-review-codex-{worker}"))
+                .spawn(move || {
+                    loop {
+                        let job = handle.codex_scheduler.next_job();
+                        handle.run_scheduled_codex_job(job);
+                    }
+                })
+                .with_context(|| format!("starting review Codex scheduler worker {worker}"))?;
+        }
         Ok(())
     }
 
@@ -865,9 +869,11 @@ impl ReviewHandle {
             preview,
             CodexAnalysisOptions {
                 codex_binary: config.codex_binary.clone(),
+                convert_binary: self.convert.clone(),
                 model: config.model.clone(),
                 timeout: config.timeout,
                 flags: config.flags,
+                resize_preview: is_jpeg_input_file(&image.raw_path),
             },
         )))
     }

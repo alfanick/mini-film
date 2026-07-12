@@ -938,6 +938,42 @@ fn schedule_ready_codex_jobs_does_not_reschedule_done_images() {
 }
 
 #[test]
+fn codex_scheduler_claims_distinct_jobs_across_two_workers() {
+    assert_eq!(REVIEW_CODEX_WORKERS, 2);
+    let scheduler = Arc::new(ReviewCodexScheduler::default());
+    scheduler.schedule(PathBuf::from("first.jpg"), "first-key".to_string());
+    scheduler.schedule(PathBuf::from("second.jpg"), "second-key".to_string());
+
+    let barrier = Arc::new(std::sync::Barrier::new(REVIEW_CODEX_WORKERS + 1));
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let workers = (0..REVIEW_CODEX_WORKERS)
+        .map(|_| {
+            let scheduler = Arc::clone(&scheduler);
+            let barrier = Arc::clone(&barrier);
+            let sender = sender.clone();
+            thread::spawn(move || {
+                barrier.wait();
+                sender.send(scheduler.next_job().raw).unwrap();
+            })
+        })
+        .collect::<Vec<_>>();
+    drop(sender);
+    barrier.wait();
+
+    let claimed = (0..REVIEW_CODEX_WORKERS)
+        .map(|_| receiver.recv_timeout(Duration::from_secs(2)).unwrap())
+        .collect::<HashSet<_>>();
+    for worker in workers {
+        worker.join().unwrap();
+    }
+    assert_eq!(
+        claimed,
+        HashSet::from([PathBuf::from("first.jpg"), PathBuf::from("second.jpg")])
+    );
+    assert!(scheduler.pending.load_full().is_empty());
+}
+
+#[test]
 fn base_render_done_triggers_pending_retouch_without_marking_done() {
     let output = PathBuf::from("frame.jpg");
     let mut render = ReviewProfileRender {
