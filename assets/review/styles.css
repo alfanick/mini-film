@@ -888,6 +888,26 @@ button:disabled {
   display: none;
 }
 
+.mobile-download {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #c9c9c1;
+  border-radius: 5px;
+  background: #fff;
+  color: #161616;
+  text-decoration: none;
+}
+
+.mobile-download:hover,
+.mobile-download:focus-visible {
+  background: #f0f0ea;
+}
+
+.mobile-actions [hidden] {
+  display: none;
+}
+
 .profiles {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(74px, 1fr));
@@ -2364,12 +2384,13 @@ kbd {
 
   .mobile-actions {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(60px, 1fr));
     gap: 4px;
     margin-bottom: 5px;
   }
 
-  .mobile-actions button {
+  .mobile-actions button,
+  .mobile-actions .mobile-download {
     min-height: 30px;
     padding: 3px 4px;
     overflow: hidden;

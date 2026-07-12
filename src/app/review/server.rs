@@ -8,7 +8,7 @@ use axum::{
     Router,
     body::{Body, Bytes, to_bytes},
     extract::State,
-    http::{Method, Request, StatusCode, header},
+    http::{HeaderValue, Method, Request, StatusCode, header},
     response::{
         IntoResponse, Response,
         sse::{Event, KeepAlive, Sse},
@@ -153,6 +153,7 @@ pub(super) async fn route_request(
             profile_hald_response(path, handle).await
         }
         (Method::GET, _) if path.starts_with("/media/") => media_response(path, handle).await,
+        (Method::GET, _) if path.starts_with("/original/") => original_response(path, handle).await,
         (Method::GET, _) if path.starts_with("/outputs/") => outputs_response(path, handle).await,
         (Method::GET, _) if path.starts_with("/preview/") => preview_response(path, handle).await,
         _ => text_response(404, "text/plain; charset=utf-8", "not found").into_response(),
@@ -168,7 +169,14 @@ pub(super) fn review_asset_content_type(path: &str) -> &'static str {
 }
 
 pub(super) fn review_route_path(path: &str) -> String {
-    for marker in ["/api/", "/assets/", "/media/", "/outputs/", "/preview/"] {
+    for marker in [
+        "/api/",
+        "/assets/",
+        "/media/",
+        "/original/",
+        "/outputs/",
+        "/preview/",
+    ] {
         if let Some(index) = path.find(marker) {
             return path[index..].to_string();
         }
@@ -222,6 +230,20 @@ pub(super) async fn media_response(path: &str, handle: &ReviewHandle) -> Respons
     };
     match handle.media_path(image_id, profile_index) {
         Ok(path) => serve_review_file(path, "image/jpeg").await,
+        Err(error) => json_error(404, error).into_response(),
+    }
+}
+
+pub(super) async fn original_response(path: &str, handle: &ReviewHandle) -> Response {
+    let id = path.trim_start_matches("/original/");
+    let image_id = match id.parse::<u64>() {
+        Ok(id) => id,
+        Err(_) => {
+            return text_response(400, "text/plain; charset=utf-8", "bad image id").into_response();
+        }
+    };
+    match handle.original_media_path(image_id) {
+        Ok(path) => serve_review_download(path).await,
         Err(error) => json_error(404, error).into_response(),
     }
 }
@@ -355,6 +377,61 @@ async fn serve_review_file(path: PathBuf, content_type: &'static str) -> Respons
             json_error(500, anyhow!("serving review media from disk: {error}")).into_response()
         }
     }
+}
+
+async fn serve_review_download(path: PathBuf) -> Response {
+    let disposition = download_content_disposition(&path);
+    let mut response = serve_review_path(path).await;
+    let value = match HeaderValue::from_str(&disposition) {
+        Ok(value) => value,
+        Err(error) => {
+            return json_error(500, anyhow!("building download filename header: {error}"))
+                .into_response();
+        }
+    };
+    response
+        .headers_mut()
+        .insert(header::CONTENT_DISPOSITION, value);
+    response
+}
+
+fn download_content_disposition(path: &Path) -> String {
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_else(|| "download".into());
+    let fallback = name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, ' ' | '.' | '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let fallback = if fallback.is_empty() {
+        "download"
+    } else {
+        &fallback
+    };
+    let mut encoded = String::with_capacity(name.len());
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    for byte in name.as_bytes() {
+        if byte.is_ascii_alphanumeric()
+            || matches!(
+                byte,
+                b'!' | b'#' | b'$' | b'&' | b'+' | b'-' | b'.' | b'^' | b'_' | b'`' | b'|' | b'~'
+            )
+        {
+            encoded.push(char::from(*byte));
+        } else {
+            encoded.push('%');
+            encoded.push(char::from(HEX[(byte >> 4) as usize]));
+            encoded.push(char::from(HEX[(byte & 0x0f) as usize]));
+        }
+    }
+    format!("attachment; filename=\"{fallback}\"; filename*=UTF-8''{encoded}")
 }
 
 pub(super) fn parse_publish_request(body: &[u8]) -> Result<PublishRequest> {

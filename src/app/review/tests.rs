@@ -1495,6 +1495,7 @@ fn review_route_path_accepts_reverse_proxy_prefixes() {
         "/assets/vendor/preact.module.js"
     );
     assert_eq!(review_route_path("/mini-film/media/1/0"), "/media/1/0");
+    assert_eq!(review_route_path("/mini-film/original/1"), "/original/1");
     assert_eq!(review_route_path("/mini-film/preview/1"), "/preview/1");
     assert_eq!(
         review_route_path("/mini-film/outputs/galleries/day/index.html"),
@@ -1503,6 +1504,59 @@ fn review_route_path_accepts_reverse_proxy_prefixes() {
     assert_eq!(review_route_path("/mini-film/review"), "/review");
     assert_eq!(review_route_path("/mini-film/tv"), "/tv");
     assert_eq!(review_route_path("/mini-film/"), "/");
+}
+
+#[tokio::test]
+async fn original_response_downloads_only_compressed_source_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let jpg = input.join("frame.JPG");
+    fs::write(&jpg, b"original jpeg bytes").unwrap();
+
+    let handle = test_handle(input.clone(), output.clone(), vec![profile(0, "Classic")]);
+    handle
+        .record_compressed_queued(&jpg, &output.join("frame.jpg"))
+        .unwrap();
+
+    let response = route_request(
+        axum::http::Method::GET,
+        "/original/1",
+        axum::body::Bytes::new(),
+        &handle,
+    )
+    .await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::CONTENT_DISPOSITION)
+            .unwrap(),
+        "attachment; filename=\"frame.JPG\"; filename*=UTF-8''frame.JPG"
+    );
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(&body[..], b"original jpeg bytes");
+
+    let raw = input.join("frame-2.NEF");
+    fs::write(&raw, b"raw bytes").unwrap();
+    handle
+        .update_store(|store| {
+            store.ensure_image(&input, &raw)?;
+            Ok(())
+        })
+        .unwrap();
+    let response = route_request(
+        axum::http::Method::GET,
+        "/original/2",
+        axum::body::Bytes::new(),
+        &handle,
+    )
+    .await;
+    assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
 }
 
 #[test]

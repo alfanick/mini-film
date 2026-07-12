@@ -1,6 +1,6 @@
 [package]
 name = "mini-film"
-version = "15.4.1"
+version = "15.5.0"
 description = "Review and publish RAW, JPEG, and HEIC photos with optional Lightroom-style film emulation profiles for RAW workflows."
 repository = "https://github.com/alfanick/mini-film"
 homepage = "https://github.com/alfanick/mini-film"
@@ -30,7 +30,7 @@ filetime = "0.2.29"
 anyhow = "1.0.103"
 clap = { version = "4.6.1", features = ["derive"] }
 flate2 = "1.1.9"
-handlebars = "6.4.2"
+handlebars = "6.4.3"
 image = "0.25.10"
 indicatif = "0.18.6"
 noise = "0.9.0"
@@ -48,7 +48,7 @@ tempfile = "3.27.0"
 walkdir = "2.5.0"
 include_dir = "0.7.4"
 notify = "8.2.0"
-sysinfo = "0.39.5"
+sysinfo = "0.39.6"
 axum = { version = "0.8.9", features = ["http2"] }
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "net", "fs", "sync", "time"] }
 async-stream = "0.3.6"

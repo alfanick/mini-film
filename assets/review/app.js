@@ -188,6 +188,17 @@ function ReviewShell() {
             { class: "mobile-actions", "aria-label": "Review tools" },
             h("button", { "data-mobile-drawer": "profiles", type: "button" }, "Profiles"),
             h("button", { "data-mobile-drawer": "retouch", type: "button" }, "Retouch"),
+            h(
+              "a",
+              {
+                id: "mobile-download-original",
+                class: "mobile-download",
+                hidden: true,
+                target: "_blank",
+                rel: "noopener",
+              },
+              "Download",
+            ),
             h("button", { "data-mobile-drawer": "metadata", type: "button" }, "Meta"),
             h("button", { id: "mobile-publish", type: "button" }, "Publish"),
           ),
@@ -1149,6 +1160,7 @@ const els = {
   app: document.querySelector(".app"),
   shortcutsHelp: document.getElementById("shortcuts-help"),
   mobileDrawerButtons: document.querySelectorAll("[data-mobile-drawer]"),
+  mobileDownloadOriginal: document.getElementById("mobile-download-original"),
   mobilePublish: document.getElementById("mobile-publish"),
   shortcutsOverlay: document.getElementById("shortcuts-overlay"),
   shortcutsClose: document.getElementById("shortcuts-close"),
@@ -2335,8 +2347,22 @@ function updateMobileActionLabels(image) {
   const profileCount = visibleProfileCount(image);
   const tagsCount = image?.tags?.length || 0;
   const hasNotes = Boolean(image?.notes);
+  const compressed = isCompressedImage(image);
+  if (compressed && state.mobileDrawer === "retouch") setMobileDrawer(null);
+  els.mobileDownloadOriginal.hidden = !compressed;
+  if (compressed) {
+    els.mobileDownloadOriginal.href = reviewUrl(`original/${image.id}`);
+    els.mobileDownloadOriginal.download = image.file_name || "original";
+    els.mobileDownloadOriginal.title = `Download original ${image.file_name || "image"}`;
+    els.mobileDownloadOriginal.setAttribute("aria-label", els.mobileDownloadOriginal.title);
+  } else {
+    els.mobileDownloadOriginal.removeAttribute("href");
+    els.mobileDownloadOriginal.removeAttribute("download");
+    els.mobileDownloadOriginal.removeAttribute("title");
+    els.mobileDownloadOriginal.removeAttribute("aria-label");
+  }
   const retouchActive = image
-    ? isCompressedImage(image)
+    ? compressed
       ? hasCropAdjustment(image)
       : !retouchIsDefault(image.retouch || defaultRetouch())
     : false;
@@ -2347,7 +2373,7 @@ function updateMobileActionLabels(image) {
       button.textContent = profileCount > 0 ? `Profiles ${profileCount}` : "Profiles";
       button.title = `${profileCount} profile ${profileCount === 1 ? "render" : "renders"}`;
     } else if (drawer === "retouch") {
-      button.hidden = false;
+      button.hidden = compressed;
       button.textContent = retouchActive ? "Retouch *" : "Retouch";
       button.title = retouchActive ? "Retouch adjustments are active" : "Retouch";
     } else if (drawer === "metadata") {

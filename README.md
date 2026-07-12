@@ -452,7 +452,9 @@ new RAW and JPEG/HEIC files immediately, extracts an embedded camera preview whe
 available, then updates the browser over server-sent events as each render moves
 from queued to processing to done. When no profiles are configured, the review UI
 shows the developed RawTherapee-default output without a profile rail. JPEG/HEIC
-inputs also hide the profile rail because they are already processed. The first
+inputs also hide the profile rail because they are already processed. In the
+phone layout, JPEG/HEIC inputs hide the unavailable Retouch action and expose a
+Download action that returns the untouched source file. The first
 `--profile` is the default selected look for RAW files when profiles are configured. All configured profile variants are selected for publish by default; use
 the checkbox on each profile thumbnail to exclude or re-include a variant while
 reviewing.

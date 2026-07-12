@@ -1740,6 +1740,22 @@ impl ReviewHandle {
         Ok(path.clone())
     }
 
+    pub(super) fn original_media_path(&self, image_id: u64) -> Result<PathBuf> {
+        let store = self.store_snapshot();
+        let image = store
+            .images
+            .iter()
+            .find(|image| image.id == image_id)
+            .ok_or_else(|| anyhow!("review image {image_id} does not exist"))?;
+        if !is_jpeg_input_file(&image.raw_path) {
+            bail!("original download is only available for compressed inputs");
+        }
+        if !image.raw_path.is_file() {
+            bail!("original media is missing: {}", image.raw_path.display());
+        }
+        Ok(image.raw_path.clone())
+    }
+
     pub(super) fn start_publish_job(&self, request: PublishRequest) -> Result<ReviewPublishJob> {
         let args = self.publish_args_from_request(&request)?;
         let id = self.next_publish_job_id.fetch_add(1, Ordering::Relaxed);
