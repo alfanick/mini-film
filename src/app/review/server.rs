@@ -155,6 +155,9 @@ pub(super) async fn route_request(
         (Method::GET, _) if path.starts_with("/media/") => media_response(path, handle).await,
         (Method::GET, _) if path.starts_with("/original/") => original_response(path, handle).await,
         (Method::GET, _) if path.starts_with("/outputs/") => outputs_response(path, handle).await,
+        (Method::GET, _) if path.starts_with("/thumbnail/") => {
+            thumbnail_response(path, handle).await
+        }
         (Method::GET, _) if path.starts_with("/preview/") => preview_response(path, handle).await,
         _ => text_response(404, "text/plain; charset=utf-8", "not found").into_response(),
     }
@@ -175,6 +178,7 @@ pub(super) fn review_route_path(path: &str) -> String {
         "/media/",
         "/original/",
         "/outputs/",
+        "/thumbnail/",
         "/preview/",
     ] {
         if let Some(index) = path.find(marker) {
@@ -216,7 +220,7 @@ pub(super) async fn media_response(path: &str, handle: &ReviewHandle) -> Respons
         }
     };
     if parts.len() == 1 {
-        return match handle.preview_media_path(image_id) {
+        return match handle.full_media_path(image_id) {
             Ok(path) => serve_review_file(path, "image/jpeg").await,
             Err(error) => json_error(404, error).into_response(),
         };
@@ -307,6 +311,20 @@ pub(super) async fn preview_response(path: &str, handle: &ReviewHandle) -> Respo
         }
     };
     match handle.preview_media_path(image_id) {
+        Ok(path) => serve_review_file(path, "image/jpeg").await,
+        Err(error) => json_error(404, error).into_response(),
+    }
+}
+
+pub(super) async fn thumbnail_response(path: &str, handle: &ReviewHandle) -> Response {
+    let id = path.trim_start_matches("/thumbnail/");
+    let image_id = match id.parse::<u64>() {
+        Ok(id) => id,
+        Err(_) => {
+            return text_response(400, "text/plain; charset=utf-8", "bad image id").into_response();
+        }
+    };
+    match handle.thumbnail_media_path(image_id) {
         Ok(path) => serve_review_file(path, "image/jpeg").await,
         Err(error) => json_error(404, error).into_response(),
     }

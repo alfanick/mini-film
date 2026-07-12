@@ -1,5 +1,5 @@
 use super::prelude::*;
-use super::scheduler::ReviewRetouchScheduler;
+use super::scheduler::{ReviewMediaScheduler, ReviewRetouchScheduler};
 use super::store::now_string;
 use crate::app::profile::{Pp3AdjustmentSection, ResolvedProfileMetadata};
 
@@ -412,6 +412,7 @@ pub(crate) struct ReviewHandle {
     pub(super) publish_defaults: ReviewPublishDefaults,
     pub(super) publish_jobs: Arc<ArcSwap<Vec<ReviewPublishJob>>>,
     pub(super) next_publish_job_id: Arc<AtomicU64>,
+    pub(super) media_scheduler: Arc<ReviewMediaScheduler>,
     pub(super) retouch_scheduler: Arc<ReviewRetouchScheduler>,
     pub(super) codex: Option<ReviewCodexConfig>,
     pub(super) codex_scheduler: Arc<ReviewCodexScheduler>,

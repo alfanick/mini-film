@@ -4,6 +4,8 @@ use super::{
 };
 
 pub(super) const REVIEW_CODEX_WORKERS: usize = 2;
+pub(super) const REVIEW_THUMBNAIL_WORKERS: usize = 1;
+pub(super) const REVIEW_PREVIEW_WORKERS: usize = 2;
 
 /// Start the embedded review server and return a handle daemon workers can update.
 ///
@@ -78,6 +80,7 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
         publish_defaults,
         publish_jobs: Arc::new(ArcSwap::from_pointee(Vec::new())),
         next_publish_job_id: Arc::new(AtomicU64::new(1)),
+        media_scheduler: Arc::new(ReviewMediaScheduler::default()),
         retouch_scheduler: Arc::new(ReviewRetouchScheduler::default()),
         codex,
         codex_scheduler: Arc::new(ReviewCodexScheduler::default()),
@@ -104,6 +107,7 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
             }
         })
         .context("starting daemon review server thread")?;
+    handle.start_media_scheduler()?;
     handle.start_retouch_scheduler()?;
     handle.start_codex_scheduler()?;
     handle.schedule_ready_codex_jobs()?;
@@ -135,6 +139,24 @@ impl ReviewHandle {
     pub(super) fn preview_path_for(&self, raw: &Path, image_id: u64) -> PathBuf {
         self.preview_root()
             .join(format!("{image_id:08}-{}.jpg", short_path_sha1(raw)))
+    }
+
+    pub(super) fn compressed_thumbnail_path_for(&self, source: &Path, image_id: u64) -> PathBuf {
+        self.preview_root()
+            .join(COMPRESSED_REVIEW_CACHE_VERSION)
+            .join("thumbnails")
+            .join(compressed_review_cache_file_name(source, image_id))
+    }
+
+    pub(super) fn compressed_display_preview_path_for(
+        &self,
+        source: &Path,
+        image_id: u64,
+    ) -> PathBuf {
+        self.preview_root()
+            .join(COMPRESSED_REVIEW_CACHE_VERSION)
+            .join("previews")
+            .join(compressed_review_cache_file_name(source, image_id))
     }
 
     #[cfg(test)]
@@ -230,6 +252,7 @@ impl ReviewHandle {
             }
             Ok(history_entries)
         })?;
+        self.schedule_compressed_review_media(input);
         for entry in history_entries {
             self.append_history(entry)?;
         }
@@ -259,6 +282,7 @@ impl ReviewHandle {
             self.schedule_retouch_job(input.to_path_buf(), None, output.to_path_buf(), render_key);
         }
         if result.is_ok() {
+            self.schedule_compressed_review_media(input);
             self.maybe_schedule_codex_for_raw(input)?;
         }
         result
@@ -291,6 +315,96 @@ impl ReviewHandle {
             self.maybe_schedule_codex_for_raw(input)?;
         }
         result
+    }
+
+    fn schedule_compressed_review_media(&self, input: &Path) {
+        let store = self.store_snapshot();
+        let Some(image) = store.images.iter().find(|image| image.raw_path == input) else {
+            return;
+        };
+        if !is_jpeg_input_file(&image.raw_path) {
+            return;
+        }
+        self.media_scheduler.schedule(
+            input.to_path_buf(),
+            image.id,
+            image.exif.capture_timestamp,
+            image.relative_path.clone(),
+        );
+    }
+
+    fn start_media_scheduler(&self) -> Result<()> {
+        for (kind, prefix, workers) in [
+            (
+                ReviewMediaKind::Thumbnail,
+                "mini-film-review-thumbnail",
+                REVIEW_THUMBNAIL_WORKERS,
+            ),
+            (
+                ReviewMediaKind::Preview,
+                "mini-film-review-preview",
+                REVIEW_PREVIEW_WORKERS,
+            ),
+        ] {
+            for worker in 1..=workers {
+                let handle = self.clone();
+                let name = format!("{prefix}-{worker}");
+                thread::Builder::new()
+                    .name(name.clone())
+                    .spawn(move || {
+                        loop {
+                            let job = handle.media_scheduler.next_job(kind);
+                            handle.run_scheduled_media_job(kind, job);
+                        }
+                    })
+                    .with_context(|| format!("starting {name} scheduler thread"))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn run_scheduled_media_job(&self, kind: ReviewMediaKind, job: ScheduledReviewMediaJob) {
+        let store = self.store_snapshot();
+        let current = store
+            .images
+            .iter()
+            .any(|image| image.id == job.image_id && image.raw_path == job.raw);
+        drop(store);
+        if !current {
+            self.media_scheduler.finish(kind, &job.raw);
+            return;
+        }
+
+        let result = match kind {
+            ReviewMediaKind::Thumbnail => ensure_compressed_review_thumbnail(
+                &job.raw,
+                &self.compressed_thumbnail_path_for(&job.raw, job.image_id),
+                &self.convert,
+            ),
+            ReviewMediaKind::Preview => ensure_compressed_review_preview(
+                &job.raw,
+                &self.compressed_display_preview_path_for(&job.raw, job.image_id),
+                &self.convert,
+            ),
+        };
+        self.media_scheduler.finish(kind, &job.raw);
+        match result {
+            Ok(()) => {
+                if let Err(error) = self.broadcast_state() {
+                    eprintln!("review media state update failed: {error:#}");
+                }
+            }
+            Err(error) => {
+                eprintln!(
+                    "review {} generation failed for {}: {error:#}",
+                    match kind {
+                        ReviewMediaKind::Thumbnail => "thumbnail",
+                        ReviewMediaKind::Preview => "preview",
+                    },
+                    job.raw.display()
+                );
+            }
+        }
     }
 
     pub(super) fn spawn_preview_job(&self, raw: PathBuf, output: PathBuf) {
@@ -1574,6 +1688,18 @@ impl ReviewHandle {
             .map(|image| {
                 let mut exif = image.exif.clone();
                 exif.sanitize_text_fields();
+                let compressed = is_jpeg_input_file(&image.raw_path);
+                let preview_ready = if compressed {
+                    self.compressed_display_preview_path_for(&image.raw_path, image.id)
+                        .is_file()
+                } else {
+                    image.preview.status == ReviewRenderStatus::Done
+                };
+                let thumbnail_ready = compressed
+                    && self
+                        .compressed_thumbnail_path_for(&image.raw_path, image.id)
+                        .is_file();
+                let full_source_ready = compressed && image.raw_path.is_file();
                 let profiles = image
                     .profiles
                     .iter()
@@ -1610,13 +1736,23 @@ impl ReviewHandle {
                     .collect::<Vec<_>>();
                 json!({
                     "id": image.id,
-                    "source_type": if is_jpeg_input_file(&image.raw_path) { "compressed" } else { "raw" },
+                    "source_type": if compressed { "compressed" } else { "raw" },
                     "relative_path": image.relative_path,
                     "file_name": image.file_name,
                     "exif": exif,
                     "preview_status": image.preview.status,
-                    "preview_url": if image.preview.status == ReviewRenderStatus::Done {
+                    "thumbnail_url": if thumbnail_ready {
+                        Some(format!("thumbnail/{}", image.id))
+                    } else {
+                        None
+                    },
+                    "preview_url": if preview_ready {
                         Some(format!("preview/{}", image.id))
+                    } else {
+                        None
+                    },
+                    "full_url": if full_source_ready {
+                        Some(format!("original/{}", image.id))
                     } else {
                         None
                     },
@@ -1725,7 +1861,7 @@ impl ReviewHandle {
         Ok(path.clone())
     }
 
-    pub(super) fn preview_media_path(&self, image_id: u64) -> Result<PathBuf> {
+    pub(super) fn full_media_path(&self, image_id: u64) -> Result<PathBuf> {
         let store = self.store_snapshot();
         let image = store
             .images
@@ -1744,6 +1880,52 @@ impl ReviewHandle {
             bail!("review preview is missing: {}", path.display());
         }
         Ok(path.clone())
+    }
+
+    pub(super) fn preview_media_path(&self, image_id: u64) -> Result<PathBuf> {
+        let store = self.store_snapshot();
+        let image = store
+            .images
+            .iter()
+            .find(|image| image.id == image_id)
+            .ok_or_else(|| anyhow!("review image {image_id} does not exist"))?;
+        if !is_jpeg_input_file(&image.raw_path) {
+            if image.preview.status != ReviewRenderStatus::Done {
+                bail!("review preview is not ready");
+            }
+            let path = image
+                .preview
+                .path
+                .as_ref()
+                .ok_or_else(|| anyhow!("review preview has no output path"))?;
+            if !path.is_file() {
+                bail!("review preview is missing: {}", path.display());
+            }
+            return Ok(path.clone());
+        }
+
+        let path = self.compressed_display_preview_path_for(&image.raw_path, image.id);
+        if !path.is_file() {
+            bail!("compressed review preview is missing: {}", path.display());
+        }
+        Ok(path)
+    }
+
+    pub(super) fn thumbnail_media_path(&self, image_id: u64) -> Result<PathBuf> {
+        let store = self.store_snapshot();
+        let image = store
+            .images
+            .iter()
+            .find(|image| image.id == image_id)
+            .ok_or_else(|| anyhow!("review image {image_id} does not exist"))?;
+        if !is_jpeg_input_file(&image.raw_path) {
+            bail!("dedicated thumbnails are only available for compressed inputs");
+        }
+        let path = self.compressed_thumbnail_path_for(&image.raw_path, image.id);
+        if !path.is_file() {
+            bail!("compressed review thumbnail is missing: {}", path.display());
+        }
+        Ok(path)
     }
 
     pub(super) fn original_media_path(&self, image_id: u64) -> Result<PathBuf> {

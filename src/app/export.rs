@@ -250,11 +250,19 @@ fn add_resize_args(command: &mut Command, export: &ExportOptions) {
 /// progress work is also active, while still letting convert use all logical
 /// CPUs available on the machine.
 pub(crate) fn add_convert_thread_limit(command: &mut Command, convert: &Path) {
+    add_convert_thread_limit_with_count(command, convert, cpu_thread_count());
+}
+
+pub(crate) fn add_convert_thread_limit_with_count(
+    command: &mut Command,
+    convert: &Path,
+    threads: usize,
+) {
     if convert_supports_threads_limit(convert) {
         command
             .arg("-limit")
             .arg("Threads")
-            .arg(cpu_thread_count().to_string());
+            .arg(threads.max(1).to_string());
     }
 }
 

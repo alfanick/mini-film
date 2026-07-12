@@ -452,15 +452,27 @@ new RAW and JPEG/HEIC files immediately, extracts an embedded camera preview whe
 available, then updates the browser over server-sent events as each render moves
 from queued to processing to done. When no profiles are configured, the review UI
 shows the developed RawTherapee-default output without a profile rail. JPEG/HEIC
-inputs also hide the profile rail because they are already processed. In the
-desktop and tablet layouts, standalone JPEG/HEIC inputs also hide the unavailable
-Retouch section. RAW inputs paired with a straight-out-of-camera JPEG/HEIC keep
-that section in place and disable it while the straight-out-of-camera profile is
-selected, so switching profiles does not shift the page layout. In the phone
-layout, JPEG/HEIC inputs hide the unavailable Retouch action and expose a Save
-Photo action for the untouched source file. On secure origins it opens the native
-file-share sheet, including iOS's Save Image action; on plain LAN HTTP it opens
-the correctly typed original image for Safari's image-save actions. The first
+inputs also hide the profile rail because they are already processed. For
+standalone JPEG/HEIC, ordered background thumbnail and preview pipelines start
+at discovery time and run concurrently with full-output export. Each converter
+uses half of the available CPU threads; one thumbnail worker and two preview
+workers keep review throughput high without overwhelming metadata discovery.
+Jobs follow capture time and then file name, and each derivative becomes
+available to the browser as soon as its cache file lands. The sidebar uses
+progressive 512-pixel quality-55 thumbnails; the main viewer uses progressive
+2048-pixel quality-82 previews and preloads the next three previews in JPEG-only
+reviews. Both tiers are cached under
+`<output>/.mini-film-review-previews/compressed-v1/`. Full media is requested
+from the original input only when the loupe activates or the browser viewport is
+larger than 2048 pixels. In the desktop and tablet layouts, standalone JPEG/HEIC
+inputs hide the unavailable Retouch section. RAW inputs paired with a
+straight-out-of-camera JPEG/HEIC keep that section in place and disable it while
+the straight-out-of-camera profile is selected, so switching profiles does not
+shift the page layout. In the phone layout, JPEG/HEIC inputs hide the unavailable
+Retouch action and expose a Save Photo action for the untouched source file. On
+secure origins it opens the native file-share sheet, including iOS's Save Image
+action; on plain LAN HTTP it opens the correctly typed original image for
+Safari's image-save actions. The first
 `--profile` is the default selected look for RAW files when profiles are
 configured. All configured profile variants are selected for publish by default;
 use the checkbox on each profile thumbnail to exclude or re-include a variant

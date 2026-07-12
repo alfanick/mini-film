@@ -19,6 +19,8 @@ const state = {
   zoomActive: false,
   zoomPointerId: null,
   zoomLastPoint: null,
+  zoomSourceImage: null,
+  zoomSourceUrl: null,
   gestureFeedbackTimer: null,
   retouchInputImageId: null,
   retouchClipboard: null,
@@ -43,6 +45,7 @@ const state = {
 const RETOUCH_SAVE_DEBOUNCE_MS = 1200;
 const HISTOGRAM_SAMPLE_LONG_EDGE = 512;
 const HISTOGRAM_RETOUCH_DEBOUNCE_MS = 100;
+const COMPRESSED_REVIEW_PREVIEW_LONG_EDGE = 2048;
 const TOUCH_SWIPE_MIN_PX = 72;
 const TOUCH_SWIPE_RATIO = 1.65;
 const ZOOM_LONG_PRESS_MS = 380;
@@ -1537,6 +1540,7 @@ function ImageList({ images, currentId, onSelect }) {
     const progress = renderProgressSummary(image);
     const labels = imageLabels(image);
     const isActive = image.id === currentId;
+    const thumbnailUrl = image.thumbnail_url || image.preview_url;
     return h(
       "button",
       {
@@ -1548,9 +1552,7 @@ function ImageList({ images, currentId, onSelect }) {
       h("img", {
         class: "image-row-thumb",
         alt: "",
-        src: image.preview_url
-          ? versionedUrl(image.preview_url, image.preview_updated_at || image.updated_at)
-          : undefined,
+        src: thumbnailUrl ? versionedUrl(thumbnailUrl, image.preview_updated_at || image.updated_at) : undefined,
         loading: "lazy",
         decoding: "async",
         fetchpriority: "low",
@@ -1746,7 +1748,8 @@ function renderCurrent(image) {
   els.app.classList.toggle("compressed-image", compressed);
   els.app.classList.toggle("sooc-profile-selected", isSoocProfile(selected));
   const hideProfiles = profilesAreImplicitOnly(image) || compressed;
-  const mainUrl = selected?.url || image.preview_url;
+  const mainSource = mainImageSource(image, selected);
+  const mainUrl = mainSource.url;
   const previewNote = selected?.url || compressed ? "" : image.preview_url ? " | camera preview" : "";
   const selectedState = compressed ? compressedDisplayState(image) : profileDisplayState(image, selected);
   const codexState = currentCodexStateText(image);
@@ -1772,8 +1775,7 @@ function renderCurrent(image) {
 
   if (mainUrl) {
     els.viewer.classList.add("has-image");
-    const stamp = selected?.url ? selected.updated_at : image.preview_updated_at;
-    const nextSrc = versionedUrl(mainUrl, stamp);
+    const nextSrc = versionedUrl(mainUrl, mainSource.updatedAt);
     if (els.image.getAttribute("src") !== nextSrc) stopZoom();
     els.image.src = nextSrc;
     els.image.alt = image.file_name;
@@ -1973,6 +1975,29 @@ function selectedProfileIndexForImage(image) {
 
 function isCompressedImage(image) {
   return image?.source_type === "compressed";
+}
+
+function compressedViewportUsesFullMedia() {
+  return Math.max(window.innerWidth, window.innerHeight) > COMPRESSED_REVIEW_PREVIEW_LONG_EDGE;
+}
+
+function mainImageSource(image, selected = selectedProfile(image)) {
+  if (selected?.url) return { url: selected.url, updatedAt: selected.updated_at };
+  if (isCompressedImage(image) && image?.full_url && compressedViewportUsesFullMedia()) {
+    return { url: image.full_url, updatedAt: image.preview_updated_at || image.updated_at };
+  }
+  return { url: image?.preview_url, updatedAt: image?.preview_updated_at || image?.updated_at };
+}
+
+function syncMainImageForViewport() {
+  const image = findImage(state.currentId);
+  if (!isCompressedImage(image)) return;
+  const source = mainImageSource(image, null);
+  if (!source.url) return;
+  const nextSrc = versionedUrl(source.url, source.updatedAt);
+  if (els.image.getAttribute("src") === nextSrc) return;
+  stopZoom();
+  els.image.src = nextSrc;
 }
 
 function isSoocProfile(profile) {
@@ -2484,8 +2509,9 @@ async function saveOriginalPhoto() {
 
 function preloadNearbyImages(image) {
   const urls = new Set();
+  const candidates = isCompressedOnlyReview() ? nextImages(image.id, 3) : nearbyImages(image.id);
 
-  for (const nearby of nearbyImages(image.id)) {
+  for (const nearby of candidates) {
     const selected = selectedProfile(nearby);
     if (selected?.url) {
       urls.add(versionedUrl(selected.url, selected.updated_at));
@@ -2495,6 +2521,18 @@ function preloadNearbyImages(image) {
   }
 
   scheduleIdlePreloads(urls);
+}
+
+function isCompressedOnlyReview() {
+  const images = state.data?.images || [];
+  return images.length > 0 && images.every(isCompressedImage);
+}
+
+function nextImages(imageId, count) {
+  const images = filteredImages();
+  const index = images.findIndex((image) => image.id === imageId);
+  if (index < 0) return [];
+  return images.slice(index + 1, index + 1 + count);
 }
 
 function nearbyImages(imageId) {
@@ -3815,12 +3853,22 @@ function stopZoom() {
   state.zoomActive = false;
   state.zoomPointerId = null;
   state.zoomLastPoint = null;
+  clearZoomSource();
   els.viewer.classList.remove("zooming");
   els.zoomLoupe.hidden = true;
   els.zoomLoupe.style.removeProperty("background-image");
   els.zoomLoupe.style.removeProperty("background-size");
   els.zoomLoupe.style.removeProperty("background-position");
   els.zoomLoupe.style.removeProperty("filter");
+}
+
+function clearZoomSource() {
+  if (state.zoomSourceImage) {
+    state.zoomSourceImage.onload = null;
+    state.zoomSourceImage.onerror = null;
+  }
+  state.zoomSourceImage = null;
+  state.zoomSourceUrl = null;
 }
 
 function updateZoomHold(event) {
@@ -3842,19 +3890,50 @@ function updateZoomLoupe(clientX, clientY, pointerType = state.zoomLastPoint?.po
   const { left, top } = zoomLoupePosition(clientX, clientY, viewerRect, loupeWidth, loupeHeight, pointerType);
   const relX = clamp((clientX - imageRect.left) / imageRect.width, 0, 1);
   const relY = clamp((clientY - imageRect.top) / imageRect.height, 0, 1);
-  const sourceWidth = els.image.naturalWidth || imageRect.width;
-  const sourceHeight = els.image.naturalHeight || imageRect.height;
+  const zoomSource = zoomImageSource();
+  const sourceWidth = zoomSource.width;
+  const sourceHeight = zoomSource.height;
   const bgX = loupeWidth / 2 - relX * sourceWidth;
   const bgY = loupeHeight / 2 - relY * sourceHeight;
-  const imageUrl = els.image.currentSrc || els.image.src;
   const imageStyle = window.getComputedStyle(els.image);
 
   els.zoomLoupe.style.left = `${left}px`;
   els.zoomLoupe.style.top = `${top}px`;
-  els.zoomLoupe.style.backgroundImage = `url("${cssUrl(imageUrl)}")`;
+  els.zoomLoupe.style.backgroundImage = `url("${cssUrl(zoomSource.url)}")`;
   els.zoomLoupe.style.backgroundSize = `${sourceWidth}px ${sourceHeight}px`;
   els.zoomLoupe.style.backgroundPosition = `${bgX}px ${bgY}px`;
   els.zoomLoupe.style.filter = imageStyle.filter === "none" ? "" : imageStyle.filter;
+}
+
+function zoomImageSource() {
+  const fallback = {
+    url: els.image.currentSrc || els.image.src,
+    width: els.image.naturalWidth || els.image.getBoundingClientRect().width,
+    height: els.image.naturalHeight || els.image.getBoundingClientRect().height,
+  };
+  const image = findImage(state.currentId);
+  if (!isCompressedImage(image) || !image.full_url || compressedViewportUsesFullMedia()) return fallback;
+
+  const fullUrl = versionedUrl(image.full_url, image.preview_updated_at || image.updated_at);
+  if (state.zoomSourceUrl !== fullUrl) {
+    clearZoomSource();
+    const source = new Image();
+    state.zoomSourceImage = source;
+    state.zoomSourceUrl = fullUrl;
+    source.onload = () => {
+      if (!state.zoomActive || state.zoomSourceImage !== source || !state.zoomLastPoint) return;
+      updateZoomLoupe(state.zoomLastPoint.clientX, state.zoomLastPoint.clientY, state.zoomLastPoint.pointerType);
+    };
+    source.src = fullUrl;
+  }
+
+  const source = state.zoomSourceImage;
+  if (!source?.complete || source.naturalWidth <= 0 || source.naturalHeight <= 0) return fallback;
+  return {
+    url: state.zoomSourceUrl,
+    width: source.naturalWidth,
+    height: source.naturalHeight,
+  };
 }
 
 function zoomLoupePosition(clientX, clientY, viewerRect, loupeWidth, loupeHeight, pointerType) {
@@ -4292,10 +4371,14 @@ wideProfilesQuery.addEventListener("change", () => {
 });
 mobileReviewQuery.addEventListener("change", syncMobileReviewLayout);
 window.addEventListener("resize", () => {
+  syncMainImageForViewport();
   scheduleViewerSafeAreaUpdate();
   scheduleHistogramRender({ debounce: true });
 });
-document.addEventListener("fullscreenchange", scheduleViewerSafeAreaUpdate);
+document.addEventListener("fullscreenchange", () => {
+  syncMainImageForViewport();
+  scheduleViewerSafeAreaUpdate();
+});
 
 if ("ResizeObserver" in window) {
   state.viewerSafeAreaObserver = new ResizeObserver(scheduleViewerSafeAreaUpdate);

@@ -82,6 +82,7 @@ fn test_handle(input: PathBuf, output: PathBuf, profiles: Vec<ReviewProfile>) ->
         ),
         publish_jobs: Arc::new(ArcSwap::from_pointee(Vec::new())),
         next_publish_job_id: Arc::new(AtomicU64::new(1)),
+        media_scheduler: Arc::new(ReviewMediaScheduler::default()),
         retouch_scheduler: Arc::new(ReviewRetouchScheduler::default()),
         codex: None,
         codex_scheduler: Arc::new(ReviewCodexScheduler::default()),
@@ -938,6 +939,67 @@ fn schedule_ready_codex_jobs_does_not_reschedule_done_images() {
 }
 
 #[test]
+fn review_media_scheduler_orders_each_pipeline_by_capture_time_then_filename() {
+    assert_eq!(REVIEW_THUMBNAIL_WORKERS, 1);
+    assert_eq!(REVIEW_PREVIEW_WORKERS, 2);
+    let scheduler = ReviewMediaScheduler::default();
+    scheduler.schedule(
+        PathBuf::from("late.jpg"),
+        3,
+        Some(300),
+        "late.jpg".to_string(),
+    );
+    scheduler.schedule(
+        PathBuf::from("missing-time.jpg"),
+        4,
+        None,
+        "missing-time.jpg".to_string(),
+    );
+    scheduler.schedule(
+        PathBuf::from("early-b.jpg"),
+        2,
+        Some(100),
+        "early-b.jpg".to_string(),
+    );
+    scheduler.schedule(
+        PathBuf::from("early-a.jpg"),
+        1,
+        Some(100),
+        "early-a.jpg".to_string(),
+    );
+
+    for kind in [ReviewMediaKind::Thumbnail, ReviewMediaKind::Preview] {
+        let order = (0..4)
+            .map(|_| scheduler.next_job(kind).image_id)
+            .collect::<Vec<_>>();
+        assert_eq!(order, [1, 2, 3, 4]);
+    }
+}
+
+#[test]
+fn review_media_scheduler_does_not_run_duplicate_tier_jobs_concurrently() {
+    let scheduler = Arc::new(ReviewMediaScheduler::default());
+    let raw = PathBuf::from("frame.jpg");
+    scheduler.schedule(raw.clone(), 1, Some(100), "frame.jpg".to_string());
+    let first = scheduler.next_job(ReviewMediaKind::Preview);
+    scheduler.schedule(raw.clone(), 1, Some(100), "frame.jpg".to_string());
+
+    let worker_scheduler = Arc::clone(&scheduler);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let worker = thread::spawn(move || {
+        sender
+            .send(worker_scheduler.next_job(ReviewMediaKind::Preview))
+            .unwrap();
+    });
+    assert!(receiver.recv_timeout(Duration::from_millis(50)).is_err());
+    scheduler.finish(ReviewMediaKind::Preview, &first.raw);
+    let second = receiver.recv_timeout(Duration::from_secs(2)).unwrap();
+    scheduler.finish(ReviewMediaKind::Preview, &second.raw);
+    worker.join().unwrap();
+    assert_eq!(first.raw, second.raw);
+}
+
+#[test]
 fn codex_scheduler_claims_distinct_jobs_across_two_workers() {
     assert_eq!(REVIEW_CODEX_WORKERS, 2);
     let scheduler = Arc::new(ReviewCodexScheduler::default());
@@ -1532,6 +1594,7 @@ fn review_route_path_accepts_reverse_proxy_prefixes() {
     );
     assert_eq!(review_route_path("/mini-film/media/1/0"), "/media/1/0");
     assert_eq!(review_route_path("/mini-film/original/1"), "/original/1");
+    assert_eq!(review_route_path("/mini-film/thumbnail/1"), "/thumbnail/1");
     assert_eq!(review_route_path("/mini-film/preview/1"), "/preview/1");
     assert_eq!(
         review_route_path("/mini-film/outputs/galleries/day/index.html"),
@@ -1620,6 +1683,80 @@ async fn original_response_serves_typed_compressed_source_files_inline() {
     )
     .await;
     assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn compressed_review_media_routes_serve_distinct_cached_sizes_and_full_output() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let jpg = input.join("frame.JPG");
+    let full = output.join("frame.jpg");
+    fs::write(&jpg, b"original jpeg bytes").unwrap();
+    fs::write(&full, b"full output bytes").unwrap();
+
+    let handle = test_handle(input, output.clone(), vec![profile(0, "Classic")]);
+    handle.record_compressed_queued(&jpg, &full).unwrap();
+    let thumbnail = handle.compressed_thumbnail_path_for(&jpg, 1);
+    let preview = handle.compressed_display_preview_path_for(&jpg, 1);
+    fs::create_dir_all(thumbnail.parent().unwrap()).unwrap();
+    fs::create_dir_all(preview.parent().unwrap()).unwrap();
+    fs::write(&thumbnail, b"thumbnail bytes").unwrap();
+    fs::write(&preview, b"preview bytes").unwrap();
+
+    let cache_root = output
+        .join(".mini-film-review-previews")
+        .join(COMPRESSED_REVIEW_CACHE_VERSION);
+    assert!(thumbnail.starts_with(&cache_root));
+    assert!(preview.starts_with(&cache_root));
+    let state = handle.api_state_value().unwrap();
+    let image = &state["images"][0];
+    assert_eq!(image["thumbnail_url"], "thumbnail/1");
+    assert_eq!(image["preview_url"], "preview/1");
+    assert_eq!(image["full_url"], "original/1");
+
+    for (route, expected) in [
+        ("/thumbnail/1", &b"thumbnail bytes"[..]),
+        ("/preview/1", &b"preview bytes"[..]),
+    ] {
+        let response = route_request(
+            axum::http::Method::GET,
+            route,
+            axum::body::Bytes::new(),
+            &handle,
+        )
+        .await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], expected);
+    }
+
+    handle
+        .update_store(|store| {
+            let image = store.images.iter_mut().find(|image| image.id == 1).unwrap();
+            image.preview.status = ReviewRenderStatus::Done;
+            image.preview.path = Some(full.clone());
+            Ok(())
+        })
+        .unwrap();
+    let state = handle.api_state_value().unwrap();
+    assert_eq!(state["images"][0]["full_url"], "original/1");
+    let response = route_request(
+        axum::http::Method::GET,
+        "/media/1",
+        axum::body::Bytes::new(),
+        &handle,
+    )
+    .await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(&body[..], b"full output bytes");
 }
 
 #[test]
