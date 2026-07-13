@@ -13,7 +13,7 @@ Installed hooks:
 - `pre-commit` checks toolchain versions, direct Cargo dependency freshness,
   frontend assets, Rust formatting, CLI-only clippy, and GUI clippy when the
   local WebKitGTK development packages are installed.
-- `pre-push` runs the same checks.
+- `pre-push` runs the same checks, followed by the full non-GUI Cargo test suite.
 - `run-style-checks.sh` is the shared check runner used by both hooks.
 
 This makes both commit and push fail early when formatting or lint checks are not clean.

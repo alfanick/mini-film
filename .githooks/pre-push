@@ -3,3 +3,6 @@
 set -euo pipefail
 
 "$(dirname "$0")/run-style-checks.sh"
+
+echo "🧪 Running tests (cargo test --all-targets --no-default-features)"
+cargo test --all-targets --no-default-features
