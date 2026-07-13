@@ -460,8 +460,9 @@ workers keep review throughput high without overwhelming metadata discovery.
 Jobs follow capture time and then file name, and each derivative becomes
 available to the browser as soon as its cache file lands. The sidebar uses
 progressive 512-pixel quality-55 thumbnails; the main viewer uses progressive
-2048-pixel quality-82 previews and preloads the next three previews in JPEG-only
-reviews. Both tiers are cached under
+2048-pixel quality-82 previews. In JPEG-only reviews it preloads the next three
+previews at viewport sizes up to 2048 pixels and the next three originals above
+that threshold. Both tiers are cached under
 `<output>/.mini-film-review-previews/compressed-v1/`. Full media is requested
 from the original input only when the loupe activates or the browser viewport is
 larger than 2048 pixels. In the desktop and tablet layouts, standalone JPEG/HEIC

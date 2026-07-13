@@ -1998,6 +1998,7 @@ function syncMainImageForViewport() {
   if (els.image.getAttribute("src") === nextSrc) return;
   stopZoom();
   els.image.src = nextSrc;
+  preloadNearbyImages(image);
 }
 
 function isSoocProfile(profile) {
@@ -2509,12 +2510,16 @@ async function saveOriginalPhoto() {
 
 function preloadNearbyImages(image) {
   const urls = new Set();
-  const candidates = isCompressedOnlyReview() ? nextImages(image.id, 3) : nearbyImages(image.id);
+  const compressedOnly = isCompressedOnlyReview();
+  const candidates = compressedOnly ? nextImages(image.id, 3) : nearbyImages(image.id);
+  const preloadFullMedia = compressedOnly && compressedViewportUsesFullMedia();
 
   for (const nearby of candidates) {
     const selected = selectedProfile(nearby);
     if (selected?.url) {
       urls.add(versionedUrl(selected.url, selected.updated_at));
+    } else if (preloadFullMedia && nearby.full_url) {
+      urls.add(versionedUrl(nearby.full_url, nearby.preview_updated_at || nearby.updated_at));
     } else if (nearby.preview_url) {
       urls.add(versionedUrl(nearby.preview_url, nearby.preview_updated_at));
     }
