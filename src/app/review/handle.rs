@@ -1739,6 +1739,9 @@ impl ReviewHandle {
                     "source_type": if compressed { "compressed" } else { "raw" },
                     "relative_path": image.relative_path,
                     "file_name": image.file_name,
+                    "source_file_size_bytes": image.exif.file_size_bytes,
+                    "source_width": image.exif.image_width,
+                    "source_height": image.exif.image_height,
                     "exif": exif,
                     "preview_status": image.preview.status,
                     "thumbnail_url": if thumbnail_ready {

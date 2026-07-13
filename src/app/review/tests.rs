@@ -770,6 +770,9 @@ fn review_state_sqlite_round_trips_and_populates_query_tables() {
         exif: GalleryExifData {
             capture_timestamp: Some(123),
             rating: Some(3),
+            file_size_bytes: Some(55_620_945),
+            image_width: Some(8288),
+            image_height: Some(5520),
             tags: vec!["camera".to_string()],
             note: Some("camera note".to_string()),
             ..GalleryExifData::default()
@@ -825,6 +828,19 @@ fn review_state_sqlite_round_trips_and_populates_query_tables() {
         table_count(&state_path, "profile_pp3_adjustments").unwrap(),
         1
     );
+    let connection = rusqlite::Connection::open(&state_path).unwrap();
+    let source_info = connection
+        .query_row(
+            "SELECT source_file_size_bytes, source_width, source_height FROM images WHERE image_id = 1",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?)),
+        )
+        .unwrap();
+    assert_eq!(source_info, (55_620_945, 8288, 5520));
+    let schema_version = connection
+        .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+        .unwrap();
+    assert_eq!(schema_version, 5);
 }
 
 #[test]
@@ -859,6 +875,67 @@ fn legacy_json_review_state_is_migrated_once_after_verified_round_trip() {
         serde_json::to_value(&loaded_again).unwrap(),
         serde_json::to_value(&store).unwrap()
     );
+}
+
+#[test]
+fn existing_sqlite_schema_is_migrated_for_source_file_info() {
+    let temp = tempfile::tempdir().unwrap();
+    let state_path = temp.path().join(SQLITE_STATE_FILE);
+    let mut store = ReviewStore::new(Vec::new());
+    store.exif_schema_version = 3;
+    let store_json = serde_json::to_string_pretty(&store).unwrap();
+    let connection = rusqlite::Connection::open(&state_path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE schema_migrations (
+                version INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE review_state (
+                id INTEGER PRIMARY KEY,
+                store_json TEXT NOT NULL
+            );
+            CREATE TABLE images (image_id INTEGER PRIMARY KEY);
+            PRAGMA user_version = 4;",
+        )
+        .unwrap();
+    for version in 1..=4 {
+        connection
+            .execute(
+                "INSERT INTO schema_migrations(version, name) VALUES (?1, ?2)",
+                rusqlite::params![version, format!("migration-{version}")],
+            )
+            .unwrap();
+    }
+    connection
+        .execute(
+            "INSERT INTO review_state(id, store_json) VALUES (1, ?1)",
+            rusqlite::params![store_json],
+        )
+        .unwrap();
+    drop(connection);
+
+    let loaded = load_store(&state_path).unwrap().unwrap();
+    assert_eq!(
+        serde_json::to_value(loaded).unwrap(),
+        serde_json::to_value(store).unwrap()
+    );
+    let connection = rusqlite::Connection::open(&state_path).unwrap();
+    for column in ["source_file_size_bytes", "source_width", "source_height"] {
+        let count = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('images') WHERE name = ?1",
+                [column],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "missing migrated column {column}");
+    }
+    let schema_version = connection
+        .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+        .unwrap();
+    assert_eq!(schema_version, 5);
 }
 
 #[test]
@@ -1705,6 +1782,14 @@ async fn compressed_review_media_routes_serve_distinct_cached_sizes_and_full_out
     fs::create_dir_all(preview.parent().unwrap()).unwrap();
     fs::write(&thumbnail, b"thumbnail bytes").unwrap();
     fs::write(&preview, b"preview bytes").unwrap();
+    handle
+        .update_store(|store| {
+            let image = store.images.iter_mut().find(|image| image.id == 1).unwrap();
+            image.exif.image_width = Some(8288);
+            image.exif.image_height = Some(5520);
+            Ok(())
+        })
+        .unwrap();
 
     let cache_root = output
         .join(".mini-film-review-previews")
@@ -1716,6 +1801,12 @@ async fn compressed_review_media_routes_serve_distinct_cached_sizes_and_full_out
     assert_eq!(image["thumbnail_url"], "thumbnail/1");
     assert_eq!(image["preview_url"], "preview/1");
     assert_eq!(image["full_url"], "original/1");
+    assert_eq!(
+        image["source_file_size_bytes"],
+        json!(fs::metadata(&jpg).unwrap().len())
+    );
+    assert_eq!(image["source_width"], 8288);
+    assert_eq!(image["source_height"], 5520);
 
     for (route, expected) in [
         ("/thumbnail/1", &b"thumbnail bytes"[..]),

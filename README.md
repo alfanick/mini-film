@@ -478,6 +478,8 @@ Safari's image-save actions. The first
 configured. All configured profile variants are selected for publish by default;
 use the checkbox on each profile thumbnail to exclude or re-include a variant
 while reviewing.
+Hover the filename in the review panel to see the source file size, pixel
+dimensions, and megapixel count rounded to one decimal place.
 
 Multiple browsers can use the review page at the same time. The current picture
 and minimum rating filter are server-owned shared state, so every browser shows

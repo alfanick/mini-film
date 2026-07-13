@@ -4,7 +4,7 @@ use super::prelude::*;
 const SOOC_RENDER_PIPELINE_KEY: &str = "sooc-sidecar-v1";
 
 impl ReviewStore {
-    const EXIF_SCHEMA_VERSION: u32 = 3;
+    const EXIF_SCHEMA_VERSION: u32 = 4;
 
     pub(super) fn new(profiles: Vec<ReviewProfile>) -> Self {
         Self {
@@ -419,6 +419,9 @@ fn refresh_image_exif_data(image: &mut ReviewImage, force: bool) {
         && !image.exif.is_empty()
         && image.exif.capture_timestamp.is_some()
         && (image.exif.rating.is_some() || image.rating_source != ReviewMetadataSource::Default)
+        && image.exif.file_size_bytes.is_some()
+        && image.exif.image_width.is_some()
+        && image.exif.image_height.is_some()
     {
         image.exif.sanitize_text_fields();
         return;
@@ -429,6 +432,15 @@ fn refresh_image_exif_data(image: &mut ReviewImage, force: bool) {
     if image.exif.is_empty() {
         image.exif = refreshed;
     } else {
+        if force || image.exif.file_size_bytes.is_none() {
+            image.exif.file_size_bytes = refreshed.file_size_bytes.or(image.exif.file_size_bytes);
+        }
+        if force || image.exif.image_width.is_none() {
+            image.exif.image_width = refreshed.image_width.or(image.exif.image_width);
+        }
+        if force || image.exif.image_height.is_none() {
+            image.exif.image_height = refreshed.image_height.or(image.exif.image_height);
+        }
         if image.exif.focal_length.is_none() {
             image.exif.focal_length = refreshed.focal_length;
         }

@@ -31,6 +31,11 @@ const MIGRATIONS: &[ReviewMigration] = &[
         name: "active_d_lighting_and_pp3_adjustments",
         sql: ACTIVE_D_LIGHTING_AND_PP3_ADJUSTMENTS_SCHEMA,
     },
+    ReviewMigration {
+        version: 5,
+        name: "source_file_info",
+        sql: SOURCE_FILE_INFO_SCHEMA,
+    },
 ];
 
 const INITIAL_SCHEMA: &str = r#"
@@ -286,6 +291,12 @@ CREATE TABLE IF NOT EXISTS profile_pp3_adjustments (
 
 CREATE INDEX IF NOT EXISTS idx_profile_pp3_adjustments_section
     ON profile_pp3_adjustments(section);
+"#;
+
+const SOURCE_FILE_INFO_SCHEMA: &str = r#"
+ALTER TABLE images ADD COLUMN source_file_size_bytes INTEGER;
+ALTER TABLE images ADD COLUMN source_width INTEGER;
+ALTER TABLE images ADD COLUMN source_height INTEGER;
 "#;
 
 pub(super) fn review_state_path(output_root: &Path) -> PathBuf {
@@ -843,8 +854,9 @@ fn insert_image(tx: &Transaction<'_>, position: usize, image: &ReviewImage) -> R
             exif_capture_timestamp, exif_rating, exif_focal_length, exif_aperture,
             exif_shutter_speed, exif_iso, exif_camera_model, exif_lens_model,
             exif_shooting_mode, exif_exposure_compensation, exif_flash, exif_note,
-            exif_active_d_lighting, preview_status, preview_path, preview_error, preview_duration_ms,
-            preview_render_key, preview_updated_at, selected_profile_index, rating,
+            exif_active_d_lighting, source_file_size_bytes, source_width, source_height,
+            preview_status, preview_path, preview_error, preview_duration_ms, preview_render_key,
+            preview_updated_at, selected_profile_index, rating,
             label, notes, rating_source, tags_source, notes_source, codex_status,
             codex_flags_tags, codex_flags_note, codex_flags_rating, codex_model,
             codex_analysis_key, codex_error, codex_updated_at, retouch_exposure,
@@ -857,8 +869,9 @@ fn insert_image(tx: &Transaction<'_>, position: usize, image: &ReviewImage) -> R
             :exif_capture_timestamp, :exif_rating, :exif_focal_length, :exif_aperture,
             :exif_shutter_speed, :exif_iso, :exif_camera_model, :exif_lens_model,
             :exif_shooting_mode, :exif_exposure_compensation, :exif_flash, :exif_note,
-            :exif_active_d_lighting, :preview_status, :preview_path, :preview_error, :preview_duration_ms,
-            :preview_render_key, :preview_updated_at, :selected_profile_index, :rating,
+            :exif_active_d_lighting, :source_file_size_bytes, :source_width, :source_height,
+            :preview_status, :preview_path, :preview_error, :preview_duration_ms, :preview_render_key,
+            :preview_updated_at, :selected_profile_index, :rating,
             :label, :notes, :rating_source, :tags_source, :notes_source, :codex_status,
             :codex_flags_tags, :codex_flags_note, :codex_flags_rating, :codex_model,
             :codex_analysis_key, :codex_error, :codex_updated_at, :retouch_exposure,
@@ -887,6 +900,9 @@ fn insert_image(tx: &Transaction<'_>, position: usize, image: &ReviewImage) -> R
             ":exif_flash": image.exif.flash,
             ":exif_note": image.exif.note,
             ":exif_active_d_lighting": image.exif.active_d_lighting,
+            ":source_file_size_bytes": optional_u64_to_i64(image.exif.file_size_bytes, "source file size")?,
+            ":source_width": image.exif.image_width.map(u32_to_i64),
+            ":source_height": image.exif.image_height.map(u32_to_i64),
             ":preview_status": preview_status,
             ":preview_path": option_path_text(image.preview.path.as_deref()),
             ":preview_error": image.preview.error,

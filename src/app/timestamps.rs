@@ -28,6 +28,12 @@ pub(crate) struct GalleryExifData {
     pub(crate) capture_timestamp: Option<i64>,
     #[serde(default)]
     pub(crate) rating: Option<u8>,
+    #[serde(default)]
+    pub(crate) file_size_bytes: Option<u64>,
+    #[serde(default)]
+    pub(crate) image_width: Option<u32>,
+    #[serde(default)]
+    pub(crate) image_height: Option<u32>,
     pub(crate) focal_length: Option<String>,
     pub(crate) aperture: Option<String>,
     pub(crate) shutter_speed: Option<String>,
@@ -704,19 +710,30 @@ fn fmt_real(value: f32) -> String {
 }
 
 pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
+    let file_size_bytes = fs::metadata(file).ok().map(|metadata| metadata.len());
+    let direct_dimensions = crate::util::is_jpeg_input_file(file)
+        .then(|| image::image_dimensions(file).ok())
+        .flatten();
     let opened = File::open(file).with_context(|| format!("opening file {}", file.display()))?;
     let mut reader = BufReader::new(opened);
     let exif = match Reader::new().read_from_container(&mut reader) {
         Ok(exif) => exif,
         Err(_) => {
-            let mut data = GalleryExifData::default();
-            if let Some(metadata) = extract_gallery_text_metadata_with_exiftool(file) {
+            let mut data = GalleryExifData {
+                file_size_bytes,
+                image_width: direct_dimensions.map(|(width, _)| width),
+                image_height: direct_dimensions.map(|(_, height)| height),
+                ..GalleryExifData::default()
+            };
+            if let Some(metadata) = extract_gallery_metadata_with_exiftool(file) {
                 data.tags = metadata.tags;
                 data.note = metadata.note;
                 data.rating = metadata.rating;
                 data.exposure_compensation = metadata.exposure_compensation;
                 data.flash = metadata.flash;
                 data.active_d_lighting = metadata.active_d_lighting;
+                data.image_width = metadata.image_width.or(data.image_width);
+                data.image_height = metadata.image_height.or(data.image_height);
             }
             data.sanitize_text_fields();
             return Ok(data);
@@ -742,11 +759,15 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
         .and_then(|value| parse_exposure_compensation_text(value));
     let mut flash = extract_firing_flash_details(&exif);
     let mut active_d_lighting = None;
-    if let Some(metadata) = extract_gallery_text_metadata_with_exiftool(file) {
+    let mut image_width = direct_dimensions.map(|(width, _)| width);
+    let mut image_height = direct_dimensions.map(|(_, height)| height);
+    if let Some(metadata) = extract_gallery_metadata_with_exiftool(file) {
         tags = metadata.tags;
         rating = metadata.rating;
         exposure_compensation = exposure_compensation.or(metadata.exposure_compensation);
         active_d_lighting = metadata.active_d_lighting;
+        image_width = metadata.image_width.or(image_width);
+        image_height = metadata.image_height.or(image_height);
         if flash.is_none() {
             flash = metadata
                 .flash
@@ -762,6 +783,9 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
     let mut data = GalleryExifData {
         capture_timestamp,
         rating,
+        file_size_bytes,
+        image_width,
+        image_height,
         focal_length,
         aperture: aperture.map(format_exif_aperture),
         shutter_speed,
@@ -780,16 +804,18 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
 }
 
 #[derive(Debug, Default)]
-struct GalleryTextMetadata {
+struct GalleryMetadata {
     tags: Vec<String>,
     note: Option<String>,
     rating: Option<u8>,
     exposure_compensation: Option<String>,
     flash: Option<String>,
     active_d_lighting: Option<String>,
+    image_width: Option<u32>,
+    image_height: Option<u32>,
 }
 
-fn extract_gallery_text_metadata_with_exiftool(file: &Path) -> Option<GalleryTextMetadata> {
+fn extract_gallery_metadata_with_exiftool(file: &Path) -> Option<GalleryMetadata> {
     let output = Command::new("exiftool")
         .arg("-q")
         .arg("-q")
@@ -801,6 +827,8 @@ fn extract_gallery_text_metadata_with_exiftool(file: &Path) -> Option<GalleryTex
         .arg("-Flash")
         .arg("-ExposureBiasValue")
         .arg("-Nikon:ActiveD-Lighting")
+        .arg("-ImageWidth#")
+        .arg("-ImageHeight#")
         .arg("-Rating")
         .arg("-XMP-xmp:Rating")
         .arg("-XMP-nine:Rating")
@@ -842,14 +870,28 @@ fn extract_gallery_text_metadata_with_exiftool(file: &Path) -> Option<GalleryTex
         .or_else(|| json_rating_value(object.get("XMP-xmp:Rating")))
         .or_else(|| json_rating_value(object.get("XMP-nine:Rating")))
         .or_else(|| json_rating_value(object.get("EXIF:Rating")));
-    Some(GalleryTextMetadata {
+    let image_width = json_u32_value(object.get("ImageWidth"));
+    let image_height = json_u32_value(object.get("ImageHeight"));
+    Some(GalleryMetadata {
         tags,
         note,
         rating,
         exposure_compensation,
         flash,
         active_d_lighting,
+        image_width,
+        image_height,
     })
+}
+
+fn json_u32_value(value: Option<&Value>) -> Option<u32> {
+    match value {
+        Some(Value::Number(value)) => value.as_u64().and_then(|value| u32::try_from(value).ok()),
+        Some(Value::String(value)) => value.trim().parse::<u32>().ok(),
+        Some(Value::Array(values)) => values.iter().find_map(|value| json_u32_value(Some(value))),
+        _ => None,
+    }
+    .filter(|value| *value > 0)
 }
 
 fn json_string_values(value: Option<&Value>) -> Vec<String> {
@@ -1297,14 +1339,39 @@ fn system_time_to_unix_seconds(timestamp: SystemTime) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        clean_exif_display_text, format_exif_aperture, parse_exif_datetime,
-        parse_exif_datetime_with_offset, parse_iso_value, sync_output_timestamps_from_exif,
+        clean_exif_display_text, extract_gallery_exif, format_exif_aperture, json_u32_value,
+        parse_exif_datetime, parse_exif_datetime_with_offset, parse_iso_value,
+        sync_output_timestamps_from_exif,
     };
     use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
     use filetime::{FileTime, set_file_atime, set_file_mtime};
     use std::fs;
     use std::time::{Duration, UNIX_EPOCH};
     use tempfile::tempdir;
+
+    #[test]
+    fn json_u32_value_accepts_positive_numeric_dimensions() {
+        assert_eq!(json_u32_value(Some(&serde_json::json!(8288))), Some(8288));
+        assert_eq!(json_u32_value(Some(&serde_json::json!("5520"))), Some(5520));
+        assert_eq!(json_u32_value(Some(&serde_json::json!(0))), None);
+        assert_eq!(json_u32_value(Some(&serde_json::json!(-1))), None);
+    }
+
+    #[test]
+    fn extract_gallery_exif_reports_jpeg_source_file_info() {
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("source.jpg");
+        image::RgbImage::new(12, 8).save(&source).unwrap();
+
+        let metadata = extract_gallery_exif(&source).unwrap();
+
+        assert_eq!(
+            metadata.file_size_bytes,
+            Some(fs::metadata(&source).unwrap().len())
+        );
+        assert_eq!(metadata.image_width, Some(12));
+        assert_eq!(metadata.image_height, Some(8));
+    }
 
     #[test]
     fn parse_exif_datetime_parses_standard_format() {

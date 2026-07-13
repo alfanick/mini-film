@@ -1731,6 +1731,7 @@ function renderCurrent(image) {
     setRetouchControlsEnabled(false);
     els.image.removeAttribute("src");
     els.title.textContent = "";
+    els.title.removeAttribute("title");
     els.profileState.textContent = "";
     els.imageExif.replaceChildren();
     preactRender(null, els.profiles);
@@ -1757,6 +1758,7 @@ function renderCurrent(image) {
     clearCropDraftState();
   }
   els.title.textContent = image.file_name;
+  els.title.title = imageSourceInfoTitle(image);
   renderImageExif(image);
   renderProfileStateSummary(image, selected, selectedState, previewNote, codexState, hideProfiles);
   const imageChanged = state.lastInputImageId !== image.id;
@@ -1975,6 +1977,39 @@ function selectedProfileIndexForImage(image) {
 
 function isCompressedImage(image) {
   return image?.source_type === "compressed";
+}
+
+function imageSourceInfoTitle(image) {
+  const parts = [];
+  const fileSize = formatFileSize(image?.source_file_size_bytes);
+  if (fileSize) parts.push(fileSize);
+
+  const width = Number(image?.source_width);
+  const height = Number(image?.source_height);
+  if (Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0) {
+    const roundedWidth = Math.round(width);
+    const roundedHeight = Math.round(height);
+    parts.push(`${roundedWidth} x ${roundedHeight} px`);
+    parts.push(`${((roundedWidth * roundedHeight) / 1_000_000).toFixed(1)} MP`);
+  }
+
+  return parts.join(" | ");
+}
+
+function formatFileSize(bytes) {
+  if (bytes === null || bytes === undefined || bytes === "") return "";
+  let value = Number(bytes);
+  if (!Number.isFinite(value) || value < 0) return "";
+  if (value < 1000) return `${Math.round(value)} B`;
+
+  const units = ["KB", "MB", "GB", "TB"];
+  let unit = units[0];
+  for (const candidate of units) {
+    value /= 1000;
+    unit = candidate;
+    if (value < 1000) break;
+  }
+  return `${value.toFixed(1)} ${unit}`;
 }
 
 function compressedViewportUsesFullMedia() {
