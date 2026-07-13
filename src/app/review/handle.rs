@@ -660,15 +660,22 @@ impl ReviewHandle {
         profile_index: usize,
         expected_output: &Path,
     ) -> bool {
+        if !expected_output.is_file() {
+            return false;
+        }
         let store = self.store_snapshot();
         let Some(image) = store.images.iter().find(|image| image.raw_path == raw) else {
             return false;
         };
         image.profiles.iter().any(|render| {
+            let Some(output) = render.output_path.as_deref() else {
+                return false;
+            };
             render.profile_index == profile_index
                 && render.processing_key.as_deref()
                     == Some(review_render_processing_key_for_input(raw, profile_index))
-                && render.output_path.as_deref() == Some(expected_output)
+                && output.is_file()
+                && retouch_base_output(output) == expected_output
                 && matches!(render.status, ReviewRenderStatus::Done)
                 && render.render_key.is_none()
         })

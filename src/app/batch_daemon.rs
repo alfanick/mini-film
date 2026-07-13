@@ -1218,14 +1218,6 @@ fn enqueue_profile_jobs(
             &profile.stem,
         )?;
         if should_skip_existing_profile_output(context, &raw, profile_index, &expected_output) {
-            if let Some(review) = context.review {
-                review.record_profile_done(
-                    &raw,
-                    profile_index,
-                    &expected_output,
-                    Duration::ZERO,
-                )?;
-            }
             continue;
         }
 
@@ -1293,19 +1285,11 @@ fn enqueue_sooc_job(
         &raw,
         SOOC_PROFILE_STEM,
     )?;
+    if should_skip_existing_profile_output(context, &raw, SOOC_PROFILE_INDEX, &expected_output) {
+        return Ok(0);
+    }
     if let Some(review) = context.review {
         review.record_profile_queued(&raw, SOOC_PROFILE_INDEX, &expected_output)?;
-    }
-    if should_skip_existing_profile_output(context, &raw, SOOC_PROFILE_INDEX, &expected_output) {
-        if let Some(review) = context.review {
-            review.record_profile_done(
-                &raw,
-                SOOC_PROFILE_INDEX,
-                &expected_output,
-                Duration::ZERO,
-            )?;
-        }
-        return Ok(0);
     }
 
     queue.push_back(PendingTask {

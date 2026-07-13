@@ -1843,6 +1843,52 @@ fn base_render_done_uses_cached_retouch_output_without_scheduling() {
 }
 
 #[test]
+fn cached_retouch_output_is_current_for_its_base_profile() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let raw = input.join("frame.NEF");
+    let rendered = output.join("Classic").join("frame.jpg");
+    fs::create_dir_all(rendered.parent().unwrap()).unwrap();
+    fs::write(&raw, b"raw").unwrap();
+    fs::write(&rendered, b"base").unwrap();
+
+    let handle = test_handle(input, output, vec![profile(0, "Classic")]);
+    handle.record_discovered_raw(&raw).unwrap();
+    let saved_retouch = RetouchSettings {
+        adjustments: BasicRetouchAdjustments {
+            exposure: 0.35,
+            ..BasicRetouchAdjustments::default()
+        },
+        ..RetouchSettings::default()
+    }
+    .normalized();
+    let cached = retouch_cache_output(&rendered, &saved_retouch.render_key());
+    fs::write(&cached, b"cached").unwrap();
+    handle
+        .update_store(|store| {
+            let image = store
+                .images
+                .iter_mut()
+                .find(|image| image.raw_path == raw)
+                .unwrap();
+            image.retouch = saved_retouch.clone();
+            Ok(())
+        })
+        .unwrap();
+    handle.record_profile_queued(&raw, 0, &rendered).unwrap();
+    handle
+        .record_profile_done(&raw, 0, &rendered, Duration::from_millis(42))
+        .unwrap();
+
+    assert!(handle.profile_render_current(&raw, 0, &rendered));
+    fs::remove_file(&cached).unwrap();
+    assert!(!handle.profile_render_current(&raw, 0, &rendered));
+}
+
+#[test]
 fn queued_missing_output_reuses_saved_retouch_settings() {
     let temp = tempfile::tempdir().unwrap();
     let input = temp.path().join("in");
