@@ -262,6 +262,15 @@ fn ensure_default_minimal_sharpening(sharpening: &mut mini_film::SharpeningSetti
     }
 }
 
+fn ensure_default_minimal_sharpening_for_layers(
+    source: &mut mini_film::SharpeningSettings,
+    emulation: &mini_film::SharpeningSettings,
+) {
+    if !emulation.present {
+        ensure_default_minimal_sharpening(source);
+    }
+}
+
 pub(crate) fn inspect_profile(
     selector: &str,
     profiles_root: &Path,
@@ -529,8 +538,7 @@ fn inspect_xmp_profile_path(
     hald_dir: &Path,
     hald_level: u32,
 ) -> Result<ProfileInfo> {
-    let mut recipe = extract_film_recipe(path)?;
-    ensure_default_minimal_sharpening(&mut recipe.sharpening);
+    let recipe = extract_film_recipe(path)?;
     if recipe.rgb_table.is_some() {
         let hald_path = cached_hald_path(path, hald_level, hald_dir)?;
         let mut converted = convert_xmp_to_hald(
@@ -562,7 +570,7 @@ fn inspect_xmp_profile_path(
             info_only: true,
         },
     )?;
-    ensure_default_minimal_sharpening(&mut converted.sharpening);
+    ensure_default_minimal_sharpening_for_layers(&mut converted.sharpening, &recipe.sharpening);
     Ok(ProfileInfo::Emulation {
         path: path.to_path_buf(),
         recipe: Box::new(recipe),
@@ -639,9 +647,7 @@ fn profile_from_xmp_inner(
             },
         )?
     };
-    let mut recipe = recipe;
-    ensure_default_minimal_sharpening(&mut recipe.sharpening);
-    ensure_default_minimal_sharpening(&mut converted.sharpening);
+    ensure_default_minimal_sharpening_for_layers(&mut converted.sharpening, &recipe.sharpening);
     if print_info {
         eprintln!("{}", profile_info_line(&converted));
     }
@@ -1362,27 +1368,41 @@ mod tests {
     }
 
     #[test]
-    fn ensure_default_minimal_sharpening_only_applies_to_missing_settings() {
-        let mut missing = mini_film::SharpeningSettings::default();
-        ensure_default_minimal_sharpening(&mut missing);
-        assert!(missing.present);
-        assert!((missing.amount - DEFAULT_MINIMAL_SHARPENING.amount).abs() < f32::EPSILON);
-        assert!((missing.radius - DEFAULT_MINIMAL_SHARPENING.radius).abs() < f32::EPSILON);
-        assert!((missing.detail - DEFAULT_MINIMAL_SHARPENING.detail).abs() < f32::EPSILON);
-        assert!((missing.masking - DEFAULT_MINIMAL_SHARPENING.masking).abs() < f32::EPSILON);
+    fn default_minimal_sharpening_only_applies_when_both_layers_omit_it() {
+        let mut source = mini_film::SharpeningSettings::default();
+        let emulation = mini_film::SharpeningSettings::default();
+        ensure_default_minimal_sharpening_for_layers(&mut source, &emulation);
+        assert!(source.present);
+        assert!((source.amount - DEFAULT_MINIMAL_SHARPENING.amount).abs() < f32::EPSILON);
+        assert!((source.radius - DEFAULT_MINIMAL_SHARPENING.radius).abs() < f32::EPSILON);
+        assert!((source.detail - DEFAULT_MINIMAL_SHARPENING.detail).abs() < f32::EPSILON);
+        assert!((source.masking - DEFAULT_MINIMAL_SHARPENING.masking).abs() < f32::EPSILON);
+        assert!(!emulation.present);
+    }
 
-        let mut present = mini_film::SharpeningSettings {
+    #[test]
+    fn default_minimal_sharpening_preserves_explicit_profile_layers() {
+        let mut source = mini_film::SharpeningSettings {
             present: true,
-            amount: 0.0,
+            amount: 42.0,
             radius: 1.0,
-            detail: 0.0,
-            masking: 0.0,
+            detail: 25.0,
+            masking: 15.0,
         };
-        ensure_default_minimal_sharpening(&mut present);
-        assert!(present.present);
-        assert!((present.amount - 0.0).abs() < f32::EPSILON);
-        assert!((present.radius - 1.0).abs() < f32::EPSILON);
-        assert!((present.detail - 0.0).abs() < f32::EPSILON);
-        assert!((present.masking - 0.0).abs() < f32::EPSILON);
+        let missing_emulation = mini_film::SharpeningSettings::default();
+        ensure_default_minimal_sharpening_for_layers(&mut source, &missing_emulation);
+        assert!((source.amount - 42.0).abs() < f32::EPSILON);
+
+        let mut missing_source = mini_film::SharpeningSettings::default();
+        let emulation = mini_film::SharpeningSettings {
+            present: true,
+            amount: 30.0,
+            radius: 0.8,
+            detail: 20.0,
+            masking: 5.0,
+        };
+        ensure_default_minimal_sharpening_for_layers(&mut missing_source, &emulation);
+        assert!(!missing_source.present);
+        assert!((emulation.amount - 30.0).abs() < f32::EPSILON);
     }
 }

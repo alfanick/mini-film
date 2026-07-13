@@ -507,14 +507,18 @@ connected browser through the server-sent event stream. At the end of a pass,
 the shared filter moves to the next rating level.
 
 Review data and the shared browser position are persisted in
-`<output>/mini-film-review.sqlite`. Existing `<output>/mini-film-review.json`
-state files are migrated automatically into that SQLite database on startup and
-renamed only after the migrated database is verified. A human-readable audit
-trail of review, render, and publish state changes is appended to
-`<output>/history.txt`. Together those files make it possible to restart the
-daemon, reopen the browser, and continue the multi-pass culling flow where it
-stopped. A typical pass is to rate everything `0` or `1`, filter to `>= 1`, rate the
-survivors higher, and repeat until the final subset is ready.
+`<output>/mini-film-review.sqlite` as normalized relational rows; the active
+database does not keep an opaque JSON copy of the review store. Databases from
+older mini-film releases are migrated automatically in one SQLite transaction
+and the old snapshot is removed only after the relational data reconstructs the
+complete review state exactly and passes SQLite integrity checks. Existing
+`<output>/mini-film-review.json` state files use the same verified relational
+migration and are renamed only after the new database is installed. A
+human-readable audit trail of review, render, and publish state changes is
+appended to `<output>/history.txt`. Together those files make it possible to
+restart the daemon, reopen the browser, and continue the multi-pass culling flow
+where it stopped. A typical pass is to rate everything `0` or `1`, filter to
+`>= 1`, rate the survivors higher, and repeat until the final subset is ready.
 
 The review workflow is optimized for keyboard operation. Press `?` in the
 browser UI to show the shortcuts overlay. `§` rates `0` and advances, `1`-`5`
@@ -783,6 +787,11 @@ RawTherapee handles:
 - `Clarity2012` as a RawTherapee luminance-contrast approximation
 - profile sharpening fields in generated `.pp3` files:
   `Sharpness`, `SharpenRadius`, `SharpenDetail`, `SharpenEdgeMasking`
+
+Source-profile sharpening is applied before emulation sharpening. Explicit
+emulation sharpening overrides the source, but an emulation that omits
+sharpening preserves an explicit source setting. The minimal `5/0.6/10/0`
+fallback is added only when neither layer defines sharpening.
 
 mini-film internally handles:
 

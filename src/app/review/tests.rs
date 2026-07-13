@@ -15,6 +15,292 @@ fn profile(index: usize, stem: &str) -> ReviewProfile {
     }
 }
 
+fn populated_profile_adjustments(seed: f32) -> ReviewProfileAdjustments {
+    ReviewProfileAdjustments {
+        exposure: seed + 0.1,
+        contrast: seed + 0.2,
+        highlights: seed + 0.3,
+        shadows: seed + 0.4,
+        whites: seed + 0.5,
+        blacks: seed + 0.6,
+        saturation: seed + 0.7,
+        vibrance: seed + 0.8,
+        clarity: seed + 0.9,
+        parametric: ReviewProfileParametricTone {
+            shadows: seed + 1.0,
+            darks: seed + 1.1,
+            lights: seed + 1.2,
+            highlights: seed + 1.3,
+            shadow_split: seed + 20.0,
+            midtone_split: seed + 50.0,
+            highlight_split: seed + 80.0,
+        },
+        hsl: ReviewProfileHslAdjustments {
+            hue: vec![seed + 2.0, seed + 2.1],
+            saturation: vec![seed + 2.2],
+            luminance: vec![seed + 2.3, seed + 2.4, seed + 2.5],
+        },
+        calibration: ReviewProfileCalibration {
+            red_hue: seed + 3.0,
+            red_saturation: seed + 3.1,
+            green_hue: seed + 3.2,
+            green_saturation: seed + 3.3,
+            blue_hue: seed + 3.4,
+            blue_saturation: seed + 3.5,
+        },
+        tone_curve: ReviewProfileToneCurves {
+            composite: vec![[0.0, seed + 0.01], [1.0, seed + 0.99]],
+            red: vec![[0.25, seed + 0.3]],
+            green: vec![[0.5, seed + 0.6]],
+            blue: vec![[0.75, seed + 0.8]],
+        },
+    }
+}
+
+fn fully_populated_review_store() -> ReviewStore {
+    let mut detailed_profile = profile(7, "Detailed");
+    detailed_profile.selector = "profiles/detailed.xmp".to_string();
+    detailed_profile.retouch_base = BasicRetouchAdjustments {
+        exposure: 0.25,
+        highlights: -10.0,
+        shadows: 11.0,
+        whites: 12.0,
+        blacks: -13.0,
+        temperature: 140.0,
+        offset: -2.0,
+        clarity: 15.0,
+    };
+    detailed_profile.metadata = Some(ReviewProfileMetadata {
+        profile_name: "Detailed Profile".to_string(),
+        profile_uuid: Some("profile-uuid".to_string()),
+        look_name: Some("Detailed Look".to_string()),
+        look_uuid: Some("look-uuid".to_string()),
+        source_profile_name: Some("Source Profile".to_string()),
+        source_profile_uuid: Some("source-uuid".to_string()),
+        source_adjustments: populated_profile_adjustments(1.0),
+        source_sharpening: ReviewProfileSharpening {
+            present: true,
+            amount: 1.1,
+            radius: 1.2,
+            detail: 1.3,
+            masking: 1.4,
+        },
+        emulation_adjustments: populated_profile_adjustments(10.0),
+        emulation_sharpening: ReviewProfileSharpening {
+            present: false,
+            amount: 2.1,
+            radius: 2.2,
+            detail: 2.3,
+            masking: 2.4,
+        },
+        has_camera_raw_settings: true,
+        grain: Some(ReviewProfileGrain {
+            amount: 31,
+            size: 42,
+            frequency: 53,
+        }),
+        has_hald: true,
+        has_pp3: true,
+        pp3_name: Some("detailed.pp3".to_string()),
+        pp3_adjustments: vec![
+            ReviewProfilePp3Section {
+                source: "Empty PP3".to_string(),
+                section: "Empty".to_string(),
+                entries: Vec::new(),
+            },
+            ReviewProfilePp3Section {
+                source: "Profile PP3".to_string(),
+                section: "Exposure".to_string(),
+                entries: vec![
+                    ReviewProfilePp3Entry {
+                        key: "Compensation".to_string(),
+                        value: "0.5".to_string(),
+                    },
+                    ReviewProfilePp3Entry {
+                        key: "Black".to_string(),
+                        value: "-100".to_string(),
+                    },
+                ],
+            },
+        ],
+    });
+    let plain_profile = profile(9, "Plain");
+    let timestamp = "2026-07-13T12:34:56+02:00".to_string();
+    let detailed_render = ReviewProfileRender {
+        profile_index: 7,
+        profile_stem: "Detailed".to_string(),
+        display_name: Some("Detailed display".to_string()),
+        status: ReviewRenderStatus::Failed,
+        output_path: Some(PathBuf::from("/out/detailed.jpg")),
+        error: Some("render failed".to_string()),
+        duration_ms: Some(987),
+        render_key: Some("render-key".to_string()),
+        processing_key: Some("processing-key".to_string()),
+        width: Some(4096),
+        height: Some(2731),
+        updated_at: timestamp.clone(),
+    };
+    let mut store = ReviewStore::new(vec![detailed_profile, plain_profile]);
+    store.next_id = 4;
+    store.ui = ReviewUiState {
+        current_image_id: Some(2),
+        min_rating: 3,
+    };
+    store.exif_schema_version = 4;
+    store.images = vec![
+        ReviewImage {
+            id: 1,
+            raw_path: PathBuf::from("/in/one.NEF"),
+            sooc_sidecar_path: Some(PathBuf::from("/in/one.JPG")),
+            relative_path: "day/one.NEF".to_string(),
+            file_name: "one.NEF".to_string(),
+            exif: GalleryExifData {
+                capture_timestamp: Some(-123_456_789),
+                rating: Some(4),
+                file_size_bytes: Some(55_620_945),
+                image_width: Some(8288),
+                image_height: Some(5520),
+                focal_length: Some("85 mm".to_string()),
+                aperture: Some("f/1.8".to_string()),
+                shutter_speed: Some("1/250".to_string()),
+                iso: Some("640".to_string()),
+                camera_model: Some("Nikon Z8".to_string()),
+                lens_model: Some("NIKKOR Z 85mm".to_string()),
+                shooting_mode: Some("Manual".to_string()),
+                exposure_compensation: Some("-0.7 EV".to_string()),
+                flash: Some("Off".to_string()),
+                active_d_lighting: Some("High".to_string()),
+                tags: vec!["camera".to_string(), "camera".to_string()],
+                note: Some("camera note".to_string()),
+            },
+            preview: ReviewPreview {
+                status: ReviewRenderStatus::Failed,
+                path: Some(PathBuf::from("/out/preview.jpg")),
+                error: Some("preview failed".to_string()),
+                duration_ms: Some(321),
+                render_key: Some("preview-key".to_string()),
+                updated_at: timestamp.clone(),
+            },
+            selected_profile_index: 7,
+            rating: 5,
+            label: ReviewLabel::Purple,
+            labels: vec![ReviewLabel::Red, ReviewLabel::None, ReviewLabel::Red],
+            tags: vec!["keeper".to_string(), "keeper".to_string()],
+            notes: "manual note".to_string(),
+            rating_source: ReviewMetadataSource::Camera,
+            tags_source: ReviewMetadataSource::Codex,
+            notes_source: ReviewMetadataSource::Manual,
+            codex: ReviewCodexAnalysis {
+                status: ReviewCodexStatus::Failed,
+                flags: CodexAnalysisFlags::all(),
+                model: "gpt-mini".to_string(),
+                analysis_key: Some("analysis-key".to_string()),
+                error: Some("analysis failed".to_string()),
+                updated_at: timestamp.clone(),
+            },
+            retouch: RetouchSettings {
+                adjustments: BasicRetouchAdjustments {
+                    exposure: 0.75,
+                    highlights: -20.0,
+                    shadows: 21.0,
+                    whites: 22.0,
+                    blacks: -23.0,
+                    temperature: 240.0,
+                    offset: -4.0,
+                    clarity: 25.0,
+                },
+                crop: Some(crate::app::retouch::RetouchCrop {
+                    x: 0.1,
+                    y: 0.2,
+                    width: 0.7,
+                    height: 0.6,
+                }),
+                rotation_degrees: 1.25,
+            },
+            publish_profile_indexes: None,
+            profile_bw_filters: vec![
+                ReviewProfileBwFilter {
+                    profile_index: 7,
+                    filter: BwFilter::None,
+                },
+                ReviewProfileBwFilter {
+                    profile_index: 7,
+                    filter: BwFilter::Yellow,
+                },
+                ReviewProfileBwFilter {
+                    profile_index: 7,
+                    filter: BwFilter::Red,
+                },
+            ],
+            profiles: vec![detailed_render],
+            updated_at: timestamp.clone(),
+        },
+        ReviewImage {
+            id: 2,
+            raw_path: PathBuf::from("/in/two.jpg"),
+            sooc_sidecar_path: None,
+            relative_path: "two.jpg".to_string(),
+            file_name: "two.jpg".to_string(),
+            exif: GalleryExifData::default(),
+            preview: ReviewPreview::default(),
+            selected_profile_index: 9,
+            rating: 3,
+            label: ReviewLabel::None,
+            labels: Vec::new(),
+            tags: Vec::new(),
+            notes: String::new(),
+            rating_source: ReviewMetadataSource::Default,
+            tags_source: ReviewMetadataSource::Default,
+            notes_source: ReviewMetadataSource::Default,
+            codex: ReviewCodexAnalysis::default(),
+            retouch: RetouchSettings::default(),
+            publish_profile_indexes: Some(Vec::new()),
+            profile_bw_filters: Vec::new(),
+            profiles: Vec::new(),
+            updated_at: timestamp.clone(),
+        },
+        ReviewImage {
+            id: 3,
+            raw_path: PathBuf::from("/in/three.NEF"),
+            sooc_sidecar_path: None,
+            relative_path: "three.NEF".to_string(),
+            file_name: "three.NEF".to_string(),
+            exif: GalleryExifData::default(),
+            preview: ReviewPreview::default(),
+            selected_profile_index: 7,
+            rating: 4,
+            label: ReviewLabel::Green,
+            labels: vec![ReviewLabel::Green],
+            tags: vec!["publish".to_string()],
+            notes: "publish selected profiles".to_string(),
+            rating_source: ReviewMetadataSource::Manual,
+            tags_source: ReviewMetadataSource::Manual,
+            notes_source: ReviewMetadataSource::Manual,
+            codex: ReviewCodexAnalysis::default(),
+            retouch: RetouchSettings::default(),
+            publish_profile_indexes: Some(vec![7, SOOC_PROFILE_INDEX]),
+            profile_bw_filters: Vec::new(),
+            profiles: Vec::new(),
+            updated_at: timestamp,
+        },
+    ];
+    store
+}
+
+fn create_v5_review_database(path: &Path, store: &ReviewStore) {
+    let connection = open_database_at_version_for_test(path, 5).unwrap();
+    let store_json = serde_json::to_string_pretty(store).unwrap();
+    connection
+        .execute(
+            "INSERT INTO review_state(
+                id, next_id, current_image_id, min_rating, exif_schema_version,
+                store_json, store_sha1, updated_at
+             ) VALUES (1, 1, NULL, 0, 4, ?1, 'test-sha1', ?2)",
+            rusqlite::params![store_json, now_string()],
+        )
+        .unwrap();
+}
+
 fn bw_profile(
     index: usize,
     stem: &str,
@@ -824,64 +1110,7 @@ fn discovered_raw_merges_existing_standalone_sidecar_and_ignores_stale_jpeg_call
 fn review_state_sqlite_round_trips_and_populates_query_tables() {
     let temp = tempfile::tempdir().unwrap();
     let state_path = temp.path().join(SQLITE_STATE_FILE);
-    let mut review_profile = profile(0, "Classic");
-    review_profile.metadata = Some(ReviewProfileMetadata {
-        pp3_adjustments: vec![ReviewProfilePp3Section {
-            source: "Profile PP3".to_string(),
-            section: "Exposure".to_string(),
-            entries: vec![ReviewProfilePp3Entry {
-                key: "Compensation".to_string(),
-                value: "0.5".to_string(),
-            }],
-        }],
-        ..ReviewProfileMetadata::default()
-    });
-    let mut store = ReviewStore::new(vec![review_profile]);
-    store.ui.current_image_id = Some(1);
-    store.ui.min_rating = 2;
-    store.images.push(ReviewImage {
-        id: 1,
-        raw_path: PathBuf::from("/in/frame.NEF"),
-        sooc_sidecar_path: Some(PathBuf::from("/in/frame.jpg")),
-        relative_path: "frame.NEF".to_string(),
-        file_name: "frame.NEF".to_string(),
-        exif: GalleryExifData {
-            capture_timestamp: Some(123),
-            rating: Some(3),
-            file_size_bytes: Some(55_620_945),
-            image_width: Some(8288),
-            image_height: Some(5520),
-            tags: vec!["camera".to_string()],
-            note: Some("camera note".to_string()),
-            ..GalleryExifData::default()
-        },
-        preview: ReviewPreview {
-            status: ReviewRenderStatus::Done,
-            path: Some(PathBuf::from("/out/preview.jpg")),
-            error: None,
-            duration_ms: Some(10),
-            render_key: Some("preview-key".to_string()),
-            updated_at: now_string(),
-        },
-        selected_profile_index: 0,
-        rating: 3,
-        label: ReviewLabel::Green,
-        labels: vec![ReviewLabel::Green],
-        tags: vec!["keeper".to_string()],
-        notes: "manual note".to_string(),
-        rating_source: ReviewMetadataSource::Manual,
-        tags_source: ReviewMetadataSource::Manual,
-        notes_source: ReviewMetadataSource::Manual,
-        codex: ReviewCodexAnalysis::default(),
-        retouch: RetouchSettings::default(),
-        publish_profile_indexes: Some(vec![0]),
-        profile_bw_filters: vec![ReviewProfileBwFilter {
-            profile_index: 0,
-            filter: BwFilter::Yellow,
-        }],
-        profiles: vec![profile_render(0, "Classic")],
-        updated_at: now_string(),
-    });
+    let store = fully_populated_review_store();
 
     save_store(&state_path, &store).unwrap();
     let loaded = load_store(&state_path).unwrap().unwrap();
@@ -890,22 +1119,23 @@ fn review_state_sqlite_round_trips_and_populates_query_tables() {
         serde_json::to_value(&loaded).unwrap(),
         serde_json::to_value(&store).unwrap()
     );
-    assert_eq!(table_count(&state_path, "review_state").unwrap(), 1);
-    assert_eq!(table_count(&state_path, "profiles").unwrap(), 1);
-    assert_eq!(table_count(&state_path, "images").unwrap(), 1);
-    assert_eq!(table_count(&state_path, "image_tags").unwrap(), 1);
+    assert!(!table_exists(&state_path, "review_state").unwrap());
+    assert_eq!(table_count(&state_path, "review_settings").unwrap(), 1);
+    assert_eq!(table_count(&state_path, "profiles").unwrap(), 2);
+    assert_eq!(table_count(&state_path, "images").unwrap(), 3);
+    assert_eq!(table_count(&state_path, "tags").unwrap(), 2);
+    assert_eq!(table_count(&state_path, "image_tags").unwrap(), 3);
     assert_eq!(
         table_count(&state_path, "image_profile_renders").unwrap(),
         1
     );
     assert_eq!(
         table_count(&state_path, "image_profile_bw_filters").unwrap(),
-        1
+        3
     );
-    assert_eq!(
-        table_count(&state_path, "profile_pp3_adjustments").unwrap(),
-        1
-    );
+    assert_eq!(table_count(&state_path, "profile_pp3_sections").unwrap(), 2);
+    assert_eq!(table_count(&state_path, "profile_pp3_entries").unwrap(), 2);
+    assert!(json_storage_columns(&state_path).unwrap().is_empty());
     let connection = rusqlite::Connection::open(&state_path).unwrap();
     let source_info = connection
         .query_row(
@@ -915,10 +1145,34 @@ fn review_state_sqlite_round_trips_and_populates_query_tables() {
         )
         .unwrap();
     assert_eq!(source_info, (55_620_945, 8288, 5520));
+    let publish_modes = connection
+        .prepare("SELECT image_id, publish_profiles_default FROM images ORDER BY image_id")
+        .unwrap()
+        .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(publish_modes, vec![(1, 1), (2, 0), (3, 0)]);
+    let image_tag_columns = connection
+        .prepare("PRAGMA table_info('image_tags')")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(image_tag_columns, vec!["image_id", "tag_id", "position"]);
+    let tags = connection
+        .prepare("SELECT tag FROM tags ORDER BY tag")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(tags, vec!["keeper", "publish"]);
     let schema_version = connection
         .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
         .unwrap();
-    assert_eq!(schema_version, 5);
+    assert_eq!(schema_version, LATEST_SCHEMA_VERSION);
 }
 
 #[test]
@@ -953,67 +1207,141 @@ fn legacy_json_review_state_is_migrated_once_after_verified_round_trip() {
         serde_json::to_value(&loaded_again).unwrap(),
         serde_json::to_value(&store).unwrap()
     );
+    assert!(!table_exists(&sqlite_path, "review_state").unwrap());
+    assert!(json_storage_columns(&sqlite_path).unwrap().is_empty());
 }
 
 #[test]
-fn existing_sqlite_schema_is_migrated_for_source_file_info() {
+fn existing_v5_sqlite_state_is_migrated_losslessly_and_only_once() {
     let temp = tempfile::tempdir().unwrap();
     let state_path = temp.path().join(SQLITE_STATE_FILE);
-    let mut store = ReviewStore::new(Vec::new());
-    store.exif_schema_version = 3;
-    let store_json = serde_json::to_string_pretty(&store).unwrap();
-    let connection = rusqlite::Connection::open(&state_path).unwrap();
-    connection
-        .execute_batch(
-            "CREATE TABLE schema_migrations (
-                version INTEGER PRIMARY KEY,
-                name TEXT NOT NULL,
-                applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE TABLE review_state (
-                id INTEGER PRIMARY KEY,
-                store_json TEXT NOT NULL
-            );
-            CREATE TABLE images (image_id INTEGER PRIMARY KEY);
-            PRAGMA user_version = 4;",
-        )
-        .unwrap();
-    for version in 1..=4 {
-        connection
-            .execute(
-                "INSERT INTO schema_migrations(version, name) VALUES (?1, ?2)",
-                rusqlite::params![version, format!("migration-{version}")],
-            )
-            .unwrap();
-    }
-    connection
-        .execute(
-            "INSERT INTO review_state(id, store_json) VALUES (1, ?1)",
-            rusqlite::params![store_json],
-        )
-        .unwrap();
-    drop(connection);
+    let store = fully_populated_review_store();
+    create_v5_review_database(&state_path, &store);
 
     let loaded = load_store(&state_path).unwrap().unwrap();
     assert_eq!(
-        serde_json::to_value(loaded).unwrap(),
+        serde_json::to_value(&loaded).unwrap(),
+        serde_json::to_value(&store).unwrap()
+    );
+    assert!(!table_exists(&state_path, "review_state").unwrap());
+    assert!(json_storage_columns(&state_path).unwrap().is_empty());
+
+    let connection = rusqlite::Connection::open(&state_path).unwrap();
+    let schema_version = connection
+        .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+        .unwrap();
+    assert_eq!(schema_version, LATEST_SCHEMA_VERSION);
+    let migration_count = connection
+        .query_row(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version = ?1",
+            [LATEST_SCHEMA_VERSION],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    assert_eq!(migration_count, 1);
+    drop(connection);
+
+    let loaded_again = load_store(&state_path).unwrap().unwrap();
+    assert_eq!(
+        serde_json::to_value(loaded_again).unwrap(),
         serde_json::to_value(store).unwrap()
     );
     let connection = rusqlite::Connection::open(&state_path).unwrap();
-    for column in ["source_file_size_bytes", "source_width", "source_height"] {
-        let count = connection
-            .query_row(
-                "SELECT COUNT(*) FROM pragma_table_info('images') WHERE name = ?1",
-                [column],
-                |row| row.get::<_, i64>(0),
-            )
-            .unwrap();
-        assert_eq!(count, 1, "missing migrated column {column}");
-    }
+    let migration_count = connection
+        .query_row(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version = ?1",
+            [LATEST_SCHEMA_VERSION],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    assert_eq!(migration_count, 1);
+}
+
+#[test]
+fn failed_v5_normalization_rolls_back_schema_and_snapshot() {
+    let temp = tempfile::tempdir().unwrap();
+    let state_path = temp.path().join(SQLITE_STATE_FILE);
+    let mut store = fully_populated_review_store();
+    store.next_id = u64::MAX;
+    create_v5_review_database(&state_path, &store);
+    let original_json = serde_json::to_string_pretty(&store).unwrap();
+
+    let error = load_store(&state_path).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("does not fit sqlite INTEGER"),
+        "{error:#}"
+    );
+
+    let connection = rusqlite::Connection::open(&state_path).unwrap();
     let schema_version = connection
         .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
         .unwrap();
     assert_eq!(schema_version, 5);
+    let stored_json = connection
+        .query_row(
+            "SELECT store_json FROM review_state WHERE id = 1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap();
+    assert_eq!(stored_json, original_json);
+    let migration_count = connection
+        .query_row(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version = 6",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    assert_eq!(migration_count, 0);
+    let settings_table_count = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table' AND name = 'review_settings'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    assert_eq!(settings_table_count, 0);
+    let image_json_column_count = connection
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('images') WHERE name = 'image_json'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    assert_eq!(image_json_column_count, 1);
+}
+
+#[test]
+fn newer_sqlite_schema_is_rejected_without_modification() {
+    let temp = tempfile::tempdir().unwrap();
+    let state_path = temp.path().join(SQLITE_STATE_FILE);
+    let connection = rusqlite::Connection::open(&state_path).unwrap();
+    connection
+        .execute_batch("PRAGMA user_version = 7;")
+        .unwrap();
+    drop(connection);
+
+    let error = load_store(&state_path).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("newer than supported version"),
+        "{error:#}"
+    );
+
+    let connection = rusqlite::Connection::open(&state_path).unwrap();
+    let schema_version = connection
+        .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+        .unwrap();
+    assert_eq!(schema_version, 7);
+    let migration_table_count = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table' AND name = 'schema_migrations'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    assert_eq!(migration_table_count, 0);
 }
 
 #[test]

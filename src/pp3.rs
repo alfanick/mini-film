@@ -22,7 +22,7 @@ pub fn write_rawtherapee_profile(
     adjustments: &ProfileAdjustments,
     sharpening: SharpeningSettings,
 ) -> Result<Option<PathBuf>> {
-    if adjustments.is_default() && !sharpening.is_enabled() {
+    if adjustments.is_default() && !sharpening.present {
         return Ok(None);
     }
 
@@ -51,8 +51,10 @@ pub fn write_rawtherapee_resize_profile(path: &Path, long_edge: u32) -> Result<P
 /// sliders map to RawTherapee's Exposure tool where there are direct controls;
 /// point and parametric curves become RT curve data; HSL/calibration sliders are
 /// represented as hue-relative Lab curves; and Lightroom sharpening becomes RT
-/// capture sharpening/unsharp settings. Unsupported or weakly-known Lightroom
-/// controls are left out instead of being baked into the Hald.
+/// capture sharpening/unsharp settings. An absent sharpening setting is omitted
+/// so a later partial profile cannot reset sharpening from an earlier layer.
+/// Unsupported or weakly-known Lightroom controls are left out instead of being
+/// baked into the Hald.
 pub fn rawtherapee_profile_text(
     adjustments: &ProfileAdjustments,
     sharpening: SharpeningSettings,
@@ -63,7 +65,9 @@ pub fn rawtherapee_profile_text(
     write_luminance_section(&mut out, adjustments);
     write_color_curve_section(&mut out, adjustments);
     write_vibrance_section(&mut out, adjustments);
-    write_sharpening_section(&mut out, sharpening);
+    if sharpening.present {
+        write_sharpening_section(&mut out, sharpening);
+    }
     write_color_management_section(&mut out);
     write_raw_section(&mut out);
 
@@ -367,14 +371,56 @@ mod tests {
     use crate::model::{ParametricTone, ProfileAdjustments};
 
     #[test]
-    fn neutral_profile_has_disabled_curves_and_sharpening() {
+    fn neutral_profile_omits_absent_sharpening() {
         let profile = rawtherapee_profile_text(
             &ProfileAdjustments::default(),
             SharpeningSettings::default(),
         );
         assert!(profile.contains("[Exposure]\n"));
         assert!(profile.contains("Curve=0;\n"));
+        assert!(!profile.contains("[Sharpening]\n"));
+    }
+
+    #[test]
+    fn explicit_disabled_sharpening_is_emitted() {
+        let profile = rawtherapee_profile_text(
+            &ProfileAdjustments::default(),
+            SharpeningSettings {
+                present: true,
+                amount: 0.0,
+                radius: 1.0,
+                detail: 0.0,
+                masking: 0.0,
+            },
+        );
+
         assert!(profile.contains("[Sharpening]\nEnabled=false\n"));
+    }
+
+    #[test]
+    fn explicit_disabled_sharpening_writes_a_partial_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("disabled-sharpening.pp3");
+
+        let written = write_rawtherapee_profile(
+            &path,
+            &ProfileAdjustments::default(),
+            SharpeningSettings {
+                present: true,
+                amount: 0.0,
+                radius: 1.0,
+                detail: 0.0,
+                masking: 0.0,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(written, Some(path.clone()));
+        assert!(
+            std::fs::read_to_string(path)
+                .unwrap()
+                .contains("[Sharpening]\nEnabled=false\n")
+        );
     }
 
     #[test]
