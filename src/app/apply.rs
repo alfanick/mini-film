@@ -1,6 +1,10 @@
 use std::{
     fs,
+    fs::OpenOptions,
+    io::Read,
     path::{Path, PathBuf},
+    process::Command,
+    thread,
     time::Duration,
 };
 
@@ -9,11 +13,12 @@ use indicatif::ProgressBar;
 use mini_film::{
     GrainEngine, GrainSettings, apply_grain_8bit_with_engine, apply_grain_with_engine,
 };
+use sha1::{Digest, Sha1};
 use tempfile::Builder;
 
 use crate::app::export::{
-    finalize_auto_oriented_output_with_retouch, finalize_output_with_retouch, output_ext,
-    validate_export_options, validate_output_format,
+    add_convert_thread_limit, finalize_auto_oriented_output_with_retouch,
+    finalize_output_with_retouch, output_ext, validate_export_options, validate_output_format,
 };
 use crate::app::pp3::{
     write_rawtherapee_active_d_lighting_profile, write_rawtherapee_color_noise_profile,
@@ -29,8 +34,8 @@ use crate::app::retouch::{
     write_rawtherapee_retouch_profile,
 };
 use crate::app::util::{
-    OutputEditMetadata, extract_capture_iso, is_jpeg_input_file, remove_temp_file,
-    sync_output_metadata_from_image_with_color_profile,
+    OutputEditMetadata, extract_capture_iso, is_heic_input_file, is_jpeg_input_file,
+    is_raw_input_file, remove_temp_file, sync_output_metadata_from_image_with_color_profile,
     sync_output_metadata_from_raw_with_color_profile, sync_output_timestamps_from_exif,
     time_of_day_seed,
 };
@@ -76,6 +81,7 @@ pub(crate) struct ApplyJob<'a> {
     pub(crate) exif_comment: Option<String>,
     pub(crate) retouch: Option<&'a RetouchSettings>,
     pub(crate) bw_filter: BwFilter,
+    pub(crate) profile_input_cache_root: Option<&'a Path>,
 }
 
 pub(crate) struct CompressedApplyJob<'a> {
@@ -108,19 +114,16 @@ pub(crate) fn run_apply(args: ApplyArgs) -> Result<()> {
     validate_output_format(&args.output)?;
     validate_export_options(&args.export)?;
 
-    if is_jpeg_input_file(&args.raw) {
-        if args
-            .profile
-            .as_deref()
-            .is_some_and(|profile| !profile.trim().is_empty())
-        {
-            bail!("--profile is only supported for RAW inputs");
-        }
+    let explicit_profile = args
+        .profile
+        .as_deref()
+        .is_some_and(|profile| !profile.trim().is_empty());
+    if is_jpeg_input_file(&args.raw) && !explicit_profile {
         if args.lens_corrections.is_enabled() {
             bail!("--lens-corrections is only supported for RAW inputs");
         }
         if args.grain.is_some() || args.grain_preset.is_some() {
-            bail!("--grain and --grain-preset are only supported for RAW inputs");
+            bail!("--grain and --grain-preset require --profile for JPEG/HEIC inputs");
         }
 
         let file = ProgressBar::new(progress_length());
@@ -192,6 +195,7 @@ pub(crate) fn run_apply(args: ApplyArgs) -> Result<()> {
             exif_comment: Some(exif_comment_for_command("apply", args.profile.as_deref())),
             retouch: args.retouch.as_ref(),
             bw_filter: args.bw_filter,
+            profile_input_cache_root: None,
         },
         &resolved,
         grain_seed,
@@ -293,13 +297,14 @@ pub(crate) fn resolve_apply_effects(
     resolved: &ResolvedProfile,
     color_noise_iso_threshold: u32,
 ) -> (bool, bool) {
-    let denoise_applied = denoise_profile_applied(raw, color_noise_iso_threshold);
+    let denoise_applied =
+        is_raw_input_file(raw) && denoise_profile_applied(raw, color_noise_iso_threshold);
     (resolved.sharpening_applied, denoise_applied)
 }
 
-/// Apply an already resolved profile to one RAW input.
+/// Apply an already resolved profile to one RAW or compressed input.
 ///
-/// The function owns the processing graph. It develops RAW with RawTherapee
+/// The function owns the processing graph. It develops the input with RawTherapee
 /// while applying generated `.pp3` adjustments and the Hald CLUT via Film
 /// Simulation, using 8-bit JPEG intermediates for JPEG-bound outputs and 16-bit
 /// TIFF intermediates for TIFF-bound outputs. It eagerly removes temporary
@@ -314,6 +319,10 @@ pub(crate) fn apply_resolved(
     progress: Option<&ApplyProgress<'_>>,
 ) -> Result<()> {
     validate_output_format(job.output)?;
+
+    let prepared_input = prepare_profile_input(&job, temp_dir, progress)?;
+    let develop_input = prepared_input.as_deref().unwrap_or(job.raw);
+    let raw_input = is_raw_input_file(job.raw);
 
     let grain_enabled = !job.no_grain && resolved.grain.is_enabled();
     let output_ext = output_ext(job.output)?;
@@ -333,19 +342,30 @@ pub(crate) fn apply_resolved(
 
     let rawtherapee_profiles =
         rawtherapee_profiles_for_apply(resolved, temp_dir, job.retouch, job.bw_filter)?;
-    let rawtherapee_profiles =
-        with_optional_active_d_lighting_profile(job.raw, &rawtherapee_profiles, temp_dir)?;
-    let rawtherapee_profiles = with_optional_color_noise_profile(
-        job.raw,
-        &rawtherapee_profiles,
-        temp_dir,
-        job.color_noise_iso_threshold,
-    )?;
-    let rawtherapee_profiles = with_optional_lens_corrections_profile(
-        &rawtherapee_profiles,
-        temp_dir,
-        job.lens_corrections,
-    )?;
+    let rawtherapee_profiles = if raw_input {
+        with_optional_active_d_lighting_profile(job.raw, &rawtherapee_profiles, temp_dir)?
+    } else {
+        rawtherapee_profiles
+    };
+    let rawtherapee_profiles = if raw_input {
+        with_optional_color_noise_profile(
+            job.raw,
+            &rawtherapee_profiles,
+            temp_dir,
+            job.color_noise_iso_threshold,
+        )?
+    } else {
+        rawtherapee_profiles
+    };
+    let rawtherapee_profiles = if raw_input {
+        with_optional_lens_corrections_profile(
+            &rawtherapee_profiles,
+            temp_dir,
+            job.lens_corrections,
+        )?
+    } else {
+        rawtherapee_profiles
+    };
     let raw_stage = progress_stage_adaptive(
         progress,
         1,
@@ -358,7 +378,7 @@ pub(crate) fn apply_resolved(
         "rawtherapee",
         estimate_rawtherapee_duration(job.raw, jpeg_intermediate),
     );
-    let effective_lcp_root = if job.lens_corrections.is_enabled() {
+    let effective_lcp_root = if raw_input && job.lens_corrections.is_enabled() {
         job.lcp_root
     } else {
         None
@@ -368,7 +388,7 @@ pub(crate) fn apply_resolved(
         run_raw_develop_jpeg(
             job.rawtherapee,
             &rawtherapee_profiles,
-            job.raw,
+            develop_input,
             &intermediate,
             job.export.jpg_quality,
             job.export.jpeg_subsampling,
@@ -379,7 +399,7 @@ pub(crate) fn apply_resolved(
         run_raw_develop(
             job.rawtherapee,
             &rawtherapee_profiles,
-            job.raw,
+            develop_input,
             &intermediate,
             effective_lcp_root,
             job.quiet,
@@ -531,6 +551,164 @@ pub(crate) fn apply_resolved(
         remove_temp_file(&intermediate)?;
     }
     progress_step(progress, 6, "done");
+    Ok(())
+}
+
+const HEIC_PROFILE_INPUT_CACHE_VERSION: &str = "heic-v1";
+
+fn prepare_profile_input(
+    job: &ApplyJob<'_>,
+    temp_dir: &Path,
+    progress: Option<&ApplyProgress<'_>>,
+) -> Result<Option<PathBuf>> {
+    if !is_heic_input_file(job.raw) {
+        return Ok(None);
+    }
+
+    progress_step(progress, 1, "heic prepare");
+    let output = if let Some(cache_root) = job.profile_input_cache_root {
+        let cache_dir = cache_root
+            .join(".mini-film-profile-inputs")
+            .join(HEIC_PROFILE_INPUT_CACHE_VERSION);
+        fs::create_dir_all(&cache_dir)
+            .with_context(|| format!("creating {}", cache_dir.display()))?;
+        let digest = profile_input_digest(job.raw)?;
+        let output = cache_dir.join(format!("{digest}.tif"));
+        ensure_cached_heic_profile_input(job.convert, job.raw, &output)?;
+        output
+    } else {
+        let output = temp_dir.join("heic-profile-input.tif");
+        convert_heic_profile_input(job.convert, job.raw, &output)?;
+        output
+    };
+    Ok(Some(output))
+}
+
+fn profile_input_digest(input: &Path) -> Result<String> {
+    let mut file = fs::File::open(input)
+        .with_context(|| format!("opening {} for profile-input cache", input.display()))?;
+    let mut hasher = Sha1::new();
+    hasher.update(HEIC_PROFILE_INPUT_CACHE_VERSION.as_bytes());
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .with_context(|| format!("reading {} for profile-input cache", input.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+fn ensure_cached_heic_profile_input(convert: &Path, input: &Path, output: &Path) -> Result<()> {
+    if cached_profile_input_exists(output) {
+        return Ok(());
+    }
+
+    let lock_path = output.with_extension("lock");
+    loop {
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            Ok(_) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                if cached_profile_input_exists(output) {
+                    return Ok(());
+                }
+                if cache_lock_is_stale(&lock_path) {
+                    match fs::remove_file(&lock_path) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => {
+                            return Err(error).with_context(|| {
+                                format!("removing stale cache lock {}", lock_path.display())
+                            });
+                        }
+                    }
+                    continue;
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("creating cache lock {}", lock_path.display()));
+            }
+        }
+    }
+    let _lock = ProfileInputCacheLock(lock_path);
+    if cached_profile_input_exists(output) {
+        return Ok(());
+    }
+
+    let parent = output
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("profile-input cache path has no parent"))?;
+    let temp = Builder::new()
+        .prefix(".mini-film-heic-")
+        .suffix(".tif")
+        .tempfile_in(parent)
+        .with_context(|| {
+            format!(
+                "creating temporary HEIC profile input in {}",
+                parent.display()
+            )
+        })?;
+    convert_heic_profile_input(convert, input, temp.path())?;
+    temp.persist(output)
+        .map_err(|error| error.error)
+        .with_context(|| format!("publishing HEIC profile input {}", output.display()))?;
+    Ok(())
+}
+
+fn cached_profile_input_exists(path: &Path) -> bool {
+    fs::metadata(path).is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
+}
+
+fn cache_lock_is_stale(path: &Path) -> bool {
+    fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .and_then(|modified| modified.elapsed().map_err(std::io::Error::other))
+        .is_ok_and(|age| age > Duration::from_secs(30 * 60))
+}
+
+struct ProfileInputCacheLock(PathBuf);
+
+impl Drop for ProfileInputCacheLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+fn convert_heic_profile_input(convert: &Path, input: &Path, output: &Path) -> Result<()> {
+    let mut command = Command::new(convert);
+    add_convert_thread_limit(&mut command, convert);
+    let status = command
+        .arg(input)
+        .arg("-auto-orient")
+        .arg("-depth")
+        .arg("16")
+        .arg("-compress")
+        .arg("Zip")
+        .arg(output)
+        .status()
+        .with_context(|| format!("preparing HEIC input with {}", convert.display()))?;
+    if !status.success() {
+        bail!("HEIC profile-input conversion failed with status {status}");
+    }
+    if !output.is_file() {
+        bail!(
+            "HEIC profile-input conversion did not create {}",
+            output.display()
+        );
+    }
     Ok(())
 }
 
@@ -931,6 +1109,7 @@ mod tests {
                 exif_comment: Some("mini-film test".to_string()),
                 retouch: None,
                 bw_filter: BwFilter::None,
+                profile_input_cache_root: None,
             },
             &resolved,
             0,
@@ -986,6 +1165,7 @@ mod tests {
                 exif_comment: Some("mini-film test".to_string()),
                 retouch: None,
                 bw_filter: BwFilter::None,
+                profile_input_cache_root: None,
             },
             &resolved,
             1,
@@ -1043,6 +1223,7 @@ mod tests {
                 exif_comment: Some("mini-film test".to_string()),
                 retouch: None,
                 bw_filter: BwFilter::None,
+                profile_input_cache_root: None,
             },
             &resolved,
             2,
@@ -1058,5 +1239,116 @@ mod tests {
                 .unwrap()
                 .contains(&out.to_string_lossy().to_string())
         );
+    }
+
+    #[test]
+    fn run_apply_sends_jpeg_with_explicit_profile_through_rawtherapee() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = temp.path().join("frame.JPG");
+        make_source_image(&input);
+        let rawtherapee_output = temp.path().join("rawtherapee-source.jpg");
+        make_source_image(&rawtherapee_output);
+        let rawtherapee = temp.path().join("rawtherapee");
+        let raw_log = write_fake_rawtherapee(&rawtherapee, &rawtherapee_output)
+            .unwrap()
+            .log;
+        let convert = temp.path().join("convert");
+        write_fake_convert(&convert).unwrap();
+        let pp3 = temp.path().join("look.pp3");
+        fs::write(&pp3, "[Exposure]\nEnabled=true\nCompensation=1\n").unwrap();
+        let output = temp.path().join("out.jpg");
+        let mut export = test_export_options();
+        export.strip_metadata = true;
+
+        run_apply(ApplyArgs {
+            raw: input.clone(),
+            output: output.clone(),
+            profile: Some(pp3.display().to_string()),
+            hald_dir: temp.path().join("hald"),
+            profiles_root: temp.path().to_path_buf(),
+            hald_level: 16,
+            rawtherapee,
+            convert,
+            keep_intermediate: None,
+            no_grain: true,
+            color_noise_iso_threshold: 1,
+            lens_corrections: LensCorrections::all(),
+            lcp_root: None,
+            grain: None,
+            grain_preset: None,
+            grain_seed: Some(1),
+            grain_engine: GrainEngine::default(),
+            export,
+            retouch: None,
+            bw_filter: BwFilter::None,
+        })
+        .unwrap();
+
+        assert!(output.is_file());
+        let invocation = fs::read_to_string(raw_log).unwrap();
+        assert!(invocation.contains(&format!("-p {}", pp3.display())));
+        assert!(invocation.contains(&format!("-c {}", input.display())));
+        assert!(!invocation.contains("lens-corrections.pp3"));
+        assert!(!invocation.contains("active-d-lighting.pp3"));
+        assert!(!invocation.contains("color-noise.pp3"));
+    }
+
+    #[test]
+    fn profiled_heic_preparation_is_cached_across_renders() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = temp.path().join("frame.HEIC");
+        fs::write(&input, b"fake heic source").unwrap();
+        let rawtherapee_output = temp.path().join("rawtherapee-source.jpg");
+        make_source_image(&rawtherapee_output);
+        let rawtherapee = temp.path().join("rawtherapee");
+        let raw_log = write_fake_rawtherapee(&rawtherapee, &rawtherapee_output)
+            .unwrap()
+            .log;
+        let convert = temp.path().join("convert");
+        let convert_log = write_fake_convert(&convert).unwrap();
+        let cache_root = temp.path().join("output-root");
+        let mut export = test_export_options();
+        export.strip_metadata = true;
+        let resolved = resolved_profile(GrainSettings::default(), None);
+
+        for index in 0..2 {
+            let job_temp = temp.path().join(format!("job-{index}"));
+            fs::create_dir_all(&job_temp).unwrap();
+            let output = temp.path().join(format!("out-{index}.jpg"));
+            apply_resolved(
+                ApplyJob {
+                    raw: &input,
+                    output: &output,
+                    rawtherapee: &rawtherapee,
+                    convert: &convert,
+                    keep_intermediate: None,
+                    no_grain: true,
+                    grain_engine: GrainEngine::default(),
+                    color_noise_iso_threshold: 1,
+                    lens_corrections: LensCorrections::all(),
+                    lcp_root: None,
+                    export: &export,
+                    quiet: true,
+                    exif_comment: None,
+                    retouch: None,
+                    bw_filter: BwFilter::None,
+                    profile_input_cache_root: Some(&cache_root),
+                },
+                &resolved,
+                index,
+                &job_temp,
+                None,
+            )
+            .unwrap();
+            assert!(output.is_file());
+        }
+
+        let convert_invocations = fs::read_to_string(convert_log).unwrap();
+        assert_eq!(convert_invocations.matches("-compress Zip").count(), 1);
+        assert!(convert_invocations.contains("-auto-orient"));
+        assert!(convert_invocations.contains("-depth 16"));
+        let raw_invocations = fs::read_to_string(raw_log).unwrap();
+        assert_eq!(raw_invocations.lines().count(), 2);
+        assert!(raw_invocations.contains(".mini-film-profile-inputs/heic-v1/"));
     }
 }

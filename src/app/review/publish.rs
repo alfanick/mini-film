@@ -405,7 +405,7 @@ pub(super) fn publish_store_inner(
             continue;
         }
 
-        if is_jpeg_input_file(&image.raw_path) {
+        if image_is_direct_compressed(image) {
             if image.preview.status != ReviewRenderStatus::Done {
                 report.skipped += 1;
                 continue;
@@ -774,10 +774,8 @@ pub(super) fn rerender_sooc_review_output(
     image: &ReviewImage,
     options: &ReviewPublishOptions,
 ) -> Result<()> {
-    let sidecar = image
-        .sooc_sidecar_path
-        .as_ref()
-        .ok_or_else(|| anyhow!("review image has no SOOC sidecar: {}", image.relative_path))?;
+    let sidecar = image_sooc_source(image)
+        .ok_or_else(|| anyhow!("review image has no SOOC source: {}", image.relative_path))?;
     let sidecar = safe_existing_raw_source(sidecar, input_root)?;
     let retouch = retouch_without_adjustments(&image.retouch);
     apply_compressed(

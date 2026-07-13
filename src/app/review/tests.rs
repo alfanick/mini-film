@@ -689,6 +689,77 @@ fn sync_profiles_merges_standalone_sooc_sidecar_after_restart() {
 }
 
 #[test]
+fn sqlite_restart_adds_profiles_to_compressed_images_without_losing_review_metadata() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let jpg = input.join("frame.JPG");
+    fs::write(&jpg, b"jpg").unwrap();
+
+    let mut store = ReviewStore::new(Vec::new());
+    let image = store.ensure_image(&input, &jpg).unwrap();
+    image.rating = 4;
+    image.tags = vec!["portrait".to_string()];
+    image.notes = "keep this note".to_string();
+    save_store(&output.join(SQLITE_STATE_FILE), &store).unwrap();
+
+    let (mut restored, _) = load_or_migrate_store(&output).unwrap();
+    restored.sync_profiles(vec![profile(0, "Classic"), profile(1, "Fade")]);
+    let image = restored
+        .images
+        .iter()
+        .find(|image| image.raw_path == jpg)
+        .unwrap();
+    assert!(image_uses_profile_pipeline(image));
+    assert_eq!(image.rating, 4);
+    assert_eq!(image.tags, vec!["portrait"]);
+    assert_eq!(image.notes, "keep this note");
+    assert_eq!(image.profiles.len(), 3);
+    assert!(
+        image
+            .profiles
+            .iter()
+            .any(|render| render.profile_index == SOOC_PROFILE_INDEX)
+    );
+    assert_eq!(effective_publish_profile_indexes(image), vec![0, 1]);
+    assert!(image.profiles.iter().all(|render| {
+        render.processing_key.as_deref()
+            == Some(review_render_processing_key_for_input(
+                &jpg,
+                render.profile_index,
+            ))
+    }));
+}
+
+#[test]
+fn unchanged_config_enables_all_profiles_for_legacy_compressed_state() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    fs::create_dir_all(&input).unwrap();
+    let jpg = input.join("frame.jpg");
+    fs::write(&jpg, b"jpg").unwrap();
+    let configured = vec![profile(0, "Classic"), profile(1, "Fade")];
+    let mut store = ReviewStore::new(configured.clone());
+    let image = store.ensure_image(&input, &jpg).unwrap();
+    image.profiles.clear();
+    image.publish_profile_indexes = Some(Vec::new());
+
+    store.sync_profiles(configured);
+
+    let image = &store.images[0];
+    assert_eq!(image.profiles.len(), 3);
+    assert!(
+        image
+            .profiles
+            .iter()
+            .any(|render| render.profile_index == SOOC_PROFILE_INDEX)
+    );
+    assert_eq!(effective_publish_profile_indexes(image), vec![0, 1]);
+}
+
+#[test]
 fn discovered_raw_merges_existing_standalone_sidecar_and_ignores_stale_jpeg_callbacks() {
     let temp = tempfile::tempdir().unwrap();
     let input = temp.path().join("in");
@@ -731,6 +802,13 @@ fn discovered_raw_merges_existing_standalone_sidecar_and_ignores_stale_jpeg_call
     handle.record_compressed_processing(&sidecar).unwrap();
     handle
         .record_compressed_done(&sidecar, &standalone_output, Duration::from_millis(5))
+        .unwrap();
+    handle
+        .record_profile_queued(&sidecar, 0, &standalone_output)
+        .unwrap();
+    handle.record_profile_processing(&sidecar, 0).unwrap();
+    handle
+        .record_profile_done(&sidecar, 0, &standalone_output, Duration::from_millis(5))
         .unwrap();
 
     let state = handle.store_snapshot();
@@ -1774,7 +1852,7 @@ async fn compressed_review_media_routes_serve_distinct_cached_sizes_and_full_out
     fs::write(&jpg, b"original jpeg bytes").unwrap();
     fs::write(&full, b"full output bytes").unwrap();
 
-    let handle = test_handle(input, output.clone(), vec![profile(0, "Classic")]);
+    let handle = test_handle(input, output.clone(), Vec::new());
     handle.record_compressed_queued(&jpg, &full).unwrap();
     let thumbnail = handle.compressed_thumbnail_path_for(&jpg, 1);
     let preview = handle.compressed_display_preview_path_for(&jpg, 1);
@@ -1801,6 +1879,7 @@ async fn compressed_review_media_routes_serve_distinct_cached_sizes_and_full_out
     assert_eq!(image["thumbnail_url"], "thumbnail/1");
     assert_eq!(image["preview_url"], "preview/1");
     assert_eq!(image["full_url"], "original/1");
+    assert_eq!(image["processing_mode"], "direct");
     assert_eq!(
         image["source_file_size_bytes"],
         json!(fs::metadata(&jpg).unwrap().len())
@@ -1848,6 +1927,51 @@ async fn compressed_review_media_routes_serve_distinct_cached_sizes_and_full_out
         .await
         .unwrap();
     assert_eq!(&body[..], b"full output bytes");
+}
+
+#[test]
+fn profiled_compressed_review_state_exposes_profiles_and_original_source() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let jpg = input.join("frame.JPG");
+    fs::write(&jpg, b"original jpeg bytes").unwrap();
+    let rendered = output.join("Classic").join("frame.jpg");
+    fs::create_dir_all(rendered.parent().unwrap()).unwrap();
+    fs::write(&rendered, b"profiled output").unwrap();
+    let sooc = output.join(SOOC_PROFILE_STEM).join("frame.jpg");
+    fs::create_dir_all(sooc.parent().unwrap()).unwrap();
+    fs::write(&sooc, b"sooc output").unwrap();
+
+    let handle = test_handle(input, output, vec![profile(0, "Classic")]);
+    handle.record_profiled_compressed_discovered(&jpg).unwrap();
+    handle.record_profile_queued(&jpg, 0, &rendered).unwrap();
+    handle
+        .record_profile_done(&jpg, 0, &rendered, Duration::from_millis(10))
+        .unwrap();
+    handle
+        .record_profile_queued(&jpg, SOOC_PROFILE_INDEX, &sooc)
+        .unwrap();
+    handle
+        .record_profile_done(&jpg, SOOC_PROFILE_INDEX, &sooc, Duration::from_millis(5))
+        .unwrap();
+
+    let state = handle.api_state_value().unwrap();
+    let image = &state["images"][0];
+    assert_eq!(image["source_type"], "compressed");
+    assert_eq!(image["processing_mode"], "profiled");
+    assert_eq!(image["full_url"], "original/1");
+    assert_eq!(image["profiles"].as_array().unwrap().len(), 2);
+    assert_eq!(image["profiles"][0]["profile_index"], 0);
+    assert_eq!(image["profiles"][1]["profile_index"], SOOC_PROFILE_INDEX);
+    assert_eq!(image["profiles"][1]["profile_stem"], SOOC_PROFILE_STEM);
+    assert_eq!(
+        image["profiles"][1]["display_name"],
+        SOOC_PROFILE_DISPLAY_NAME
+    );
+    assert_eq!(image["publish_profile_indexes"], json!([0]));
 }
 
 #[test]

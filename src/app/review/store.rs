@@ -2,6 +2,7 @@ use super::model::*;
 use super::prelude::*;
 
 const SOOC_RENDER_PIPELINE_KEY: &str = "sooc-sidecar-v1";
+const PROFILED_COMPRESSED_RENDER_PIPELINE_KEY: &str = "profiled-compressed-render-v1";
 
 impl ReviewStore {
     const EXIF_SCHEMA_VERSION: u32 = 4;
@@ -487,13 +488,20 @@ pub(super) fn sync_image_profile_renders(
     profiles_changed: bool,
     unchanged_profile_indexes: &HashSet<usize>,
 ) {
-    if is_jpeg_input_file(&image.raw_path) {
+    let profiles_apply_to_compressed = profiles
+        .iter()
+        .any(|profile| !profile.selector.trim().is_empty());
+    if is_jpeg_input_file(&image.raw_path) && !profiles_apply_to_compressed {
         image.profiles.clear();
         image.selected_profile_index = 0;
         image.publish_profile_indexes = Some(Vec::new());
         image.profile_bw_filters.clear();
         return;
     }
+
+    let enabling_profiled_compressed = is_jpeg_input_file(&image.raw_path)
+        && profiles_apply_to_compressed
+        && image.profiles.is_empty();
 
     let existing = image
         .profiles
@@ -504,7 +512,8 @@ pub(super) fn sync_image_profile_renders(
     image.profiles = profiles
         .iter()
         .map(|profile| {
-            let processing_key = review_render_processing_key(profile.index);
+            let processing_key =
+                review_render_processing_key_for_input(&image.raw_path, profile.index);
             existing
                 .get(&profile.index)
                 .filter(|render| {
@@ -527,7 +536,9 @@ pub(super) fn sync_image_profile_renders(
                 })
         })
         .collect();
-    if image.sooc_sidecar_path.is_some() {
+    let include_sooc_profile = image.sooc_sidecar_path.is_some()
+        || (is_jpeg_input_file(&image.raw_path) && profiles_apply_to_compressed);
+    if include_sooc_profile {
         let processing_key = review_render_processing_key(SOOC_PROFILE_INDEX);
         image.profiles.push(
             existing
@@ -558,7 +569,7 @@ pub(super) fn sync_image_profile_renders(
             render.processing_key = Some(processing_key.to_string());
         }
     }
-    if profiles_changed {
+    if profiles_changed || enabling_profiled_compressed {
         image.selected_profile_index = profiles.first().map(|profile| profile.index).unwrap_or(0);
         image.publish_profile_indexes = Some(
             image
@@ -583,8 +594,17 @@ pub(super) fn sync_image_profile_renders(
 }
 
 pub(super) fn review_render_processing_key(profile_index: usize) -> &'static str {
+    review_render_processing_key_for_input(Path::new("image.raw"), profile_index)
+}
+
+pub(super) fn review_render_processing_key_for_input(
+    input: &Path,
+    profile_index: usize,
+) -> &'static str {
     if profile_index == SOOC_PROFILE_INDEX {
         SOOC_RENDER_PIPELINE_KEY
+    } else if is_jpeg_input_file(input) {
+        PROFILED_COMPRESSED_RENDER_PIPELINE_KEY
     } else {
         RAW_RENDER_PIPELINE_KEY
     }
@@ -613,7 +633,7 @@ fn missing_profile_render(
 }
 
 pub(super) fn effective_publish_profile_indexes(image: &ReviewImage) -> Vec<usize> {
-    if is_jpeg_input_file(&image.raw_path) {
+    if image_is_direct_compressed(image) {
         return Vec::new();
     }
     match &image.publish_profile_indexes {
@@ -625,6 +645,14 @@ pub(super) fn effective_publish_profile_indexes(image: &ReviewImage) -> Vec<usiz
             .map(|profile| profile.profile_index)
             .collect(),
     }
+}
+
+pub(super) fn image_uses_profile_pipeline(image: &ReviewImage) -> bool {
+    !is_jpeg_input_file(&image.raw_path) || !image.profiles.is_empty()
+}
+
+pub(super) fn image_is_direct_compressed(image: &ReviewImage) -> bool {
+    is_jpeg_input_file(&image.raw_path) && !image_uses_profile_pipeline(image)
 }
 
 pub(super) fn preferred_preview_profile_index(

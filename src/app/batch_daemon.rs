@@ -15,7 +15,7 @@ use notify::{
     Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher,
     event::{AccessKind, ModifyKind},
 };
-use tempfile::Builder;
+use tempfile::{Builder, TempPath};
 use walkdir::WalkDir;
 
 use mini_film::GrainEngine;
@@ -39,8 +39,8 @@ use crate::app::review::{
 use crate::app::system_stats::{ResourceUsageSummary, sample_usage_block};
 use crate::app::util::{
     InputFileFilter, coalesce_due_input_sidecars, coalesce_input_sidecars, half_cpu_thread_count,
-    input_filter_name, is_raw_input_file, is_supported_input_file, matching_sidecar_for_raw,
-    time_of_day_seed,
+    input_filter_name, is_raw_input_file, is_supported_input_file, matching_raw_for_sidecar,
+    matching_sidecar_for_raw, time_of_day_seed,
 };
 use crate::cli::{
     BatchOutputFormat, CodexAnalysisFlags, ExportOptions, GalleryTemplate, LensCorrections,
@@ -561,6 +561,14 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
             let Some(task) = queue.pop_front() else {
                 break;
             };
+            if matches!(
+                &task.kind,
+                DaemonTaskKind::RawProfile(_) | DaemonTaskKind::SoocSidecar { .. }
+            ) && compressed_profile_has_matching_raw(&task.raw)
+            {
+                batch.inc(1);
+                continue;
+            }
             let profile = match &task.kind {
                 DaemonTaskKind::RawProfile(profile_index) => {
                     match profiles.get(*profile_index).cloned() {
@@ -1014,10 +1022,6 @@ fn profile_daemon_info(
 }
 
 fn resolve_daemon_profiles(args: &BatchDaemonArgs, temp_dir: &Path) -> Result<Vec<DaemonProfile>> {
-    if matches!(args.input_file_filter, InputFileFilter::JpgOnly) {
-        return Ok(Vec::new());
-    }
-
     let selectors = args
         .profile
         .iter()
@@ -1026,6 +1030,10 @@ fn resolve_daemon_profiles(args: &BatchDaemonArgs, temp_dir: &Path) -> Result<Ve
             (!selector.is_empty()).then(|| selector.to_string())
         })
         .collect::<Vec<_>>();
+
+    if selectors.is_empty() && matches!(args.input_file_filter, InputFileFilter::JpgOnly) {
+        return Ok(Vec::new());
+    }
 
     selectors
         .iter()
@@ -1183,14 +1191,22 @@ fn enqueue_profile_jobs(
     context: &ProfileScheduleContext<'_>,
 ) -> Result<usize> {
     let mut queued = 0usize;
-    if !is_raw_input_file(&raw) {
+    let raw_input = is_raw_input_file(&raw);
+    if !raw_input && !daemon_profiles_are_explicit(profiles) {
         return enqueue_compressed_job(queue, raw, context);
     }
-    let sooc_sidecar = matches!(context.input_file_filter, InputFileFilter::All)
+    if compressed_profile_has_matching_raw(&raw) {
+        return Ok(0);
+    }
+    let sooc_sidecar = (raw_input && matches!(context.input_file_filter, InputFileFilter::All))
         .then(|| matching_sidecar_for_raw(&raw))
         .flatten();
     if let Some(review) = context.review {
-        review.record_discovered_raw_with_sidecar(&raw, sooc_sidecar.as_deref())?;
+        if raw_input {
+            review.record_discovered_raw_with_sidecar(&raw, sooc_sidecar.as_deref())?;
+        } else {
+            review.record_profiled_compressed_discovered(&raw)?;
+        }
     }
     for (profile_index, profile) in profiles.iter().enumerate() {
         let expected_output = daemon_output_path(
@@ -1221,10 +1237,17 @@ fn enqueue_profile_jobs(
         });
         queued += 1;
     }
-    if let Some(sidecar) = sooc_sidecar {
+    let sooc_source = sooc_sidecar.or_else(|| (!raw_input).then(|| raw.clone()));
+    if let Some(sidecar) = sooc_source {
         queued += enqueue_sooc_job(queue, raw, sidecar, context)?;
     }
     Ok(queued)
+}
+
+fn daemon_profiles_are_explicit(profiles: &[Arc<DaemonProfile>]) -> bool {
+    profiles
+        .iter()
+        .any(|profile| !profile.selector.trim().is_empty())
 }
 
 fn enqueue_compressed_job(
@@ -1347,12 +1370,24 @@ fn process_single_profile(
                 duration: Duration::ZERO,
                 profile_index: Some(profile_index as usize),
                 error: Some(error.to_string()),
-                lens_profile_status: lens_profile_status(args.lens_corrections, false),
+                lens_profile_status: daemon_input_lens_status(raw, args.lens_corrections, false),
                 sharpening_status: sharpening_status(false),
                 denoise_status: denoise_status(false),
             };
         }
     };
+    if compressed_profile_has_matching_raw(raw) {
+        return DaemonFileResult {
+            raw: raw.to_path_buf(),
+            output,
+            duration: Duration::ZERO,
+            profile_index: Some(profile_index as usize),
+            error: None,
+            lens_profile_status: daemon_input_lens_status(raw, args.lens_corrections, false),
+            sharpening_status: sharpening_status(false),
+            denoise_status: denoise_status(false),
+        };
+    }
 
     if let Some(parent) = output.parent()
         && let Err(error) = fs::create_dir_all(parent)
@@ -1363,7 +1398,7 @@ fn process_single_profile(
             duration: Duration::ZERO,
             profile_index: Some(profile_index as usize),
             error: Some(error.to_string()),
-            lens_profile_status: lens_profile_status(args.lens_corrections, false),
+            lens_profile_status: daemon_input_lens_status(raw, args.lens_corrections, false),
             sharpening_status: sharpening_status(false),
             denoise_status: denoise_status(false),
         };
@@ -1378,12 +1413,36 @@ fn process_single_profile(
                 duration: Duration::ZERO,
                 profile_index: Some(profile_index as usize),
                 error: Some(error.to_string()),
-                lens_profile_status: lens_profile_status(args.lens_corrections, false),
+                lens_profile_status: daemon_input_lens_status(raw, args.lens_corrections, false),
                 sharpening_status: sharpening_status(false),
                 denoise_status: denoise_status(false),
             };
         }
     };
+    let staged_output = if is_raw_input_file(raw) {
+        None
+    } else {
+        match daemon_profile_output_temp(&output) {
+            Ok(staged_output) => Some(staged_output),
+            Err(error) => {
+                return DaemonFileResult {
+                    raw: raw.to_path_buf(),
+                    output,
+                    duration: Duration::ZERO,
+                    profile_index: Some(profile_index as usize),
+                    error: Some(error.to_string()),
+                    lens_profile_status: daemon_input_lens_status(
+                        raw,
+                        args.lens_corrections,
+                        false,
+                    ),
+                    sharpening_status: sharpening_status(false),
+                    denoise_status: denoise_status(false),
+                };
+            }
+        }
+    };
+    let apply_output = staged_output.as_deref().unwrap_or(&output);
 
     file.set_position(0);
     let profile_label = daemon_profile_label(&profile.stem);
@@ -1399,7 +1458,7 @@ fn process_single_profile(
     if let Err(error) = apply_resolved(
         ApplyJob {
             raw,
-            output: &output,
+            output: apply_output,
             rawtherapee: &args.rawtherapee,
             convert: &args.convert,
             keep_intermediate: None,
@@ -1421,6 +1480,7 @@ fn process_single_profile(
             )),
             retouch: None,
             bw_filter: crate::app::retouch::BwFilter::None,
+            profile_input_cache_root: Some(&args.output),
         },
         &profile.resolved,
         seed,
@@ -1433,7 +1493,21 @@ fn process_single_profile(
             duration: file_start.elapsed(),
             profile_index: Some(profile_index as usize),
             error: Some(error.to_string()),
-            lens_profile_status: lens_profile_status(args.lens_corrections, false),
+            lens_profile_status: daemon_input_lens_status(raw, args.lens_corrections, false),
+            sharpening_status: sharpening_status(false),
+            denoise_status: denoise_status(false),
+        };
+    }
+    if let Some(staged_output) = staged_output
+        && let Err(error) = publish_daemon_profile_output(raw, staged_output, &output)
+    {
+        return DaemonFileResult {
+            raw: raw.to_path_buf(),
+            output,
+            duration: file_start.elapsed(),
+            profile_index: Some(profile_index as usize),
+            error: Some(error.to_string()),
+            lens_profile_status: daemon_input_lens_status(raw, args.lens_corrections, false),
             sharpening_status: sharpening_status(false),
             denoise_status: denoise_status(false),
         };
@@ -1455,10 +1529,57 @@ fn process_single_profile(
         duration: file_start.elapsed(),
         profile_index: Some(profile_index as usize),
         error: None,
-        lens_profile_status: lens_profile_status(args.lens_corrections, true),
+        lens_profile_status: daemon_input_lens_status(raw, args.lens_corrections, true),
         sharpening_status: sharpening_status(sharpening_applied),
         denoise_status: denoise_status(denoise_applied),
     }
+}
+
+fn daemon_input_lens_status(input: &Path, corrections: LensCorrections, applied: bool) -> String {
+    if is_raw_input_file(input) {
+        lens_profile_status(corrections, applied)
+    } else {
+        "lens-profile: skipped (compressed input)".to_string()
+    }
+}
+
+fn daemon_profile_output_temp(output: &Path) -> Result<TempPath> {
+    let parent = output
+        .parent()
+        .ok_or_else(|| anyhow!("daemon profile output has no parent: {}", output.display()))?;
+    let extension = output
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .ok_or_else(|| {
+            anyhow!(
+                "daemon profile output has no extension: {}",
+                output.display()
+            )
+        })?;
+    let suffix = format!(".{extension}");
+    let staged = Builder::new()
+        .prefix(".mini-film-profile-output-")
+        .suffix(&suffix)
+        .tempfile_in(parent)
+        .with_context(|| format!("creating staged profile output in {}", parent.display()))?
+        .into_temp_path();
+    fs::remove_file(&staged)
+        .with_context(|| format!("preparing staged profile output {}", staged.display()))?;
+    Ok(staged)
+}
+
+fn publish_daemon_profile_output(input: &Path, staged: TempPath, output: &Path) -> Result<()> {
+    if compressed_profile_has_matching_raw(input) {
+        return Ok(());
+    }
+    staged
+        .persist(output)
+        .map_err(|error| error.error)
+        .with_context(|| format!("publishing daemon profile output {}", output.display()))
+}
+
+fn compressed_profile_has_matching_raw(input: &Path) -> bool {
+    !is_raw_input_file(input) && matching_raw_for_sidecar(input).is_some()
 }
 
 fn process_single_compressed(
@@ -1583,6 +1704,19 @@ fn process_single_sooc(
         }
     };
 
+    if compressed_profile_has_matching_raw(raw) {
+        return DaemonFileResult {
+            raw: raw.to_path_buf(),
+            output,
+            duration: Duration::ZERO,
+            profile_index: Some(SOOC_PROFILE_INDEX),
+            error: None,
+            lens_profile_status: "lens-profile: skipped (sooc sidecar)".to_string(),
+            sharpening_status: sharpening_status(false),
+            denoise_status: denoise_status(false),
+        };
+    }
+
     if let Some(parent) = output.parent()
         && let Err(error) = fs::create_dir_all(parent)
     {
@@ -1598,6 +1732,27 @@ fn process_single_sooc(
         };
     }
 
+    let staged_output = if is_raw_input_file(raw) {
+        None
+    } else {
+        match daemon_profile_output_temp(&output) {
+            Ok(staged_output) => Some(staged_output),
+            Err(error) => {
+                return DaemonFileResult {
+                    raw: raw.to_path_buf(),
+                    output,
+                    duration: Duration::ZERO,
+                    profile_index: Some(SOOC_PROFILE_INDEX),
+                    error: Some(error.to_string()),
+                    lens_profile_status: "lens-profile: skipped (sooc sidecar)".to_string(),
+                    sharpening_status: sharpening_status(false),
+                    denoise_status: denoise_status(false),
+                };
+            }
+        }
+    };
+    let apply_output = staged_output.as_deref().unwrap_or(&output);
+
     file.set_position(0);
     file.set_message(format!("{raw_name} -> sooc: queued"));
 
@@ -1610,7 +1765,7 @@ fn process_single_sooc(
     if let Err(error) = apply_compressed(
         CompressedApplyJob {
             input: sidecar,
-            output: &output,
+            output: apply_output,
             convert: &args.convert,
             export: &args.export,
             exif_comment: Some(format!(
@@ -1621,6 +1776,20 @@ fn process_single_sooc(
         },
         Some(&progress),
     ) {
+        return DaemonFileResult {
+            raw: raw.to_path_buf(),
+            output,
+            duration: file_start.elapsed(),
+            profile_index: Some(SOOC_PROFILE_INDEX),
+            error: Some(error.to_string()),
+            lens_profile_status: "lens-profile: skipped (sooc sidecar)".to_string(),
+            sharpening_status: sharpening_status(false),
+            denoise_status: denoise_status(false),
+        };
+    }
+    if let Some(staged_output) = staged_output
+        && let Err(error) = publish_daemon_profile_output(raw, staged_output, &output)
+    {
         return DaemonFileResult {
             raw: raw.to_path_buf(),
             output,
@@ -1807,6 +1976,115 @@ mod tests {
         RenameMode,
     };
     use std::collections::{HashMap, HashSet};
+
+    #[test]
+    fn compressed_inputs_queue_profile_tasks_only_for_explicit_profiles() {
+        let root = tempfile::tempdir().unwrap();
+        let input_root = root.path().join("in");
+        let output_root = root.path().join("out");
+        fs::create_dir_all(&input_root).unwrap();
+        fs::create_dir_all(&output_root).unwrap();
+        let context = ProfileScheduleContext {
+            input_root: &input_root,
+            output_root: &output_root,
+            output_format: BatchOutputFormat::Jpg,
+            input_file_filter: InputFileFilter::All,
+            skip_existing: false,
+            review: None,
+        };
+        let compressed = input_root.join("frame.JPG");
+        fs::write(&compressed, b"jpeg").unwrap();
+
+        let explicit = vec![Arc::new(DaemonProfile {
+            selector: "Classic".to_string(),
+            stem: "Classic".to_string(),
+            resolved: neutral_profile(),
+            profile_report: String::new(),
+        })];
+        let mut queue = VecDeque::new();
+        assert_eq!(
+            enqueue_profile_jobs(&mut queue, &explicit, compressed.clone(), &context).unwrap(),
+            2
+        );
+        assert!(matches!(
+            queue.front().map(|task| &task.kind),
+            Some(DaemonTaskKind::RawProfile(0))
+        ));
+        assert!(matches!(
+            queue.back().map(|task| &task.kind),
+            Some(DaemonTaskKind::SoocSidecar { sidecar }) if sidecar == &compressed
+        ));
+
+        let implicit = vec![Arc::new(DaemonProfile {
+            selector: String::new(),
+            stem: String::new(),
+            resolved: neutral_profile(),
+            profile_report: String::new(),
+        })];
+        queue.clear();
+        assert_eq!(
+            enqueue_profile_jobs(&mut queue, &implicit, compressed, &context).unwrap(),
+            1
+        );
+        assert!(matches!(
+            queue.front().map(|task| &task.kind),
+            Some(DaemonTaskKind::StandaloneCompressed)
+        ));
+    }
+
+    #[test]
+    fn compressed_sidecars_never_queue_explicit_profile_tasks() {
+        let root = tempfile::tempdir().unwrap();
+        let input_root = root.path().join("in");
+        let output_root = root.path().join("out");
+        fs::create_dir_all(&input_root).unwrap();
+        fs::create_dir_all(&output_root).unwrap();
+        let raw = input_root.join("frame.NEF");
+        let sidecar = input_root.join("frame.JPG");
+        fs::write(&raw, b"raw").unwrap();
+        fs::write(&sidecar, b"jpeg").unwrap();
+        let context = ProfileScheduleContext {
+            input_root: &input_root,
+            output_root: &output_root,
+            output_format: BatchOutputFormat::Jpg,
+            input_file_filter: InputFileFilter::JpgOnly,
+            skip_existing: false,
+            review: None,
+        };
+        let profiles = vec![Arc::new(DaemonProfile {
+            selector: "Classic".to_string(),
+            stem: "Classic".to_string(),
+            resolved: neutral_profile(),
+            profile_report: String::new(),
+        })];
+        let mut queue = VecDeque::new();
+
+        assert_eq!(
+            enqueue_profile_jobs(&mut queue, &profiles, sidecar, &context).unwrap(),
+            0
+        );
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn daemon_profile_publication_never_replaces_a_matching_raw_with_its_sidecar() {
+        let root = tempfile::tempdir().unwrap();
+        let input = root.path().join("in");
+        let output_root = root.path().join("out");
+        fs::create_dir_all(&input).unwrap();
+        fs::create_dir_all(&output_root).unwrap();
+        let raw = input.join("frame.NEF");
+        let sidecar = input.join("frame.JPG");
+        let output = output_root.join("frame.jpg");
+        fs::write(&raw, b"raw source").unwrap();
+        fs::write(&sidecar, b"sidecar source").unwrap();
+        fs::write(&output, b"raw render").unwrap();
+
+        let staged = daemon_profile_output_temp(&output).unwrap();
+        fs::write(&staged, b"sidecar render").unwrap();
+        publish_daemon_profile_output(&sidecar, staged, &output).unwrap();
+        assert_eq!(fs::read(&output).unwrap(), b"raw render");
+    }
 
     #[test]
     fn write_daemon_info_txt_emits_tree_profile_level_info_file() {

@@ -113,7 +113,7 @@ pub(crate) enum CommandKind {
         hald_level: u32,
     },
 
-    /// Develop a RAW file or convert an already-processed JPEG/HEIC input.
+    /// Develop a RAW file or process a JPEG/HEIC input, optionally with a profile.
     Apply {
         /// Input file. RAW inputs support common camera RAW formats such as `.dng`,
         /// `.nef`, `.cr2`, `.cr3`, `.arw`, `.raf`, `.orf`, `.rw2`; compressed
@@ -124,9 +124,9 @@ pub(crate) enum CommandKind {
         #[arg(short, long)]
         output: PathBuf,
 
-        /// Optional RAW profile selector: Hald PNG path/name, emulation XMP path/name, or RawTherapee PP3 path.
-        /// If omitted, RawTherapee develops the RAW with its default settings.
-        /// JPEG/HEIC inputs do not accept profiles.
+        /// Optional profile selector: Hald PNG path/name, emulation XMP path/name, or RawTherapee PP3 path.
+        /// If omitted, RawTherapee develops RAW inputs with its defaults while JPEG/HEIC inputs are converted directly.
+        /// With a profile, JPEG is processed directly by RawTherapee and HEIC is prepared as a 16-bit TIFF first.
         #[arg(short, long)]
         profile: Option<String>,
 
@@ -194,7 +194,7 @@ pub(crate) enum CommandKind {
         #[arg(long)]
         grain_seed: Option<u64>,
 
-        /// Grain renderer to use for RAW outputs.
+        /// Grain renderer to use for profiled outputs.
         #[arg(long, value_enum, default_value_t = GrainEngine::default())]
         grain_engine: GrainEngine,
 
@@ -231,7 +231,7 @@ pub(crate) enum CommandKind {
         progressive_jpeg: bool,
     },
 
-    /// Apply optional RAW profiles or convert compressed inputs in an input folder.
+    /// Apply an optional profile or directly convert compressed inputs in a folder.
     Batch {
         /// Input folder scanned recursively for supported RAW and compressed image files.
         ///
@@ -243,9 +243,9 @@ pub(crate) enum CommandKind {
         /// Output folder. It is created if it does not exist.
         output: PathBuf,
 
-        /// Optional RAW profile selector: Hald PNG path/name, emulation XMP path/name, or RawTherapee PP3 path.
-        /// If omitted, RawTherapee develops each RAW with its default settings.
-        /// JPEG/HEIC inputs are converted directly without profiles.
+        /// Optional profile selector: Hald PNG path/name, emulation XMP path/name, or RawTherapee PP3 path.
+        /// If omitted, RawTherapee develops each RAW with its defaults and JPEG/HEIC inputs are converted directly.
+        /// If provided, the profile is also applied to standalone JPEG/HEIC inputs.
         #[arg(short, long)]
         profile: Option<String>,
 
@@ -482,9 +482,8 @@ pub(crate) enum CommandKind {
         /// Output root folder. It is created if it does not exist.
         output: PathBuf,
 
-        /// RAW profile selectors to apply to each incoming RAW. Repeat this option for each profile.
-        /// If omitted, each RAW is developed once with RawTherapee defaults.
-        /// JPEG/HEIC inputs are converted directly without profiles.
+        /// Profile selectors to apply to each incoming RAW or standalone JPEG/HEIC. Repeat for each profile.
+        /// If omitted, each RAW is developed once with RawTherapee defaults and compressed inputs are converted directly.
         #[arg(short = 'p', long = "profile")]
         profile: Vec<String>,
 
@@ -543,7 +542,7 @@ pub(crate) enum CommandKind {
         #[arg(long)]
         grain_seed: Option<u64>,
 
-        /// Grain renderer to use for RAW outputs.
+        /// Grain renderer to use for profiled outputs.
         #[arg(long, value_enum, default_value_t = GrainEngine::default())]
         grain_engine: GrainEngine,
 

@@ -37,7 +37,7 @@ use crate::app::system_stats::{ResourceUsageSummary, sample_usage_block};
 use crate::app::timestamps::{GalleryExifData, extract_gallery_exif};
 use crate::app::util::{
     InputFileFilter, coalesce_input_sidecars, half_cpu_thread_count, input_filter_name,
-    is_raw_input_file, is_supported_input_file, time_of_day_seed,
+    is_raw_input_file, is_supported_input_file, matching_raw_for_sidecar, time_of_day_seed,
 };
 use crate::cli::{BatchOutputFormat, ExportOptions, GalleryTemplate, LensCorrections};
 
@@ -144,18 +144,34 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
     fs::create_dir_all(&args.output)
         .with_context(|| format!("creating {}", args.output.display()))?;
 
-    let inputs = collect_batch_inputs(&args.input, args.input_file_filter)?;
+    let profile_selector = args
+        .profile
+        .as_deref()
+        .map(str::trim)
+        .filter(|profile| !profile.is_empty());
+    let mut inputs = collect_batch_inputs(&args.input, args.input_file_filter)?;
+    if profile_selector.is_some() {
+        inputs.retain(|input| batch_profile_input_is_eligible(input));
+    }
     if inputs.is_empty() {
         let filter_name = input_filter_name(args.input_file_filter);
+        if profile_selector.is_some() {
+            bail!(
+                "no profile-eligible {filter_name} files found under {}; compressed files with matching RAWs are sidecars",
+                args.input.display()
+            );
+        }
         bail!(
             "no supported {filter_name} files found under {}",
             args.input.display()
         );
     }
     let has_raw_inputs = inputs.iter().any(|input| is_raw_input_file(input));
+    let has_profiled_compressed_inputs =
+        profile_selector.is_some() && inputs.iter().any(|input| !is_raw_input_file(input));
 
     let temp_dir = Builder::new().prefix("mini-film-batch-").tempdir()?;
-    let resolved = if has_raw_inputs {
+    let resolved = if has_raw_inputs || has_profiled_compressed_inputs {
         let apply_args = ApplyArgs {
             raw: PathBuf::new(),
             output: PathBuf::new(),
@@ -188,12 +204,7 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
     } else {
         None
     };
-    let profile_selector = args
-        .profile
-        .as_deref()
-        .map(str::trim)
-        .filter(|profile| !profile.is_empty());
-    let profile_report = if let Some(profile) = profile_selector.filter(|_| has_raw_inputs) {
+    let profile_report = if let Some(profile) = profile_selector {
         profile_info_text_for_selector(
             profile,
             &args.profiles_root,
@@ -507,7 +518,9 @@ fn gallery_internal_path(output_root: &Path, path: &Path) -> bool {
     };
     relative.components().any(|component| {
         let name = component.as_os_str().to_string_lossy();
-        name == "thumbnails" || name == ".mini-film-gallery-thumbnails"
+        name == "thumbnails"
+            || name == ".mini-film-gallery-thumbnails"
+            || name == ".mini-film-profile-inputs"
     }) || relative
         .file_name()
         .and_then(|name| name.to_str())
@@ -702,12 +715,14 @@ struct ProcessBatchFileContext<'a> {
 }
 
 fn process_batch_file(context: &ProcessBatchFileContext<'_>, raw: &Path) -> BatchFileRecord {
-    let (sharpening_applied, denoise_applied) =
-        if let Some(resolved) = context.resolved.filter(|_| is_raw_input_file(raw)) {
-            resolve_apply_effects(raw, resolved, context.args.color_noise_iso_threshold)
-        } else {
-            (false, false)
-        };
+    let (sharpening_applied, denoise_applied) = if let Some(resolved) = context
+        .resolved
+        .filter(|_| batch_input_uses_profile_pipeline(context.args, raw))
+    {
+        resolve_apply_effects(raw, resolved, context.args.color_noise_iso_threshold)
+    } else {
+        (false, false)
+    };
     let lens_status = if is_raw_input_file(raw) {
         lens_profile_status(context.args.lens_corrections, true)
     } else {
@@ -772,10 +787,10 @@ fn process_batch_file_inner(
     let file_temp = context.temp_root.join(format!("file-{}", context.index));
     fs::create_dir_all(&file_temp).with_context(|| format!("creating {}", file_temp.display()))?;
     let seed = per_file_seed(context.base_seed, context.index as u64, raw);
-    let result = if is_raw_input_file(raw) {
+    let result = if batch_input_uses_profile_pipeline(context.args, raw) {
         let resolved = context
             .resolved
-            .ok_or_else(|| anyhow::anyhow!("RAW input queued without a resolved profile"))?;
+            .ok_or_else(|| anyhow::anyhow!("profiled input queued without a resolved profile"))?;
         apply_resolved(
             ApplyJob {
                 raw,
@@ -801,6 +816,7 @@ fn process_batch_file_inner(
                 )),
                 retouch: None,
                 bw_filter: crate::app::retouch::BwFilter::None,
+                profile_input_cache_root: Some(&context.args.output),
             },
             resolved,
             seed,
@@ -844,6 +860,18 @@ fn process_batch_file_inner(
             Err(err)
         }
     }
+}
+
+fn batch_input_uses_profile_pipeline(args: &BatchArgs, input: &Path) -> bool {
+    is_raw_input_file(input)
+        || args
+            .profile
+            .as_deref()
+            .is_some_and(|profile| !profile.trim().is_empty())
+}
+
+fn batch_profile_input_is_eligible(input: &Path) -> bool {
+    is_raw_input_file(input) || matching_raw_for_sidecar(input).is_none()
 }
 
 fn collect_batch_inputs(input: &Path, filter: InputFileFilter) -> Result<Vec<PathBuf>> {
@@ -1093,6 +1121,22 @@ mod tests {
 
         let all_files = collect_batch_inputs(root.path(), InputFileFilter::All).unwrap();
         assert_eq!(all_files.len(), 5);
+    }
+
+    #[test]
+    fn profiled_batch_skips_compressed_sidecars_even_with_jpg_only_filter() {
+        let root = tempfile::tempdir().unwrap();
+        let raw = root.path().join("paired.NEF");
+        let sidecar = root.path().join("paired.JPG");
+        let standalone = root.path().join("standalone.JPG");
+        fs::write(&raw, b"raw").unwrap();
+        fs::write(&sidecar, b"sidecar").unwrap();
+        fs::write(&standalone, b"standalone").unwrap();
+
+        let mut inputs = collect_batch_inputs(root.path(), InputFileFilter::JpgOnly).unwrap();
+        inputs.retain(|input| batch_profile_input_is_eligible(input));
+
+        assert_eq!(inputs, vec![standalone]);
     }
 
     #[test]

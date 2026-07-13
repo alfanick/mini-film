@@ -2,8 +2,8 @@
 
 `mini-film` is a complete photo-to-review-to-publish workflow for photographers
 who want film-emulation output without opening Lightroom. It watches an inbox of
-RAW, JPEG, and HEIC files, develops RAWs through RawTherapee, applies
-user-supplied film profiles and grain to RAW outputs, serves a live review UI,
+RAW, JPEG, and HEIC files, develops images through RawTherapee when profiles are
+configured, applies user-supplied film profiles and grain, serves a live review UI,
 records ratings/tags/notes, and publishes the final selection with metadata
 preserved.
 
@@ -49,9 +49,9 @@ Available shortcuts:
   with live job progress. The review workflow is optimized for fast keyboard
   operation, while still supporting mouse, touch, and tablet use.
 - **Mixed RAW and processed-file input**: batch, daemon, review, and publish can
-  take RAW files plus existing JPEG/HEIC files. RAWs get profiles and adjustment
-  sliders; JPEG/HEIC inputs keep their existing look and expose rating, labels,
-  tags, notes, and original-file saving without unavailable retouch controls.
+  take RAW files plus existing JPEG/HEIC files. Explicit profiles apply to all
+  standalone inputs; without a profile, JPEG/HEIC keeps its existing look and
+  skips RawTherapee. Compressed originals remain available for saving.
 - **Optional Codex review assist**: let Codex analyze small embedded RAW
   previews after rendering finishes and fill tags, notes, or initial ratings
   while the live review UI shows the same queued/processing status indicators.
@@ -82,7 +82,7 @@ emulations/   # user-facing emulation preset XMPs
 
 ## Quick Start
 
-Apply one profile to one RAW:
+Apply one profile to one RAW, JPEG, or HEIC image:
 
 ```sh
 mini-film apply input.RAW \
@@ -309,9 +309,10 @@ Output metadata behavior for `apply`, `batch`, `daemon`, and `sampler`:
   `mini-film <version> usage=<command> profile=<profile-or-emulation>`
   or `profile=none` when no profile was configured
 
-For JPEG/HEIC inputs, source metadata is copied from the compressed source and
-mini-film only adds its basic version/comment marker and review/publish metadata.
-Camera Raw Settings edit history is reserved for RAW-generated outputs.
+For direct JPEG/HEIC inputs without a profile, source metadata is copied from the
+compressed source and mini-film only adds its basic version/comment marker and
+review/publish metadata. Profiled JPEG/HEIC outputs receive the same resolved
+profile, grain, and edit-history metadata as profiled RAW outputs.
 
 ## Batch Apply
 
@@ -330,9 +331,16 @@ cargo run --release -- batch \
 The output directory is created if it does not exist. Nested input folders are
 preserved, and each input uses the same relative path with a `.jpg` extension by
 default. Use `--output-format tiff` to write `.tif` files through the 16-bit
-Zip-compressed TIFF path. JPEG/HEIC inputs are converted directly with
-resize/crop/rotation and metadata copyback; RAW-only profiles, grain, denoise,
-and lens corrections are skipped for those files.
+Zip-compressed TIFF path. With `--profile`, standalone JPEG/HEIC inputs use the
+same PP3, Hald, grain, retouch, and black-and-white profile pipeline as RAW.
+JPEG goes directly to RawTherapee; HEIC is first auto-oriented into a 16-bit
+Zip-compressed TIFF. In daemon review, a straight-out-of-camera rendition also
+appears as a profile and is excluded from publish until selected. Without
+`--profile`, compressed inputs retain the direct resize/crop/rotation and
+metadata-copy path. Active D-Lighting, automatic ISO denoise, and lens
+corrections remain RAW-only. During folder discovery, a JPEG/HEIC with a matching
+RAW is treated as its straight-out-of-camera sidecar; only the RAW receives
+profile renders.
 
 By default, `batch` processes half of the detected CPU threads at once. On a 16-thread CPU that means 8 files in parallel. Override it with `--jobs N` when tuning for a different machine, output format, or memory budget.
 
@@ -388,8 +396,11 @@ or regenerate thumbnails.
 
 Run a long-lived watcher that applies optional profiles whenever new files
 arrive in an input folder. If no `--profile` is provided, each RAW is developed
-once with RawTherapee defaults. JPEG/HEIC inputs are converted directly without
-profiles.
+once with RawTherapee defaults and JPEG/HEIC inputs are converted directly.
+When profiles are provided, each standalone RAW, JPEG, or HEIC gets one output
+per profile. Prepared HEIC TIFFs are reused from
+`<output>/.mini-film-profile-inputs/heic-v1/` across profile and retouch renders.
+If a matching RAW exists, its JPEG/HEIC sidecar is never profiled separately.
 
 ```sh
 mini-film daemon \
@@ -451,8 +462,12 @@ does not need HTML/CSS/JS files next to it. The UI is live: the daemon records
 new RAW and JPEG/HEIC files immediately, extracts an embedded camera preview when
 available, then updates the browser over server-sent events as each render moves
 from queued to processing to done. When no profiles are configured, the review UI
-shows the developed RawTherapee-default output without a profile rail. JPEG/HEIC
-inputs also hide the profile rail because they are already processed. For
+shows the developed RawTherapee-default output without a profile rail and direct
+JPEG/HEIC inputs hide profile and retouch controls. With explicit profiles,
+standalone JPEG/HEIC inputs expose the same profile rail, retouch controls,
+black-and-white filters, and publish selection as RAW. Their camera rendition
+appears in the rail as `straight out of camera`, unchecked for publish by
+default. For
 standalone JPEG/HEIC, ordered background thumbnail and preview pipelines start
 at discovery time and run concurrently with full-output export. Each converter
 uses half of the available CPU threads; one thumbnail worker and two preview
@@ -463,19 +478,21 @@ progressive 512-pixel quality-55 thumbnails; the main viewer uses progressive
 2048-pixel quality-82 previews. In JPEG-only reviews it preloads the next three
 previews at viewport sizes up to 2048 pixels and the next three originals above
 that threshold. Both tiers are cached under
-`<output>/.mini-film-review-previews/compressed-v1/`. Full media is requested
-from the original input only when the loupe activates or the browser viewport is
-larger than 2048 pixels. In the desktop and tablet layouts, standalone JPEG/HEIC
-inputs hide the unavailable Retouch section. RAW inputs paired with a
+`<output>/.mini-film-review-previews/compressed-v1/`. Direct compressed images
+request the original input only when the loupe activates or the browser viewport
+is larger than 2048 pixels; profiled compressed images use the selected profile
+render for the main viewer and loupe. In the desktop and tablet layouts, direct
+JPEG/HEIC inputs hide the unavailable Retouch section. RAW inputs paired with a
 straight-out-of-camera JPEG/HEIC keep that section in place and disable it while
 the straight-out-of-camera profile is selected, so switching profiles does not
-shift the page layout. In the phone layout, JPEG/HEIC inputs hide the unavailable
-Retouch action and expose a Save Photo action for the untouched source file. On
+shift the page layout. In the phone layout, direct JPEG/HEIC inputs hide the
+unavailable Retouch action. All JPEG/HEIC inputs expose a Save Photo action for
+the untouched source file. On
 secure origins it opens the native file-share sheet, including iOS's Save Image
 action; on plain LAN HTTP it opens the correctly typed original image for
 Safari's image-save actions. The first
-`--profile` is the default selected look for RAW files when profiles are
-configured. All configured profile variants are selected for publish by default;
+`--profile` is the default selected look for RAW and standalone compressed files
+when profiles are configured. All configured profile variants are selected for publish by default;
 use the checkbox on each profile thumbnail to exclude or re-include a variant
 while reviewing.
 Hover the filename in the review panel to see the source file size, pixel
@@ -512,13 +529,14 @@ label toggles. `c` copies the current retouch slider adjustments, and `v` pastes
 them onto another picture.
 
 The review UI stores rating, label, tags, notes, active preview profile, and the
-set of profile variants selected for publish. RAW inputs support per-picture
+set of profile variants selected for publish. RAW and explicitly profiled
+JPEG/HEIC inputs support per-picture
 retouch controls for exposure, highlights, shadows, whites, blacks, relative
-color temperature, clarity, rotation, and crop. Standalone JPEG/HEIC inputs do
-not expose retouch controls. The browser applies a fast draft preview while
+color temperature, clarity, rotation, and crop. Direct JPEG/HEIC inputs without
+a profile do not expose retouch controls. The browser applies a fast draft preview while
 edits are being made, then queues a high-quality mini-film render and swaps in
 the finished output when it is ready. Crop and rotation are persisted with the
-review state and are used by publish rerenders. RAW profiles whose combined
+review state and are used by publish rerenders. Profile variants whose combined
 source and emulation saturation is effectively black-and-white show `None`, `Y`,
 `O`, `R`, and `G` filter controls beside the selected profile name. Those
 black-and-white filter choices are stored per picture/profile variant and are

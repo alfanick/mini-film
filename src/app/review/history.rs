@@ -115,7 +115,7 @@ pub(super) fn history_image_discovered(
     if let Some(sidecar) = &image.sooc_sidecar_path {
         entry.line(format!("sooc sidecar: {}", sidecar.display()));
     }
-    if !is_jpeg_input_file(&image.raw_path) {
+    if image_uses_profile_pipeline(image) {
         entry.line(format!("profiles: {}", image.profiles.len()));
     }
     entry
@@ -211,7 +211,7 @@ pub(super) fn history_review_changed(
     entry.change("labels", labels_text(before), labels_text(after));
     entry.change("tags", list_text(&before.tags), list_text(&after.tags));
     entry.change("notes", quoted(&before.notes), quoted(&after.notes));
-    if !is_jpeg_input_file(&after.raw_path) {
+    if image_uses_profile_pipeline(after) {
         entry.change(
             "selected profile",
             profile_index_text(before.selected_profile_index, before),

@@ -15,6 +15,7 @@ pub const SUPPORTED_RAW_EXTENSIONS: &[&str] = &[
 ];
 
 pub const SUPPORTED_COMPRESSED_EXTENSIONS: &[&str] = &["jpg", "jpeg", "heic", "heif"];
+pub const SUPPORTED_HEIC_EXTENSIONS: &[&str] = &["heic", "heif"];
 
 #[derive(Clone, Copy, Debug, Default)]
 pub enum InputFileFilter {
@@ -43,6 +44,16 @@ pub fn is_jpeg_input_file(path: &Path) -> bool {
         .and_then(|s| s.to_str())
         .is_some_and(|ext| {
             SUPPORTED_COMPRESSED_EXTENSIONS
+                .iter()
+                .any(|supported| ext.eq_ignore_ascii_case(supported))
+        })
+}
+
+pub fn is_heic_input_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|s| s.to_str())
+        .is_some_and(|ext| {
+            SUPPORTED_HEIC_EXTENSIONS
                 .iter()
                 .any(|supported| ext.eq_ignore_ascii_case(supported))
         })
@@ -206,6 +217,9 @@ mod tests {
         assert!(is_jpeg_input_file(Path::new("foo.HEIF")));
         assert!(!is_jpeg_input_file(Path::new("foo.nef")));
         assert!(!is_jpeg_input_file(Path::new("foo.txt")));
+        assert!(!is_heic_input_file(Path::new("foo.jpg")));
+        assert!(is_heic_input_file(Path::new("foo.HEIC")));
+        assert!(is_heic_input_file(Path::new("foo.heif")));
     }
 
     #[test]

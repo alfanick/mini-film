@@ -623,6 +623,13 @@ pub(super) struct ReviewProfileRender {
     pub(super) updated_at: String,
 }
 
+pub(super) fn image_sooc_source(image: &ReviewImage) -> Option<&Path> {
+    image
+        .sooc_sidecar_path
+        .as_deref()
+        .or_else(|| is_jpeg_input_file(&image.raw_path).then_some(image.raw_path.as_path()))
+}
+
 pub(super) fn review_profile_bw_filter_eligible(profile: &ReviewProfile) -> bool {
     profile.metadata.as_ref().is_some_and(|metadata| {
         metadata.source_adjustments.saturation + metadata.emulation_adjustments.saturation <= -99.0

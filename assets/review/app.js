@@ -1591,7 +1591,7 @@ function ImageList({ images, currentId, onSelect }) {
 }
 
 function renderProgressSummary(image) {
-  if (isCompressedImage(image)) {
+  if (isDirectCompressedImage(image)) {
     if (isLocalRetouchDraft(image)) {
       return {
         state: "retouch-draft",
@@ -1745,14 +1745,14 @@ function renderCurrent(image) {
   }
 
   const selected = selectedProfile(image);
-  const compressed = isCompressedImage(image);
-  els.app.classList.toggle("compressed-image", compressed);
+  const directCompressed = isDirectCompressedImage(image);
+  els.app.classList.toggle("compressed-image", directCompressed);
   els.app.classList.toggle("sooc-profile-selected", isSoocProfile(selected));
-  const hideProfiles = profilesAreImplicitOnly(image) || compressed;
+  const hideProfiles = profilesAreImplicitOnly(image) || directCompressed;
   const mainSource = mainImageSource(image, selected);
   const mainUrl = mainSource.url;
-  const previewNote = selected?.url || compressed ? "" : image.preview_url ? " | camera preview" : "";
-  const selectedState = compressed ? compressedDisplayState(image) : profileDisplayState(image, selected);
+  const previewNote = selected?.url || directCompressed ? "" : image.preview_url ? " | camera preview" : "";
+  const selectedState = directCompressed ? compressedDisplayState(image) : profileDisplayState(image, selected);
   const codexState = currentCodexStateText(image);
   if (state.cropDraftImageId !== null && state.cropDraftImageId !== image.id) {
     clearCropDraftState();
@@ -1771,7 +1771,7 @@ function renderCurrent(image) {
   if (imageChanged || !isRetouchControlActive()) {
     setRetouchInputs(retouchForImage(image, image.retouch || defaultRetouch()));
   }
-  setRetouchControlsEnabled(!compressed && !isSoocProfile(selected));
+  setRetouchControlsEnabled(!directCompressed && !isSoocProfile(selected));
   state.lastInputImageId = image.id;
   setActiveReviewButtons(image);
 
@@ -1806,7 +1806,7 @@ function currentCodexStateText(image) {
 
 function renderProfileStateSummary(image, selected, selectedState, previewNote, codexState, hideProfiles) {
   const selectedName = !hideProfiles && selected ? profileDisplayName(selected) : "";
-  if (isCompressedImage(image) || !selectedName) {
+  if (isDirectCompressedImage(image) || !selectedName) {
     els.profileState.textContent = `${selectedState?.text || ""}${codexState ? ` | ${codexState}` : ""}`.trim();
     return;
   }
@@ -1936,7 +1936,7 @@ function selectedProfile(image) {
 }
 
 function selectedProfileForImage(image) {
-  if (isCompressedImage(image)) return null;
+  if (isDirectCompressedImage(image)) return null;
   const profiles = image?.profiles || [];
   const selectedIndex = selectedProfileIndexForImage(image);
   const selected = profiles.find((profile) => profile.profile_index === selectedIndex);
@@ -1979,6 +1979,16 @@ function isCompressedImage(image) {
   return image?.source_type === "compressed";
 }
 
+function usesProfilePipeline(image) {
+  if (!image) return false;
+  if (image.processing_mode) return image.processing_mode === "profiled";
+  return !isCompressedImage(image);
+}
+
+function isDirectCompressedImage(image) {
+  return isCompressedImage(image) && !usesProfilePipeline(image);
+}
+
 function imageSourceInfoTitle(image) {
   const parts = [];
   const fileSize = formatFileSize(image?.source_file_size_bytes);
@@ -2018,7 +2028,7 @@ function compressedViewportUsesFullMedia() {
 
 function mainImageSource(image, selected = selectedProfile(image)) {
   if (selected?.url) return { url: selected.url, updatedAt: selected.updated_at };
-  if (isCompressedImage(image) && image?.full_url && compressedViewportUsesFullMedia()) {
+  if (isDirectCompressedImage(image) && image?.full_url && compressedViewportUsesFullMedia()) {
     return { url: image.full_url, updatedAt: image.preview_updated_at || image.updated_at };
   }
   return { url: image?.preview_url, updatedAt: image?.preview_updated_at || image?.updated_at };
@@ -2026,7 +2036,7 @@ function mainImageSource(image, selected = selectedProfile(image)) {
 
 function syncMainImageForViewport() {
   const image = findImage(state.currentId);
-  if (!isCompressedImage(image)) return;
+  if (!isDirectCompressedImage(image)) return;
   const source = mainImageSource(image, null);
   if (!source.url) return;
   const nextSrc = versionedUrl(source.url, source.updatedAt);
@@ -2042,7 +2052,7 @@ function isSoocProfile(profile) {
 
 function isRetouchControlsDisabledForImage(image) {
   if (!image) return true;
-  return isCompressedImage(image) || isSoocProfile(selectedProfile(image));
+  return isDirectCompressedImage(image) || isSoocProfile(selectedProfile(image));
 }
 
 function isPortraitRenderProfile(profile) {
@@ -2136,7 +2146,7 @@ function profileDisplayState(image, profile) {
 }
 
 function publishProfileIndexes(image) {
-  if (isCompressedImage(image)) return [];
+  if (isDirectCompressedImage(image)) return [];
   if (Array.isArray(image.publish_profile_indexes)) return image.publish_profile_indexes;
   return (image.profiles || []).map((profile) => profile.profile_index);
 }
@@ -2148,7 +2158,7 @@ function profilesAreImplicitOnly(image = null) {
 }
 
 function visibleProfileCount(image = null) {
-  if (isCompressedImage(image)) return 0;
+  if (isDirectCompressedImage(image)) return 0;
   if (profilesAreImplicitOnly(image)) return 0;
   return image ? image.profiles?.length || 0 : state.data?.profiles?.length || 0;
 }
@@ -2216,7 +2226,7 @@ async function setProfileBwFilter(image, profileIndex, filter) {
 }
 
 function renderProfiles(image) {
-  if (profilesAreImplicitOnly(image) || isCompressedImage(image)) {
+  if (profilesAreImplicitOnly(image) || isDirectCompressedImage(image)) {
     preactRender(null, els.profiles);
     return;
   }
@@ -2406,22 +2416,22 @@ function updateMobileActionLabels(image) {
   const profileCount = visibleProfileCount(image);
   const tagsCount = image?.tags?.length || 0;
   const hasNotes = Boolean(image?.notes);
-  const compressed = isCompressedImage(image);
-  if (compressed && state.mobileDrawer === "retouch") setMobileDrawer(null);
+  const directCompressed = isDirectCompressedImage(image);
+  if (directCompressed && state.mobileDrawer === "retouch") setMobileDrawer(null);
   syncMobileSaveOriginal(image);
   const retouchActive = image
-    ? compressed
+    ? directCompressed
       ? hasCropAdjustment(image)
       : !retouchIsDefault(image.retouch || defaultRetouch())
     : false;
   els.mobileDrawerButtons.forEach((button) => {
     const drawer = button.dataset.mobileDrawer;
     if (drawer === "profiles") {
-      button.hidden = profilesAreImplicitOnly(image) || isCompressedImage(image);
+      button.hidden = profilesAreImplicitOnly(image) || directCompressed;
       button.textContent = profileCount > 0 ? `Profiles ${profileCount}` : "Profiles";
       button.title = `${profileCount} profile ${profileCount === 1 ? "render" : "renders"}`;
     } else if (drawer === "retouch") {
-      button.hidden = compressed;
+      button.hidden = directCompressed;
       button.textContent = retouchActive ? "Retouch *" : "Retouch";
       button.title = retouchActive ? "Retouch adjustments are active" : "Retouch";
     } else if (drawer === "metadata") {
@@ -2553,7 +2563,7 @@ function preloadNearbyImages(image) {
     const selected = selectedProfile(nearby);
     if (selected?.url) {
       urls.add(versionedUrl(selected.url, selected.updated_at));
-    } else if (preloadFullMedia && nearby.full_url) {
+    } else if (isDirectCompressedImage(nearby) && preloadFullMedia && nearby.full_url) {
       urls.add(versionedUrl(nearby.full_url, nearby.preview_updated_at || nearby.updated_at));
     } else if (nearby.preview_url) {
       urls.add(versionedUrl(nearby.preview_url, nearby.preview_updated_at));
@@ -2896,7 +2906,7 @@ function publishSelectionStats(body = publishFormBody()) {
   for (const image of state.data?.images || []) {
     if (!imagePassesPublishFilters(image, body.min_rating, labels, tags)) continue;
     pictures += 1;
-    outputs += isCompressedImage(image) ? 1 : publishProfileIndexes(image).length;
+    outputs += isDirectCompressedImage(image) ? 1 : publishProfileIndexes(image).length;
   }
   return { pictures, outputs };
 }
@@ -3090,7 +3100,7 @@ function retouchFromInputs(image = findImage(state.currentId)) {
 
 function retouchForImage(image, retouch) {
   const normalized = normalizedRetouch(retouch);
-  if (!isCompressedImage(image)) return normalized;
+  if (!isDirectCompressedImage(image)) return normalized;
   return normalizedRetouch({
     ...normalized,
     adjustments: defaultRetouch().adjustments,
@@ -3155,10 +3165,10 @@ function applyLocalRetouch(retouch, options = {}) {
   renderProfileStateSummary(
     image,
     selected,
-    isCompressedImage(image) ? compressedDisplayState(image) : profileDisplayState(image, selected),
+    isDirectCompressedImage(image) ? compressedDisplayState(image) : profileDisplayState(image, selected),
     "",
     "",
-    isCompressedImage(image) || profilesAreImplicitOnly(image),
+    isDirectCompressedImage(image) || profilesAreImplicitOnly(image),
   );
   if (options.save !== false) scheduleRetouchSave();
 }
@@ -3952,7 +3962,7 @@ function zoomImageSource() {
     height: els.image.naturalHeight || els.image.getBoundingClientRect().height,
   };
   const image = findImage(state.currentId);
-  if (!isCompressedImage(image) || !image.full_url || compressedViewportUsesFullMedia()) return fallback;
+  if (!isDirectCompressedImage(image) || !image.full_url || compressedViewportUsesFullMedia()) return fallback;
 
   const fullUrl = versionedUrl(image.full_url, image.preview_updated_at || image.updated_at);
   if (state.zoomSourceUrl !== fullUrl) {

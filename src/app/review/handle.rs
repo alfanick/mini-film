@@ -259,6 +259,45 @@ impl ReviewHandle {
         self.broadcast_state()
     }
 
+    pub(crate) fn record_profiled_compressed_discovered(&self, input: &Path) -> Result<()> {
+        let history_entries = self.update_store(|store| {
+            let mut history_entries = Vec::new();
+            if store.claim_sooc_sidecar(input) {
+                return Ok(history_entries);
+            }
+            let discovered = !store.images.iter().any(|image| image.raw_path == input);
+            let image = store.ensure_image(&self.input_root, input)?;
+            let preview_path = self.compressed_display_preview_path_for(input, image.id);
+            let before = image.preview.clone();
+            image.preview.path = Some(preview_path.clone());
+            image.preview.render_key = None;
+            image.preview.error = None;
+            image.preview.status = if preview_path.is_file() {
+                ReviewRenderStatus::Done
+            } else {
+                ReviewRenderStatus::Queued
+            };
+            image.preview.updated_at = now_string();
+            image.updated_at = now_string();
+            if discovered {
+                history_entries.push(history_image_discovered(
+                    image,
+                    true,
+                    !preview_path.is_file(),
+                ));
+            }
+            if let Some(entry) = history_preview_changed(image, &before, &image.preview) {
+                history_entries.push(entry);
+            }
+            Ok(history_entries)
+        })?;
+        self.schedule_compressed_review_media(input);
+        for entry in history_entries {
+            self.append_history(entry)?;
+        }
+        self.broadcast_state()
+    }
+
     pub(crate) fn record_compressed_processing(&self, input: &Path) -> Result<()> {
         self.update_preview(input, |preview| {
             preview.status = ReviewRenderStatus::Processing;
@@ -368,12 +407,13 @@ impl ReviewHandle {
         let current = store
             .images
             .iter()
-            .any(|image| image.id == job.image_id && image.raw_path == job.raw);
+            .find(|image| image.id == job.image_id && image.raw_path == job.raw)
+            .map(image_uses_profile_pipeline);
         drop(store);
-        if !current {
+        let Some(profiled) = current else {
             self.media_scheduler.finish(kind, &job.raw);
             return;
-        }
+        };
 
         let result = match kind {
             ReviewMediaKind::Thumbnail => ensure_compressed_review_thumbnail(
@@ -390,11 +430,22 @@ impl ReviewHandle {
         self.media_scheduler.finish(kind, &job.raw);
         match result {
             Ok(()) => {
-                if let Err(error) = self.broadcast_state() {
+                let update = if kind == ReviewMediaKind::Preview && profiled {
+                    self.record_preview_done(
+                        &job.raw,
+                        &self.compressed_display_preview_path_for(&job.raw, job.image_id),
+                    )
+                } else {
+                    self.broadcast_state()
+                };
+                if let Err(error) = update {
                     eprintln!("review media state update failed: {error:#}");
                 }
             }
             Err(error) => {
+                if kind == ReviewMediaKind::Preview && profiled {
+                    let _ = self.record_preview_failed(&job.raw, &format!("{error:#}"));
+                }
                 eprintln!(
                     "review {} generation failed for {}: {error:#}",
                     match kind {
@@ -523,6 +574,9 @@ impl ReviewHandle {
         expected_output: &Path,
     ) -> Result<()> {
         let history_entry = self.update_store(|store| {
+            if store.claim_sooc_sidecar(raw) {
+                return Ok(None);
+            }
             let profile = store
                 .profiles
                 .iter()
@@ -547,7 +601,8 @@ impl ReviewHandle {
             render.error = None;
             render.duration_ms = None;
             render.render_key = render_key;
-            render.processing_key = Some(review_render_processing_key(profile_index).to_string());
+            render.processing_key =
+                Some(review_render_processing_key_for_input(raw, profile_index).to_string());
             render.width = None;
             render.height = None;
             render.updated_at = now_string();
@@ -574,7 +629,7 @@ impl ReviewHandle {
         image.profiles.iter().any(|render| {
             render.profile_index == profile_index
                 && render.processing_key.as_deref()
-                    == Some(review_render_processing_key(profile_index))
+                    == Some(review_render_processing_key_for_input(raw, profile_index))
                 && render.output_path.as_deref() == Some(expected_output)
                 && matches!(render.status, ReviewRenderStatus::Done)
                 && render.render_key.is_none()
@@ -664,6 +719,9 @@ impl ReviewHandle {
         F: FnMut(&mut ReviewProfileRender),
     {
         let history_entry = self.update_store(|store| {
+            if store.claim_sooc_sidecar(raw) {
+                return Ok(None);
+            }
             let image = store.ensure_image(&self.input_root, raw)?;
             let Some(render) = image
                 .profiles
@@ -698,6 +756,9 @@ impl ReviewHandle {
         let (updated, history_entry) = self.update_store(|store| {
             let mut updated = false;
             let mut history_entry = None;
+            if store.claim_sooc_sidecar(raw) {
+                return Ok((true, None));
+            }
             let image = store.ensure_image(&self.input_root, raw)?;
             let Some(render) = image
                 .profiles
@@ -777,9 +838,8 @@ impl ReviewHandle {
         if render.render_key.as_deref() != Some(render_key) {
             return Ok(None);
         }
-        let Some(sidecar) = image
-            .sooc_sidecar_path
-            .clone()
+        let Some(sidecar) = image_sooc_source(image)
+            .map(Path::to_path_buf)
             .filter(|path| path.is_file())
         else {
             return Ok(None);
@@ -796,7 +856,7 @@ impl ReviewHandle {
         let Some(image) = store.images.iter().find(|image| image.raw_path == input) else {
             return Ok(None);
         };
-        if !is_jpeg_input_file(&image.raw_path) {
+        if !image_is_direct_compressed(image) {
             return Ok(None);
         }
         if image.preview.render_key.as_deref() != Some(render_key) {
@@ -1405,6 +1465,7 @@ impl ReviewHandle {
                 )),
                 retouch: Some(retouch),
                 bw_filter,
+                profile_input_cache_root: Some(&self.output_root),
             },
             &resolved,
             seed,
@@ -1483,9 +1544,9 @@ impl ReviewHandle {
                 else {
                     bail!("review image {} does not exist", update.image_id);
                 };
-                let compressed = is_jpeg_input_file(&image.raw_path);
+                let direct_compressed = image_is_direct_compressed(image);
                 if let Some(selected_profile_index) = update.selected_profile_index
-                    && !compressed
+                    && !direct_compressed
                     && !image
                         .profiles
                         .iter()
@@ -1527,12 +1588,12 @@ impl ReviewHandle {
                     image.retouch = retouch.normalized();
                 }
                 if let Some(selected_profile_index) =
-                    update.selected_profile_index.filter(|_| !compressed)
+                    update.selected_profile_index.filter(|_| !direct_compressed)
                 {
                     image.selected_profile_index = selected_profile_index;
                 }
                 if let Some(indexes) = update.publish_profile_indexes.clone() {
-                    if compressed {
+                    if direct_compressed {
                         image.publish_profile_indexes = Some(Vec::new());
                     } else {
                         validate_publish_profile_indexes(&indexes, &image.profiles)?;
@@ -1542,7 +1603,7 @@ impl ReviewHandle {
                 }
                 let mut changed_bw_profile_indexes = Vec::new();
                 if let Some(filters) = update.profile_bw_filters.clone() {
-                    let normalized_filters = if compressed {
+                    let normalized_filters = if direct_compressed {
                         Vec::new()
                     } else {
                         normalize_profile_bw_filters(&filters, &image.profiles)
@@ -1558,7 +1619,7 @@ impl ReviewHandle {
                     }
                 }
                 if retouch_changed {
-                    if compressed {
+                    if direct_compressed {
                         let render_key = image.retouch.render_key();
                         image.preview.status = ReviewRenderStatus::Queued;
                         image.preview.error = None;
@@ -1612,7 +1673,7 @@ impl ReviewHandle {
                             );
                         }
                     }
-                } else if !changed_bw_profile_indexes.is_empty() && !compressed {
+                } else if !changed_bw_profile_indexes.is_empty() && !direct_compressed {
                     let changed_indexes = changed_bw_profile_indexes
                         .iter()
                         .copied()
@@ -1689,6 +1750,7 @@ impl ReviewHandle {
                 let mut exif = image.exif.clone();
                 exif.sanitize_text_fields();
                 let compressed = is_jpeg_input_file(&image.raw_path);
+                let profiled = image_uses_profile_pipeline(image);
                 let preview_ready = if compressed {
                     self.compressed_display_preview_path_for(&image.raw_path, image.id)
                         .is_file()
@@ -1737,6 +1799,7 @@ impl ReviewHandle {
                 json!({
                     "id": image.id,
                     "source_type": if compressed { "compressed" } else { "raw" },
+                    "processing_mode": if profiled { "profiled" } else { "direct" },
                     "relative_path": image.relative_path,
                     "file_name": image.file_name,
                     "source_file_size_bytes": image.exif.file_size_bytes,
@@ -2422,7 +2485,7 @@ fn codex_analysis_key_for_image_with_config(
 }
 
 fn review_image_renders_terminal(image: &ReviewImage) -> bool {
-    if is_jpeg_input_file(&image.raw_path) {
+    if image_is_direct_compressed(image) {
         return matches!(
             image.preview.status,
             ReviewRenderStatus::Done | ReviewRenderStatus::Failed
