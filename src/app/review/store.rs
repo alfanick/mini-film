@@ -5,7 +5,7 @@ const SOOC_RENDER_PIPELINE_KEY: &str = "sooc-sidecar-v1";
 const PROFILED_COMPRESSED_RENDER_PIPELINE_KEY: &str = "profiled-compressed-render-v1";
 
 impl ReviewStore {
-    const EXIF_SCHEMA_VERSION: u32 = 7;
+    const EXIF_SCHEMA_VERSION: u32 = 9;
 
     pub(super) fn new(profiles: Vec<ReviewProfile>) -> Self {
         Self {
@@ -464,6 +464,21 @@ fn refresh_image_exif_data(image: &mut ReviewImage, force: bool) {
             image.exif.iso_auto_hi_limit = refreshed
                 .iso_auto_hi_limit
                 .or(image.exif.iso_auto_hi_limit.take());
+        }
+        if force || image.exif.white_balance_mode.is_none() {
+            image.exif.white_balance_mode = refreshed
+                .white_balance_mode
+                .or(image.exif.white_balance_mode.take());
+        }
+        if force || image.exif.white_balance_temperature.is_none() {
+            image.exif.white_balance_temperature = refreshed
+                .white_balance_temperature
+                .or(image.exif.white_balance_temperature);
+        }
+        if force || image.exif.white_balance_offset.is_none() {
+            image.exif.white_balance_offset = refreshed
+                .white_balance_offset
+                .or(image.exif.white_balance_offset);
         }
         if force || image.exif.shutter_count.is_none() {
             image.exif.shutter_count = refreshed.shutter_count.or(image.exif.shutter_count);

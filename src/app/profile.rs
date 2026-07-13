@@ -1186,6 +1186,7 @@ mod tests {
                 progressive_jpeg: false,
             },
             retouch: None,
+            retouch_white_balance: crate::app::retouch::RetouchWhiteBalance::default(),
             bw_filter: crate::app::retouch::BwFilter::None,
         }
     }

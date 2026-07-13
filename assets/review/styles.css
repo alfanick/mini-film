@@ -1184,7 +1184,7 @@ button:disabled {
 
 .retouch label {
   display: grid;
-  grid-template-columns: minmax(44px, 56px) minmax(0, 1fr) 34px;
+  grid-template-columns: minmax(64px, 72px) minmax(0, 1fr) 34px;
   gap: 4px;
   align-items: center;
   min-width: 0;
@@ -1916,7 +1916,7 @@ kbd {
   }
 
   .retouch label {
-    grid-template-columns: minmax(42px, 54px) minmax(0, 1fr) 34px;
+    grid-template-columns: minmax(62px, 70px) minmax(0, 1fr) 34px;
   }
 }
 
@@ -2171,7 +2171,7 @@ kbd {
   }
 
   .retouch label {
-    grid-template-columns: minmax(40px, 54px) minmax(0, 1fr) 34px;
+    grid-template-columns: minmax(60px, 68px) minmax(0, 1fr) 34px;
   }
 
   .shortcut-sections {

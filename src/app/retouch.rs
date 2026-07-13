@@ -9,6 +9,16 @@ use sha1::{Digest, Sha1};
 
 use mini_film::ProfileAdjustments;
 
+const DEFAULT_WHITE_BALANCE_TEMPERATURE: f32 = 6504.0;
+const MIN_WHITE_BALANCE_TEMPERATURE: f32 = 1500.0;
+const MAX_WHITE_BALANCE_TEMPERATURE: f32 = 60_000.0;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(crate) struct RetouchWhiteBalance {
+    pub(crate) temperature: Option<u32>,
+    pub(crate) offset: Option<i32>,
+}
+
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum BwFilter {
@@ -158,8 +168,16 @@ impl RetouchSettings {
     }
 
     pub(crate) fn render_key(&self) -> String {
+        self.render_key_with_white_balance(RetouchWhiteBalance::default())
+    }
+
+    pub(crate) fn render_key_with_white_balance(
+        &self,
+        white_balance: RetouchWhiteBalance,
+    ) -> String {
         let normalized = self.clone().normalized();
         let mut hasher = Sha1::new();
+        hasher.update("retouch-v2");
         hasher.update(format!("{:.4}", normalized.adjustments.exposure));
         hasher.update(format!("{:.3}", normalized.adjustments.highlights));
         hasher.update(format!("{:.3}", normalized.adjustments.shadows));
@@ -169,6 +187,17 @@ impl RetouchSettings {
         hasher.update(format!("{:.3}", normalized.adjustments.offset));
         hasher.update(format!("{:.3}", normalized.adjustments.clarity));
         hasher.update(format!("{:.3}", normalized.rotation_degrees));
+        if normalized.adjustments.temperature != 0.0 || normalized.adjustments.offset != 0.0 {
+            hasher.update(format!(
+                "|wb={}:{}",
+                white_balance
+                    .temperature
+                    .map_or_else(|| "default".to_string(), |value| value.to_string()),
+                white_balance
+                    .offset
+                    .map_or_else(|| "default".to_string(), |value| value.to_string())
+            ));
+        }
         if let Some(crop) = normalized.crop {
             hasher.update(format!(
                 "{:.5}:{:.5}:{:.5}:{:.5}",
@@ -234,6 +263,7 @@ pub(crate) fn write_rawtherapee_retouch_profile(
     path: &Path,
     base: BasicRetouchAdjustments,
     retouch: &RetouchSettings,
+    white_balance: RetouchWhiteBalance,
 ) -> Result<Option<PathBuf>> {
     if retouch.adjustments.is_default() {
         return Ok(None);
@@ -265,19 +295,19 @@ pub(crate) fn write_rawtherapee_retouch_profile(
     let _ = writeln!(out, "Contrast={}", fmt_slider(effective.clarity));
     let _ = writeln!(out);
     if effective.temperature != 0.0 || effective.offset != 0.0 {
+        let temperature = (white_balance
+            .temperature
+            .map_or(DEFAULT_WHITE_BALANCE_TEMPERATURE, |value| value as f32)
+            + effective.temperature)
+            .clamp(MIN_WHITE_BALANCE_TEMPERATURE, MAX_WHITE_BALANCE_TEMPERATURE);
+        let offset = white_balance.offset.unwrap_or_default() as f32 + effective.offset;
         let _ = writeln!(out, "[White Balance]");
         let _ = writeln!(out, "Enabled=true");
-        let _ = writeln!(out, "Setting=Camera");
-        if effective.temperature != 0.0 {
-            let _ = writeln!(out, "TemperatureBias={}", fmt_i32(effective.temperature));
-        }
-        if effective.offset != 0.0 {
-            let _ = writeln!(
-                out,
-                "Green={}",
-                fmt_f32(wb_green_from_offset(effective.offset))
-            );
-        }
+        let _ = writeln!(out, "Setting=Custom");
+        let _ = writeln!(out, "Temperature={}", fmt_i32(temperature));
+        let _ = writeln!(out, "Green={}", fmt_f32(wb_green_from_offset(offset)));
+        let _ = writeln!(out, "Equal=1");
+        let _ = writeln!(out, "TemperatureBias=0");
         let _ = writeln!(out);
     }
     std::fs::write(path, out).with_context(|| format!("writing {}", path.display()))?;
@@ -410,6 +440,29 @@ mod tests {
     }
 
     #[test]
+    fn retouch_key_includes_as_shot_white_balance_when_it_affects_rendering() {
+        let mut retouch = RetouchSettings::default();
+        let warm = RetouchWhiteBalance {
+            temperature: Some(4860),
+            offset: Some(0),
+        };
+        let cool = RetouchWhiteBalance {
+            temperature: Some(5200),
+            offset: Some(-2),
+        };
+        assert_eq!(
+            retouch.render_key_with_white_balance(warm),
+            retouch.render_key_with_white_balance(cool)
+        );
+
+        retouch.adjustments.temperature = 100.0;
+        assert_ne!(
+            retouch.render_key_with_white_balance(warm),
+            retouch.render_key_with_white_balance(cool)
+        );
+    }
+
+    #[test]
     fn rawtherapee_retouch_profile_writes_tone_and_temperature_overrides() {
         let dir = tempfile::tempdir().unwrap();
         let output = dir.path().join("retouch.pp3");
@@ -432,6 +485,10 @@ mod tests {
             &output,
             BasicRetouchAdjustments::default(),
             &retouch,
+            RetouchWhiteBalance {
+                temperature: Some(4860),
+                offset: Some(-5),
+            },
         )
         .unwrap();
 
@@ -444,8 +501,11 @@ mod tests {
         assert!(text.contains("HighlightCompr=20"));
         assert!(text.contains("ShadowCompr=30"));
         assert!(text.contains("[White Balance]"));
-        assert!(text.contains("TemperatureBias=450"));
-        assert!(text.contains("Green=1.07"));
+        assert!(text.contains("Setting=Custom"));
+        assert!(text.contains("Temperature=5310"));
+        assert!(text.contains("Green=1.06"));
+        assert!(text.contains("TemperatureBias=0"));
+        assert!(!text.contains("Setting=Camera"));
         assert!(text.contains("Contrast=12"));
     }
 
@@ -488,8 +548,13 @@ mod tests {
             rotation_degrees: 0.0,
         };
 
-        write_rawtherapee_retouch_profile(&output, BasicRetouchAdjustments::default(), &retouch)
-            .unwrap();
+        write_rawtherapee_retouch_profile(
+            &output,
+            BasicRetouchAdjustments::default(),
+            &retouch,
+            RetouchWhiteBalance::default(),
+        )
+        .unwrap();
 
         let text = std::fs::read_to_string(output).unwrap();
         assert!(text.contains("Brightness=17\n"));
@@ -527,7 +592,16 @@ mod tests {
             rotation_degrees: 0.0,
         };
 
-        write_rawtherapee_retouch_profile(&output, base, &retouch).unwrap();
+        write_rawtherapee_retouch_profile(
+            &output,
+            base,
+            &retouch,
+            RetouchWhiteBalance {
+                temperature: Some(4860),
+                offset: Some(0),
+            },
+        )
+        .unwrap();
 
         let text = std::fs::read_to_string(output).unwrap();
         for key in [
@@ -536,6 +610,7 @@ mod tests {
             "HighlightCompr",
             "ShadowCompr",
             "Contrast",
+            "Temperature",
             "TemperatureBias",
         ] {
             let line = text
@@ -552,6 +627,7 @@ mod tests {
         assert!(text.contains("HighlightCompr=21\n"));
         assert!(text.contains("ShadowCompr=31\n"));
         assert!(text.contains("Contrast=16\n"));
-        assert!(text.contains("TemperatureBias=451\n"));
+        assert!(text.contains("Temperature=5311\n"));
+        assert!(text.contains("TemperatureBias=0\n"));
     }
 }

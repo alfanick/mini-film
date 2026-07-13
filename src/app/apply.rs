@@ -30,7 +30,7 @@ use crate::app::progress::{
 };
 use crate::app::raw::{run_raw_develop, run_raw_develop_jpeg};
 use crate::app::retouch::{
-    BwFilter, RetouchSettings, write_rawtherapee_bw_filter_profile,
+    BwFilter, RetouchSettings, RetouchWhiteBalance, write_rawtherapee_bw_filter_profile,
     write_rawtherapee_retouch_profile,
 };
 use crate::app::util::{
@@ -62,6 +62,7 @@ pub(crate) struct ApplyArgs {
     pub(crate) grain_engine: GrainEngine,
     pub(crate) export: ExportOptions,
     pub(crate) retouch: Option<RetouchSettings>,
+    pub(crate) retouch_white_balance: RetouchWhiteBalance,
     pub(crate) bw_filter: BwFilter,
 }
 
@@ -80,6 +81,7 @@ pub(crate) struct ApplyJob<'a> {
     pub(crate) quiet: bool,
     pub(crate) exif_comment: Option<String>,
     pub(crate) retouch: Option<&'a RetouchSettings>,
+    pub(crate) retouch_white_balance: RetouchWhiteBalance,
     pub(crate) bw_filter: BwFilter,
     pub(crate) profile_input_cache_root: Option<&'a Path>,
 }
@@ -194,6 +196,7 @@ pub(crate) fn run_apply(args: ApplyArgs) -> Result<()> {
             quiet: true,
             exif_comment: Some(exif_comment_for_command("apply", args.profile.as_deref())),
             retouch: args.retouch.as_ref(),
+            retouch_white_balance: args.retouch_white_balance,
             bw_filter: args.bw_filter,
             profile_input_cache_root: None,
         },
@@ -340,8 +343,13 @@ pub(crate) fn apply_resolved(
         });
     let cleanup_intermediate = job.keep_intermediate.is_none();
 
-    let rawtherapee_profiles =
-        rawtherapee_profiles_for_apply(resolved, temp_dir, job.retouch, job.bw_filter)?;
+    let rawtherapee_profiles = rawtherapee_profiles_for_apply(
+        resolved,
+        temp_dir,
+        job.retouch,
+        job.retouch_white_balance,
+        job.bw_filter,
+    )?;
     let rawtherapee_profiles = if raw_input {
         with_optional_color_noise_profile(
             job.raw,
@@ -716,6 +724,7 @@ fn rawtherapee_profiles_for_apply(
     resolved: &ResolvedProfile,
     temp_dir: &Path,
     retouch: Option<&RetouchSettings>,
+    white_balance: RetouchWhiteBalance,
     bw_filter: BwFilter,
 ) -> Result<Vec<PathBuf>> {
     let mut profiles = resolved.rawtherapee_profiles.clone();
@@ -724,6 +733,7 @@ fn rawtherapee_profiles_for_apply(
             &temp_dir.join("retouch.pp3"),
             resolved.retouch_base,
             retouch,
+            white_balance,
         )?
     {
         profiles.push(profile);
@@ -1108,6 +1118,7 @@ mod tests {
                 quiet: true,
                 exif_comment: Some("mini-film test".to_string()),
                 retouch: None,
+                retouch_white_balance: RetouchWhiteBalance::default(),
                 bw_filter: BwFilter::None,
                 profile_input_cache_root: None,
             },
@@ -1174,6 +1185,7 @@ mod tests {
                 quiet: true,
                 exif_comment: Some("mini-film test".to_string()),
                 retouch: None,
+                retouch_white_balance: RetouchWhiteBalance::default(),
                 bw_filter: BwFilter::None,
                 profile_input_cache_root: None,
             },
@@ -1232,6 +1244,7 @@ mod tests {
                 quiet: true,
                 exif_comment: Some("mini-film test".to_string()),
                 retouch: None,
+                retouch_white_balance: RetouchWhiteBalance::default(),
                 bw_filter: BwFilter::None,
                 profile_input_cache_root: None,
             },
@@ -1290,6 +1303,7 @@ mod tests {
             grain_engine: GrainEngine::default(),
             export,
             retouch: None,
+            retouch_white_balance: RetouchWhiteBalance::default(),
             bw_filter: BwFilter::None,
         })
         .unwrap();
@@ -1342,6 +1356,7 @@ mod tests {
                     quiet: true,
                     exif_comment: None,
                     retouch: None,
+                    retouch_white_balance: RetouchWhiteBalance::default(),
                     bw_filter: BwFilter::None,
                     profile_input_cache_root: Some(&cache_root),
                 },

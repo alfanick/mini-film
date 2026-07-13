@@ -43,6 +43,8 @@ const state = {
 };
 
 const RETOUCH_SAVE_DEBOUNCE_MS = 1200;
+const RETOUCH_TEMPERATURE_DELTA_LIMIT = 2500;
+const RETOUCH_OFFSET_DELTA_LIMIT = 100;
 const HISTOGRAM_SAMPLE_LONG_EDGE = 512;
 const HISTOGRAM_RETOUCH_DEBOUNCE_MS = 100;
 const COMPRESSED_REVIEW_PREVIEW_LONG_EDGE = 2048;
@@ -738,7 +740,7 @@ function ControlsShell() {
       h(RetouchSlider, { id: "retouch-whites", label: "Whites", min: "-100", max: "100", step: "1", value: "0" }),
       h(RetouchSlider, {
         id: "retouch-temperature",
-        label: "Temp",
+        label: "Temperature",
         min: "-2500",
         max: "2500",
         step: "50",
@@ -756,7 +758,7 @@ function ControlsShell() {
       h(RetouchSlider, { id: "retouch-clarity", label: "Contrast", min: "-100", max: "100", step: "1", value: "0" }),
       h(RetouchSlider, { id: "retouch-shadows", label: "Shadows", min: "-100", max: "100", step: "1", value: "0" }),
       h(RetouchSlider, { id: "retouch-blacks", label: "Blacks", min: "-100", max: "100", step: "1", value: "0" }),
-      h(RetouchSlider, { id: "retouch-offset", label: "Offset", min: "-100", max: "100", step: "1", value: "0" }),
+      h(RetouchSlider, { id: "retouch-offset", label: "Tint", min: "-100", max: "100", step: "1", value: "0" }),
     ),
   );
 }
@@ -1147,6 +1149,7 @@ const els = {
   retouchBlacks: document.getElementById("retouch-blacks"),
   retouchBlacksValue: document.getElementById("retouch-blacks-value"),
   retouchTemperature: document.getElementById("retouch-temperature"),
+  retouchTemperatureLabel: document.getElementById("retouch-temperature").previousElementSibling,
   retouchTemperatureValue: document.getElementById("retouch-temperature-value"),
   retouchOffset: document.getElementById("retouch-offset"),
   retouchOffsetValue: document.getElementById("retouch-offset-value"),
@@ -1769,7 +1772,7 @@ function renderCurrent(image) {
     els.notes.value = image.notes || "";
   }
   if (imageChanged || !isRetouchControlActive()) {
-    setRetouchInputs(retouchForImage(image, image.retouch || defaultRetouch()));
+    setRetouchInputs(retouchForImage(image, image.retouch || defaultRetouch()), image);
   }
   setRetouchControlsEnabled(!directCompressed && !isSoocProfile(selected));
   state.lastInputImageId = image.id;
@@ -3080,8 +3083,16 @@ function normalizedRetouch(retouch) {
       shadows: clamp(Number(normalized.adjustments?.shadows) || 0, -100, 100),
       whites: clamp(Number(normalized.adjustments?.whites) || 0, -100, 100),
       blacks: clamp(Number(normalized.adjustments?.blacks) || 0, -100, 100),
-      temperature: clamp(Number(normalized.adjustments?.temperature) || 0, -2500, 2500),
-      offset: clamp(Number(normalized.adjustments?.offset) || 0, -100, 100),
+      temperature: clamp(
+        Number(normalized.adjustments?.temperature) || 0,
+        -RETOUCH_TEMPERATURE_DELTA_LIMIT,
+        RETOUCH_TEMPERATURE_DELTA_LIMIT,
+      ),
+      offset: clamp(
+        Number(normalized.adjustments?.offset) || 0,
+        -RETOUCH_OFFSET_DELTA_LIMIT,
+        RETOUCH_OFFSET_DELTA_LIMIT,
+      ),
       clarity: clamp(Number(normalized.adjustments?.clarity) || 0, -100, 100),
     },
     crop,
@@ -3100,6 +3111,41 @@ function normalizeRotation(value) {
   return Math.abs(rotation) < 0.0001 ? 0 : rotation;
 }
 
+// The UI edits absolute as-shot values while persisted retouch state remains portable deltas.
+function asShotWhiteBalanceTemperature(image = findImage(state.currentId)) {
+  const temperature = Number(image?.exif?.white_balance_temperature);
+  return Number.isFinite(temperature) && temperature > 0 ? Math.round(temperature) : null;
+}
+
+function retouchTemperatureInputValue(image, temperatureDelta) {
+  const asShot = asShotWhiteBalanceTemperature(image);
+  return asShot === null ? temperatureDelta : asShot + temperatureDelta;
+}
+
+function retouchTemperatureDeltaFromInput(image) {
+  const inputValue = Number(els.retouchTemperature.value || 0);
+  const asShot = asShotWhiteBalanceTemperature(image);
+  return asShot === null ? inputValue : inputValue - asShot;
+}
+
+function asShotWhiteBalanceOffset(image = findImage(state.currentId)) {
+  const value = image?.exif?.white_balance_offset;
+  if (value === null || value === undefined || value === "") return null;
+  const offset = Number(value);
+  return Number.isFinite(offset) ? Math.round(offset) : null;
+}
+
+function retouchOffsetInputValue(image, offsetDelta) {
+  const asShot = asShotWhiteBalanceOffset(image);
+  return asShot === null ? offsetDelta : asShot + offsetDelta;
+}
+
+function retouchOffsetDeltaFromInput(image) {
+  const inputValue = Number(els.retouchOffset.value || 0);
+  const asShot = asShotWhiteBalanceOffset(image);
+  return asShot === null ? inputValue : inputValue - asShot;
+}
+
 function retouchFromInputs(image = findImage(state.currentId)) {
   const existing = normalizedRetouch(image?.retouch || defaultRetouch());
   return retouchForImage(image, {
@@ -3109,8 +3155,8 @@ function retouchFromInputs(image = findImage(state.currentId)) {
       shadows: Number(els.retouchShadows.value || 0),
       whites: Number(els.retouchWhites.value || 0),
       blacks: Number(els.retouchBlacks.value || 0),
-      temperature: Number(els.retouchTemperature.value || 0),
-      offset: Number(els.retouchOffset.value || 0),
+      temperature: retouchTemperatureDeltaFromInput(image),
+      offset: retouchOffsetDeltaFromInput(image),
       clarity: Number(els.retouchClarity.value || 0),
     },
     crop: existing.crop,
@@ -3135,28 +3181,53 @@ function cloneRetouchAdjustments(retouch) {
   return cloneRetouch(retouch).adjustments;
 }
 
-function setRetouchInputs(retouch) {
+function setRetouchInputs(retouch, image = findImage(state.currentId)) {
   const normalized = normalizedRetouch(retouch);
+  const asShotTemperature = asShotWhiteBalanceTemperature(image);
+  const asShotOffset = asShotWhiteBalanceOffset(image);
   els.retouchExposure.value = String(normalized.adjustments.exposure);
   els.retouchHighlights.value = String(normalized.adjustments.highlights);
   els.retouchShadows.value = String(normalized.adjustments.shadows);
   els.retouchWhites.value = String(normalized.adjustments.whites);
   els.retouchBlacks.value = String(normalized.adjustments.blacks);
-  els.retouchTemperature.value = String(normalized.adjustments.temperature);
-  els.retouchOffset.value = String(normalized.adjustments.offset);
+  if (asShotTemperature === null) {
+    els.retouchTemperature.min = String(-RETOUCH_TEMPERATURE_DELTA_LIMIT);
+    els.retouchTemperature.max = String(RETOUCH_TEMPERATURE_DELTA_LIMIT);
+    els.retouchTemperature.defaultValue = "0";
+  } else {
+    els.retouchTemperature.min = String(asShotTemperature - RETOUCH_TEMPERATURE_DELTA_LIMIT);
+    els.retouchTemperature.max = String(asShotTemperature + RETOUCH_TEMPERATURE_DELTA_LIMIT);
+    els.retouchTemperature.defaultValue = String(asShotTemperature);
+  }
+  els.retouchTemperature.value = String(retouchTemperatureInputValue(image, normalized.adjustments.temperature));
+  els.retouchTemperatureLabel.title = image?.exif?.white_balance_mode
+    ? `White balance: ${image.exif.white_balance_mode}`
+    : "Double-click to reset";
+  if (asShotOffset === null) {
+    els.retouchOffset.min = String(-RETOUCH_OFFSET_DELTA_LIMIT);
+    els.retouchOffset.max = String(RETOUCH_OFFSET_DELTA_LIMIT);
+    els.retouchOffset.defaultValue = "0";
+  } else {
+    els.retouchOffset.min = String(asShotOffset - RETOUCH_OFFSET_DELTA_LIMIT);
+    els.retouchOffset.max = String(asShotOffset + RETOUCH_OFFSET_DELTA_LIMIT);
+    els.retouchOffset.defaultValue = String(asShotOffset);
+  }
+  els.retouchOffset.value = String(retouchOffsetInputValue(image, normalized.adjustments.offset));
   els.retouchClarity.value = String(normalized.adjustments.clarity);
-  updateRetouchReadouts(normalized);
+  updateRetouchReadouts(normalized, image);
 }
 
-function updateRetouchReadouts(retouch = retouchFromInputs()) {
+function updateRetouchReadouts(retouch = retouchFromInputs(), image = findImage(state.currentId)) {
   const normalized = normalizedRetouch(retouch);
   els.retouchExposureValue.value = signed(normalized.adjustments.exposure, 2);
   els.retouchHighlightsValue.value = signed(normalized.adjustments.highlights, 0);
   els.retouchShadowsValue.value = signed(normalized.adjustments.shadows, 0);
   els.retouchWhitesValue.value = signed(normalized.adjustments.whites, 0);
   els.retouchBlacksValue.value = signed(normalized.adjustments.blacks, 0);
-  els.retouchTemperatureValue.value = `${signed(normalized.adjustments.temperature, 0)}K`;
-  els.retouchOffsetValue.value = signed(normalized.adjustments.offset, 0);
+  const temperature = Math.round(retouchTemperatureInputValue(image, normalized.adjustments.temperature));
+  els.retouchTemperatureValue.value = `${asShotWhiteBalanceTemperature(image) === null ? signed(temperature, 0) : temperature}K`;
+  const offset = Math.round(retouchOffsetInputValue(image, normalized.adjustments.offset));
+  els.retouchOffsetValue.value = signed(offset, 0);
   els.retouchClarityValue.value = signed(normalized.adjustments.clarity, 0);
 }
 
@@ -3174,7 +3245,7 @@ function applyLocalRetouch(retouch, options = {}) {
   if (!image) return;
   state.localRetouchDirty = true;
   image.retouch = retouchForImage(image, retouch);
-  setRetouchInputs(image.retouch);
+  setRetouchInputs(image.retouch, image);
   applyDraftRetouch(image, selectedProfile(image));
   scheduleHistogramRender({ debounce: true });
   renderRetouchGrid(image, selectedProfile(image));

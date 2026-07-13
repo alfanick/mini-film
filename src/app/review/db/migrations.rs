@@ -1,7 +1,7 @@
 use super::*;
 use rusqlite::{OptionalExtension, Transaction, params};
 
-pub(super) const LATEST_SCHEMA_VERSION: i64 = 9;
+pub(super) const LATEST_SCHEMA_VERSION: i64 = 11;
 
 enum MigrationAction {
     Sql(&'static str),
@@ -59,6 +59,16 @@ const MIGRATIONS: &[ReviewMigration] = &[
         version: 9,
         name: "image_auto_iso",
         action: MigrationAction::Rust(migrate_image_auto_iso),
+    },
+    ReviewMigration {
+        version: 10,
+        name: "image_white_balance",
+        action: MigrationAction::Rust(migrate_image_white_balance),
+    },
+    ReviewMigration {
+        version: 11,
+        name: "image_white_balance_offset",
+        action: MigrationAction::Rust(migrate_image_white_balance_offset),
     },
 ];
 
@@ -325,9 +335,12 @@ ALTER TABLE images ADD COLUMN source_height INTEGER;
 
 const NORMALIZED_RELATIONAL_SCHEMA: &str = r#"
 -- Version 6 invokes the current relational writer while importing v5 snapshots.
--- Versions 7 through 9 add these columns to databases that completed v6 earlier.
+-- Versions 7 through 11 add these columns to databases that completed v6 earlier.
 ALTER TABLE images ADD COLUMN exif_auto_iso INTEGER;
 ALTER TABLE images ADD COLUMN exif_iso_auto_hi_limit TEXT;
+ALTER TABLE images ADD COLUMN exif_white_balance_mode TEXT;
+ALTER TABLE images ADD COLUMN exif_white_balance_temperature INTEGER;
+ALTER TABLE images ADD COLUMN exif_white_balance_offset INTEGER;
 ALTER TABLE images ADD COLUMN exif_shutter_count INTEGER;
 ALTER TABLE images ADD COLUMN exif_shutter_mode TEXT;
 ALTER TABLE images ADD COLUMN exif_silent_photography INTEGER;
@@ -581,6 +594,27 @@ fn migrate_image_auto_iso(tx: &Transaction<'_>) -> Result<()> {
         tx,
         "exif_iso_auto_hi_limit",
         "ALTER TABLE images ADD COLUMN exif_iso_auto_hi_limit TEXT;",
+    )
+}
+
+fn migrate_image_white_balance(tx: &Transaction<'_>) -> Result<()> {
+    ensure_image_column(
+        tx,
+        "exif_white_balance_mode",
+        "ALTER TABLE images ADD COLUMN exif_white_balance_mode TEXT;",
+    )?;
+    ensure_image_column(
+        tx,
+        "exif_white_balance_temperature",
+        "ALTER TABLE images ADD COLUMN exif_white_balance_temperature INTEGER;",
+    )
+}
+
+fn migrate_image_white_balance_offset(tx: &Transaction<'_>) -> Result<()> {
+    ensure_image_column(
+        tx,
+        "exif_white_balance_offset",
+        "ALTER TABLE images ADD COLUMN exif_white_balance_offset INTEGER;",
     )
 }
 

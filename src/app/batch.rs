@@ -192,6 +192,7 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
             grain_engine: args.grain_engine,
             export: args.export.clone(),
             retouch: None,
+            retouch_white_balance: crate::app::retouch::RetouchWhiteBalance::default(),
             bw_filter: crate::app::retouch::BwFilter::None,
         };
         let mut resolved = resolve_profile(&apply_args, temp_dir.path())?;
@@ -815,6 +816,7 @@ fn process_batch_file_inner(
                     }
                 )),
                 retouch: None,
+                retouch_white_balance: crate::app::retouch::RetouchWhiteBalance::default(),
                 bw_filter: crate::app::retouch::BwFilter::None,
                 profile_input_cache_root: Some(&context.args.output),
             },

@@ -1066,6 +1066,7 @@ fn resolve_daemon_profiles(args: &BatchDaemonArgs, temp_dir: &Path) -> Result<Ve
                 grain_engine: args.grain_engine,
                 export: args.export.clone(),
                 retouch: None,
+                retouch_white_balance: crate::app::retouch::RetouchWhiteBalance::default(),
                 bw_filter: crate::app::retouch::BwFilter::None,
             };
             let mut resolved = resolve_profile(&apply_args, &profile_tmp_dir)
@@ -1479,6 +1480,7 @@ fn process_single_profile(
                 }
             )),
             retouch: None,
+            retouch_white_balance: crate::app::retouch::RetouchWhiteBalance::default(),
             bw_filter: crate::app::retouch::BwFilter::None,
             profile_input_cache_root: Some(&args.output),
         },

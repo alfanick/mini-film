@@ -146,7 +146,7 @@ fn fully_populated_review_store() -> ReviewStore {
         current_image_id: Some(2),
         min_rating: 3,
     };
-    store.exif_schema_version = 7;
+    store.exif_schema_version = 9;
     store.images = vec![
         ReviewImage {
             id: 1,
@@ -166,6 +166,9 @@ fn fully_populated_review_store() -> ReviewStore {
                 iso: Some("640".to_string()),
                 auto_iso: Some(true),
                 iso_auto_hi_limit: Some("ISO 6400".to_string()),
+                white_balance_mode: Some("Auto1".to_string()),
+                white_balance_temperature: Some(4860),
+                white_balance_offset: Some(-2),
                 camera_model: Some("Nikon Z8".to_string()),
                 shutter_count: Some(66_278),
                 shutter_mode: Some("Auto (Electronic Front Curtain)".to_string()),
@@ -1146,7 +1149,8 @@ fn review_state_sqlite_round_trips_and_populates_query_tables() {
     let source_info = connection
         .query_row(
             "SELECT source_file_size_bytes, source_width, source_height, exif_shutter_count,
-                    exif_auto_iso, exif_iso_auto_hi_limit
+                    exif_auto_iso, exif_iso_auto_hi_limit, exif_white_balance_mode,
+                    exif_white_balance_temperature, exif_white_balance_offset
              FROM images WHERE image_id = 1",
             [],
             |row| {
@@ -1157,13 +1161,26 @@ fn review_state_sqlite_round_trips_and_populates_query_tables() {
                     row.get::<_, i64>(3)?,
                     row.get::<_, i64>(4)?,
                     row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, i64>(8)?,
                 ))
             },
         )
         .unwrap();
     assert_eq!(
         source_info,
-        (55_620_945, 8288, 5520, 66_278, 1, "ISO 6400".to_string())
+        (
+            55_620_945,
+            8288,
+            5520,
+            66_278,
+            1,
+            "ISO 6400".to_string(),
+            "Auto1".to_string(),
+            4860,
+            -2
+        )
     );
     let shutter_details = connection
         .query_row(
@@ -1456,12 +1473,71 @@ fn existing_v8_sqlite_adds_auto_iso_columns() {
 }
 
 #[test]
+fn existing_v9_sqlite_adds_white_balance_columns() {
+    let temp = tempfile::tempdir().unwrap();
+    let state_path = temp.path().join(SQLITE_STATE_FILE);
+    let connection = open_database_at_version_for_test(&state_path, 9).unwrap();
+    connection
+        .execute_batch(
+            "ALTER TABLE images DROP COLUMN exif_white_balance_mode;
+             ALTER TABLE images DROP COLUMN exif_white_balance_temperature;",
+        )
+        .unwrap();
+    drop(connection);
+
+    assert!(load_store(&state_path).unwrap().is_none());
+
+    let connection = rusqlite::Connection::open(&state_path).unwrap();
+    let column_count = connection
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('images')
+             WHERE name IN ('exif_white_balance_mode', 'exif_white_balance_temperature')",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    assert_eq!(column_count, 2);
+    let schema_version = connection
+        .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+        .unwrap();
+    assert_eq!(schema_version, LATEST_SCHEMA_VERSION);
+}
+
+#[test]
+fn existing_v10_sqlite_adds_white_balance_offset_column() {
+    let temp = tempfile::tempdir().unwrap();
+    let state_path = temp.path().join(SQLITE_STATE_FILE);
+    let connection = open_database_at_version_for_test(&state_path, 10).unwrap();
+    connection
+        .execute_batch("ALTER TABLE images DROP COLUMN exif_white_balance_offset;")
+        .unwrap();
+    drop(connection);
+
+    assert!(load_store(&state_path).unwrap().is_none());
+
+    let connection = rusqlite::Connection::open(&state_path).unwrap();
+    let column_count = connection
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('images')
+             WHERE name = 'exif_white_balance_offset'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    assert_eq!(column_count, 1);
+    let schema_version = connection
+        .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+        .unwrap();
+    assert_eq!(schema_version, LATEST_SCHEMA_VERSION);
+}
+
+#[test]
 fn newer_sqlite_schema_is_rejected_without_modification() {
     let temp = tempfile::tempdir().unwrap();
     let state_path = temp.path().join(SQLITE_STATE_FILE);
     let connection = rusqlite::Connection::open(&state_path).unwrap();
     connection
-        .execute_batch("PRAGMA user_version = 10;")
+        .execute_batch("PRAGMA user_version = 12;")
         .unwrap();
     drop(connection);
 
@@ -1475,7 +1551,7 @@ fn newer_sqlite_schema_is_rejected_without_modification() {
     let schema_version = connection
         .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
         .unwrap();
-    assert_eq!(schema_version, 10);
+    assert_eq!(schema_version, 12);
     let migration_table_count = connection
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master
@@ -1840,7 +1916,11 @@ fn review_update_uses_cached_bw_filter_output_without_scheduling() {
     handle
         .record_profile_done(&raw, 0, &rendered, Duration::from_millis(42))
         .unwrap();
-    let render_key = profile_render_key_value(&RetouchSettings::default(), BwFilter::Yellow);
+    let render_key = profile_render_key_value(
+        &RetouchSettings::default(),
+        RetouchWhiteBalance::default(),
+        BwFilter::Yellow,
+    );
     let cached = retouch_cache_output(&rendered, &render_key);
     fs::write(&cached, b"yellow").unwrap();
 

@@ -34,7 +34,7 @@ pub(super) use crate::{
     app::export::validate_export_options,
     app::pp3::RAW_RENDER_PIPELINE_KEY,
     app::profile::resolve_profile,
-    app::retouch::{BasicRetouchAdjustments, BwFilter, RetouchSettings},
+    app::retouch::{BasicRetouchAdjustments, BwFilter, RetouchSettings, RetouchWhiteBalance},
     app::timestamps::{GalleryExifData, extract_gallery_exif},
     app::util::{is_jpeg_input_file, matching_raw_for_sidecar},
     cli::{BatchOutputFormat, CodexAnalysisFlags, ExportOptions, GalleryTemplate, LensCorrections},

@@ -587,7 +587,8 @@ impl ReviewHandle {
                 .as_ref()
                 .map(|profile| effective_bw_filter_for_profile(image, profile))
                 .unwrap_or_default();
-            let render_key = profile_render_key(&image.retouch, bw_filter);
+            let white_balance = retouch_white_balance_for_image(image);
+            let render_key = profile_render_key(&image.retouch, white_balance, bw_filter);
             let Some(render) = image
                 .profiles
                 .iter_mut()
@@ -792,7 +793,14 @@ impl ReviewHandle {
         raw: &Path,
         profile_index: usize,
         render_key: &str,
-    ) -> Result<Option<(ReviewProfile, RetouchSettings, BwFilter)>> {
+    ) -> Result<
+        Option<(
+            ReviewProfile,
+            RetouchSettings,
+            RetouchWhiteBalance,
+            BwFilter,
+        )>,
+    > {
         let store = self.store_snapshot();
         let Some(image) = store.images.iter().find(|image| image.raw_path == raw) else {
             return Ok(None);
@@ -816,7 +824,13 @@ impl ReviewHandle {
             return Ok(None);
         };
         let bw_filter = effective_bw_filter_for_profile(image, &profile);
-        Ok(Some((profile, image.retouch.clone(), bw_filter)))
+        let white_balance = retouch_white_balance_for_image(image);
+        Ok(Some((
+            profile,
+            image.retouch.clone(),
+            white_balance,
+            bw_filter,
+        )))
     }
 
     pub(super) fn sooc_retouch_task_snapshot(
@@ -1140,7 +1154,7 @@ impl ReviewHandle {
             return;
         }
         let profile_index = job.profile_index.expect("profile retouch job has an index");
-        let Ok(Some((profile, retouch, bw_filter))) =
+        let Ok(Some((profile, retouch, white_balance, bw_filter))) =
             self.retouch_task_snapshot(&job.raw, profile_index, &job.render_key)
         else {
             return;
@@ -1176,8 +1190,8 @@ impl ReviewHandle {
         let result = self.render_retouch_output(
             &job.raw,
             &profile,
-            profile_index,
             &retouch,
+            white_balance,
             bw_filter,
             &temp_output,
         );
@@ -1397,8 +1411,8 @@ impl ReviewHandle {
         &self,
         raw: &Path,
         profile: &ReviewProfile,
-        profile_index: usize,
         retouch: &RetouchSettings,
+        white_balance: RetouchWhiteBalance,
         bw_filter: BwFilter,
         output: &Path,
     ) -> Result<()> {
@@ -1426,6 +1440,7 @@ impl ReviewHandle {
             grain_engine: self.grain_engine,
             export: self.export.clone(),
             retouch: None,
+            retouch_white_balance: white_balance,
             bw_filter,
         };
         let mut resolved = resolve_profile(&apply_args, temp_dir.path())?;
@@ -1436,8 +1451,8 @@ impl ReviewHandle {
         }
         let seed = self
             .grain_seed
-            .map(|seed| review_publish_seed(seed, &raw, profile_index))
-            .unwrap_or_else(|| review_publish_seed(0, &raw, profile_index));
+            .map(|seed| review_publish_seed(seed, &raw, profile.index))
+            .unwrap_or_else(|| review_publish_seed(0, &raw, profile.index));
         apply_resolved(
             ApplyJob {
                 raw: &raw,
@@ -1464,6 +1479,7 @@ impl ReviewHandle {
                     bw_filter_summary(bw_filter)
                 )),
                 retouch: Some(retouch),
+                retouch_white_balance: white_balance,
                 bw_filter,
                 profile_input_cache_root: Some(&self.output_root),
             },
@@ -1663,7 +1679,11 @@ impl ReviewHandle {
                                 .get(&profile_index)
                                 .map(|profile| effective_bw_filter_for_profile(image, profile))
                                 .unwrap_or_default();
-                            let render_key = profile_render_key_value(&image.retouch, bw_filter);
+                            let render_key = profile_render_key_value(
+                                &image.retouch,
+                                retouch_white_balance_for_image(image),
+                                bw_filter,
+                            );
                             queue_profile_retouch_render(
                                 image,
                                 index,
@@ -1687,7 +1707,11 @@ impl ReviewHandle {
                             continue;
                         };
                         let bw_filter = effective_bw_filter_for_profile(image, profile);
-                        let render_key = profile_render_key_value(&image.retouch, bw_filter);
+                        let render_key = profile_render_key_value(
+                            &image.retouch,
+                            retouch_white_balance_for_image(image),
+                            bw_filter,
+                        );
                         queue_profile_retouch_render(
                             image,
                             index,
@@ -2598,19 +2622,28 @@ pub(super) fn retouch_render_key(retouch: &RetouchSettings) -> Option<String> {
     (normalized != RetouchSettings::default()).then(|| normalized.render_key())
 }
 
-pub(super) fn profile_render_key(retouch: &RetouchSettings, bw_filter: BwFilter) -> Option<String> {
+pub(super) fn profile_render_key(
+    retouch: &RetouchSettings,
+    white_balance: RetouchWhiteBalance,
+    bw_filter: BwFilter,
+) -> Option<String> {
     let normalized = retouch.clone().normalized();
     (normalized != RetouchSettings::default() || bw_filter != BwFilter::None)
-        .then(|| profile_render_key_value(&normalized, bw_filter))
+        .then(|| profile_render_key_value(&normalized, white_balance, bw_filter))
 }
 
-pub(super) fn profile_render_key_value(retouch: &RetouchSettings, bw_filter: BwFilter) -> String {
+pub(super) fn profile_render_key_value(
+    retouch: &RetouchSettings,
+    white_balance: RetouchWhiteBalance,
+    bw_filter: BwFilter,
+) -> String {
     let normalized = retouch.clone().normalized();
+    let retouch_key = normalized.render_key_with_white_balance(white_balance);
     if bw_filter == BwFilter::None {
-        return normalized.render_key();
+        return retouch_key;
     }
     let mut hasher = Sha1::new();
-    hasher.update(normalized.render_key());
+    hasher.update(retouch_key);
     hasher.update("|bw-filter-v2=");
     hasher.update(bw_filter.as_str());
     let digest = hasher.finalize();
@@ -2619,6 +2652,13 @@ pub(super) fn profile_render_key_value(retouch: &RetouchSettings, bw_filter: BwF
         .take(8)
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+pub(super) fn retouch_white_balance_for_image(image: &ReviewImage) -> RetouchWhiteBalance {
+    RetouchWhiteBalance {
+        temperature: image.exif.white_balance_temperature,
+        offset: image.exif.white_balance_offset,
+    }
 }
 
 fn changed_bw_filter_profile_indexes(

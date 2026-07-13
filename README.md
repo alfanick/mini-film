@@ -543,8 +543,13 @@ them onto another picture.
 The review UI stores rating, label, tags, notes, active preview profile, and the
 set of profile variants selected for publish. RAW and explicitly profiled
 JPEG/HEIC inputs support per-picture
-retouch controls for exposure, highlights, shadows, whites, blacks, relative
-color temperature, clarity, rotation, and crop. Direct JPEG/HEIC inputs without
+retouch controls for exposure, highlights, shadows, whites, blacks, as-shot
+color temperature, clarity, rotation, and crop. The temperature control is
+centered on the camera's Kelvin value, and hovering `Temperature` shows the
+camera white-balance mode when available. `Tint` is centered on the camera's
+green/magenta white-balance fine-tune value. Moving either white-balance control
+generates an effective custom RawTherapee white balance from those as-shot
+values. Direct JPEG/HEIC inputs without
 a profile do not expose retouch controls. The browser applies a fast draft preview while
 edits are being made, then queues a high-quality mini-film render and swaps in
 the finished output when it is ready. Crop and rotation are persisted with the

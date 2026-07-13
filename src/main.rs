@@ -154,6 +154,7 @@ fn main() -> Result<()> {
                 progressive_jpeg,
             },
             retouch: None,
+            retouch_white_balance: crate::app::retouch::RetouchWhiteBalance::default(),
             bw_filter: crate::app::retouch::BwFilter::None,
         }),
         CommandKind::Batch {

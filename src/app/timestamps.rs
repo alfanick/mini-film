@@ -42,6 +42,12 @@ pub(crate) struct GalleryExifData {
     pub(crate) auto_iso: Option<bool>,
     #[serde(default)]
     pub(crate) iso_auto_hi_limit: Option<String>,
+    #[serde(default)]
+    pub(crate) white_balance_mode: Option<String>,
+    #[serde(default)]
+    pub(crate) white_balance_temperature: Option<u32>,
+    #[serde(default)]
+    pub(crate) white_balance_offset: Option<i32>,
     pub(crate) camera_model: Option<String>,
     #[serde(default)]
     pub(crate) shutter_count: Option<u64>,
@@ -73,6 +79,9 @@ impl GalleryExifData {
             && self.iso.is_none()
             && self.auto_iso.is_none()
             && self.iso_auto_hi_limit.is_none()
+            && self.white_balance_mode.is_none()
+            && self.white_balance_temperature.is_none()
+            && self.white_balance_offset.is_none()
             && self.camera_model.is_none()
             && self.shutter_count.is_none()
             && self.shutter_mode.is_none()
@@ -93,6 +102,7 @@ impl GalleryExifData {
         clean_optional_exif_text(&mut self.shutter_speed);
         clean_optional_exif_text(&mut self.iso);
         clean_optional_exif_text(&mut self.iso_auto_hi_limit);
+        clean_optional_exif_text(&mut self.white_balance_mode);
         clean_optional_exif_text(&mut self.camera_model);
         clean_optional_exif_text(&mut self.shutter_mode);
         clean_optional_exif_text(&mut self.release_mode);
@@ -755,6 +765,9 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
                 data.active_d_lighting = metadata.active_d_lighting;
                 data.auto_iso = metadata.auto_iso;
                 data.iso_auto_hi_limit = metadata.iso_auto_hi_limit;
+                data.white_balance_mode = metadata.white_balance_mode;
+                data.white_balance_temperature = metadata.white_balance_temperature;
+                data.white_balance_offset = metadata.white_balance_offset;
                 data.shutter_count = metadata.shutter_count;
                 data.shutter_mode = metadata.shutter_mode;
                 data.silent_photography = metadata.silent_photography;
@@ -788,6 +801,9 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
     let mut active_d_lighting = None;
     let mut auto_iso = None;
     let mut iso_auto_hi_limit = None;
+    let mut white_balance_mode = None;
+    let mut white_balance_temperature = None;
+    let mut white_balance_offset = None;
     let mut shutter_count = None;
     let mut shutter_mode = None;
     let mut silent_photography = None;
@@ -801,6 +817,9 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
         active_d_lighting = metadata.active_d_lighting;
         auto_iso = metadata.auto_iso;
         iso_auto_hi_limit = metadata.iso_auto_hi_limit;
+        white_balance_mode = metadata.white_balance_mode;
+        white_balance_temperature = metadata.white_balance_temperature;
+        white_balance_offset = metadata.white_balance_offset;
         shutter_count = metadata.shutter_count;
         shutter_mode = metadata.shutter_mode;
         silent_photography = metadata.silent_photography;
@@ -831,6 +850,9 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
         iso,
         auto_iso,
         iso_auto_hi_limit,
+        white_balance_mode,
+        white_balance_temperature,
+        white_balance_offset,
         camera_model,
         shutter_count,
         shutter_mode,
@@ -858,6 +880,9 @@ struct GalleryMetadata {
     active_d_lighting: Option<String>,
     auto_iso: Option<bool>,
     iso_auto_hi_limit: Option<String>,
+    white_balance_mode: Option<String>,
+    white_balance_temperature: Option<u32>,
+    white_balance_offset: Option<i32>,
     shutter_count: Option<u64>,
     shutter_mode: Option<String>,
     silent_photography: Option<bool>,
@@ -880,6 +905,9 @@ fn extract_gallery_metadata_with_exiftool(file: &Path) -> Option<GalleryMetadata
         .arg("-Nikon:ActiveD-Lighting")
         .arg("-Nikon:ShootingMode")
         .arg("-NikonSettings:ISOAutoHiLimit")
+        .arg("-Nikon:WhiteBalance")
+        .arg("-Nikon:ColorTemperatureAuto#")
+        .arg("-Nikon:WhiteBalanceFineTune#")
         .arg("-ShutterCount#")
         .arg("-Nikon:ShutterMode")
         .arg("-Nikon:SilentPhotography#")
@@ -924,6 +952,17 @@ fn extract_gallery_metadata_with_exiftool(file: &Path) -> Option<GalleryMetadata
         .or_else(|| json_first_string(object.get("NikonSettings:ISOAutoHiLimit")))
         .map(clean_exif_display_text)
         .filter(|value| !value.is_empty());
+    let white_balance_mode = json_first_string(object.get("WhiteBalance"))
+        .or_else(|| json_first_string(object.get("Nikon:WhiteBalance")))
+        .map(clean_exif_display_text)
+        .filter(|value| !value.is_empty());
+    let white_balance_temperature = json_u32_value(object.get("ColorTemperatureAuto"))
+        .or_else(|| json_u32_value(object.get("Nikon:ColorTemperatureAuto")));
+    let white_balance_offset = json_nikon_white_balance_offset(
+        object
+            .get("WhiteBalanceFineTune")
+            .or_else(|| object.get("Nikon:WhiteBalanceFineTune")),
+    );
     let shutter_count = json_u64_value(object.get("ShutterCount"))
         .or_else(|| json_u64_value(object.get("Nikon:ShutterCount")));
     let shutter_mode = json_first_string(object.get("ShutterMode"))
@@ -957,6 +996,9 @@ fn extract_gallery_metadata_with_exiftool(file: &Path) -> Option<GalleryMetadata
         active_d_lighting,
         auto_iso,
         iso_auto_hi_limit,
+        white_balance_mode,
+        white_balance_temperature,
+        white_balance_offset,
         shutter_count,
         shutter_mode,
         silent_photography,
@@ -1003,6 +1045,16 @@ fn json_u32_value(value: Option<&Value>) -> Option<u32> {
         _ => None,
     }
     .filter(|value| *value > 0)
+}
+
+fn json_nikon_white_balance_offset(value: Option<&Value>) -> Option<i32> {
+    let value = json_first_string(value)?;
+    let values = value
+        .split(|character: char| character.is_whitespace() || character == ',')
+        .filter_map(|value| value.parse::<f32>().ok())
+        .collect::<Vec<_>>();
+    let offset = *values.get(1)?;
+    offset.is_finite().then(|| offset.round() as i32)
 }
 
 fn json_string_values(value: Option<&Value>) -> Vec<String> {
@@ -1451,8 +1503,9 @@ fn system_time_to_unix_seconds(timestamp: SystemTime) -> Option<i64> {
 mod tests {
     use super::{
         clean_exif_display_text, extract_gallery_exif, format_exif_aperture, json_bool_value,
-        json_u32_value, json_u64_value, nikon_shooting_mode_uses_auto_iso, parse_exif_datetime,
-        parse_exif_datetime_with_offset, parse_iso_value, sync_output_timestamps_from_exif,
+        json_nikon_white_balance_offset, json_u32_value, json_u64_value,
+        nikon_shooting_mode_uses_auto_iso, parse_exif_datetime, parse_exif_datetime_with_offset,
+        parse_iso_value, sync_output_timestamps_from_exif,
     };
     use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
     use filetime::{FileTime, set_file_atime, set_file_mtime};
@@ -1492,6 +1545,18 @@ mod tests {
             Some(false)
         );
         assert_eq!(json_bool_value(Some(&serde_json::json!("unknown"))), None);
+    }
+
+    #[test]
+    fn nikon_white_balance_offset_uses_green_magenta_component() {
+        assert_eq!(
+            json_nikon_white_balance_offset(Some(&serde_json::json!("2 -3"))),
+            Some(-3)
+        );
+        assert_eq!(
+            json_nikon_white_balance_offset(Some(&serde_json::json!("2"))),
+            None
+        );
     }
 
     #[test]

@@ -1,4 +1,10 @@
-use super::{db::*, handle::retouch_without_adjustments, model::*, prelude::*, store::*};
+use super::{
+    db::*,
+    handle::{retouch_white_balance_for_image, retouch_without_adjustments},
+    model::*,
+    prelude::*,
+    store::*,
+};
 use mini_film::GrainEngine;
 
 pub(super) fn parse_batch_output_format(raw: &str) -> Result<BatchOutputFormat> {
@@ -740,6 +746,7 @@ pub(super) fn rerender_review_output(
         grain_engine: options.grain_engine,
         export: options.export.clone(),
         retouch: Some(image.retouch.clone()),
+        retouch_white_balance: retouch_white_balance_for_image(image),
         bw_filter: effective_bw_filter_for_profile(image, profile),
     })
 }

@@ -408,6 +408,7 @@ fn load_images(connection: &rusqlite::Connection) -> Result<Vec<ReviewImage>> {
             image_id, position, raw_path, sooc_sidecar_path, relative_path, file_name,
             exif_capture_timestamp, exif_rating, exif_focal_length, exif_aperture,
             exif_shutter_speed, exif_iso, exif_auto_iso, exif_iso_auto_hi_limit,
+            exif_white_balance_mode, exif_white_balance_temperature, exif_white_balance_offset,
             exif_camera_model, exif_shutter_count,
             exif_shutter_mode, exif_silent_photography, exif_release_mode, exif_lens_model,
             exif_shooting_mode, exif_exposure_compensation, exif_flash, exif_note,
@@ -486,6 +487,15 @@ fn load_images(connection: &rusqlite::Connection) -> Result<Vec<ReviewImage>> {
                     .map(|value| i64_to_bool(value, "EXIF Auto ISO"))
                     .transpose()?,
                 iso_auto_hi_limit: row.get("exif_iso_auto_hi_limit")?,
+                white_balance_mode: row.get("exif_white_balance_mode")?,
+                white_balance_temperature: row
+                    .get::<_, Option<i64>>("exif_white_balance_temperature")?
+                    .map(|value| i64_to_u32(value, "EXIF white balance temperature"))
+                    .transpose()?,
+                white_balance_offset: row
+                    .get::<_, Option<i64>>("exif_white_balance_offset")?
+                    .map(|value| i64_to_i32(value, "EXIF white balance offset"))
+                    .transpose()?,
                 camera_model: row.get("exif_camera_model")?,
                 shutter_count: row
                     .get::<_, Option<i64>>("exif_shutter_count")?
@@ -789,6 +799,10 @@ fn i64_to_u8(value: i64, name: &str) -> Result<u8> {
 
 fn i64_to_u32(value: i64, name: &str) -> Result<u32> {
     u32::try_from(value).with_context(|| format!("{name} {value} does not fit u32"))
+}
+
+fn i64_to_i32(value: i64, name: &str) -> Result<i32> {
+    i32::try_from(value).with_context(|| format!("{name} {value} exceeds SQLite i32 range"))
 }
 
 fn i64_to_u64(value: i64, name: &str) -> Result<u64> {
