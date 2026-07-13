@@ -2299,6 +2299,10 @@ fn review_route_path_accepts_reverse_proxy_prefixes() {
         "/assets/vendor/preact.module.js"
     );
     assert_eq!(review_route_path("/mini-film/media/1/0"), "/media/1/0");
+    assert_eq!(
+        review_route_path("/mini-film/crop-source/1"),
+        "/crop-source/1"
+    );
     assert_eq!(review_route_path("/mini-film/original/1"), "/original/1");
     assert_eq!(review_route_path("/mini-film/thumbnail/1"), "/thumbnail/1");
     assert_eq!(review_route_path("/mini-film/preview/1"), "/preview/1");
@@ -2429,6 +2433,7 @@ async fn compressed_review_media_routes_serve_distinct_cached_sizes_and_full_out
     let image = &state["images"][0];
     assert_eq!(image["thumbnail_url"], "thumbnail/1");
     assert_eq!(image["preview_url"], "preview/1");
+    assert_eq!(image["crop_source_url"], "preview/1");
     assert_eq!(image["full_url"], "original/1");
     assert_eq!(image["processing_mode"], "direct");
     assert_eq!(
@@ -2516,6 +2521,7 @@ fn profiled_compressed_review_state_exposes_profiles_and_original_source() {
     assert_eq!(image["full_url"], "original/1");
     assert_eq!(image["profiles"].as_array().unwrap().len(), 2);
     assert_eq!(image["profiles"][0]["profile_index"], 0);
+    assert_eq!(image["profiles"][0]["base_url"], "media/1/0/base");
     assert_eq!(image["profiles"][1]["profile_index"], SOOC_PROFILE_INDEX);
     assert_eq!(image["profiles"][1]["profile_stem"], SOOC_PROFILE_STEM);
     assert_eq!(
@@ -2523,6 +2529,68 @@ fn profiled_compressed_review_state_exposes_profiles_and_original_source() {
         SOOC_PROFILE_DISPLAY_NAME
     );
     assert_eq!(image["publish_profile_indexes"], json!([0]));
+}
+
+#[tokio::test]
+async fn crop_source_and_profile_base_routes_serve_uncropped_media() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let raw = input.join("frame.NEF");
+    let sidecar = input.join("frame.JPG");
+    fs::write(&raw, b"raw").unwrap();
+    fs::write(&sidecar, b"sidecar").unwrap();
+    let base = output.join("Classic").join("frame.jpg");
+    let cached = retouch_cache_output(&base, "crop");
+    fs::create_dir_all(base.parent().unwrap()).unwrap();
+    fs::write(&base, b"uncropped profile").unwrap();
+    fs::write(&cached, b"cropped profile").unwrap();
+
+    let handle = test_handle(input.clone(), output, vec![profile(0, "Classic")]);
+    handle
+        .update_store(|store| {
+            let image = store.ensure_image(&input, &raw)?;
+            image.sooc_sidecar_path = Some(sidecar.clone());
+            let render = image
+                .profiles
+                .iter_mut()
+                .find(|render| render.profile_index == 0)
+                .unwrap();
+            render.status = ReviewRenderStatus::Done;
+            render.output_path = Some(cached.clone());
+            Ok(())
+        })
+        .unwrap();
+    let crop_source = handle.crop_source_preview_path_for(&sidecar, 1);
+    fs::create_dir_all(crop_source.parent().unwrap()).unwrap();
+    fs::write(&crop_source, b"crop source").unwrap();
+
+    let state = handle.api_state_value().unwrap();
+    assert_eq!(state["images"][0]["crop_source_url"], "crop-source/1");
+    assert_eq!(
+        state["images"][0]["profiles"][0]["base_url"],
+        "media/1/0/base"
+    );
+
+    for (route, expected) in [
+        ("/crop-source/1", &b"crop source"[..]),
+        ("/media/1/0/base", &b"uncropped profile"[..]),
+    ] {
+        let response = route_request(
+            axum::http::Method::GET,
+            route,
+            axum::body::Bytes::new(),
+            &handle,
+        )
+        .await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], expected);
+    }
 }
 
 #[test]

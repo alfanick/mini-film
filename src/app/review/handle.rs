@@ -159,6 +159,12 @@ impl ReviewHandle {
             .join(compressed_review_cache_file_name(source, image_id))
     }
 
+    pub(super) fn crop_source_preview_path_for(&self, source: &Path, image_id: u64) -> PathBuf {
+        self.preview_root()
+            .join(CROP_SOURCE_CACHE_VERSION)
+            .join(compressed_review_cache_file_name(source, image_id))
+    }
+
     #[cfg(test)]
     pub(crate) fn record_discovered_raw(&self, raw: &Path) -> Result<()> {
         self.record_discovered_raw_with_sidecar(raw, None)
@@ -169,8 +175,9 @@ impl ReviewHandle {
         raw: &Path,
         sooc_sidecar: Option<&Path>,
     ) -> Result<()> {
-        let (history_entry, preview_job) = self.update_store(|store| {
+        let (history_entry, preview_job, crop_source_job) = self.update_store(|store| {
             let mut preview_job = None;
+            let mut crop_source_job = None;
             let mut history_entry = None;
             let discovered = !store.images.iter().any(|image| image.raw_path == raw);
             let profiles = store.profiles.clone();
@@ -178,6 +185,12 @@ impl ReviewHandle {
                 let image = store.ensure_image(&self.input_root, raw)?;
                 let old_sidecar = image.sooc_sidecar_path.clone();
                 image.sooc_sidecar_path = sooc_sidecar.map(Path::to_path_buf);
+                if let Some(sidecar) = &image.sooc_sidecar_path {
+                    let crop_source = self.crop_source_preview_path_for(sidecar, image.id);
+                    if !crop_source.is_file() {
+                        crop_source_job = Some((image.id, sidecar.clone(), crop_source));
+                    }
+                }
                 if image.sooc_sidecar_path != old_sidecar {
                     sync_image_profile_renders(image, &profiles, false, &HashSet::new());
                 }
@@ -212,7 +225,7 @@ impl ReviewHandle {
                 }
             }
             store.merge_standalone_sooc_sidecars();
-            Ok((history_entry, preview_job))
+            Ok((history_entry, preview_job, crop_source_job))
         })?;
         if let Some(entry) = history_entry {
             self.append_history(entry)?;
@@ -221,7 +234,31 @@ impl ReviewHandle {
         if let Some((raw, preview_path)) = preview_job {
             self.spawn_preview_job(raw, preview_path);
         }
+        if let Some((image_id, source, output)) = crop_source_job {
+            self.spawn_crop_source_preview_job(image_id, source, output);
+        }
         Ok(())
+    }
+
+    fn spawn_crop_source_preview_job(&self, image_id: u64, source: PathBuf, output: PathBuf) {
+        let handle = self.clone();
+        let _ = thread::Builder::new()
+            .name("mini-film-review-crop-source".to_string())
+            .spawn(move || {
+                match ensure_compressed_review_preview(&source, &output, &handle.convert) {
+                    Ok(()) => {
+                        if let Err(error) = handle.broadcast_state() {
+                            eprintln!("review crop source state update failed: {error:#}");
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!(
+                            "review crop source generation failed for image {image_id} ({}): {error:#}",
+                            source.display()
+                        );
+                    }
+                }
+            });
     }
 
     pub(crate) fn record_compressed_queued(
@@ -1786,6 +1823,11 @@ impl ReviewHandle {
                         .compressed_thumbnail_path_for(&image.raw_path, image.id)
                         .is_file();
                 let full_source_ready = compressed && image.raw_path.is_file();
+                let sidecar_crop_source_ready = image
+                    .sooc_sidecar_path
+                    .as_ref()
+                    .map(|source| self.crop_source_preview_path_for(source, image.id))
+                    .is_some_and(|path| path.is_file());
                 let profiles = image
                     .profiles
                     .iter()
@@ -1799,6 +1841,11 @@ impl ReviewHandle {
                         let bw_filter = profile
                             .map(|profile| effective_bw_filter_for_profile(image, profile))
                             .unwrap_or_default();
+                        let base_output_ready = render
+                            .output_path
+                            .as_ref()
+                            .map(|output| retouch_base_output(output))
+                            .is_some_and(|output| output.is_file());
                         json!({
                             "profile_index": render.profile_index,
                             "profile_stem": render.profile_stem,
@@ -1806,6 +1853,11 @@ impl ReviewHandle {
                             "status": render.status,
                             "url": if render.status == ReviewRenderStatus::Done {
                                 Some(format!("media/{}/{}", image.id, render.profile_index))
+                            } else {
+                                None
+                            },
+                            "base_url": if base_output_ready {
+                                Some(format!("media/{}/{}/base", image.id, render.profile_index))
                             } else {
                                 None
                             },
@@ -1840,6 +1892,18 @@ impl ReviewHandle {
                         Some(format!("preview/{}", image.id))
                     } else {
                         None
+                    },
+                    "crop_source_url": if sidecar_crop_source_ready {
+                        Some(format!("crop-source/{}", image.id))
+                    } else if preview_ready {
+                        Some(format!("preview/{}", image.id))
+                    } else {
+                        None
+                    },
+                    "crop_source_updated_at": if sidecar_crop_source_ready {
+                        &image.updated_at
+                    } else {
+                        &image.preview.updated_at
                     },
                     "full_url": if full_source_ready {
                         Some(format!("original/{}", image.id))
@@ -1932,6 +1996,54 @@ impl ReviewHandle {
             bail!("review media is missing: {}", path.display());
         }
         Ok(path.clone())
+    }
+
+    pub(super) fn profile_base_media_path(
+        &self,
+        image_id: u64,
+        profile_index: usize,
+    ) -> Result<PathBuf> {
+        let store = self.store_snapshot();
+        let image = store
+            .images
+            .iter()
+            .find(|image| image.id == image_id)
+            .ok_or_else(|| anyhow!("review image {image_id} does not exist"))?;
+        let render = image
+            .profiles
+            .iter()
+            .find(|render| render.profile_index == profile_index)
+            .ok_or_else(|| anyhow!("profile {profile_index} is not available"))?;
+        let output = render
+            .output_path
+            .as_ref()
+            .ok_or_else(|| anyhow!("profile {profile_index} has no output path"))?;
+        let base = retouch_base_output(output);
+        if !base.is_file() {
+            bail!(
+                "profile {profile_index} base media is missing: {}",
+                base.display()
+            );
+        }
+        Ok(base)
+    }
+
+    pub(super) fn crop_source_media_path(&self, image_id: u64) -> Result<PathBuf> {
+        let store = self.store_snapshot();
+        let image = store
+            .images
+            .iter()
+            .find(|image| image.id == image_id)
+            .ok_or_else(|| anyhow!("review image {image_id} does not exist"))?;
+        let source = image
+            .sooc_sidecar_path
+            .as_ref()
+            .ok_or_else(|| anyhow!("review image {image_id} has no SOOC sidecar"))?;
+        let path = self.crop_source_preview_path_for(source, image.id);
+        if !path.is_file() {
+            bail!("review crop source is missing: {}", path.display());
+        }
+        Ok(path)
     }
 
     pub(super) fn profile_hald_path(&self, profile_index: usize) -> Result<PathBuf> {

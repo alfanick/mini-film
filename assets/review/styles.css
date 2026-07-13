@@ -459,6 +459,11 @@ button:disabled {
   -webkit-user-drag: none;
 }
 
+.viewer > #main-image,
+.viewer > .crop-stage {
+  grid-area: 1 / 1;
+}
+
 .gesture-feedback {
   position: absolute;
   z-index: 6;
@@ -566,10 +571,59 @@ button:disabled {
   display: block;
 }
 
-.viewer.draft-retouch img {
+.viewer.draft-retouch > #main-image {
   filter: brightness(var(--draft-brightness, 1)) contrast(var(--draft-contrast, 1)) saturate(var(--draft-saturation, 1))
     sepia(var(--draft-sepia, 0)) hue-rotate(var(--draft-hue, 0deg));
   transform: rotate(var(--draft-rotation, 0deg));
+}
+
+.crop-stage {
+  position: relative;
+  min-width: 1px;
+  min-height: 1px;
+  place-self: center;
+  overflow: hidden;
+  background: #000;
+}
+
+.crop-stage[hidden] {
+  display: none;
+}
+
+.crop-canvas {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.viewer .crop-stage img {
+  position: absolute;
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: none;
+  max-height: none;
+  object-fit: fill;
+  transform-origin: center;
+  pointer-events: none;
+}
+
+.crop-source-image {
+  z-index: 1;
+  left: 50%;
+  top: 50%;
+}
+
+.crop-current-image {
+  z-index: 2;
+}
+
+.viewer .crop-current-image[hidden] {
+  display: none;
+}
+
+.app.crop-mode .viewer > #main-image {
+  visibility: hidden;
 }
 
 .retouch-grid {
@@ -634,6 +688,7 @@ button:disabled {
 .crop-overlay {
   position: absolute;
   z-index: 4;
+  inset: 0;
   pointer-events: none;
 }
 
@@ -699,12 +754,12 @@ button:disabled {
 .crop-tools {
   position: absolute;
   left: 50%;
-  bottom: 12px;
+  bottom: calc(var(--review-panel-safe) + 12px);
   z-index: 5;
   display: flex;
   align-items: center;
   gap: 8px;
-  width: min(520px, calc(100% - 24px));
+  width: min(680px, calc(100% - 24px));
   transform: translateX(-50%);
   border: 1px solid rgba(255, 255, 255, 0.2);
   border-radius: 7px;
@@ -728,7 +783,7 @@ button:disabled {
   color: #fff;
 }
 
-.crop-tools label {
+.crop-rotation-control {
   display: grid;
   grid-template-columns: auto minmax(80px, 1fr) 42px;
   flex: 1;
@@ -738,9 +793,28 @@ button:disabled {
   font-size: 11px;
 }
 
+.crop-ratio-control {
+  display: grid;
+  grid-template-columns: auto minmax(88px, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-width: 132px;
+  font-size: 11px;
+}
+
 .crop-tools input {
   width: 100%;
   accent-color: #fff;
+}
+
+.crop-tools select {
+  width: 100%;
+  min-height: 30px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 4px;
+  background: #30302e;
+  color: #fff;
+  padding: 3px 6px;
 }
 
 .crop-tools output {
@@ -2511,14 +2585,23 @@ kbd {
 
   .crop-tools {
     width: min(420px, calc(100% - 12px));
-    bottom: max(8px, env(safe-area-inset-bottom));
+    bottom: calc(var(--review-panel-safe) + max(8px, env(safe-area-inset-bottom)));
     gap: 5px;
     padding: 6px;
   }
 
-  .crop-tools label {
+  .crop-rotation-control {
     grid-template-columns: auto minmax(54px, 1fr) 36px;
     gap: 5px;
+  }
+
+  .crop-ratio-control {
+    grid-template-columns: minmax(54px, 1fr);
+    min-width: 72px;
+  }
+
+  .crop-ratio-control > span {
+    display: none;
   }
 
   .shortcuts-overlay,

@@ -3,6 +3,7 @@ use crate::app::export::{add_convert_thread_limit, add_convert_thread_limit_with
 use crate::app::util::{half_cpu_thread_count, is_jpeg_input_file};
 
 pub(super) const COMPRESSED_REVIEW_CACHE_VERSION: &str = "compressed-v1";
+pub(super) const CROP_SOURCE_CACHE_VERSION: &str = "crop-source-v1";
 pub(super) const COMPRESSED_REVIEW_THUMBNAIL_LONG_EDGE: u32 = 512;
 pub(super) const COMPRESSED_REVIEW_THUMBNAIL_QUALITY: u8 = 55;
 pub(super) const COMPRESSED_REVIEW_PREVIEW_LONG_EDGE: u32 = 2048;

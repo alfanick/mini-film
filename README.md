@@ -538,7 +538,8 @@ double-tap a profile thumbnail to publish only that profile and exclude the
 others. `6`, `7`, `8`, `9`, and `0` toggle red, yellow, green, blue, and purple
 labels without advancing; `r`, `y`, `g`, `b`, and `p` provide the same mnemonic
 label toggles. `c` copies the current retouch slider adjustments, and `v` pastes
-them onto another picture.
+them onto another picture. While crop mode is open, `r` rotates the selected
+crop ratio instead of toggling the red label.
 
 The review UI stores rating, label, tags, notes, active preview profile, and the
 set of profile variants selected for publish. RAW and explicitly profiled
@@ -553,7 +554,14 @@ values. Direct JPEG/HEIC inputs without
 a profile do not expose retouch controls. The browser applies a fast draft preview while
 edits are being made, then queues a high-quality mini-film render and swaps in
 the finished output when it is ready. Crop and rotation are persisted with the
-review state and are used by publish rerenders. Profile variants whose combined
+review state and are used by publish rerenders. Reopening crop mode shows an
+uncropped camera preview or original SOOC image, with the finished crop aligned
+over it, so an existing crop can be expanded or repositioned without losing the
+discarded area. Crop ratios can be locked to the auto-oriented original frame,
+`4:3`, `5:4`, `1:1`, `16:10`, `21:9`, or `3:1`; press `r` in crop mode to swap
+the selected ratio's orientation. The editable frame is constrained to the
+largest black-corner-free area after rotation, so neither crop handles nor the
+published result can include rotation triangles. Profile variants whose combined
 source and emulation saturation is effectively black-and-white show `None`, `Y`,
 `O`, `R`, and `G` filter controls beside the selected profile name. Those
 black-and-white filter choices are stored per picture/profile variant and are

@@ -153,6 +153,9 @@ pub(super) async fn route_request(
             profile_hald_response(path, handle).await
         }
         (Method::GET, _) if path.starts_with("/media/") => media_response(path, handle).await,
+        (Method::GET, _) if path.starts_with("/crop-source/") => {
+            crop_source_response(path, handle).await
+        }
         (Method::GET, _) if path.starts_with("/original/") => original_response(path, handle).await,
         (Method::GET, _) if path.starts_with("/outputs/") => outputs_response(path, handle).await,
         (Method::GET, _) if path.starts_with("/thumbnail/") => {
@@ -176,6 +179,7 @@ pub(super) fn review_route_path(path: &str) -> String {
         "/api/",
         "/assets/",
         "/media/",
+        "/crop-source/",
         "/original/",
         "/outputs/",
         "/thumbnail/",
@@ -210,7 +214,7 @@ pub(super) async fn media_response(path: &str, handle: &ReviewHandle) -> Respons
         .trim_start_matches("/media/")
         .split('/')
         .collect::<Vec<_>>();
-    if parts.len() != 1 && parts.len() != 2 {
+    if parts.len() != 1 && parts.len() != 2 && parts.len() != 3 {
         return text_response(404, "text/plain; charset=utf-8", "not found").into_response();
     }
     let image_id = match parts[0].parse::<u64>() {
@@ -232,7 +236,29 @@ pub(super) async fn media_response(path: &str, handle: &ReviewHandle) -> Respons
                 .into_response();
         }
     };
-    match handle.media_path(image_id, profile_index) {
+    let result = if parts.len() == 3 {
+        if parts[2] != "base" {
+            return text_response(404, "text/plain; charset=utf-8", "not found").into_response();
+        }
+        handle.profile_base_media_path(image_id, profile_index)
+    } else {
+        handle.media_path(image_id, profile_index)
+    };
+    match result {
+        Ok(path) => serve_review_file(path, "image/jpeg").await,
+        Err(error) => json_error(404, error).into_response(),
+    }
+}
+
+pub(super) async fn crop_source_response(path: &str, handle: &ReviewHandle) -> Response {
+    let id = path.trim_start_matches("/crop-source/");
+    let image_id = match id.parse::<u64>() {
+        Ok(id) => id,
+        Err(_) => {
+            return text_response(400, "text/plain; charset=utf-8", "bad image id").into_response();
+        }
+    };
+    match handle.crop_source_media_path(image_id) {
         Ok(path) => serve_review_file(path, "image/jpeg").await,
         Err(error) => json_error(404, error).into_response(),
     }
