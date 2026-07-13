@@ -4,5 +4,5 @@ set -euo pipefail
 
 "$(dirname "$0")/run-style-checks.sh"
 
-echo "🧪 Running tests (cargo test --all-targets --no-default-features)"
-cargo test --all-targets --no-default-features
+echo "🧪 Running tests (cargo test --all-targets --no-default-features -- --test-threads=1)"
+cargo test --all-targets --no-default-features -- --test-threads=1
