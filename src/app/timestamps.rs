@@ -38,7 +38,19 @@ pub(crate) struct GalleryExifData {
     pub(crate) aperture: Option<String>,
     pub(crate) shutter_speed: Option<String>,
     pub(crate) iso: Option<String>,
+    #[serde(default)]
+    pub(crate) auto_iso: Option<bool>,
+    #[serde(default)]
+    pub(crate) iso_auto_hi_limit: Option<String>,
     pub(crate) camera_model: Option<String>,
+    #[serde(default)]
+    pub(crate) shutter_count: Option<u64>,
+    #[serde(default)]
+    pub(crate) shutter_mode: Option<String>,
+    #[serde(default)]
+    pub(crate) silent_photography: Option<bool>,
+    #[serde(default)]
+    pub(crate) release_mode: Option<String>,
     pub(crate) lens_model: Option<String>,
     pub(crate) shooting_mode: Option<String>,
     pub(crate) exposure_compensation: Option<String>,
@@ -59,7 +71,13 @@ impl GalleryExifData {
             && self.aperture.is_none()
             && self.shutter_speed.is_none()
             && self.iso.is_none()
+            && self.auto_iso.is_none()
+            && self.iso_auto_hi_limit.is_none()
             && self.camera_model.is_none()
+            && self.shutter_count.is_none()
+            && self.shutter_mode.is_none()
+            && self.silent_photography.is_none()
+            && self.release_mode.is_none()
             && self.lens_model.is_none()
             && self.shooting_mode.is_none()
             && self.exposure_compensation.is_none()
@@ -74,7 +92,10 @@ impl GalleryExifData {
         clean_optional_exif_text(&mut self.aperture);
         clean_optional_exif_text(&mut self.shutter_speed);
         clean_optional_exif_text(&mut self.iso);
+        clean_optional_exif_text(&mut self.iso_auto_hi_limit);
         clean_optional_exif_text(&mut self.camera_model);
+        clean_optional_exif_text(&mut self.shutter_mode);
+        clean_optional_exif_text(&mut self.release_mode);
         clean_optional_exif_text(&mut self.lens_model);
         clean_optional_exif_text(&mut self.shooting_mode);
         clean_optional_exif_text(&mut self.exposure_compensation);
@@ -732,6 +753,12 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
                 data.exposure_compensation = metadata.exposure_compensation;
                 data.flash = metadata.flash;
                 data.active_d_lighting = metadata.active_d_lighting;
+                data.auto_iso = metadata.auto_iso;
+                data.iso_auto_hi_limit = metadata.iso_auto_hi_limit;
+                data.shutter_count = metadata.shutter_count;
+                data.shutter_mode = metadata.shutter_mode;
+                data.silent_photography = metadata.silent_photography;
+                data.release_mode = metadata.release_mode;
                 data.image_width = metadata.image_width.or(data.image_width);
                 data.image_height = metadata.image_height.or(data.image_height);
             }
@@ -759,6 +786,12 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
         .and_then(|value| parse_exposure_compensation_text(value));
     let mut flash = extract_firing_flash_details(&exif);
     let mut active_d_lighting = None;
+    let mut auto_iso = None;
+    let mut iso_auto_hi_limit = None;
+    let mut shutter_count = None;
+    let mut shutter_mode = None;
+    let mut silent_photography = None;
+    let mut release_mode = None;
     let mut image_width = direct_dimensions.map(|(width, _)| width);
     let mut image_height = direct_dimensions.map(|(_, height)| height);
     if let Some(metadata) = extract_gallery_metadata_with_exiftool(file) {
@@ -766,6 +799,12 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
         rating = metadata.rating;
         exposure_compensation = exposure_compensation.or(metadata.exposure_compensation);
         active_d_lighting = metadata.active_d_lighting;
+        auto_iso = metadata.auto_iso;
+        iso_auto_hi_limit = metadata.iso_auto_hi_limit;
+        shutter_count = metadata.shutter_count;
+        shutter_mode = metadata.shutter_mode;
+        silent_photography = metadata.silent_photography;
+        release_mode = metadata.release_mode;
         image_width = metadata.image_width.or(image_width);
         image_height = metadata.image_height.or(image_height);
         if flash.is_none() {
@@ -790,7 +829,13 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
         aperture: aperture.map(format_exif_aperture),
         shutter_speed,
         iso,
+        auto_iso,
+        iso_auto_hi_limit,
         camera_model,
+        shutter_count,
+        shutter_mode,
+        silent_photography,
+        release_mode,
         lens_model,
         shooting_mode,
         exposure_compensation,
@@ -811,6 +856,12 @@ struct GalleryMetadata {
     exposure_compensation: Option<String>,
     flash: Option<String>,
     active_d_lighting: Option<String>,
+    auto_iso: Option<bool>,
+    iso_auto_hi_limit: Option<String>,
+    shutter_count: Option<u64>,
+    shutter_mode: Option<String>,
+    silent_photography: Option<bool>,
+    release_mode: Option<String>,
     image_width: Option<u32>,
     image_height: Option<u32>,
 }
@@ -827,6 +878,12 @@ fn extract_gallery_metadata_with_exiftool(file: &Path) -> Option<GalleryMetadata
         .arg("-Flash")
         .arg("-ExposureBiasValue")
         .arg("-Nikon:ActiveD-Lighting")
+        .arg("-Nikon:ShootingMode")
+        .arg("-NikonSettings:ISOAutoHiLimit")
+        .arg("-ShutterCount#")
+        .arg("-Nikon:ShutterMode")
+        .arg("-Nikon:SilentPhotography#")
+        .arg("-Nikon:ReleaseMode")
         .arg("-ImageWidth#")
         .arg("-ImageHeight#")
         .arg("-Rating")
@@ -860,6 +917,25 @@ fn extract_gallery_metadata_with_exiftool(file: &Path) -> Option<GalleryMetadata
         .or_else(|| json_first_string(object.get("Nikon:ActiveD-Lighting")))
         .map(clean_exif_display_text)
         .filter(|value| !value.is_empty());
+    let auto_iso = json_first_string(object.get("ShootingMode"))
+        .or_else(|| json_first_string(object.get("Nikon:ShootingMode")))
+        .map(|value| nikon_shooting_mode_uses_auto_iso(&value));
+    let iso_auto_hi_limit = json_first_string(object.get("ISOAutoHiLimit"))
+        .or_else(|| json_first_string(object.get("NikonSettings:ISOAutoHiLimit")))
+        .map(clean_exif_display_text)
+        .filter(|value| !value.is_empty());
+    let shutter_count = json_u64_value(object.get("ShutterCount"))
+        .or_else(|| json_u64_value(object.get("Nikon:ShutterCount")));
+    let shutter_mode = json_first_string(object.get("ShutterMode"))
+        .or_else(|| json_first_string(object.get("Nikon:ShutterMode")))
+        .map(clean_exif_display_text)
+        .filter(|value| !value.is_empty());
+    let silent_photography = json_bool_value(object.get("SilentPhotography"))
+        .or_else(|| json_bool_value(object.get("Nikon:SilentPhotography")));
+    let release_mode = json_first_string(object.get("ReleaseMode"))
+        .or_else(|| json_first_string(object.get("Nikon:ReleaseMode")))
+        .map(clean_exif_display_text)
+        .filter(|value| !value.is_empty());
     let exposure_compensation = json_exposure_compensation_value(object.get("ExposureBiasValue"))
         .or_else(|| json_exposure_compensation_value(object.get("XMP-exif:ExposureBiasValue")))
         .or_else(|| json_exposure_compensation_value(object.get("XMP:ExposureBiasValue")))
@@ -879,9 +955,44 @@ fn extract_gallery_metadata_with_exiftool(file: &Path) -> Option<GalleryMetadata
         exposure_compensation,
         flash,
         active_d_lighting,
+        auto_iso,
+        iso_auto_hi_limit,
+        shutter_count,
+        shutter_mode,
+        silent_photography,
+        release_mode,
         image_width,
         image_height,
     })
+}
+
+fn nikon_shooting_mode_uses_auto_iso(value: &str) -> bool {
+    value
+        .split(',')
+        .any(|mode| mode.trim().eq_ignore_ascii_case("Auto ISO"))
+}
+
+fn json_bool_value(value: Option<&Value>) -> Option<bool> {
+    match value {
+        Some(Value::Bool(value)) => Some(*value),
+        Some(Value::Number(value)) => value.as_u64().map(|value| value != 0),
+        Some(Value::String(value)) => match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "on" | "yes" | "enabled" => Some(true),
+            "0" | "false" | "off" | "no" | "disabled" => Some(false),
+            _ => None,
+        },
+        Some(Value::Array(values)) => values.iter().find_map(|value| json_bool_value(Some(value))),
+        _ => None,
+    }
+}
+
+fn json_u64_value(value: Option<&Value>) -> Option<u64> {
+    match value {
+        Some(Value::Number(value)) => value.as_u64(),
+        Some(Value::String(value)) => value.trim().parse::<u64>().ok(),
+        Some(Value::Array(values)) => values.iter().find_map(|value| json_u64_value(Some(value))),
+        _ => None,
+    }
 }
 
 fn json_u32_value(value: Option<&Value>) -> Option<u32> {
@@ -1339,9 +1450,9 @@ fn system_time_to_unix_seconds(timestamp: SystemTime) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        clean_exif_display_text, extract_gallery_exif, format_exif_aperture, json_u32_value,
-        parse_exif_datetime, parse_exif_datetime_with_offset, parse_iso_value,
-        sync_output_timestamps_from_exif,
+        clean_exif_display_text, extract_gallery_exif, format_exif_aperture, json_bool_value,
+        json_u32_value, json_u64_value, nikon_shooting_mode_uses_auto_iso, parse_exif_datetime,
+        parse_exif_datetime_with_offset, parse_iso_value, sync_output_timestamps_from_exif,
     };
     use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
     use filetime::{FileTime, set_file_atime, set_file_mtime};
@@ -1355,6 +1466,39 @@ mod tests {
         assert_eq!(json_u32_value(Some(&serde_json::json!("5520"))), Some(5520));
         assert_eq!(json_u32_value(Some(&serde_json::json!(0))), None);
         assert_eq!(json_u32_value(Some(&serde_json::json!(-1))), None);
+    }
+
+    #[test]
+    fn json_u64_value_accepts_numeric_shutter_counts() {
+        assert_eq!(
+            json_u64_value(Some(&serde_json::json!(66_278))),
+            Some(66_278)
+        );
+        assert_eq!(
+            json_u64_value(Some(&serde_json::json!("66278"))),
+            Some(66_278)
+        );
+        assert_eq!(json_u64_value(Some(&serde_json::json!(0))), Some(0));
+        assert_eq!(json_u64_value(Some(&serde_json::json!(-1))), None);
+    }
+
+    #[test]
+    fn json_bool_value_accepts_raw_exiftool_flags() {
+        assert_eq!(json_bool_value(Some(&serde_json::json!(1))), Some(true));
+        assert_eq!(json_bool_value(Some(&serde_json::json!(0))), Some(false));
+        assert_eq!(json_bool_value(Some(&serde_json::json!("On"))), Some(true));
+        assert_eq!(
+            json_bool_value(Some(&serde_json::json!("Off"))),
+            Some(false)
+        );
+        assert_eq!(json_bool_value(Some(&serde_json::json!("unknown"))), None);
+    }
+
+    #[test]
+    fn nikon_shooting_mode_identifies_auto_iso_token() {
+        assert!(nikon_shooting_mode_uses_auto_iso("Single-Frame, Auto ISO"));
+        assert!(nikon_shooting_mode_uses_auto_iso("auto iso"));
+        assert!(!nikon_shooting_mode_uses_auto_iso("Single-Frame"));
     }
 
     #[test]

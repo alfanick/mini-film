@@ -1885,21 +1885,41 @@ function zeroPad(value) {
 
 function renderImageExif(image) {
   els.imageExif.replaceChildren();
+  els.imageExif.removeAttribute("title");
   const exif = image?.exif || {};
   const exposureCompensation = formatExposureCompensation(exif.exposure_compensation);
+  const shutterCountTitle =
+    exif.shutter_count === null || exif.shutter_count === undefined || exif.shutter_count === ""
+      ? ""
+      : `Shutter count: ${exif.shutter_count}`;
+  const isoTitle = exif.auto_iso ? (exif.iso_auto_hi_limit ? `Auto ISO <= ${exif.iso_auto_hi_limit}` : "Auto ISO") : "";
+  const lensTitle = exif.lens_model ? `Lens: ${exif.lens_model}` : "";
+  const releaseModeTitle = exif.release_mode ? `Release mode: ${exif.release_mode}` : "";
+  const shutterDetailsTitle = [
+    exif.shutter_mode ? `Shutter mode: ${exif.shutter_mode}` : "",
+    exif.silent_photography ? "Silent photography: On" : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
   const parts = [
-    exif.shooting_mode ? `Mode ${exif.shooting_mode}` : "",
-    exif.camera_model || "",
-    formatExifFocalLength(exif.focal_length),
-    exif.iso ? `ISO ${exif.iso}` : "",
-    formatExifAperture(exif.aperture),
-    exif.shutter_speed || "",
-    exposureCompensation,
-    exif.flash ? `Flash ${exif.flash}` : "",
-  ].filter(Boolean);
-  const text = parts.join(" · ");
-  els.imageExif.textContent = text;
-  els.imageExif.title = text;
+    { text: exif.shooting_mode ? `Mode ${exif.shooting_mode}` : "", title: releaseModeTitle },
+    { text: exif.camera_model || "", className: "image-exif-camera", title: shutterCountTitle },
+    { text: formatExifFocalLength(exif.focal_length), title: lensTitle },
+    { text: exif.iso ? `ISO ${exif.iso}` : "", title: isoTitle },
+    { text: formatExifAperture(exif.aperture) },
+    { text: exif.shutter_speed || "", title: shutterDetailsTitle },
+    { text: exposureCompensation },
+    { text: exif.flash ? `Flash ${exif.flash}` : "" },
+  ].filter((part) => part.text);
+  const text = parts.map((part) => part.text).join(" · ");
+  parts.forEach((part, index) => {
+    if (index > 0) els.imageExif.append(document.createTextNode(" · "));
+    const span = document.createElement("span");
+    span.textContent = part.text;
+    if (part.className) span.className = part.className;
+    span.title = part.title || text;
+    els.imageExif.append(span);
+  });
 }
 
 function formatExposureCompensation(value) {

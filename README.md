@@ -498,6 +498,12 @@ use the checkbox on each profile thumbnail to exclude or re-include a variant
 while reviewing.
 Hover the filename in the review panel to see the source file size, pixel
 dimensions, and megapixel count rounded to one decimal place.
+When the source metadata contains a shutter count, hover the camera name in the
+same panel to see `Shutter count: N`. Hover the focal length to see the lens
+name when it is available. Hover the shutter speed to see the shutter mode and,
+when enabled, silent photography. Hover the PSAM mode to see the release mode.
+When Nikon Auto ISO is active, hover ISO to see `Auto ISO <= ISO N` with the
+configured upper limit.
 
 Multiple browsers can use the review page at the same time. The current picture
 and minimum rating filter are server-owned shared state, so every browser shows

@@ -1,7 +1,7 @@
 use super::*;
 use rusqlite::{OptionalExtension, Transaction, params};
 
-pub(super) const LATEST_SCHEMA_VERSION: i64 = 6;
+pub(super) const LATEST_SCHEMA_VERSION: i64 = 9;
 
 enum MigrationAction {
     Sql(&'static str),
@@ -44,6 +44,21 @@ const MIGRATIONS: &[ReviewMigration] = &[
         version: 6,
         name: "normalized_relational_review_store",
         action: MigrationAction::Rust(migrate_normalized_relational_review_store),
+    },
+    ReviewMigration {
+        version: 7,
+        name: "image_shutter_count",
+        action: MigrationAction::Rust(migrate_image_shutter_count),
+    },
+    ReviewMigration {
+        version: 8,
+        name: "image_shutter_details",
+        action: MigrationAction::Rust(migrate_image_shutter_details),
+    },
+    ReviewMigration {
+        version: 9,
+        name: "image_auto_iso",
+        action: MigrationAction::Rust(migrate_image_auto_iso),
     },
 ];
 
@@ -309,6 +324,15 @@ ALTER TABLE images ADD COLUMN source_height INTEGER;
 "#;
 
 const NORMALIZED_RELATIONAL_SCHEMA: &str = r#"
+-- Version 6 invokes the current relational writer while importing v5 snapshots.
+-- Versions 7 through 9 add these columns to databases that completed v6 earlier.
+ALTER TABLE images ADD COLUMN exif_auto_iso INTEGER;
+ALTER TABLE images ADD COLUMN exif_iso_auto_hi_limit TEXT;
+ALTER TABLE images ADD COLUMN exif_shutter_count INTEGER;
+ALTER TABLE images ADD COLUMN exif_shutter_mode TEXT;
+ALTER TABLE images ADD COLUMN exif_silent_photography INTEGER;
+ALTER TABLE images ADD COLUMN exif_release_mode TEXT;
+
 CREATE TABLE review_settings (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     next_id INTEGER NOT NULL,
@@ -519,6 +543,63 @@ fn migrate_normalized_relational_review_store(tx: &Transaction<'_>) -> Result<()
         .context("removing legacy sqlite review snapshot")?;
     verify_relational_store(tx, store.as_ref())?;
     verify_database_integrity(tx)
+}
+
+fn migrate_image_shutter_count(tx: &Transaction<'_>) -> Result<()> {
+    ensure_image_column(
+        tx,
+        "exif_shutter_count",
+        "ALTER TABLE images ADD COLUMN exif_shutter_count INTEGER;",
+    )
+}
+
+fn migrate_image_shutter_details(tx: &Transaction<'_>) -> Result<()> {
+    ensure_image_column(
+        tx,
+        "exif_shutter_mode",
+        "ALTER TABLE images ADD COLUMN exif_shutter_mode TEXT;",
+    )?;
+    ensure_image_column(
+        tx,
+        "exif_silent_photography",
+        "ALTER TABLE images ADD COLUMN exif_silent_photography INTEGER;",
+    )?;
+    ensure_image_column(
+        tx,
+        "exif_release_mode",
+        "ALTER TABLE images ADD COLUMN exif_release_mode TEXT;",
+    )
+}
+
+fn migrate_image_auto_iso(tx: &Transaction<'_>) -> Result<()> {
+    ensure_image_column(
+        tx,
+        "exif_auto_iso",
+        "ALTER TABLE images ADD COLUMN exif_auto_iso INTEGER;",
+    )?;
+    ensure_image_column(
+        tx,
+        "exif_iso_auto_hi_limit",
+        "ALTER TABLE images ADD COLUMN exif_iso_auto_hi_limit TEXT;",
+    )
+}
+
+fn ensure_image_column(tx: &Transaction<'_>, column: &str, sql: &str) -> Result<()> {
+    let column_exists = tx
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM pragma_table_info('images')
+                WHERE name = ?1
+            )",
+            [column],
+            |row| row.get::<_, bool>(0),
+        )
+        .with_context(|| format!("checking image column {column}"))?;
+    if !column_exists {
+        tx.execute_batch(sql)
+            .with_context(|| format!("adding image column {column}"))?;
+    }
+    Ok(())
 }
 
 fn verify_relational_store(

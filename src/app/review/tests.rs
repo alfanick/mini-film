@@ -146,7 +146,7 @@ fn fully_populated_review_store() -> ReviewStore {
         current_image_id: Some(2),
         min_rating: 3,
     };
-    store.exif_schema_version = 4;
+    store.exif_schema_version = 7;
     store.images = vec![
         ReviewImage {
             id: 1,
@@ -164,7 +164,13 @@ fn fully_populated_review_store() -> ReviewStore {
                 aperture: Some("f/1.8".to_string()),
                 shutter_speed: Some("1/250".to_string()),
                 iso: Some("640".to_string()),
+                auto_iso: Some(true),
+                iso_auto_hi_limit: Some("ISO 6400".to_string()),
                 camera_model: Some("Nikon Z8".to_string()),
+                shutter_count: Some(66_278),
+                shutter_mode: Some("Auto (Electronic Front Curtain)".to_string()),
+                silent_photography: Some(true),
+                release_mode: Some("Single Frame".to_string()),
                 lens_model: Some("NIKKOR Z 85mm".to_string()),
                 shooting_mode: Some("Manual".to_string()),
                 exposure_compensation: Some("-0.7 EV".to_string()),
@@ -1139,12 +1145,48 @@ fn review_state_sqlite_round_trips_and_populates_query_tables() {
     let connection = rusqlite::Connection::open(&state_path).unwrap();
     let source_info = connection
         .query_row(
-            "SELECT source_file_size_bytes, source_width, source_height FROM images WHERE image_id = 1",
+            "SELECT source_file_size_bytes, source_width, source_height, exif_shutter_count,
+                    exif_auto_iso, exif_iso_auto_hi_limit
+             FROM images WHERE image_id = 1",
             [],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?)),
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            },
         )
         .unwrap();
-    assert_eq!(source_info, (55_620_945, 8288, 5520));
+    assert_eq!(
+        source_info,
+        (55_620_945, 8288, 5520, 66_278, 1, "ISO 6400".to_string())
+    );
+    let shutter_details = connection
+        .query_row(
+            "SELECT exif_shutter_mode, exif_silent_photography, exif_release_mode
+             FROM images WHERE image_id = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        shutter_details,
+        (
+            "Auto (Electronic Front Curtain)".to_string(),
+            1,
+            "Single Frame".to_string()
+        )
+    );
     let publish_modes = connection
         .prepare("SELECT image_id, publish_profiles_default FROM images ORDER BY image_id")
         .unwrap()
@@ -1313,12 +1355,113 @@ fn failed_v5_normalization_rolls_back_schema_and_snapshot() {
 }
 
 #[test]
+fn existing_v6_sqlite_adds_shutter_metadata_columns() {
+    let temp = tempfile::tempdir().unwrap();
+    let state_path = temp.path().join(SQLITE_STATE_FILE);
+    let connection = open_database_at_version_for_test(&state_path, 6).unwrap();
+    connection
+        .execute_batch(
+            "ALTER TABLE images DROP COLUMN exif_shutter_count;
+             ALTER TABLE images DROP COLUMN exif_shutter_mode;
+             ALTER TABLE images DROP COLUMN exif_silent_photography;
+             ALTER TABLE images DROP COLUMN exif_release_mode;",
+        )
+        .unwrap();
+    drop(connection);
+
+    assert!(load_store(&state_path).unwrap().is_none());
+
+    let connection = rusqlite::Connection::open(&state_path).unwrap();
+    let column_count = connection
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('images')
+             WHERE name IN (
+                 'exif_shutter_count', 'exif_shutter_mode',
+                 'exif_silent_photography', 'exif_release_mode'
+             )",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    assert_eq!(column_count, 4);
+    let schema_version = connection
+        .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+        .unwrap();
+    assert_eq!(schema_version, LATEST_SCHEMA_VERSION);
+}
+
+#[test]
+fn existing_v7_sqlite_adds_shutter_detail_columns() {
+    let temp = tempfile::tempdir().unwrap();
+    let state_path = temp.path().join(SQLITE_STATE_FILE);
+    let connection = open_database_at_version_for_test(&state_path, 7).unwrap();
+    connection
+        .execute_batch(
+            "ALTER TABLE images DROP COLUMN exif_shutter_mode;
+             ALTER TABLE images DROP COLUMN exif_silent_photography;
+             ALTER TABLE images DROP COLUMN exif_release_mode;",
+        )
+        .unwrap();
+    drop(connection);
+
+    assert!(load_store(&state_path).unwrap().is_none());
+
+    let connection = rusqlite::Connection::open(&state_path).unwrap();
+    let column_count = connection
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('images')
+             WHERE name IN (
+                 'exif_shutter_mode', 'exif_silent_photography', 'exif_release_mode'
+             )",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    assert_eq!(column_count, 3);
+    let schema_version = connection
+        .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+        .unwrap();
+    assert_eq!(schema_version, LATEST_SCHEMA_VERSION);
+}
+
+#[test]
+fn existing_v8_sqlite_adds_auto_iso_columns() {
+    let temp = tempfile::tempdir().unwrap();
+    let state_path = temp.path().join(SQLITE_STATE_FILE);
+    let connection = open_database_at_version_for_test(&state_path, 8).unwrap();
+    connection
+        .execute_batch(
+            "ALTER TABLE images DROP COLUMN exif_auto_iso;
+             ALTER TABLE images DROP COLUMN exif_iso_auto_hi_limit;",
+        )
+        .unwrap();
+    drop(connection);
+
+    assert!(load_store(&state_path).unwrap().is_none());
+
+    let connection = rusqlite::Connection::open(&state_path).unwrap();
+    let column_count = connection
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('images')
+             WHERE name IN ('exif_auto_iso', 'exif_iso_auto_hi_limit')",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    assert_eq!(column_count, 2);
+    let schema_version = connection
+        .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+        .unwrap();
+    assert_eq!(schema_version, LATEST_SCHEMA_VERSION);
+}
+
+#[test]
 fn newer_sqlite_schema_is_rejected_without_modification() {
     let temp = tempfile::tempdir().unwrap();
     let state_path = temp.path().join(SQLITE_STATE_FILE);
     let connection = rusqlite::Connection::open(&state_path).unwrap();
     connection
-        .execute_batch("PRAGMA user_version = 7;")
+        .execute_batch("PRAGMA user_version = 10;")
         .unwrap();
     drop(connection);
 
@@ -1332,7 +1475,7 @@ fn newer_sqlite_schema_is_rejected_without_modification() {
     let schema_version = connection
         .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
         .unwrap();
-    assert_eq!(schema_version, 7);
+    assert_eq!(schema_version, 10);
     let migration_table_count = connection
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master

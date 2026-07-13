@@ -407,7 +407,9 @@ fn load_images(connection: &rusqlite::Connection) -> Result<Vec<ReviewImage>> {
         "SELECT
             image_id, position, raw_path, sooc_sidecar_path, relative_path, file_name,
             exif_capture_timestamp, exif_rating, exif_focal_length, exif_aperture,
-            exif_shutter_speed, exif_iso, exif_camera_model, exif_lens_model,
+            exif_shutter_speed, exif_iso, exif_auto_iso, exif_iso_auto_hi_limit,
+            exif_camera_model, exif_shutter_count,
+            exif_shutter_mode, exif_silent_photography, exif_release_mode, exif_lens_model,
             exif_shooting_mode, exif_exposure_compensation, exif_flash, exif_note,
             exif_active_d_lighting, source_file_size_bytes, source_width, source_height,
             preview_status, preview_path, preview_error, preview_duration_ms,
@@ -479,7 +481,22 @@ fn load_images(connection: &rusqlite::Connection) -> Result<Vec<ReviewImage>> {
                 aperture: row.get("exif_aperture")?,
                 shutter_speed: row.get("exif_shutter_speed")?,
                 iso: row.get("exif_iso")?,
+                auto_iso: row
+                    .get::<_, Option<i64>>("exif_auto_iso")?
+                    .map(|value| i64_to_bool(value, "EXIF Auto ISO"))
+                    .transpose()?,
+                iso_auto_hi_limit: row.get("exif_iso_auto_hi_limit")?,
                 camera_model: row.get("exif_camera_model")?,
+                shutter_count: row
+                    .get::<_, Option<i64>>("exif_shutter_count")?
+                    .map(|value| i64_to_u64(value, "EXIF shutter count"))
+                    .transpose()?,
+                shutter_mode: row.get("exif_shutter_mode")?,
+                silent_photography: row
+                    .get::<_, Option<i64>>("exif_silent_photography")?
+                    .map(|value| i64_to_bool(value, "EXIF silent photography"))
+                    .transpose()?,
+                release_mode: row.get("exif_release_mode")?,
                 lens_model: row.get("exif_lens_model")?,
                 shooting_mode: row.get("exif_shooting_mode")?,
                 exposure_compensation: row.get("exif_exposure_compensation")?,

@@ -5,7 +5,7 @@ const SOOC_RENDER_PIPELINE_KEY: &str = "sooc-sidecar-v1";
 const PROFILED_COMPRESSED_RENDER_PIPELINE_KEY: &str = "profiled-compressed-render-v1";
 
 impl ReviewStore {
-    const EXIF_SCHEMA_VERSION: u32 = 4;
+    const EXIF_SCHEMA_VERSION: u32 = 7;
 
     pub(super) fn new(profiles: Vec<ReviewProfile>) -> Self {
         Self {
@@ -456,6 +456,28 @@ fn refresh_image_exif_data(image: &mut ReviewImage, force: bool) {
         }
         if image.exif.camera_model.is_none() {
             image.exif.camera_model = refreshed.camera_model;
+        }
+        if force || image.exif.auto_iso.is_none() {
+            image.exif.auto_iso = refreshed.auto_iso.or(image.exif.auto_iso);
+        }
+        if force || image.exif.iso_auto_hi_limit.is_none() {
+            image.exif.iso_auto_hi_limit = refreshed
+                .iso_auto_hi_limit
+                .or(image.exif.iso_auto_hi_limit.take());
+        }
+        if force || image.exif.shutter_count.is_none() {
+            image.exif.shutter_count = refreshed.shutter_count.or(image.exif.shutter_count);
+        }
+        if force || image.exif.shutter_mode.is_none() {
+            image.exif.shutter_mode = refreshed.shutter_mode.or(image.exif.shutter_mode.take());
+        }
+        if force || image.exif.silent_photography.is_none() {
+            image.exif.silent_photography = refreshed
+                .silent_photography
+                .or(image.exif.silent_photography);
+        }
+        if force || image.exif.release_mode.is_none() {
+            image.exif.release_mode = refreshed.release_mode.or(image.exif.release_mode.take());
         }
         if image.exif.lens_model.is_none() {
             image.exif.lens_model = refreshed.lens_model;
