@@ -21,7 +21,7 @@ use crate::app::export::{
     finalize_output_with_retouch, output_ext, validate_export_options, validate_output_format,
 };
 use crate::app::pp3::{
-    write_rawtherapee_active_d_lighting_profile, write_rawtherapee_color_noise_profile,
+    write_rawtherapee_auto_matched_curve_profile, write_rawtherapee_color_noise_profile,
     write_rawtherapee_lens_corrections_profile,
 };
 use crate::app::profile::{ResolvedProfile, normalize_name, resolve_profile};
@@ -343,11 +343,6 @@ pub(crate) fn apply_resolved(
     let rawtherapee_profiles =
         rawtherapee_profiles_for_apply(resolved, temp_dir, job.retouch, job.bw_filter)?;
     let rawtherapee_profiles = if raw_input {
-        with_optional_active_d_lighting_profile(job.raw, &rawtherapee_profiles, temp_dir)?
-    } else {
-        rawtherapee_profiles
-    };
-    let rawtherapee_profiles = if raw_input {
         with_optional_color_noise_profile(
             job.raw,
             &rawtherapee_profiles,
@@ -363,6 +358,11 @@ pub(crate) fn apply_resolved(
             temp_dir,
             job.lens_corrections,
         )?
+    } else {
+        rawtherapee_profiles
+    };
+    let rawtherapee_profiles = if raw_input {
+        with_auto_matched_curve_profile(&rawtherapee_profiles, temp_dir)?
     } else {
         rawtherapee_profiles
     };
@@ -742,20 +742,6 @@ fn rawtherapee_profiles_for_apply(
     Ok(profiles)
 }
 
-fn with_optional_active_d_lighting_profile(
-    raw: &Path,
-    base_profiles: &[PathBuf],
-    temp_dir: &Path,
-) -> Result<Vec<PathBuf>> {
-    let mut profiles = Vec::from(base_profiles);
-    if let Some(path) =
-        write_rawtherapee_active_d_lighting_profile(&temp_dir.join("active-d-lighting.pp3"), raw)?
-    {
-        profiles.insert(0, path);
-    }
-    Ok(profiles)
-}
-
 fn estimate_rawtherapee_duration(raw: &Path, jpeg_intermediate: bool) -> Duration {
     let mib = file_size_mib(raw).unwrap_or(45.0);
     let seconds = if jpeg_intermediate {
@@ -816,6 +802,17 @@ fn with_optional_lens_corrections_profile(
     )? {
         profiles.push(path);
     }
+    Ok(profiles)
+}
+
+fn with_auto_matched_curve_profile(
+    base_profiles: &[PathBuf],
+    temp_dir: &Path,
+) -> Result<Vec<PathBuf>> {
+    let mut profiles = Vec::from(base_profiles);
+    profiles.push(write_rawtherapee_auto_matched_curve_profile(
+        &temp_dir.join("auto-matched-curve.pp3"),
+    )?);
     Ok(profiles)
 }
 
@@ -1090,7 +1087,10 @@ mod tests {
             .log;
         let convert_log = write_fake_convert(&temp.path().join("convert")).unwrap();
         let out = temp.path().join("out.jpg");
-        let resolved = resolved_profile(GrainSettings::default(), None);
+        let look = temp.path().join("look.pp3");
+        fs::write(&look, "[Exposure]\nHistogramMatching=false\n").unwrap();
+        let mut resolved = resolved_profile(GrainSettings::default(), None);
+        resolved.rawtherapee_profiles.push(look.clone());
 
         apply_resolved(
             ApplyJob {
@@ -1122,6 +1122,16 @@ mod tests {
         let raw_invocation = fs::read_to_string(raw_log).unwrap();
         assert!(raw_invocation.contains("-j90"));
         assert!(raw_invocation.contains("-c"));
+        let auto_matched = temp.path().join("auto-matched-curve.pp3");
+        assert!(raw_invocation.contains(&format!("-p {}", auto_matched.display())));
+        assert!(
+            raw_invocation.find(&look.display().to_string())
+                < raw_invocation.find(&auto_matched.display().to_string())
+        );
+        assert_eq!(
+            fs::read_to_string(auto_matched).unwrap(),
+            "[Exposure]\nAuto=false\nHistogramMatching=true\nCurveFromHistogramMatching=false\n\n"
+        );
         let convert_invocation = fs::read_to_string(convert_log).unwrap();
         assert!(convert_invocation.contains(&out.to_string_lossy().to_string()));
     }
@@ -1291,6 +1301,7 @@ mod tests {
         assert!(!invocation.contains("lens-corrections.pp3"));
         assert!(!invocation.contains("active-d-lighting.pp3"));
         assert!(!invocation.contains("color-noise.pp3"));
+        assert!(!invocation.contains("auto-matched-curve.pp3"));
     }
 
     #[test]
@@ -1350,5 +1361,6 @@ mod tests {
         let raw_invocations = fs::read_to_string(raw_log).unwrap();
         assert_eq!(raw_invocations.lines().count(), 2);
         assert!(raw_invocations.contains(".mini-film-profile-inputs/heic-v1/"));
+        assert!(!raw_invocations.contains("auto-matched-curve.pp3"));
     }
 }

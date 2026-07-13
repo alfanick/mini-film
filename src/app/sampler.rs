@@ -26,7 +26,7 @@ use walkdir::WalkDir;
 
 use crate::app::export::{add_convert_thread_limit, finalize_output, output_ext};
 use crate::app::pp3::{
-    RAW_RENDER_PIPELINE_KEY, write_rawtherapee_active_d_lighting_profile,
+    RAW_RENDER_PIPELINE_KEY, write_rawtherapee_auto_matched_curve_profile,
     write_rawtherapee_color_noise_profile, write_rawtherapee_lens_corrections_profile,
 };
 use crate::app::profile::{profile_from_xmp_quiet, rawtherapee_profiles_with_hald};
@@ -540,11 +540,6 @@ fn render_profile_thumbnail(
     .with_context(|| format!("resolving profile {}", profile.display()))?;
     let developed = profile_temp.join("rawtherapee.jpg");
     let mut rawtherapee_profiles = rawtherapee_profiles_with_hald(&resolved, &profile_temp)?;
-    prepend_active_d_lighting_if_present(
-        &context.args.raw,
-        &mut rawtherapee_profiles,
-        &profile_temp,
-    )?;
     append_color_noise_if_qualified(
         &context.args.raw,
         context.args.color_noise_iso_threshold,
@@ -556,6 +551,7 @@ fn render_profile_thumbnail(
         &mut rawtherapee_profiles,
         &profile_temp,
     )?;
+    append_auto_matched_curve(&mut rawtherapee_profiles, &profile_temp)?;
     rawtherapee_profiles.push(write_rawtherapee_resize_profile(
         &profile_temp.join("resize.pp3"),
         context.args.thumbnail_long_edge,
@@ -711,19 +707,6 @@ fn append_color_noise_if_qualified(
     Ok(())
 }
 
-fn prepend_active_d_lighting_if_present(
-    raw: &Path,
-    rawtherapee_profiles: &mut Vec<PathBuf>,
-    temp_dir: &Path,
-) -> Result<()> {
-    if let Some(path) =
-        write_rawtherapee_active_d_lighting_profile(&temp_dir.join("active-d-lighting.pp3"), raw)?
-    {
-        rawtherapee_profiles.insert(0, path);
-    }
-    Ok(())
-}
-
 fn append_lens_corrections_if_requested(
     lens_corrections: LensCorrections,
     rawtherapee_profiles: &mut Vec<PathBuf>,
@@ -738,6 +721,16 @@ fn append_lens_corrections_if_requested(
     Ok(())
 }
 
+fn append_auto_matched_curve(
+    rawtherapee_profiles: &mut Vec<PathBuf>,
+    temp_dir: &Path,
+) -> Result<()> {
+    rawtherapee_profiles.push(write_rawtherapee_auto_matched_curve_profile(
+        &temp_dir.join("auto-matched-curve.pp3"),
+    )?);
+    Ok(())
+}
+
 fn append_color_noise_to_profiles(
     rawtherapee_profiles: Vec<PathBuf>,
     temp_dir: &Path,
@@ -749,16 +742,6 @@ fn append_color_noise_to_profiles(
     Ok(profiles)
 }
 
-fn prepend_active_d_lighting_to_profiles(
-    rawtherapee_profiles: Vec<PathBuf>,
-    temp_dir: &Path,
-    raw: &Path,
-) -> Result<Vec<PathBuf>> {
-    let mut profiles = rawtherapee_profiles;
-    prepend_active_d_lighting_if_present(raw, &mut profiles, temp_dir)?;
-    Ok(profiles)
-}
-
 fn append_lens_corrections_to_profiles(
     rawtherapee_profiles: Vec<PathBuf>,
     temp_dir: &Path,
@@ -766,6 +749,15 @@ fn append_lens_corrections_to_profiles(
 ) -> Result<Vec<PathBuf>> {
     let mut profiles = rawtherapee_profiles;
     append_lens_corrections_if_requested(lens_corrections, &mut profiles, temp_dir)?;
+    Ok(profiles)
+}
+
+fn append_auto_matched_curve_to_profiles(
+    rawtherapee_profiles: Vec<PathBuf>,
+    temp_dir: &Path,
+) -> Result<Vec<PathBuf>> {
+    let mut profiles = rawtherapee_profiles;
+    append_auto_matched_curve(&mut profiles, temp_dir)?;
     Ok(profiles)
 }
 
@@ -952,8 +944,6 @@ fn write_html_sampler_sidecars(
         .as_ref()
         .context("resolved emulation did not produce a HALD path")?;
     let rawtherapee_profiles = rawtherapee_profiles_with_hald(&resolved, temp_dir.path())?;
-    let rawtherapee_profiles =
-        prepend_active_d_lighting_to_profiles(rawtherapee_profiles, temp_dir.path(), context.raw)?;
     let rawtherapee_profiles = append_color_noise_to_profiles(
         rawtherapee_profiles,
         temp_dir.path(),
@@ -965,6 +955,8 @@ fn write_html_sampler_sidecars(
         temp_dir.path(),
         context.lens_corrections,
     )?;
+    let rawtherapee_profiles =
+        append_auto_matched_curve_to_profiles(rawtherapee_profiles, temp_dir.path())?;
     let mut text = String::new();
     for profile in rawtherapee_profiles {
         text.push_str(
@@ -1035,9 +1027,12 @@ fn write_html_baseline_thumbnail(
         .prefix("mini-film-sampler-baseline-")
         .tempdir()?;
     let raw_source = temp_dir.path().join("raw-baseline.jpg");
+    let profiles = [write_rawtherapee_auto_matched_curve_profile(
+        &temp_dir.path().join("auto-matched-curve.pp3"),
+    )?];
     run_raw_develop_jpeg(
         rawtherapee,
-        &[],
+        &profiles,
         raw,
         &raw_source,
         jpg_quality,

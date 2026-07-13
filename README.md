@@ -63,9 +63,10 @@ Available shortcuts:
   the daemon inbox.
 - **Batch, sampler, and gallery output**: process whole folders, render profile
   sampler sheets, and generate modern static HTML galleries.
-- **RAW pipeline extras**: deterministic film grain, optional high-ISO color
-  denoise, optional RawTherapee lens corrections, metadata copyback with
-  `exiftool`, 8-bit JPEG output, and 16-bit Zip-compressed TIFF output.
+- **RAW pipeline extras**: RawTherapee auto-matched camera tone curves,
+  deterministic film grain, optional high-ISO color denoise, optional
+  RawTherapee lens corrections, metadata copyback with `exiftool`, 8-bit JPEG
+  output, and 16-bit Zip-compressed TIFF output.
 
 ## Profile Library
 
@@ -337,7 +338,7 @@ JPEG goes directly to RawTherapee; HEIC is first auto-oriented into a 16-bit
 Zip-compressed TIFF. In daemon review, a straight-out-of-camera rendition also
 appears as a profile and is excluded from publish until selected. Without
 `--profile`, compressed inputs retain the direct resize/crop/rotation and
-metadata-copy path. Active D-Lighting, automatic ISO denoise, and lens
+metadata-copy path. Camera tone matching, automatic ISO denoise, and lens
 corrections remain RAW-only. During folder discovery, a JPEG/HEIC with a matching
 RAW is treated as its straight-out-of-camera sidecar; only the RAW receives
 profile renders.
@@ -771,7 +772,8 @@ This is necessarily lossy. Nikon classic NCP does not store a full 3D LUT, RGBTa
 RawTherapee handles:
 
 - RAW development and Hald CLUT application through Film Simulation
-- Nikon Active D-Lighting MakerNote hints via a generated RawTherapee tone-mapping approximation
+- camera JPEG tone response, including visible Nikon Active D-Lighting effects,
+  through RawTherapee histogram matching
 - `Exposure2012`, `Contrast2012`, `Highlights2012`, `Shadows2012`, `Whites2012`, `Blacks2012`
 - `Saturation`, `Vibrance`
 - `ToneCurvePV2012` and per-channel `ToneCurvePV2012Red/Green/Blue`
@@ -809,7 +811,11 @@ rawtherapee-cli -q -Y [-p generated.pp3 ...] -o intermediate.jpg -j95 -js3 -c in
 
 Sampler also adds a temporary RawTherapee resize profile so each RAW development produces a thumbnail-sized JPEG instead of a full-size TIFF.
 
-When a Nikon RAW carries `ActiveD-Lighting`, mini-film adds a temporary RawTherapee profile before the selected emulation/profile stack. It approximates Nikon's proprietary D-Lighting curve with highlight recovery, shadow/highlight compression, and RawTherapee EPD tone mapping; `Off` or missing metadata keeps the previous neutral behavior.
+When a Nikon RAW carries `ActiveD-Lighting`, mini-film keeps that MakerNote value
+in review metadata and shows it in the film simulation overlay. The embedded
+camera JPEG already includes Nikon's proprietary rendering, so the auto-matched
+curve derives its tonal effect from the camera output. Mini-film does not stack
+an additional synthetic D-Lighting curve on top of that match.
 
 Use a non-default RawTherapee binary path with:
 
@@ -893,6 +899,21 @@ Select the exact RFGR engine explicitly with:
 ```sh
 --grain-engine rfgr
 ```
+
+## RAW Tone Matching
+
+Every RAW render explicitly asks RawTherapee to generate an auto-matched tone
+curve from the camera's embedded JPEG. Mini-film appends a partial PP3 layer
+with `HistogramMatching=true` and `CurveFromHistogramMatching=false` after the
+selected profile layers, so the behavior does not depend on the user's
+RawTherapee preferences and a stale stored curve is not reused. This is the
+same histogram-matching switch used by RawTherapee's bundled
+`Auto-Matched Curve - ISO Low/Medium/High` profiles; mini-film handles ISO-based
+denoising separately. JPEG and HEIC profile inputs do not receive RAW histogram
+matching.
+
+RawTherapee requires an adequately sized embedded preview for matching. If a
+RAW has no usable preview, RawTherapee falls back to a linear curve.
 
 ## Color Noise Reduction
 
