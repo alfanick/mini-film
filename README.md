@@ -529,8 +529,9 @@ where it stopped. A typical pass is to rate everything `0` or `1`, filter to
 The review workflow is optimized for keyboard operation. Press `?` in the
 browser UI to show the shortcuts overlay. `§` rates `0` and advances, `1`-`5`
 rates and advances, arrow up/down changes the rating and advances, left/right
-navigates without rating, `h` toggles the luma/RGB histogram, PageUp/PageDown
-cycles the profile preview for the current picture, Space includes or skips the
+navigates without rating, `h` toggles the luma/RGB histogram in the workspace's
+top-left corner on desktop, PageUp/PageDown cycles the profile preview for the
+current picture, Space includes or skips the
 selected profile for publish, and Escape leaves the tags or notes field without
 advancing. Double-click or
 double-tap a profile thumbnail to publish only that profile and exclude the
