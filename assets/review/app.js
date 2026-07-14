@@ -3282,7 +3282,25 @@ function normalizeRotation(value) {
   return Math.abs(rotation) < 0.0001 ? 0 : rotation;
 }
 
-// The UI edits absolute as-shot values while persisted retouch state remains portable deltas.
+// The UI edits effective profile/as-shot values while persisted retouch state remains portable deltas.
+function profileRetouchBase(image = findImage(state.currentId)) {
+  const selected = selectedProfile(image);
+  const profile = profileByIndex(profileRenderIndex(selected));
+  return normalizedRetouch({ adjustments: profile?.retouch_base || {} }).adjustments;
+}
+
+function retouchTonalInputValues(image, retouch) {
+  const adjustments = normalizedRetouch(retouch).adjustments;
+  const base = profileRetouchBase(image);
+  return {
+    exposure: clamp(base.exposure + adjustments.exposure, -4, 4),
+    highlights: clamp(base.highlights + adjustments.highlights, -100, 100),
+    shadows: clamp(base.shadows + adjustments.shadows, -100, 100),
+    whites: clamp(base.whites + adjustments.whites, -100, 100),
+    blacks: clamp(base.blacks + adjustments.blacks, -100, 100),
+  };
+}
+
 function asShotWhiteBalanceTemperature(image = findImage(state.currentId)) {
   const temperature = Number(image?.exif?.white_balance_temperature);
   return Number.isFinite(temperature) && temperature > 0 ? Math.round(temperature) : null;
@@ -3319,13 +3337,14 @@ function retouchOffsetDeltaFromInput(image) {
 
 function retouchFromInputs(image = findImage(state.currentId)) {
   const existing = normalizedRetouch(image?.retouch || defaultRetouch());
+  const base = profileRetouchBase(image);
   return retouchForImage(image, {
     adjustments: {
-      exposure: Number(els.retouchExposure.value || 0),
-      highlights: Number(els.retouchHighlights.value || 0),
-      shadows: Number(els.retouchShadows.value || 0),
-      whites: Number(els.retouchWhites.value || 0),
-      blacks: Number(els.retouchBlacks.value || 0),
+      exposure: Number(els.retouchExposure.value || 0) - base.exposure,
+      highlights: Number(els.retouchHighlights.value || 0) - base.highlights,
+      shadows: Number(els.retouchShadows.value || 0) - base.shadows,
+      whites: Number(els.retouchWhites.value || 0) - base.whites,
+      blacks: Number(els.retouchBlacks.value || 0) - base.blacks,
       temperature: retouchTemperatureDeltaFromInput(image),
       offset: retouchOffsetDeltaFromInput(image),
       clarity: Number(els.retouchClarity.value || 0),
@@ -3354,13 +3373,20 @@ function cloneRetouchAdjustments(retouch) {
 
 function setRetouchInputs(retouch, image = findImage(state.currentId)) {
   const normalized = normalizedRetouch(retouch);
+  const base = profileRetouchBase(image);
+  const tonalValues = retouchTonalInputValues(image, normalized);
   const asShotTemperature = asShotWhiteBalanceTemperature(image);
   const asShotOffset = asShotWhiteBalanceOffset(image);
-  els.retouchExposure.value = String(normalized.adjustments.exposure);
-  els.retouchHighlights.value = String(normalized.adjustments.highlights);
-  els.retouchShadows.value = String(normalized.adjustments.shadows);
-  els.retouchWhites.value = String(normalized.adjustments.whites);
-  els.retouchBlacks.value = String(normalized.adjustments.blacks);
+  els.retouchExposure.defaultValue = String(base.exposure);
+  els.retouchHighlights.defaultValue = String(base.highlights);
+  els.retouchShadows.defaultValue = String(base.shadows);
+  els.retouchWhites.defaultValue = String(base.whites);
+  els.retouchBlacks.defaultValue = String(base.blacks);
+  els.retouchExposure.value = String(tonalValues.exposure);
+  els.retouchHighlights.value = String(tonalValues.highlights);
+  els.retouchShadows.value = String(tonalValues.shadows);
+  els.retouchWhites.value = String(tonalValues.whites);
+  els.retouchBlacks.value = String(tonalValues.blacks);
   if (asShotTemperature === null) {
     els.retouchTemperature.min = String(-RETOUCH_TEMPERATURE_DELTA_LIMIT);
     els.retouchTemperature.max = String(RETOUCH_TEMPERATURE_DELTA_LIMIT);
@@ -3390,11 +3416,12 @@ function setRetouchInputs(retouch, image = findImage(state.currentId)) {
 
 function updateRetouchReadouts(retouch = retouchFromInputs(), image = findImage(state.currentId)) {
   const normalized = normalizedRetouch(retouch);
-  els.retouchExposureValue.value = signed(normalized.adjustments.exposure, 2);
-  els.retouchHighlightsValue.value = signed(normalized.adjustments.highlights, 0);
-  els.retouchShadowsValue.value = signed(normalized.adjustments.shadows, 0);
-  els.retouchWhitesValue.value = signed(normalized.adjustments.whites, 0);
-  els.retouchBlacksValue.value = signed(normalized.adjustments.blacks, 0);
+  const tonalValues = retouchTonalInputValues(image, normalized);
+  els.retouchExposureValue.value = signed(tonalValues.exposure, 2);
+  els.retouchHighlightsValue.value = signed(tonalValues.highlights, 0);
+  els.retouchShadowsValue.value = signed(tonalValues.shadows, 0);
+  els.retouchWhitesValue.value = signed(tonalValues.whites, 0);
+  els.retouchBlacksValue.value = signed(tonalValues.blacks, 0);
   const temperature = Math.round(retouchTemperatureInputValue(image, normalized.adjustments.temperature));
   els.retouchTemperatureValue.value = `${asShotWhiteBalanceTemperature(image) === null ? signed(temperature, 0) : temperature}K`;
   const offset = Math.round(retouchOffsetInputValue(image, normalized.adjustments.offset));

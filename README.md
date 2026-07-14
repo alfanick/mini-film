@@ -550,7 +550,11 @@ centered on the camera's Kelvin value, and hovering `Temperature` shows the
 camera white-balance mode when available. `Tint` is centered on the camera's
 green/magenta white-balance fine-tune value. Moving either white-balance control
 generates an effective custom RawTherapee white balance from those as-shot
-values. Direct JPEG/HEIC inputs without
+values. Exposure, highlights, shadows, whites, and blacks display the combined
+source-profile and emulation values for the selected profile plus any manual
+per-picture adjustment. Manual edits remain stored as deltas, so changing the
+selected profile updates those five slider baselines without applying profile
+values twice. Direct JPEG/HEIC inputs without
 a profile do not expose retouch controls. The browser applies a fast draft preview while
 edits are being made, then queues a high-quality mini-film render and swaps in
 the finished output when it is ready. Crop and rotation are persisted with the

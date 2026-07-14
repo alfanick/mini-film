@@ -563,11 +563,16 @@ fn review_state_defaults_to_first_profile_and_records_outputs() {
     fs::create_dir_all(rendered.parent().unwrap()).unwrap();
     fs::write(&rendered, b"jpg").unwrap();
 
-    let handle = test_handle(
-        input,
-        output,
-        vec![profile(0, "Classic"), profile(1, "Fade")],
-    );
+    let mut classic = profile(0, "Classic");
+    classic.retouch_base = BasicRetouchAdjustments {
+        exposure: 0.5,
+        highlights: -18.0,
+        shadows: 22.0,
+        whites: 9.0,
+        blacks: -7.0,
+        ..BasicRetouchAdjustments::default()
+    };
+    let handle = test_handle(input, output, vec![classic, profile(1, "Fade")]);
 
     handle.record_discovered_raw(&raw).unwrap();
     handle
@@ -578,6 +583,13 @@ fn review_state_defaults_to_first_profile_and_records_outputs() {
     assert!(text.contains("\"publish_profile_indexes\":[0,1]"));
     assert!(text.contains("\"status\":\"done\""));
     assert!(text.contains("media/1/0"));
+    let state = handle.api_state_value().unwrap();
+    let base = &state["profiles"][0]["retouch_base"];
+    assert_eq!(base["exposure"], json!(0.5));
+    assert_eq!(base["highlights"], json!(-18.0));
+    assert_eq!(base["shadows"], json!(22.0));
+    assert_eq!(base["whites"], json!(9.0));
+    assert_eq!(base["blacks"], json!(-7.0));
 }
 
 #[test]
