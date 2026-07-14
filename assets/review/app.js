@@ -36,6 +36,13 @@ const state = {
   mobileDrawer: null,
   pendingProfileSelections: new Map(),
   profileInfoProfileIndex: null,
+  profileInfoPp3: {
+    key: null,
+    text: null,
+    error: null,
+    loading: false,
+    requestId: 0,
+  },
   commandInvocationOpen: false,
   histogramOpen: false,
   histogramRequestId: 0,
@@ -274,6 +281,10 @@ function ProfileInfoOverlay() {
   const image = findImage(state.currentId);
   const exif = image?.exif || {};
   const haldImage = metadata.has_hald ? `api/profile/${profile.index}/hald` : null;
+  const pp3Url = image ? profilePp3Url(image, profile) : null;
+  const pp3Key = image ? profilePp3Key(image, profile) : null;
+  const pp3State = state.profileInfoPp3.key === pp3Key ? state.profileInfoPp3 : null;
+  const pp3Text = pp3State?.error || pp3State?.text || "Loading...";
   return h(
     "section",
     { class: "profile-info-card", role: "dialog", "aria-modal": "true" },
@@ -325,6 +336,33 @@ function ProfileInfoOverlay() {
             alt: "HALD LUT table",
             loading: "lazy",
           }),
+        )
+      : null,
+    pp3Url
+      ? h(
+          "details",
+          {
+            key: pp3Key,
+            class: "profile-info-details",
+            onToggle: (event) => {
+              if (event.currentTarget.open) loadProfilePp3(image, profile);
+            },
+          },
+          h("summary", null, "Complete PP3"),
+          h(
+            "div",
+            { class: "profile-info-pp3-actions" },
+            h(
+              "a",
+              {
+                href: reviewUrl(pp3Url),
+                download: profilePp3DownloadName(image, profile),
+                class: "profile-info-pp3-download",
+              },
+              "Download PP3",
+            ),
+          ),
+          h("pre", { class: `profile-info-pp3 ${pp3State?.error ? "profile-info-pp3-error" : ""}` }, pp3Text),
         )
       : null,
     h(
@@ -427,6 +465,7 @@ function profileByIndex(profileIndex) {
 
 function openProfileInfo(profile) {
   closeCommandInvocation();
+  clearProfileInfoPp3();
   state.profileInfoProfileIndex = profileRenderIndex(profile);
   renderProfileInfo();
 }
@@ -434,6 +473,77 @@ function openProfileInfo(profile) {
 function closeProfileInfo() {
   if (state.profileInfoProfileIndex === null) return;
   state.profileInfoProfileIndex = null;
+  clearProfileInfoPp3();
+  renderProfileInfo();
+}
+
+function profilePp3Url(image, profile) {
+  return `api/profile/${profile.index}/pp3/${image.id}`;
+}
+
+function profilePp3Key(image, profile) {
+  return `${image.id}:${profile.index}:${image.updated_at || ""}`;
+}
+
+function profilePp3DownloadName(image, profile) {
+  const rawName = image.file_name || image.relative_path || "mini-film";
+  const baseName = rawName.replace(/\.[^.]*$/, "");
+  const profileName = profile.stem || profile.selector || profileDisplayName(profile);
+  return `${safeDownloadPart(baseName)}--${safeDownloadPart(profileName)}.pp3`;
+}
+
+function clearProfileInfoPp3() {
+  state.profileInfoPp3 = {
+    key: null,
+    text: null,
+    error: null,
+    loading: false,
+    requestId: state.profileInfoPp3.requestId + 1,
+  };
+}
+
+async function loadProfilePp3(image, profile) {
+  const key = profilePp3Key(image, profile);
+  if (
+    state.profileInfoPp3.key === key &&
+    (state.profileInfoPp3.loading || state.profileInfoPp3.text !== null || state.profileInfoPp3.error !== null)
+  ) {
+    return;
+  }
+
+  const requestId = state.profileInfoPp3.requestId + 1;
+  state.profileInfoPp3 = {
+    key,
+    text: null,
+    error: null,
+    loading: true,
+    requestId,
+  };
+  renderProfileInfo();
+  try {
+    const response = await fetch(reviewUrl(profilePp3Url(image, profile)), { cache: "no-store" });
+    const body = await response.text();
+    if (!response.ok) {
+      let message = `PP3 ${response.status}`;
+      try {
+        message = JSON.parse(body).error || message;
+      } catch {
+        if (body.trim()) message = body.trim();
+      }
+      throw new Error(message);
+    }
+    if (state.profileInfoPp3.requestId !== requestId || state.profileInfoPp3.key !== key) return;
+    state.profileInfoPp3 = { key, text: body, error: null, loading: false, requestId };
+  } catch (error) {
+    if (state.profileInfoPp3.requestId !== requestId || state.profileInfoPp3.key !== key) return;
+    state.profileInfoPp3 = {
+      key,
+      text: null,
+      error: `Could not load PP3: ${error.message}`,
+      loading: false,
+      requestId,
+    };
+  }
   renderProfileInfo();
 }
 
@@ -1375,6 +1485,7 @@ function findImageInData(data, id) {
 function render() {
   if (state.profileInfoProfileIndex !== null && !profileByIndex(state.profileInfoProfileIndex)) {
     state.profileInfoProfileIndex = null;
+    clearProfileInfoPp3();
   }
   renderProfileInfo();
   renderCommandInvocation();

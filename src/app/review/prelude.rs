@@ -26,7 +26,8 @@ pub(super) use crate::app::review_assets::{
 };
 pub(super) use crate::{
     app::apply::{
-        ApplyArgs, ApplyJob, CompressedApplyJob, apply_compressed, apply_resolved,
+        ApplyArgs, ApplyJob, CompressedApplyJob, RawTherapeeProfileOptions, apply_compressed,
+        apply_resolved, rawtherapee_profile_chain_text, rawtherapee_profiles_for_input,
         resolve_grain_override, run_apply,
     },
     app::batch::{FolderGalleryOptions, render_gallery_for_folder},

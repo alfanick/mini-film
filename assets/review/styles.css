@@ -1480,6 +1480,35 @@ button:disabled {
   white-space: pre-wrap;
 }
 
+.profile-info-pp3-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 10px 8px;
+}
+
+.profile-info-pp3-download {
+  color: #20201d;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.profile-info-pp3 {
+  margin: 0;
+  padding: 0 10px 10px;
+  max-height: 420px;
+  overflow: auto;
+  color: #252520;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: pre;
+}
+
+.profile-info-pp3-error {
+  color: #a02720;
+  white-space: pre-wrap;
+}
+
 .command-invocation-overlay {
   position: fixed;
   inset: 0;

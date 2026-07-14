@@ -570,7 +570,11 @@ filter variants are cached as hidden sibling outputs so returning to an already
 rendered variant swaps immediately.
 Click the selected profile name to open the film simulation info overlay; it
 shows profile identity, camera Active D-Lighting metadata for the current RAW,
-and a compact summary of generated or direct PP3 adjustment sections.
+and a compact summary of generated or direct PP3 adjustment sections. Its
+collapsible `Complete PP3` section shows and downloads every PP3 layer applied
+to that picture/profile in RawTherapee command-line order, including generated
+retouch, black-and-white filter, ISO denoise, lens correction, and auto-matched
+curve adjustments when active.
 
 Optional Codex analysis can run after each image has a review preview and its
 configured renders have finished. RAW inputs use the embedded camera preview;

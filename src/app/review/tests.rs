@@ -2578,6 +2578,89 @@ fn profiled_compressed_review_state_exposes_profiles_and_original_source() {
 }
 
 #[tokio::test]
+async fn profile_pp3_route_includes_complete_per_image_adjustment_chain() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let jpg = input.join("frame.JPG");
+    fs::write(&jpg, b"original jpeg bytes").unwrap();
+    let pp3 = input.join("Classic.pp3");
+    let source_curve = format!("Curve={}\n", "1;0;0;1;1;".repeat(80));
+    fs::write(
+        &pp3,
+        format!("[Exposure]\nAuto=false\nCompensation=0.25\n{source_curve}"),
+    )
+    .unwrap();
+
+    let mut classic = bw_profile(0, "Classic", -100.0, 0.0);
+    classic.selector = pp3.display().to_string();
+    let handle = test_handle(input.clone(), output, vec![classic]);
+    handle.record_profiled_compressed_discovered(&jpg).unwrap();
+    handle
+        .update_store(|store| {
+            let image = store.images.first_mut().unwrap();
+            image.retouch = RetouchSettings {
+                adjustments: BasicRetouchAdjustments {
+                    highlights: -20.0,
+                    shadows: 30.0,
+                    whites: 10.0,
+                    blacks: -5.0,
+                    ..BasicRetouchAdjustments::default()
+                },
+                ..RetouchSettings::default()
+            };
+            image.profile_bw_filters = vec![ReviewProfileBwFilter {
+                profile_index: 0,
+                filter: BwFilter::Yellow,
+            }];
+            Ok(())
+        })
+        .unwrap();
+
+    let response = route_request(
+        axum::http::Method::GET,
+        "/api/profile/0/pp3/1",
+        axum::body::Bytes::new(),
+        &handle,
+    )
+    .await;
+
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .unwrap(),
+        "text/plain; charset=utf-8"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::CONTENT_DISPOSITION)
+            .unwrap(),
+        "attachment"
+    );
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body = String::from_utf8(body.to_vec()).unwrap();
+    assert!(body.contains("# Layer 1/3: Classic.pp3"));
+    assert!(body.contains("# Layer 2/3: retouch.pp3"));
+    assert!(body.contains("# Layer 3/3: bw-filter.pp3"));
+    assert!(body.contains(&source_curve));
+    assert!(body.contains(
+        "[ToneEqualizer]\nEnabled=true\nBand0=-5\nBand1=30\nBand2=0\nBand3=-20\nBand4=10\n"
+    ));
+    assert!(body.contains("[Black & White]\nEnabled=true"));
+    assert!(body.contains("Filter=Yellow"));
+    assert!(!body.contains("auto-matched-curve.pp3"));
+    assert!(!body.contains("color-noise.pp3"));
+    assert!(!body.contains("lens-corrections.pp3"));
+}
+
+#[tokio::test]
 async fn crop_source_and_profile_base_routes_serve_uncropped_media() {
     let temp = tempfile::tempdir().unwrap();
     let input = temp.path().join("in");

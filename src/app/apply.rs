@@ -1,4 +1,5 @@
 use std::{
+    fmt::Write as _,
     fs,
     fs::OpenOptions,
     io::Read,
@@ -84,6 +85,15 @@ pub(crate) struct ApplyJob<'a> {
     pub(crate) retouch_white_balance: RetouchWhiteBalance,
     pub(crate) bw_filter: BwFilter,
     pub(crate) profile_input_cache_root: Option<&'a Path>,
+}
+
+pub(crate) struct RawTherapeeProfileOptions<'a> {
+    pub(crate) input: &'a Path,
+    pub(crate) retouch: Option<&'a RetouchSettings>,
+    pub(crate) retouch_white_balance: RetouchWhiteBalance,
+    pub(crate) bw_filter: BwFilter,
+    pub(crate) color_noise_iso_threshold: u32,
+    pub(crate) lens_corrections: LensCorrections,
 }
 
 pub(crate) struct CompressedApplyJob<'a> {
@@ -343,37 +353,18 @@ pub(crate) fn apply_resolved(
         });
     let cleanup_intermediate = job.keep_intermediate.is_none();
 
-    let rawtherapee_profiles = rawtherapee_profiles_for_apply(
+    let rawtherapee_profiles = rawtherapee_profiles_for_input(
+        RawTherapeeProfileOptions {
+            input: job.raw,
+            retouch: job.retouch,
+            retouch_white_balance: job.retouch_white_balance,
+            bw_filter: job.bw_filter,
+            color_noise_iso_threshold: job.color_noise_iso_threshold,
+            lens_corrections: job.lens_corrections,
+        },
         resolved,
         temp_dir,
-        job.retouch,
-        job.retouch_white_balance,
-        job.bw_filter,
     )?;
-    let rawtherapee_profiles = if raw_input {
-        with_optional_color_noise_profile(
-            job.raw,
-            &rawtherapee_profiles,
-            temp_dir,
-            job.color_noise_iso_threshold,
-        )?
-    } else {
-        rawtherapee_profiles
-    };
-    let rawtherapee_profiles = if raw_input {
-        with_optional_lens_corrections_profile(
-            &rawtherapee_profiles,
-            temp_dir,
-            job.lens_corrections,
-        )?
-    } else {
-        rawtherapee_profiles
-    };
-    let rawtherapee_profiles = if raw_input {
-        with_auto_matched_curve_profile(&rawtherapee_profiles, temp_dir)?
-    } else {
-        rawtherapee_profiles
-    };
     let raw_stage = progress_stage_adaptive(
         progress,
         1,
@@ -752,6 +743,59 @@ fn rawtherapee_profiles_for_apply(
     Ok(profiles)
 }
 
+pub(crate) fn rawtherapee_profiles_for_input(
+    options: RawTherapeeProfileOptions<'_>,
+    resolved: &ResolvedProfile,
+    temp_dir: &Path,
+) -> Result<Vec<PathBuf>> {
+    let profiles = rawtherapee_profiles_for_apply(
+        resolved,
+        temp_dir,
+        options.retouch,
+        options.retouch_white_balance,
+        options.bw_filter,
+    )?;
+    if !is_raw_input_file(options.input) {
+        return Ok(profiles);
+    }
+
+    let profiles = with_optional_color_noise_profile(
+        options.input,
+        &profiles,
+        temp_dir,
+        options.color_noise_iso_threshold,
+    )?;
+    let profiles =
+        with_optional_lens_corrections_profile(&profiles, temp_dir, options.lens_corrections)?;
+    with_auto_matched_curve_profile(&profiles, temp_dir)
+}
+
+pub(crate) fn rawtherapee_profile_chain_text(profiles: &[PathBuf]) -> Result<String> {
+    if profiles.is_empty() {
+        return Ok("# No PP3 layers are applied.\n".to_string());
+    }
+
+    let mut output =
+        String::from("# mini-film applies these PP3 layers in order with rawtherapee-cli -p.\n\n");
+    for (index, profile) in profiles.iter().enumerate() {
+        let name = profile
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("profile.pp3");
+        let _ = writeln!(output, "# Layer {}/{}: {name}", index + 1, profiles.len());
+        let text = fs::read_to_string(profile)
+            .with_context(|| format!("reading RawTherapee profile {}", profile.display()))?;
+        output.push_str(&text);
+        if !text.ends_with('\n') {
+            output.push('\n');
+        }
+        if index + 1 < profiles.len() {
+            output.push('\n');
+        }
+    }
+    Ok(output)
+}
+
 fn estimate_rawtherapee_duration(raw: &Path, jpeg_intermediate: bool) -> Duration {
     let mib = file_size_mib(raw).unwrap_or(45.0);
     let seconds = if jpeg_intermediate {
@@ -976,6 +1020,28 @@ mod tests {
     #[test]
     fn missing_file_size_returns_none() {
         assert!(file_size_mib(Path::new("/definitely/missing/raw.dng")).is_none());
+    }
+
+    #[test]
+    fn rawtherapee_profile_chain_text_preserves_complete_layers_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.pp3");
+        let retouch = dir.path().join("retouch.pp3");
+        let curve = format!("Curve={}\n", "1;0;0;1;1;".repeat(80));
+        fs::write(&source, format!("[Exposure]\nCompensation=0.25\n{curve}")).unwrap();
+        fs::write(
+            &retouch,
+            "[ToneEqualizer]\nEnabled=true\nBand0=-12\nBand4=18\n",
+        )
+        .unwrap();
+
+        let text = rawtherapee_profile_chain_text(&[source, retouch]).unwrap();
+
+        assert!(text.contains("# Layer 1/2: source.pp3"));
+        assert!(text.contains("# Layer 2/2: retouch.pp3"));
+        assert!(text.find("source.pp3") < text.find("retouch.pp3"));
+        assert!(text.contains(&curve));
+        assert!(text.contains("Band0=-12\nBand4=18\n"));
     }
 
     struct FakeRawtherapee {

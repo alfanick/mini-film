@@ -8,7 +8,7 @@ use axum::{
     Router,
     body::{Body, Bytes, to_bytes},
     extract::State,
-    http::{Method, Request, StatusCode, header},
+    http::{HeaderValue, Method, Request, StatusCode, header},
     response::{
         IntoResponse, Response,
         sse::{Event, KeepAlive, Sse},
@@ -150,7 +150,7 @@ pub(super) async fn route_request(
             }
         }
         (Method::GET, _) if path.starts_with("/api/profile/") => {
-            profile_hald_response(path, handle).await
+            profile_asset_response(path, handle).await
         }
         (Method::GET, _) if path.starts_with("/media/") => media_response(path, handle).await,
         (Method::GET, _) if path.starts_with("/crop-source/") => {
@@ -294,21 +294,44 @@ fn original_media_content_type(path: &Path) -> &'static str {
     }
 }
 
-async fn profile_hald_response(path: &str, handle: &ReviewHandle) -> Response {
+async fn profile_asset_response(path: &str, handle: &ReviewHandle) -> Response {
     let suffix = path.trim_start_matches("/api/profile/");
     let parts = suffix.split('/').collect::<Vec<_>>();
-    if parts.len() != 2 || parts[1] != "hald" {
-        return text_response(404, "text/plain; charset=utf-8", "not found").into_response();
+    let Some(profile_index) = parts
+        .first()
+        .and_then(|profile_index| profile_index.parse::<usize>().ok())
+    else {
+        return text_response(400, "text/plain; charset=utf-8", "bad profile index")
+            .into_response();
+    };
+
+    match parts.as_slice() {
+        [_, "hald"] => match handle.profile_hald_path(profile_index) {
+            Ok(path) => serve_review_file(path, "image/png").await,
+            Err(error) => json_error(404, error).into_response(),
+        },
+        [_, "pp3", image_id] => profile_pp3_response(profile_index, image_id, handle),
+        _ => text_response(404, "text/plain; charset=utf-8", "not found").into_response(),
     }
-    let profile_index = match parts[0].parse::<usize>() {
+}
+
+fn profile_pp3_response(profile_index: usize, image_id: &str, handle: &ReviewHandle) -> Response {
+    let image_id = match image_id.parse::<u64>() {
         Ok(index) => index,
         Err(_) => {
-            return text_response(400, "text/plain; charset=utf-8", "bad profile index")
-                .into_response();
+            return text_response(400, "text/plain; charset=utf-8", "bad image id").into_response();
         }
     };
-    match handle.profile_hald_path(profile_index) {
-        Ok(path) => serve_review_file(path, "image/png").await,
+    match handle.profile_pp3_text(image_id, profile_index) {
+        Ok(text) => {
+            let mut response =
+                text_response(200, "text/plain; charset=utf-8", &text).into_response();
+            response.headers_mut().insert(
+                header::CONTENT_DISPOSITION,
+                HeaderValue::from_static("attachment"),
+            );
+            response
+        }
         Err(error) => json_error(404, error).into_response(),
     }
 }

@@ -2070,6 +2070,66 @@ impl ReviewHandle {
         Ok(path.clone())
     }
 
+    pub(super) fn profile_pp3_text(&self, image_id: u64, profile_index: usize) -> Result<String> {
+        let store = self.store_snapshot();
+        let image = store
+            .images
+            .iter()
+            .find(|image| image.id == image_id)
+            .ok_or_else(|| anyhow!("review image {image_id} does not exist"))?;
+        if !image
+            .profiles
+            .iter()
+            .any(|render| render.profile_index == profile_index)
+        {
+            bail!("review image {image_id} has no profile {profile_index}");
+        }
+        let profile = store
+            .profiles
+            .iter()
+            .find(|profile| profile.index == profile_index)
+            .ok_or_else(|| anyhow!("review profile {profile_index} does not exist"))?;
+        let input = safe_existing_raw_source(&image.raw_path, &self.input_root)?;
+        let temp_dir = Builder::new().prefix("mini-film-review-pp3-").tempdir()?;
+        let apply_args = ApplyArgs {
+            raw: input.clone(),
+            output: self.output_root.join(".profile-details.jpg"),
+            profile: optional_profile_selector(&profile.selector),
+            hald_dir: self.hald_dir.clone(),
+            profiles_root: self.profiles_root.clone(),
+            hald_level: self.hald_level,
+            rawtherapee: self.rawtherapee.clone(),
+            convert: self.convert.clone(),
+            lcp_root: self.lcp_root.clone(),
+            keep_intermediate: None,
+            no_grain: self.no_grain,
+            color_noise_iso_threshold: self.color_noise_iso_threshold,
+            lens_corrections: self.lens_corrections,
+            grain: self.grain.clone(),
+            grain_preset: self.grain_preset.clone(),
+            grain_seed: self.grain_seed,
+            grain_engine: self.grain_engine,
+            export: self.export.clone(),
+            retouch: None,
+            retouch_white_balance: retouch_white_balance_for_image(image),
+            bw_filter: effective_bw_filter_for_profile(image, profile),
+        };
+        let resolved = resolve_profile(&apply_args, temp_dir.path())?;
+        let profiles = rawtherapee_profiles_for_input(
+            RawTherapeeProfileOptions {
+                input: &input,
+                retouch: Some(&image.retouch),
+                retouch_white_balance: retouch_white_balance_for_image(image),
+                bw_filter: effective_bw_filter_for_profile(image, profile),
+                color_noise_iso_threshold: self.color_noise_iso_threshold,
+                lens_corrections: self.lens_corrections,
+            },
+            &resolved,
+            temp_dir.path(),
+        )?;
+        rawtherapee_profile_chain_text(&profiles)
+    }
+
     pub(super) fn full_media_path(&self, image_id: u64) -> Result<PathBuf> {
         let store = self.store_snapshot();
         let image = store
