@@ -16,7 +16,7 @@ const HIGH_COLOR_NOISE_CHROMA: u16 = 18;
 const VERY_HIGH_COLOR_NOISE_LUMA: u16 = 44;
 const VERY_HIGH_COLOR_NOISE_LDETAIL: u16 = 64;
 const VERY_HIGH_COLOR_NOISE_CHROMA: u16 = 28;
-pub(crate) const RAW_RENDER_PIPELINE_KEY: &str = "raw-render-v4-source-sharpening-precedence";
+pub(crate) const RAW_RENDER_PIPELINE_KEY: &str = "raw-render-v5-tone-equalizer";
 
 use crate::app::profile::{ProfileInfo, inspect_profile};
 use crate::cli::LensCorrections;

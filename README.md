@@ -798,7 +798,9 @@ RawTherapee handles:
 - RAW development and Hald CLUT application through Film Simulation
 - camera JPEG tone response, including visible Nikon Active D-Lighting effects,
   through RawTherapee histogram matching
-- `Exposure2012`, `Contrast2012`, `Highlights2012`, `Shadows2012`, `Whites2012`, `Blacks2012`
+- `Exposure2012` and `Contrast2012`; `Blacks2012`, `Shadows2012`,
+  `Highlights2012`, and `Whites2012` map directly to RawTherapee Tone Equalizer
+  bands 0, 1, 3, and 4, with its midtones band 2 left neutral
 - `Saturation`, `Vibrance`
 - `ToneCurvePV2012` and per-channel `ToneCurvePV2012Red/Green/Blue`
 - `ParametricShadows/Darks/Lights/Highlights` and split points

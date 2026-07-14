@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 
-use mini_film::ProfileAdjustments;
+use mini_film::{ProfileAdjustments, rawtherapee_tone_equalizer_profile_text};
 
 const DEFAULT_WHITE_BALANCE_TEMPERATURE: f32 = 6504.0;
 const MIN_WHITE_BALANCE_TEMPERATURE: f32 = 1500.0;
@@ -177,7 +177,7 @@ impl RetouchSettings {
     ) -> String {
         let normalized = self.clone().normalized();
         let mut hasher = Sha1::new();
-        hasher.update("retouch-v2");
+        hasher.update("retouch-v3-tone-equalizer");
         hasher.update(format!("{:.4}", normalized.adjustments.exposure));
         hasher.update(format!("{:.3}", normalized.adjustments.highlights));
         hasher.update(format!("{:.3}", normalized.adjustments.shadows));
@@ -277,19 +277,16 @@ pub(crate) fn write_rawtherapee_retouch_profile(
     let _ = writeln!(out, "[Exposure]");
     let _ = writeln!(out, "Auto=false");
     let _ = writeln!(out, "Compensation={}", fmt_f32(effective.exposure));
-    let _ = writeln!(out, "Brightness={}", fmt_slider(effective.whites * 0.5));
-    let _ = writeln!(out, "Black={}", fmt_slider(-effective.blacks));
-    let _ = writeln!(
-        out,
-        "HighlightCompr={}",
-        fmt_slider((-effective.highlights).clamp(0.0, 100.0))
-    );
-    let _ = writeln!(
-        out,
-        "ShadowCompr={}",
-        fmt_slider(effective.shadows.clamp(0.0, 100.0))
-    );
     let _ = writeln!(out);
+    out.push_str(&rawtherapee_tone_equalizer_profile_text(
+        &ProfileAdjustments {
+            highlights: effective.highlights,
+            shadows: effective.shadows,
+            whites: effective.whites,
+            blacks: effective.blacks,
+            ..ProfileAdjustments::default()
+        },
+    ));
     let _ = writeln!(out, "[Luminance Curve]");
     let _ = writeln!(out, "Enabled=true");
     let _ = writeln!(out, "Contrast={}", fmt_slider(effective.clarity));
@@ -496,10 +493,11 @@ mod tests {
         let text = std::fs::read_to_string(output).unwrap();
         assert!(text.contains("[Exposure]"));
         assert!(text.contains("Compensation=0.5"));
-        assert!(text.contains("Brightness=5"));
-        assert!(text.contains("Black=5"));
-        assert!(text.contains("HighlightCompr=20"));
-        assert!(text.contains("ShadowCompr=30"));
+        assert!(text.contains(
+            "[ToneEqualizer]\nEnabled=true\nBand0=-5\nBand1=30\nBand2=0\nBand3=-20\nBand4=10\n"
+        ));
+        assert!(!text.contains("HighlightCompr="));
+        assert!(!text.contains("ShadowCompr="));
         assert!(text.contains("[White Balance]"));
         assert!(text.contains("Setting=Custom"));
         assert!(text.contains("Temperature=5310"));
@@ -557,12 +555,12 @@ mod tests {
         .unwrap();
 
         let text = std::fs::read_to_string(output).unwrap();
-        assert!(text.contains("Brightness=17\n"));
-        assert!(text.contains("Black=-21\n"));
-        assert!(text.contains("HighlightCompr=21\n"));
-        assert!(text.contains("ShadowCompr=31\n"));
+        assert!(text.contains("Band0=21\n"));
+        assert!(text.contains("Band1=31\n"));
+        assert!(text.contains("Band2=0\n"));
+        assert!(text.contains("Band3=-21\n"));
+        assert!(text.contains("Band4=33\n"));
         assert!(text.contains("Contrast=16\n"));
-        assert!(!text.contains("Brightness=16.5\n"));
     }
 
     #[test]
@@ -605,10 +603,11 @@ mod tests {
 
         let text = std::fs::read_to_string(output).unwrap();
         for key in [
-            "Brightness",
-            "Black",
-            "HighlightCompr",
-            "ShadowCompr",
+            "Band0",
+            "Band1",
+            "Band2",
+            "Band3",
+            "Band4",
             "Contrast",
             "Temperature",
             "TemperatureBias",
@@ -622,10 +621,11 @@ mod tests {
                 "{key} should be integer-only, got {line}"
             );
         }
-        assert!(text.contains("Brightness=17\n"));
-        assert!(text.contains("Black=-21\n"));
-        assert!(text.contains("HighlightCompr=21\n"));
-        assert!(text.contains("ShadowCompr=31\n"));
+        assert!(text.contains("Band0=21\n"));
+        assert!(text.contains("Band1=31\n"));
+        assert!(text.contains("Band2=0\n"));
+        assert!(text.contains("Band3=-21\n"));
+        assert!(text.contains("Band4=33\n"));
         assert!(text.contains("Contrast=16\n"));
         assert!(text.contains("Temperature=5311\n"));
         assert!(text.contains("TemperatureBias=0\n"));

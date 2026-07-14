@@ -62,6 +62,7 @@ pub fn rawtherapee_profile_text(
     let mut out = String::new();
 
     write_exposure_section(&mut out, adjustments);
+    out.push_str(&rawtherapee_tone_equalizer_profile_text(adjustments));
     write_luminance_section(&mut out, adjustments);
     write_color_curve_section(&mut out, adjustments);
     write_vibrance_section(&mut out, adjustments);
@@ -106,21 +107,8 @@ fn write_exposure_section(out: &mut String, adjustments: &ProfileAdjustments) {
     let _ = writeln!(out, "Auto=false");
     let _ = writeln!(out, "Clip=0.02");
     let _ = writeln!(out, "Compensation={}", fmt_f32(adjustments.exposure));
-    let _ = writeln!(out, "Brightness={}", fmt_slider(adjustments.whites * 0.5));
     let _ = writeln!(out, "Contrast={}", fmt_slider(adjustments.contrast));
     let _ = writeln!(out, "Saturation={}", fmt_slider(adjustments.saturation));
-    let _ = writeln!(out, "Black={}", fmt_slider(-adjustments.blacks));
-    let _ = writeln!(
-        out,
-        "HighlightCompr={}",
-        fmt_slider((-adjustments.highlights).clamp(0.0, 100.0))
-    );
-    let _ = writeln!(
-        out,
-        "ShadowCompr={}",
-        fmt_slider(adjustments.shadows.clamp(0.0, 100.0))
-    );
-    let _ = writeln!(out, "HighlightComprThreshold=0");
     let _ = writeln!(out, "CurveFromHistogramMatching=false");
     let _ = writeln!(out, "CurveMode=Standard");
     let _ = writeln!(out, "CurveMode2=Standard");
@@ -131,6 +119,28 @@ fn write_exposure_section(out: &mut String, adjustments: &ProfileAdjustments) {
     );
     let _ = writeln!(out, "Curve2=0;");
     let _ = writeln!(out);
+}
+
+/// Map Lightroom-style tonal-region sliders directly to RawTherapee's five-band
+/// tone equalizer. Band 2 is RawTherapee's midtones control and has no matching
+/// basic Lightroom slider, so it remains neutral.
+pub fn rawtherapee_tone_equalizer_profile_text(adjustments: &ProfileAdjustments) -> String {
+    let enabled = adjustments.blacks != 0.0
+        || adjustments.shadows != 0.0
+        || adjustments.highlights != 0.0
+        || adjustments.whites != 0.0;
+    let mut out = String::new();
+    let _ = writeln!(out, "[ToneEqualizer]");
+    let _ = writeln!(out, "Enabled={enabled}");
+    let _ = writeln!(out, "Band0={}", fmt_slider(adjustments.blacks));
+    let _ = writeln!(out, "Band1={}", fmt_slider(adjustments.shadows));
+    let _ = writeln!(out, "Band2=0");
+    let _ = writeln!(out, "Band3={}", fmt_slider(adjustments.highlights));
+    let _ = writeln!(out, "Band4={}", fmt_slider(adjustments.whites));
+    let _ = writeln!(out, "Regularization=0");
+    let _ = writeln!(out, "Pivot=0");
+    let _ = writeln!(out);
+    out
 }
 
 fn write_luminance_section(out: &mut String, adjustments: &ProfileAdjustments) {
@@ -452,15 +462,33 @@ mod tests {
 
         let profile = rawtherapee_profile_text(&adjustments, sharpening);
         assert!(profile.contains("Compensation=0.5\n"));
-        assert!(profile.contains("Brightness=13\n"));
         assert!(profile.contains("Contrast=20\n"));
-        assert!(profile.contains("Black=5\n"));
-        assert!(profile.contains("HighlightCompr=30\n"));
-        assert!(profile.contains("ShadowCompr=40\n"));
-        assert!(!profile.contains("Brightness=12.5\n"));
+        assert!(profile.contains(
+            "[ToneEqualizer]\nEnabled=true\nBand0=-5\nBand1=40\nBand2=0\nBand3=-30\nBand4=25\n"
+        ));
+        assert!(!profile.contains("HighlightCompr="));
+        assert!(!profile.contains("ShadowCompr="));
         assert!(profile.contains("[Vibrance]\nEnabled=true\n"));
         assert!(profile.contains("[Sharpening]\nEnabled=true\n"));
         assert!(profile.contains("Amount=40\n"));
+    }
+
+    #[test]
+    fn tone_equalizer_preserves_both_directions_of_each_tonal_slider() {
+        let adjustments = ProfileAdjustments {
+            highlights: 35.0,
+            shadows: -40.0,
+            whites: -25.0,
+            blacks: 15.0,
+            ..ProfileAdjustments::default()
+        };
+
+        let profile = rawtherapee_tone_equalizer_profile_text(&adjustments);
+
+        assert_eq!(
+            profile,
+            "[ToneEqualizer]\nEnabled=true\nBand0=15\nBand1=-40\nBand2=0\nBand3=35\nBand4=-25\nRegularization=0\nPivot=0\n\n"
+        );
     }
 
     #[test]

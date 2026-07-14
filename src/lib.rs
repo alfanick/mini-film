@@ -29,7 +29,8 @@ pub use nikon::{
 };
 pub use pp3::{
     rawtherapee_hald_clut_profile_text, rawtherapee_profile_text, rawtherapee_resize_profile_text,
-    write_rawtherapee_profile, write_rawtherapee_resize_profile,
+    rawtherapee_tone_equalizer_profile_text, write_rawtherapee_profile,
+    write_rawtherapee_resize_profile,
 };
 pub use rgb_table::{decode_rgb_table, parse_rgb_table, sample_rgb_table};
 pub use util::{
