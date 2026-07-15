@@ -565,8 +565,9 @@ review state and are used by publish rerenders. Reopening crop mode shows an
 uncropped camera preview or original SOOC image, with the finished crop aligned
 over it, so an existing crop can be expanded or repositioned without losing the
 discarded area. Crop ratios can be locked to the auto-oriented original frame,
-`4:3`, `5:4`, `1:1`, `16:10`, `21:9`, or `3:1`; press `r` in crop mode to swap
-the selected ratio's orientation. The editable frame is constrained to the
+`4:3`, `5:4`, `A3/A4`, `1:1`, `16:10`, `21:9`, or `3:1`; press `r` in crop mode
+to swap the selected ratio's orientation. The A3/A4 preset uses the shared ISO
+A-series `sqrt(2):1` paper ratio. The editable frame is constrained to the
 largest black-corner-free area after rotation, so neither crop handles nor the
 published result can include rotation triangles. Profile variants whose combined
 source and emulation saturation is effectively black-and-white show `None`, `Y`,

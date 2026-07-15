@@ -95,6 +95,7 @@ const CROP_RATIO_PRESETS = [
   ["original", "Original"],
   ["4:3", "4:3"],
   ["5:4", "5:4"],
+  ["a3-a4", "A3/A4", "A3/A4 portrait"],
   ["1:1", "1:1"],
   ["16:10", "16:10"],
   ["21:9", "21:9"],
@@ -3887,6 +3888,7 @@ function updateCropRotationControls() {
 
 function cropRatioBase(key = state.cropRatioKey) {
   if (key === "current") return state.cropRatioBase || 1;
+  if (key === "a3-a4") return Math.SQRT2;
   if (key === "original") {
     const source = cropSourceDimensions();
     return source ? source.width / source.height : 1;
@@ -3957,13 +3959,14 @@ function updateCropRatioControls() {
     option.textContent = label;
   }
   const selected = els.cropRatio.querySelector(`option[value="${state.cropRatioKey}"]`);
+  const selectedPreset = CROP_RATIO_PRESETS.find(([value]) => value === state.cropRatioKey);
   if (selected) {
     if (state.cropRatioKey === "original") {
       selected.textContent = `Original ${formatCropRatio(cropTargetRatio())}`;
     } else if (state.cropRatioKey === "current") {
       selected.textContent = `Current ${formatCropRatio(cropTargetRatio())}`;
     } else if (state.cropRatioRotated && state.cropRatioKey !== "1:1") {
-      selected.textContent = state.cropRatioKey.split(":").reverse().join(":");
+      selected.textContent = selectedPreset?.[2] || state.cropRatioKey.split(":").reverse().join(":");
     }
   }
   els.cropRatio.value = state.cropRatioKey;
