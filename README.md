@@ -482,7 +482,10 @@ that threshold. Both tiers are cached under
 `<output>/.mini-film-review-previews/compressed-v1/`. Direct compressed images
 request the original input only when the loupe activates or the browser viewport
 is larger than 2048 pixels; profiled compressed images use the selected profile
-render for the main viewer and loupe. In the desktop and tablet layouts, direct
+render for the main viewer and loupe. Holding the primary mouse button or a touch
+shows the nearby loupe until release. On desktop, double-clicking the picture
+toggles a full-view zoom that follows the mouse cursor; double-click again or
+press Escape to leave it. In the desktop and tablet layouts, direct
 JPEG/HEIC inputs hide the unavailable Retouch section. RAW inputs paired with a
 straight-out-of-camera JPEG/HEIC keep that section in place and disable it while
 the straight-out-of-camera profile is selected, so switching profiles does not

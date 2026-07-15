@@ -27,6 +27,8 @@ const state = {
   zoomActive: false,
   zoomPointerId: null,
   zoomLastPoint: null,
+  zoomFullActive: false,
+  zoomFullLastPoint: null,
   zoomSourceImage: null,
   zoomSourceUrl: null,
   gestureFeedbackTimer: null,
@@ -202,6 +204,7 @@ function ReviewShell() {
             ),
           ),
           h("div", { id: "gesture-feedback", class: "gesture-feedback", hidden: true }),
+          h("div", { id: "zoom-full", class: "zoom-full", hidden: true, "aria-hidden": "true" }),
           h("div", { id: "zoom-loupe", class: "zoom-loupe", hidden: true }),
           h(
             "div",
@@ -951,6 +954,7 @@ function ShortcutsOverlay() {
         [["Wheel ←/→"], "Move between visible pictures after a short scroll threshold."],
         [["Wheel ↑/↓"], "Preview the previous or next profile after a short scroll threshold."],
         [["Hold"], "Show a nearby loupe for the picture under the cursor or finger until released."],
+        [["Double-click"], "Toggle full-image zoom; move the cursor to pan the zoomed image."],
         [
           ["Profile"],
           "Click a profile thumbnail to preview it; use its checkbox to include it in publishing. Double-click or double-tap a profile to publish only that profile.",
@@ -1277,6 +1281,7 @@ const els = {
   panel: document.querySelector(".panel"),
   image: document.getElementById("main-image"),
   gestureFeedback: document.getElementById("gesture-feedback"),
+  zoomFull: document.getElementById("zoom-full"),
   zoomLoupe: document.getElementById("zoom-loupe"),
   histogramOverlay: document.getElementById("histogram-overlay"),
   histogramCanvas: document.getElementById("histogram-canvas"),
@@ -1649,8 +1654,11 @@ function updateViewerSafeArea() {
   if (!els.retouchGrid.hidden) positionRetouchGrid();
   if (!els.cropOverlay.hidden) positionCropOverlay();
   if (!els.gestureFeedback.hidden) positionGestureFeedback();
-  if (state.zoomActive && state.zoomLastPoint)
+  if (state.zoomFullActive && state.zoomFullLastPoint) {
+    updateFullImageZoom(state.zoomFullLastPoint.clientX, state.zoomFullLastPoint.clientY);
+  } else if (state.zoomActive && state.zoomLastPoint) {
     updateZoomLoupe(state.zoomLastPoint.clientX, state.zoomLastPoint.clientY);
+  }
 }
 
 let viewerSafeAreaFrame = 0;
@@ -3796,6 +3804,7 @@ function beginCropEditing() {
   const image = findImage(state.currentId);
   if (!image) return;
   if (cropDraftIsFor(image)) return;
+  stopZoom();
   clearRetouchSaveTimer();
   const retouch = normalizedRetouch(image.retouch || defaultRetouch());
   const selected = selectedProfile(image);
@@ -4475,8 +4484,17 @@ function preventNativeViewerAction(event) {
 }
 
 function canStartViewerZoom(event) {
-  if (state.cropEditing || !findImage(state.currentId) || !els.image.getAttribute("src")) return false;
+  if (state.zoomFullActive || state.cropEditing || !findImage(state.currentId) || !els.image.getAttribute("src"))
+    return false;
   if (event.pointerType !== "touch" && event.button !== 0) return false;
+  const target = pointerTargetElement(event);
+  return !target?.closest(".crop-overlay, .crop-tools, .retouch-grid, .gesture-feedback, .zoom-loupe");
+}
+
+function canToggleFullImageZoom(event) {
+  if (!window.matchMedia("(hover: hover) and (pointer: fine)").matches) return false;
+  if (state.cropEditing || !findImage(state.currentId) || !els.image.getAttribute("src") || event.button !== 0)
+    return false;
   const target = pointerTargetElement(event);
   return !target?.closest(".crop-overlay, .crop-tools, .retouch-grid, .gesture-feedback, .zoom-loupe");
 }
@@ -4524,8 +4542,16 @@ function stopZoom() {
   state.zoomActive = false;
   state.zoomPointerId = null;
   state.zoomLastPoint = null;
+  state.zoomFullActive = false;
+  state.zoomFullLastPoint = null;
   clearZoomSource();
   els.viewer.classList.remove("zooming");
+  els.viewer.classList.remove("zoom-full-active");
+  els.zoomFull.hidden = true;
+  els.zoomFull.style.removeProperty("background-image");
+  els.zoomFull.style.removeProperty("background-size");
+  els.zoomFull.style.removeProperty("background-position");
+  els.zoomFull.style.removeProperty("filter");
   els.zoomLoupe.hidden = true;
   els.zoomLoupe.style.removeProperty("background-image");
   els.zoomLoupe.style.removeProperty("background-size");
@@ -4576,6 +4602,55 @@ function updateZoomLoupe(clientX, clientY, pointerType = state.zoomLastPoint?.po
   els.zoomLoupe.style.filter = imageStyle.filter === "none" ? "" : imageStyle.filter;
 }
 
+function toggleFullImageZoom(event) {
+  if (!canToggleFullImageZoom(event)) return;
+  event.preventDefault();
+  if (state.zoomFullActive) {
+    stopZoom();
+    return;
+  }
+
+  stopZoom();
+  state.zoomFullActive = true;
+  state.zoomFullLastPoint = { clientX: event.clientX, clientY: event.clientY };
+  els.viewer.classList.add("zoom-full-active");
+  els.zoomFull.hidden = false;
+  updateFullImageZoom(event.clientX, event.clientY);
+}
+
+function updateFullImageZoom(clientX, clientY) {
+  if (!state.zoomFullActive) return;
+  const imageRect = els.image.getBoundingClientRect();
+  const frameRect = els.zoomFull.getBoundingClientRect();
+  if (imageRect.width <= 1 || imageRect.height <= 1 || frameRect.width <= 1 || frameRect.height <= 1) return;
+
+  state.zoomFullLastPoint = { clientX, clientY };
+  const zoomSource = zoomImageSource();
+  if (!zoomSource.url || zoomSource.width <= 0 || zoomSource.height <= 0) return;
+  const minimumScale = Math.max((imageRect.width * 2) / zoomSource.width, (imageRect.height * 2) / zoomSource.height);
+  const coverScale = Math.max(frameRect.width / zoomSource.width, frameRect.height / zoomSource.height);
+  const scale = Math.max(1, minimumScale, coverScale);
+  const zoomWidth = zoomSource.width * scale;
+  const zoomHeight = zoomSource.height * scale;
+  const relativeX = clamp((clientX - imageRect.left) / imageRect.width, 0, 1);
+  const relativeY = clamp((clientY - imageRect.top) / imageRect.height, 0, 1);
+  const pointerX = clamp(clientX - frameRect.left, 0, frameRect.width);
+  const pointerY = clamp(clientY - frameRect.top, 0, frameRect.height);
+  const backgroundX = fullZoomOffset(pointerX, relativeX, zoomWidth, frameRect.width);
+  const backgroundY = fullZoomOffset(pointerY, relativeY, zoomHeight, frameRect.height);
+  const imageStyle = window.getComputedStyle(els.image);
+
+  els.zoomFull.style.backgroundImage = `url("${cssUrl(zoomSource.url)}")`;
+  els.zoomFull.style.backgroundSize = `${zoomWidth}px ${zoomHeight}px`;
+  els.zoomFull.style.backgroundPosition = `${backgroundX}px ${backgroundY}px`;
+  els.zoomFull.style.filter = imageStyle.filter === "none" ? "" : imageStyle.filter;
+}
+
+function fullZoomOffset(pointer, relative, contentSize, frameSize) {
+  if (contentSize <= frameSize) return (frameSize - contentSize) / 2;
+  return clamp(pointer - relative * contentSize, frameSize - contentSize, 0);
+}
+
 function zoomImageSource() {
   const fallback = {
     url: els.image.currentSrc || els.image.src,
@@ -4592,8 +4667,12 @@ function zoomImageSource() {
     state.zoomSourceImage = source;
     state.zoomSourceUrl = fullUrl;
     source.onload = () => {
-      if (!state.zoomActive || state.zoomSourceImage !== source || !state.zoomLastPoint) return;
-      updateZoomLoupe(state.zoomLastPoint.clientX, state.zoomLastPoint.clientY, state.zoomLastPoint.pointerType);
+      if (state.zoomSourceImage !== source) return;
+      if (state.zoomFullActive && state.zoomFullLastPoint) {
+        updateFullImageZoom(state.zoomFullLastPoint.clientX, state.zoomFullLastPoint.clientY);
+      } else if (state.zoomActive && state.zoomLastPoint) {
+        updateZoomLoupe(state.zoomLastPoint.clientX, state.zoomLastPoint.clientY, state.zoomLastPoint.pointerType);
+      }
     };
     source.src = fullUrl;
   }
@@ -4644,6 +4723,10 @@ function startViewerTouch(event) {
 }
 
 function updateViewerTouch(event) {
+  if (state.zoomFullActive && event.pointerType === "mouse") {
+    updateFullImageZoom(event.clientX, event.clientY);
+    return;
+  }
   if (state.zoomActive && state.zoomPointerId === event.pointerId) {
     event.preventDefault();
     updateZoomLoupe(event.clientX, event.clientY, event.pointerType);
@@ -4697,7 +4780,7 @@ els.notes.addEventListener("blur", () => saveReview());
 els.notes.addEventListener("input", scheduleAutosave);
 els.notes.addEventListener("keydown", confirmMetadataInput);
 els.image.addEventListener("load", () => {
-  if (state.zoomActive) stopZoom();
+  if (state.zoomActive || state.zoomFullActive) stopZoom();
   scheduleHistogramRender();
   scheduleViewerSafeAreaUpdate();
   renderRetouchGrid(findImage(state.currentId));
@@ -4707,6 +4790,7 @@ els.cropSourceImage.addEventListener("load", initializeCropGeometry);
 els.cropCurrentImage.addEventListener("load", () => layoutCropStage());
 els.viewer.addEventListener("pointerdown", startViewerTouch);
 els.viewer.addEventListener("pointermove", updateViewerTouch);
+els.viewer.addEventListener("dblclick", toggleFullImageZoom);
 els.viewer.addEventListener("pointerup", (event) => {
   endViewerTouch(event).catch((error) => console.error(error));
 });
@@ -4716,7 +4800,8 @@ els.viewer.addEventListener("pointercancel", (event) => {
   state.touchGesture = null;
 });
 els.viewer.addEventListener("contextmenu", (event) => {
-  if (state.zoomActive || state.zoomPress || isViewerGestureSurface(event)) event.preventDefault();
+  if (state.zoomActive || state.zoomFullActive || state.zoomPress || isViewerGestureSurface(event))
+    event.preventDefault();
 });
 els.viewer.addEventListener("dragstart", preventNativeViewerAction);
 els.viewer.addEventListener("selectstart", preventNativeViewerAction);
@@ -4937,6 +5022,11 @@ window.addEventListener("keydown", (event) => {
   if (event.target === els.tags) return;
   if (event.target === els.notes) return;
   if (event.target === els.minRating) return;
+  if (event.key === "Escape" && state.zoomFullActive) {
+    event.preventDefault();
+    stopZoom();
+    return;
+  }
   if (event.key === "Escape" && state.histogramOpen) {
     event.preventDefault();
     toggleHistogram(false);

@@ -508,6 +508,20 @@ button:disabled {
   display: none;
 }
 
+.zoom-full {
+  position: absolute;
+  z-index: 4;
+  inset: var(--review-viewer-edge) var(--review-viewer-edge) calc(var(--review-panel-safe) + var(--review-viewer-edge));
+  background-color: #20201f;
+  background-repeat: no-repeat;
+  pointer-events: none;
+  transform: translateZ(0);
+}
+
+.zoom-full[hidden] {
+  display: none;
+}
+
 .histogram-overlay {
   position: absolute;
   z-index: 5;
@@ -565,6 +579,11 @@ button:disabled {
 
 .viewer.zooming img {
   cursor: zoom-in;
+}
+
+.viewer.zoom-full-active,
+.viewer.zoom-full-active img {
+  cursor: zoom-out;
 }
 
 .viewer.has-image img {
