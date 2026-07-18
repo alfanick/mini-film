@@ -916,6 +916,20 @@ fn sync_profiles_invalidates_renders_from_old_processing_pipeline() {
 }
 
 #[test]
+fn compressed_profile_processing_key_tracks_no_sharpening_pipeline() {
+    for input in [Path::new("frame.jpg"), Path::new("frame.HEIC")] {
+        assert_eq!(
+            review_render_processing_key_for_input(input, 0),
+            "profiled-compressed-render-v3-no-sharpening"
+        );
+    }
+    assert_eq!(
+        review_render_processing_key_for_input(Path::new("frame.NEF"), 0),
+        RAW_RENDER_PIPELINE_KEY
+    );
+}
+
+#[test]
 fn sync_profiles_preserves_publish_selection_after_restart_with_metadata_changes() {
     let base_profiles = vec![profile(0, "Classic"), profile(1, "Fade")];
     let mut changed_profiles = base_profiles.clone();
@@ -2540,15 +2554,18 @@ fn profile_pp3_route_includes_complete_per_image_adjustment_chain() {
         .block_on(axum::body::to_bytes(response.into_body(), usize::MAX))
         .unwrap();
     let body = String::from_utf8(body.to_vec()).unwrap();
-    assert!(body.contains("# Layer 1/3: Classic.pp3"));
-    assert!(body.contains("# Layer 2/3: retouch.pp3"));
-    assert!(body.contains("# Layer 3/3: bw-filter.pp3"));
+    assert!(body.contains("# Layer 1/4: Classic.pp3"));
+    assert!(body.contains("# Layer 2/4: retouch.pp3"));
+    assert!(body.contains("# Layer 3/4: bw-filter.pp3"));
+    assert!(body.contains("# Layer 4/4: compressed-no-sharpening.pp3"));
     assert!(body.contains(&source_curve));
     assert!(body.contains(
         "[ToneEqualizer]\nEnabled=true\nBand0=-5\nBand1=30\nBand2=0\nBand3=-20\nBand4=10\n"
     ));
     assert!(body.contains("[Black & White]\nEnabled=true"));
     assert!(body.contains("Filter=Yellow"));
+    assert_eq!(body.matches("Enabled=false").count(), 5);
+    assert!(body.contains("[PostResizeSharpening]\nEnabled=false"));
     assert!(!body.contains("auto-matched-curve.pp3"));
     assert!(!body.contains("color-noise.pp3"));
     assert!(!body.contains("lens-corrections.pp3"));

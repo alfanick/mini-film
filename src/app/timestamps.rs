@@ -17,6 +17,7 @@ use crate::app::profile::ResolvedProfileMetadata;
 pub(crate) struct OutputEditMetadata<'a> {
     pub(crate) comment: Option<&'a str>,
     pub(crate) profile: &'a ResolvedProfileMetadata,
+    pub(crate) profile_sharpening_applied: bool,
     pub(crate) grain: GrainSettings,
     pub(crate) grain_seed: Option<u64>,
     pub(crate) grain_engine: Option<GrainEngine>,
@@ -435,9 +436,10 @@ fn add_edit_metadata_args(command: &mut Command, raw: &Path, edit: &OutputEditMe
 
     if profile.has_camera_raw_settings {
         let adjustments = combined_adjustments(profile);
-        let sharpening = combined_sharpening(profile);
         add_profile_adjustment_args(command, &adjustments);
-        add_sharpening_args(command, sharpening);
+        if edit.profile_sharpening_applied {
+            add_sharpening_args(command, combined_sharpening(profile));
+        }
     }
 
     command
@@ -1502,16 +1504,76 @@ fn system_time_to_unix_seconds(timestamp: SystemTime) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        clean_exif_display_text, extract_gallery_exif, format_exif_aperture, json_bool_value,
-        json_nikon_white_balance_offset, json_u32_value, json_u64_value,
-        nikon_shooting_mode_uses_auto_iso, parse_exif_datetime, parse_exif_datetime_with_offset,
-        parse_iso_value, sync_output_timestamps_from_exif,
+        OutputEditMetadata, add_edit_metadata_args, clean_exif_display_text, extract_gallery_exif,
+        format_exif_aperture, json_bool_value, json_nikon_white_balance_offset, json_u32_value,
+        json_u64_value, nikon_shooting_mode_uses_auto_iso, parse_exif_datetime,
+        parse_exif_datetime_with_offset, parse_iso_value, sync_output_timestamps_from_exif,
     };
+    use crate::app::profile::ResolvedProfileMetadata;
     use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
     use filetime::{FileTime, set_file_atime, set_file_mtime};
-    use std::fs;
+    use mini_film::{GrainSettings, SharpeningSettings};
     use std::time::{Duration, UNIX_EPOCH};
+    use std::{fs, path::Path, process::Command};
     use tempfile::tempdir;
+
+    #[test]
+    fn edit_metadata_omits_profile_sharpening_when_pixels_were_not_sharpened() {
+        let profile = ResolvedProfileMetadata {
+            profile_name: "Profile".to_string(),
+            profile_uuid: None,
+            look_name: None,
+            look_uuid: None,
+            source_profile_name: None,
+            source_profile_uuid: None,
+            hald_path: None,
+            pp3_path: None,
+            pp3_adjustments: Vec::new(),
+            grain: GrainSettings::default(),
+            source_adjustments: Default::default(),
+            source_sharpening: SharpeningSettings {
+                present: true,
+                amount: 42.0,
+                radius: 0.8,
+                detail: 25.0,
+                masking: 10.0,
+            },
+            emulation_adjustments: Default::default(),
+            emulation_sharpening: Default::default(),
+            has_camera_raw_settings: true,
+        };
+        let metadata_args = |profile_sharpening_applied| {
+            let edit = OutputEditMetadata {
+                comment: None,
+                profile: &profile,
+                profile_sharpening_applied,
+                grain: GrainSettings::default(),
+                grain_seed: None,
+                grain_engine: None,
+            };
+            let mut command = Command::new("exiftool");
+            add_edit_metadata_args(&mut command, Path::new("frame.jpg"), &edit);
+            command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+
+        let compressed_args = metadata_args(false);
+        assert!(
+            compressed_args
+                .iter()
+                .all(|arg| !arg.starts_with("-XMP-crs:Sharpen"))
+        );
+
+        let raw_args = metadata_args(true);
+        assert!(raw_args.iter().any(|arg| arg == "-XMP-crs:Sharpness=42"));
+        assert!(
+            raw_args
+                .iter()
+                .any(|arg| arg == "-XMP-crs:SharpenRadius=0.80")
+        );
+    }
 
     #[test]
     fn json_u32_value_accepts_positive_numeric_dimensions() {

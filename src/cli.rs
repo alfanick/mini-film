@@ -564,7 +564,7 @@ pub(crate) enum CommandKind {
         #[arg(long, default_value_t = 0)]
         debounce_seconds: u64,
 
-        /// Also ingest RAW files from a paired Nikon Connect-to-PC / Wireless Transmitter Utility camera at this host/IP.
+        /// Also ingest RAW and JPEG files from a paired Nikon Connect-to-PC / Wireless Transmitter Utility camera at this host/IP.
         #[arg(long)]
         nikon_wtu: Option<String>,
 

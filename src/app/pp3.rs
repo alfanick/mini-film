@@ -45,6 +45,34 @@ pub(crate) fn write_rawtherapee_auto_matched_curve_profile(path: &Path) -> Resul
     Ok(path.to_path_buf())
 }
 
+pub(crate) fn write_rawtherapee_disable_sharpening_profile(path: &Path) -> Result<PathBuf> {
+    let parent = path
+        .parent()
+        .context("disable-sharpening profile has no parent")?;
+    fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    fs::write(path, rawtherapee_disable_sharpening_profile_text())
+        .with_context(|| format!("writing {}", path.display()))?;
+    Ok(path.to_path_buf())
+}
+
+fn rawtherapee_disable_sharpening_profile_text() -> &'static str {
+    "[Sharpening]\n\
+Enabled=false\n\
+\n\
+[SharpenEdge]\n\
+Enabled=false\n\
+\n\
+[SharpenMicro]\n\
+Enabled=false\n\
+\n\
+[PostDemosaicSharpening]\n\
+Enabled=false\n\
+\n\
+[PostResizeSharpening]\n\
+Enabled=false\n\
+"
+}
+
 fn rawtherapee_auto_matched_curve_profile_text() -> String {
     let mut out = String::new();
     let _ = writeln!(out, "[Exposure]");
@@ -251,6 +279,23 @@ mod tests {
             text,
             "[Exposure]\nAuto=false\nHistogramMatching=true\nCurveFromHistogramMatching=false\n\n"
         );
+    }
+
+    #[test]
+    fn disable_sharpening_profile_turns_off_every_rawtherapee_sharpening_stage() {
+        let text = rawtherapee_disable_sharpening_profile_text();
+
+        for section in [
+            "Sharpening",
+            "SharpenEdge",
+            "SharpenMicro",
+            "PostDemosaicSharpening",
+            "PostResizeSharpening",
+        ] {
+            assert!(text.contains(&format!("[{section}]\nEnabled=false\n")));
+        }
+        assert_eq!(text.matches("Enabled=false").count(), 5);
+        assert!(!text.contains("Enabled=true"));
     }
 
     #[test]

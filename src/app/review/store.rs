@@ -2,8 +2,7 @@ use super::model::*;
 use super::prelude::*;
 
 const SOOC_RENDER_PIPELINE_KEY: &str = "sooc-sidecar-v2-tone-equalizer";
-const PROFILED_COMPRESSED_RENDER_PIPELINE_KEY: &str =
-    "profiled-compressed-render-v2-tone-equalizer";
+const PROFILED_COMPRESSED_RENDER_PIPELINE_KEY: &str = "profiled-compressed-render-v3-no-sharpening";
 
 impl ReviewStore {
     const EXIF_SCHEMA_VERSION: u32 = 9;

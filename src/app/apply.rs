@@ -23,7 +23,7 @@ use crate::app::export::{
 };
 use crate::app::pp3::{
     write_rawtherapee_auto_matched_curve_profile, write_rawtherapee_color_noise_profile,
-    write_rawtherapee_lens_corrections_profile,
+    write_rawtherapee_disable_sharpening_profile, write_rawtherapee_lens_corrections_profile,
 };
 use crate::app::profile::{ResolvedProfile, normalize_name, resolve_profile};
 use crate::app::progress::{
@@ -303,16 +303,17 @@ pub(crate) fn apply_compressed(
 /// Compute whether sharpening and color-noise denoising are expected to be active for
 /// a specific input before invoking expensive processing.
 ///
-/// Sharpening is derived from resolved emulation metadata. Denoise reflects the
-/// same threshold/ISO logic used by `with_optional_color_noise_profile`.
+/// Sharpening is derived from resolved emulation metadata for RAW inputs and is
+/// always disabled for compressed inputs. Denoise reflects the same threshold/ISO
+/// logic used by `with_optional_color_noise_profile`.
 pub(crate) fn resolve_apply_effects(
     raw: &Path,
     resolved: &ResolvedProfile,
     color_noise_iso_threshold: u32,
 ) -> (bool, bool) {
-    let denoise_applied =
-        is_raw_input_file(raw) && denoise_profile_applied(raw, color_noise_iso_threshold);
-    (resolved.sharpening_applied, denoise_applied)
+    let raw_input = is_raw_input_file(raw);
+    let denoise_applied = raw_input && denoise_profile_applied(raw, color_noise_iso_threshold);
+    (raw_input && resolved.sharpening_applied, denoise_applied)
 }
 
 /// Apply an already resolved profile to one RAW or compressed input.
@@ -526,6 +527,7 @@ pub(crate) fn apply_resolved(
             OutputEditMetadata {
                 comment: job.exif_comment.as_deref(),
                 profile: &resolved.metadata,
+                profile_sharpening_applied: raw_input,
                 grain: actual_grain,
                 grain_seed: grain_enabled.then_some(grain_seed),
                 grain_engine: grain_enabled.then_some(job.grain_engine),
@@ -748,7 +750,7 @@ pub(crate) fn rawtherapee_profiles_for_input(
     resolved: &ResolvedProfile,
     temp_dir: &Path,
 ) -> Result<Vec<PathBuf>> {
-    let profiles = rawtherapee_profiles_for_apply(
+    let mut profiles = rawtherapee_profiles_for_apply(
         resolved,
         temp_dir,
         options.retouch,
@@ -756,6 +758,9 @@ pub(crate) fn rawtherapee_profiles_for_input(
         options.bw_filter,
     )?;
     if !is_raw_input_file(options.input) {
+        profiles.push(write_rawtherapee_disable_sharpening_profile(
+            &temp_dir.join("compressed-no-sharpening.pp3"),
+        )?);
         return Ok(profiles);
     }
 
@@ -1020,6 +1025,77 @@ mod tests {
     #[test]
     fn missing_file_size_returns_none() {
         assert!(file_size_mib(Path::new("/definitely/missing/raw.dng")).is_none());
+    }
+
+    #[test]
+    fn compressed_inputs_report_sharpening_as_disabled() {
+        let mut resolved = resolved_profile(GrainSettings::default(), None);
+        resolved.sharpening_applied = true;
+
+        assert_eq!(
+            resolve_apply_effects(Path::new("frame.NEF"), &resolved, 0),
+            (true, false)
+        );
+        assert_eq!(
+            resolve_apply_effects(Path::new("frame.jpg"), &resolved, 0),
+            (false, false)
+        );
+        assert_eq!(
+            resolve_apply_effects(Path::new("frame.HEIC"), &resolved, 0),
+            (false, false)
+        );
+    }
+
+    #[test]
+    fn compressed_profile_chain_ends_with_no_sharpening_override() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source.pp3");
+        fs::write(&source, "[Sharpening]\nEnabled=true\nAmount=75\n").unwrap();
+        let mut resolved = resolved_profile(GrainSettings::default(), None);
+        resolved.rawtherapee_profiles.push(source.clone());
+
+        for input in [Path::new("frame.jpg"), Path::new("frame.HEIC")] {
+            let profiles = rawtherapee_profiles_for_input(
+                RawTherapeeProfileOptions {
+                    input,
+                    retouch: None,
+                    retouch_white_balance: RetouchWhiteBalance::default(),
+                    bw_filter: BwFilter::None,
+                    color_noise_iso_threshold: 0,
+                    lens_corrections: LensCorrections::default(),
+                },
+                &resolved,
+                temp.path(),
+            )
+            .unwrap();
+
+            assert_eq!(profiles.first(), Some(&source));
+            let override_profile = profiles.last().unwrap();
+            assert_eq!(
+                override_profile.file_name().and_then(|name| name.to_str()),
+                Some("compressed-no-sharpening.pp3")
+            );
+            let text = fs::read_to_string(override_profile).unwrap();
+            assert_eq!(text.matches("Enabled=false").count(), 5);
+        }
+
+        let raw_profiles = rawtherapee_profiles_for_input(
+            RawTherapeeProfileOptions {
+                input: Path::new("frame.NEF"),
+                retouch: None,
+                retouch_white_balance: RetouchWhiteBalance::default(),
+                bw_filter: BwFilter::None,
+                color_noise_iso_threshold: 0,
+                lens_corrections: LensCorrections::default(),
+            },
+            &resolved,
+            temp.path(),
+        )
+        .unwrap();
+        assert!(raw_profiles.iter().all(|profile| {
+            profile.file_name().and_then(|name| name.to_str())
+                != Some("compressed-no-sharpening.pp3")
+        }));
     }
 
     #[test]
@@ -1377,6 +1453,11 @@ mod tests {
         assert!(output.is_file());
         let invocation = fs::read_to_string(raw_log).unwrap();
         assert!(invocation.contains(&format!("-p {}", pp3.display())));
+        assert!(invocation.contains("compressed-no-sharpening.pp3"));
+        assert!(
+            invocation.find(&pp3.display().to_string())
+                < invocation.find("compressed-no-sharpening.pp3")
+        );
         assert!(invocation.contains(&format!("-c {}", input.display())));
         assert!(!invocation.contains("lens-corrections.pp3"));
         assert!(!invocation.contains("active-d-lighting.pp3"));
@@ -1442,6 +1523,12 @@ mod tests {
         let raw_invocations = fs::read_to_string(raw_log).unwrap();
         assert_eq!(raw_invocations.lines().count(), 2);
         assert!(raw_invocations.contains(".mini-film-profile-inputs/heic-v1/"));
+        assert_eq!(
+            raw_invocations
+                .matches("compressed-no-sharpening.pp3")
+                .count(),
+            2
+        );
         assert!(!raw_invocations.contains("auto-matched-curve.pp3"));
     }
 }

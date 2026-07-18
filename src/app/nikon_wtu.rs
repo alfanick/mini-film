@@ -24,7 +24,7 @@ use chrono::Utc;
 use serde_json::{Value, json};
 use sha1::{Digest, Sha1};
 
-use crate::app::util::is_supported_raw_file;
+use crate::app::util::{is_jpeg_input_file, is_supported_raw_file};
 
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(10);
@@ -81,10 +81,10 @@ enum PairingWizardState {
 
 /// Configuration for the background Nikon WTU receiver.
 ///
-/// The receiver downloads camera-transfer objects into `output_dir`, which is
-/// normally daemon mode's watched inbox. `camera` is the reachable camera host
-/// or IP, while `computer_name` and `guid` define the stable PTP/IP initiator
-/// identity Nikon stores during pairing.
+/// The receiver downloads supported RAW and compressed camera-transfer objects
+/// into `output_dir`, which is normally daemon mode's watched inbox. `camera` is
+/// the reachable camera host or IP, while `computer_name` and `guid` define the
+/// stable PTP/IP initiator identity Nikon stores during pairing.
 #[derive(Clone, Debug)]
 pub(crate) struct NikonWtuConfig {
     pub(crate) camera: String,
@@ -357,7 +357,7 @@ fn prepare_transfer_session(session: &mut PtpIpSession, logs: &mpsc::Sender<Stri
         logs.send("nikon-wtu: Nikon GetDevicePTPIPInfo is not listed by this camera".to_string())
             .ok();
     }
-    logs.send("nikon-wtu: ready; waiting for uploaded RAW objects".to_string())
+    logs.send("nikon-wtu: ready; waiting for uploaded RAW/JPEG objects".to_string())
         .ok();
     Ok(())
 }
@@ -481,8 +481,8 @@ fn drain_transfer_queue(
             }
         }
         // The next `0x9010` call uses this status to tell the body that the
-        // previous transfer slot was handled, including unsupported JPEGs that
-        // were read and discarded.
+        // previous transfer slot was handled, including unsupported objects
+        // that were read and discarded.
         state.last_job_status = NIKON_TRANSFER_OK;
     }
     Ok(())
@@ -816,9 +816,9 @@ impl TransferObject {
 
 /// Fetch metadata for one queued object and either download or consume it.
 ///
-/// Non-RAW objects are silently consumed because the camera may offer JPEG/RAW
-/// pairs; leaving JPEGs unread can cause the body to keep advertising the same
-/// unsupported queue item.
+/// Supported RAW and compressed objects are persisted into the watched inbox.
+/// Other objects are silently consumed so the body does not keep advertising
+/// the same unsupported queue item.
 fn download_transfer_object(
     session: &mut PtpIpSession,
     object: &TransferObject,
@@ -838,9 +838,9 @@ fn download_transfer_object(
     } else {
         info.filename.clone()
     };
-    if !is_supported_raw_file(Path::new(&filename)) {
+    if !is_supported_nikon_transfer_file(Path::new(&filename)) {
         // Read-and-discard tells the body the transfer slot is done while
-        // preserving mini-film's RAW-only inbox behavior.
+        // keeping unsupported movies and metadata out of the daemon inbox.
         consume_transfer_object(session, object, &info)
             .with_context(|| format!("discarding unsupported transfer object {filename}"))?;
         return Ok(TransferDownload::SkippedUnsupported);
@@ -850,7 +850,7 @@ fn download_transfer_object(
     let output = output_dir.join(safe_filename.as_ref());
     if output.exists() {
         // Existing files can happen after reconnects; consume the object anyway
-        // so it does not block later RAWs in the camera queue.
+        // so it does not block later files in the camera queue.
         consume_transfer_object(session, object, &info)
             .with_context(|| format!("discarding already-downloaded transfer object {filename}"))?;
         return Ok(TransferDownload::SkippedExisting(filename));
@@ -871,7 +871,11 @@ fn download_transfer_object(
     }
 }
 
-/// Download a supported RAW transfer object into a temporary file.
+fn is_supported_nikon_transfer_file(path: &Path) -> bool {
+    is_supported_raw_file(path) || is_jpeg_input_file(path)
+}
+
+/// Download a supported image transfer object into a temporary file.
 fn download_transfer_object_to_file(
     session: &mut PtpIpSession,
     object: &TransferObject,
@@ -890,8 +894,8 @@ fn download_transfer_object_to_file(
     drop(file);
     if expected_size > 0 && bytes != expected_size {
         // Some Nikon bodies report object size accurately before transfer.
-        // Preserve the old strictness here because RAW processors tend to fail
-        // later with less useful errors when a partial file slips through.
+        // Preserve strict size validation because downstream image processing
+        // tends to fail later with less useful errors on partial files.
         bail!(
             "object {} expected {} bytes, received {} bytes",
             info.filename,
@@ -1684,6 +1688,21 @@ mod tests {
             filename_from_transfer_path("/store/DCIM/100NIKON/DSC_0043.NEF").as_deref(),
             Some("DSC_0043.NEF")
         );
+    }
+
+    #[test]
+    fn transfer_filter_accepts_raw_jpeg_and_heic_images() {
+        for filename in [
+            "DSC_0001.NEF",
+            "DSC_0001.JPG",
+            "DSC_0001.jpeg",
+            "IMG_0001.HEIC",
+        ] {
+            assert!(is_supported_nikon_transfer_file(Path::new(filename)));
+        }
+        for filename in ["DSC_0001.MOV", "DSC_0001.XMP", "README.TXT"] {
+            assert!(!is_supported_nikon_transfer_file(Path::new(filename)));
+        }
     }
 
     #[test]

@@ -40,9 +40,9 @@ use crate::app::sampler_assets::{
     html_section_template, html_styles, html_tile_template,
 };
 use crate::app::util::{
-    OutputEditMetadata, extract_capture_iso, half_cpu_thread_count, remove_temp_file,
-    sync_output_metadata_from_raw_with_color_profile, sync_output_timestamps_from_exif,
-    time_of_day_seed,
+    OutputEditMetadata, extract_capture_iso, half_cpu_thread_count, is_raw_input_file,
+    remove_temp_file, sync_output_metadata_from_raw_with_color_profile,
+    sync_output_timestamps_from_exif, time_of_day_seed,
 };
 use crate::cli::{ExportOptions, JpegSubsampling, LensCorrections};
 
@@ -656,6 +656,7 @@ fn render_profile_thumbnail(
                     resolved.resolved_stem
                 )),
                 profile: &resolved.metadata,
+                profile_sharpening_applied: is_raw_input_file(&context.args.raw),
                 grain: metadata_grain,
                 grain_seed: metadata_grain_seed,
                 grain_engine: grain_enabled.then_some(context.args.grain_engine),

@@ -59,8 +59,8 @@ Available shortcuts:
   Hald CLUT PNGs, or RawTherapee `.pp3` files; convert Adobe Camera Raw /
   Lightroom `crs:RGBTable` profile XMPs into cached 16-bit Hald PNGs.
 - **Nikon WTU ingest**: pair with Nikon Connect-to-PC / Wireless Transmitter
-  Utility mode over built-in camera Wi-Fi and feed transferred RAWs directly into
-  the daemon inbox.
+  Utility mode over built-in camera Wi-Fi and feed transferred RAW and JPEG files
+  directly into the daemon inbox.
 - **Batch, sampler, and gallery output**: process whole folders, render profile
   sampler sheets, and generate modern static HTML galleries.
 - **RAW pipeline extras**: RawTherapee auto-matched camera tone curves,
@@ -335,8 +335,11 @@ default. Use `--output-format tiff` to write `.tif` files through the 16-bit
 Zip-compressed TIFF path. With `--profile`, standalone JPEG/HEIC inputs use the
 same PP3, Hald, grain, retouch, and black-and-white profile pipeline as RAW.
 JPEG goes directly to RawTherapee; HEIC is first auto-oriented into a 16-bit
-Zip-compressed TIFF. In daemon review, a straight-out-of-camera rendition also
-appears as a profile and is excluded from publish until selected. Without
+Zip-compressed TIFF. A final PP3 layer disables standard, edge, microcontrast,
+capture, and post-resize sharpening for JPEG/HEIC inputs because these files are
+normally already sharpened in camera; output XMP also omits profile sharpening
+fields for these inputs. In daemon review, a straight-out-of-camera rendition
+also appears as a profile and is excluded from publish until selected. Without
 `--profile`, compressed inputs retain the direct resize/crop/rotation and
 metadata-copy path. Camera tone matching, automatic ISO denoise, and lens
 corrections remain RAW-only. During folder discovery, a JPEG/HEIC with a matching
@@ -681,8 +684,8 @@ Daemon can also ingest files from a Nikon camera configured for
 Connect-to-PC / Wireless Transmitter Utility style transfer. Start the camera's
 connection wizard, make sure the computer can reach the camera address, then
 point mini-film at that address. mini-film drives the Nikon pairing/auth step,
-downloads RAWs into the watched inbox, and processes them with the normal daemon
-queue:
+downloads RAW and JPEG files into the watched inbox, and processes them with the
+normal daemon queue:
 
 ```sh
 mini-film daemon \
@@ -696,9 +699,11 @@ mini-film daemon \
 The Nikon WTU receiver is native PTP/IP over TCP port `15740`; it does not use
 external camera-control tools. During first-time setup it requests the camera's
 pairing code, accepts the wizard, completes pairing, reconnects, and then waits
-for transferred RAW objects. Non-RAW transfer objects are consumed silently so
-they do not block the camera's transfer queue. mini-film persists a stable
-initiator GUID in `$HOME/.cache/mini-film/nikon-wtu-guid` unless
+for transferred RAW/JPEG objects. JPEGs follow the normal daemon rules: they are
+reviewed directly when standalone, or merged as the straight-out-of-camera
+sidecar when a matching RAW arrives. Unsupported transfer objects are consumed
+silently so they do not block the camera's transfer queue. mini-film persists a
+stable initiator GUID in `$HOME/.cache/mini-film/nikon-wtu-guid` unless
 `--nikon-wtu-guid` is provided, and records successful camera pairings in
 `$HOME/.cache/mini-film/nikon-wtu-pairings.json`. Later daemon runs reuse the
 cached camera/name/GUID identity and go straight to transfer mode. If a camera
@@ -834,7 +839,9 @@ RawTherapee handles:
 Source-profile sharpening is applied before emulation sharpening. Explicit
 emulation sharpening overrides the source, but an emulation that omits
 sharpening preserves an explicit source setting. The minimal `5/0.6/10/0`
-fallback is added only when neither layer defines sharpening.
+fallback is added only when neither layer defines sharpening. These settings
+apply only to RAW renders; JPEG/HEIC profile renders append a final PP3 override
+that disables every RawTherapee sharpening stage.
 
 mini-film internally handles:
 
