@@ -648,7 +648,10 @@ the first daemon `--profile` is treated as the default profile and does not add 
 profile suffix. Additional selected profiles add `-<profile stem>`. If a gallery
 template is chosen in the wizard, publish renders an `index.html` gallery in the
 album folder using the same templates as batch. Supported templates are
-`modern`, `soft`, `compact`, `hero`, `phone`, and `all`.
+`modern`, `soft`, `compact`, `hero`, `phone`, and `all`. When publishing
+finishes, the review wizard shows both `Open gallery` and `Download gallery`;
+the download is one portable ZIP containing the HTML, gallery assets,
+thumbnails, and full published images.
 
 Published JPGs are annotated with review metadata through `exiftool`: rating,
 label, tags, published profile, notes, and a mini-film version/comment marker.

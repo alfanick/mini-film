@@ -1857,6 +1857,13 @@ button:disabled {
   gap: 5px;
 }
 
+.publish-gallery-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px 12px;
+}
+
 .publish-gallery-link {
   color: #2a2aef;
   text-decoration: underline;

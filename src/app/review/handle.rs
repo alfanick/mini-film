@@ -1,6 +1,6 @@
 use super::{
-    db::*, history::*, model::*, prelude::*, preview::*, publish::*, scheduler::*, server::*,
-    store::*,
+    db::*, gallery_download::*, history::*, model::*, prelude::*, preview::*, publish::*,
+    scheduler::*, server::*, store::*,
 };
 
 pub(super) const REVIEW_CODEX_WORKERS: usize = 2;
@@ -2482,6 +2482,22 @@ impl ReviewHandle {
 
     pub(super) fn publish_jobs_snapshot(&self) -> Result<Vec<ReviewPublishJob>> {
         Ok((**self.publish_jobs.load()).clone())
+    }
+
+    pub(super) fn gallery_archive_spec(&self, job_id: u64) -> Result<GalleryArchiveSpec> {
+        let jobs = self.publish_jobs.load();
+        let job = jobs
+            .iter()
+            .find(|job| job.id == job_id)
+            .ok_or_else(|| anyhow!("review publish job {job_id} does not exist"))?;
+        if job.status != ReviewPublishJobStatus::Done {
+            bail!("review publish job {job_id} has not completed");
+        }
+        if job.galleries == 0 || job.gallery_urls.is_empty() {
+            bail!("review publish job {job_id} did not create a gallery");
+        }
+        let album = validate_relative_publish_album(&job.album)?;
+        Ok(GalleryArchiveSpec::new(&self.output_root, &album))
     }
 
     pub(super) fn update_publish_jobs<R, F>(&self, mut update: F) -> Result<R>

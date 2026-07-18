@@ -17,7 +17,7 @@ use axum::{
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
 
-use super::{model::*, prelude::*};
+use super::{gallery_download::build_gallery_archive, model::*, prelude::*};
 
 pub(super) fn run_review_listener(
     listener: std::net::TcpListener,
@@ -149,6 +149,9 @@ pub(super) async fn route_request(
                 Err(error) => json_error(500, error).into_response(),
             }
         }
+        (Method::GET, _) if path.starts_with("/api/publish/") => {
+            gallery_archive_response(path, handle).await
+        }
         (Method::GET, _) if path.starts_with("/api/profile/") => {
             profile_asset_response(path, handle).await
         }
@@ -163,6 +166,33 @@ pub(super) async fn route_request(
         }
         (Method::GET, _) if path.starts_with("/preview/") => preview_response(path, handle).await,
         _ => text_response(404, "text/plain; charset=utf-8", "not found").into_response(),
+    }
+}
+
+async fn gallery_archive_response(path: &str, handle: &ReviewHandle) -> Response {
+    let parts = path
+        .trim_start_matches("/api/publish/")
+        .split('/')
+        .collect::<Vec<_>>();
+    let [job_id, "gallery.zip"] = parts.as_slice() else {
+        return text_response(404, "text/plain; charset=utf-8", "not found").into_response();
+    };
+    let job_id = match job_id.parse::<u64>() {
+        Ok(job_id) => job_id,
+        Err(_) => {
+            return text_response(400, "text/plain; charset=utf-8", "bad publish job id")
+                .into_response();
+        }
+    };
+    let spec = match handle.gallery_archive_spec(job_id) {
+        Ok(spec) => spec,
+        Err(error) => return json_error(404, error).into_response(),
+    };
+    let download_name = spec.download_name().to_string();
+    match tokio::task::spawn_blocking(move || build_gallery_archive(&spec)).await {
+        Ok(Ok(path)) => serve_gallery_archive(path, &download_name).await,
+        Ok(Err(error)) => json_error(500, error).into_response(),
+        Err(error) => json_error(500, anyhow!("building gallery archive: {error}")).into_response(),
     }
 }
 
@@ -460,6 +490,25 @@ async fn serve_review_file(path: PathBuf, content_type: &'static str) -> Respons
             json_error(500, anyhow!("serving review media from disk: {error}")).into_response()
         }
     }
+}
+
+async fn serve_gallery_archive(path: PathBuf, download_name: &str) -> Response {
+    let mut response = serve_review_file(path, "application/zip").await;
+    if response.status().is_success() {
+        let disposition = format!("attachment; filename=\"{download_name}\"");
+        match HeaderValue::from_str(&disposition) {
+            Ok(disposition) => {
+                response
+                    .headers_mut()
+                    .insert(header::CONTENT_DISPOSITION, disposition);
+            }
+            Err(error) => {
+                return json_error(500, anyhow!("building gallery download header: {error}"))
+                    .into_response();
+            }
+        }
+    }
+    response
 }
 
 pub(super) fn parse_publish_request(body: &[u8]) -> Result<PublishRequest> {

@@ -2454,6 +2454,105 @@ async fn original_response_serves_typed_compressed_source_files_inline() {
 }
 
 #[tokio::test]
+async fn published_gallery_download_route_archives_portable_assets() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    let gallery = output.join("finals");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(gallery.join("thumbnails")).unwrap();
+    fs::create_dir_all(gallery.join(".mini-film-profile-inputs")).unwrap();
+    fs::write(gallery.join("index.html"), b"<html>gallery</html>").unwrap();
+    fs::write(gallery.join("gallery.js"), b"console.log('gallery')").unwrap();
+    fs::write(gallery.join("gallery.css"), b"body { color: black; }").unwrap();
+    fs::write(gallery.join("photo.jpg"), b"full jpeg").unwrap();
+    fs::write(gallery.join("thumbnails/photo.jpg"), b"thumbnail jpeg").unwrap();
+    fs::write(
+        gallery.join(".mini-film-profile-inputs/private.jpg"),
+        b"internal render input",
+    )
+    .unwrap();
+
+    let handle = test_handle(input, output, vec![profile(0, "Classic")]);
+    handle
+        .update_publish_jobs(|jobs| {
+            jobs.push(ReviewPublishJob {
+                id: 1,
+                album: "finals".to_string(),
+                status: ReviewPublishJobStatus::Running,
+                started_at: now_string(),
+                finished_at: None,
+                processed: 0,
+                total: 0,
+                step: "starting".to_string(),
+                current: None,
+                linked: 0,
+                skipped: 0,
+                galleries: 0,
+                gallery_urls: Vec::new(),
+                error: None,
+            });
+            Ok(())
+        })
+        .unwrap();
+    handle
+        .record_publish_job_done(
+            1,
+            &PublishReport {
+                linked: 1,
+                skipped: 0,
+                min_rating: 0,
+                galleries: 1,
+                gallery_roots: vec![gallery],
+            },
+        )
+        .unwrap();
+
+    let response = route_request(
+        axum::http::Method::GET,
+        "/api/publish/1/gallery.zip",
+        axum::body::Bytes::new(),
+        &handle,
+    )
+    .await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .unwrap(),
+        "application/zip"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::CONTENT_DISPOSITION)
+            .unwrap(),
+        "attachment; filename=\"finals.zip\""
+    );
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(body)).unwrap();
+    let names = (0..archive.len())
+        .map(|index| archive.by_index(index).unwrap().name().to_string())
+        .collect::<HashSet<_>>();
+    assert!(names.contains("finals/index.html"));
+    assert!(names.contains("finals/gallery.js"));
+    assert!(names.contains("finals/gallery.css"));
+    assert!(names.contains("finals/photo.jpg"));
+    assert!(names.contains("finals/thumbnails/photo.jpg"));
+    assert!(!names.contains("finals/.mini-film-profile-inputs/private.jpg"));
+    let mut photo = String::new();
+    archive
+        .by_name("finals/photo.jpg")
+        .unwrap()
+        .read_to_string(&mut photo)
+        .unwrap();
+    assert_eq!(photo, "full jpeg");
+}
+
+#[tokio::test]
 async fn compressed_review_media_routes_serve_distinct_cached_sizes_and_full_output() {
     let temp = tempfile::tempdir().unwrap();
     let input = temp.path().join("in");

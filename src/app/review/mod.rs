@@ -1,4 +1,5 @@
 mod db;
+mod gallery_download;
 mod handle;
 mod history;
 mod model;

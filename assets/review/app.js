@@ -1592,14 +1592,27 @@ function PublishStatus({ job }) {
               { class: "publish-gallery-list" },
               galleryLinks.map((link, index) =>
                 h(
-                  "a",
-                  {
-                    href: link,
-                    target: "_blank",
-                    rel: "noopener noreferrer",
-                    class: "publish-gallery-link",
-                  },
-                  galleryLinks.length > 1 ? `Gallery ${index + 1}` : "Open gallery",
+                  "div",
+                  { class: "publish-gallery-row" },
+                  h(
+                    "a",
+                    {
+                      href: link,
+                      target: "_blank",
+                      rel: "noopener noreferrer",
+                      class: "publish-gallery-link",
+                    },
+                    galleryLinks.length > 1 ? `Gallery ${index + 1}` : "Open gallery",
+                  ),
+                  h(
+                    "a",
+                    {
+                      href: reviewUrl(`api/publish/${job.id}/gallery.zip`),
+                      download: "",
+                      class: "publish-gallery-link",
+                    },
+                    "Download gallery",
+                  ),
                 ),
               ),
             ),
