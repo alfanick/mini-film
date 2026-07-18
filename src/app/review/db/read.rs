@@ -1,70 +1,50 @@
-use super::*;
-use rusqlite::OptionalExtension;
+use super::{entities::*, *};
+use sea_orm::{ConnectionTrait, EntityTrait, QueryOrder};
 use serde::de::DeserializeOwned;
 
-pub(super) fn load_store_from_connection(
-    connection: &rusqlite::Connection,
-) -> Result<Option<ReviewStore>> {
-    let settings = connection
-        .query_row(
-            "SELECT next_id, current_image_id, min_rating, exif_schema_version
-             FROM review_settings WHERE id = 1",
-            [],
-            |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, Option<i64>>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, i64>(3)?,
-                ))
-            },
-        )
-        .optional()
-        .context("reading review settings")?;
-    let Some((next_id, current_image_id, min_rating, exif_schema_version)) = settings else {
+pub(super) async fn load_store<C>(connection: &C) -> Result<Option<ReviewStore>>
+where
+    C: ConnectionTrait,
+{
+    let Some(settings) = review_settings::Entity::find_by_id(1)
+        .one(connection)
+        .await
+        .context("reading review settings")?
+    else {
         return Ok(None);
     };
 
-    let profiles = load_profiles(connection)?;
-    let images = load_images(connection)?;
     Ok(Some(ReviewStore {
-        next_id: i64_to_u64(next_id, "review next_id")?,
-        profiles,
-        images,
+        next_id: i64_to_u64(settings.next_id, "review next_id")?,
+        profiles: load_profiles(connection).await?,
+        images: load_images(connection).await?,
         ui: ReviewUiState {
-            current_image_id: current_image_id
+            current_image_id: settings
+                .current_image_id
                 .map(|value| i64_to_u64(value, "current image id"))
                 .transpose()?,
-            min_rating: i64_to_u8(min_rating, "minimum rating")?,
+            min_rating: i64_to_u8(settings.min_rating, "minimum rating")?,
         },
-        exif_schema_version: i64_to_u32(exif_schema_version, "EXIF schema version")?,
+        exif_schema_version: i64_to_u32(settings.exif_schema_version, "EXIF schema version")?,
     }))
 }
 
-fn load_profiles(connection: &rusqlite::Connection) -> Result<Vec<ReviewProfile>> {
-    let mut statement = connection
-        .prepare(
-            "SELECT
-                profile_index, position, selector, stem,
-                retouch_exposure, retouch_highlights, retouch_shadows, retouch_whites,
-                retouch_blacks, retouch_temperature, retouch_offset, retouch_clarity,
-                metadata_present, profile_name, profile_uuid, look_name, look_uuid,
-                source_profile_name, source_profile_uuid, has_camera_raw_settings,
-                grain_amount, grain_size, grain_frequency, has_hald, has_pp3, pp3_name
-             FROM profiles ORDER BY position",
-        )
-        .context("preparing review profile query")?;
-    let mut rows = statement.query([]).context("querying review profiles")?;
-    let mut profiles = Vec::new();
-    while let Some(row) = rows.next().context("reading review profile row")? {
-        let position = i64_to_usize(row.get("position")?, "profile position")?;
-        require_next_position(position, profiles.len(), "profile")?;
-        let profile_index = i64_to_usize(row.get("profile_index")?, "profile index")?;
-        let metadata_present = i64_to_bool(row.get("metadata_present")?, "metadata_present")?;
-        let grain_amount = row.get::<_, Option<i64>>("grain_amount")?;
-        let grain_size = row.get::<_, Option<i64>>("grain_size")?;
-        let grain_frequency = row.get::<_, Option<i64>>("grain_frequency")?;
-        let grain = match (grain_amount, grain_size, grain_frequency) {
+async fn load_profiles<C>(connection: &C) -> Result<Vec<ReviewProfile>>
+where
+    C: ConnectionTrait,
+{
+    let rows = profiles::Entity::find()
+        .order_by_asc(profiles::Column::Position)
+        .all(connection)
+        .await
+        .context("reading review profiles")?;
+    let mut result = Vec::with_capacity(rows.len());
+    for row in rows {
+        let position = i64_to_usize(row.position, "profile position")?;
+        require_next_position(position, result.len(), "profile")?;
+        let profile_index = i64_to_usize(row.profile_index, "profile index")?;
+        let metadata_present = i64_to_bool(row.metadata_present, "metadata_present")?;
+        let grain = match (row.grain_amount, row.grain_size, row.grain_frequency) {
             (None, None, None) => None,
             (Some(amount), Some(size), Some(frequency)) => Some(ReviewProfileGrain {
                 amount: i64_to_u8(amount, "profile grain amount")?,
@@ -73,74 +53,71 @@ fn load_profiles(connection: &rusqlite::Connection) -> Result<Vec<ReviewProfile>
             }),
             _ => bail!("profile {profile_index} has incomplete grain settings"),
         };
-        let profile_name = row.get::<_, Option<String>>("profile_name")?;
         let metadata = if metadata_present {
             Some(ReviewProfileMetadata {
-                profile_name: profile_name.ok_or_else(|| {
+                profile_name: row.profile_name.ok_or_else(|| {
                     anyhow!("profile {profile_index} metadata has no profile name")
                 })?,
-                profile_uuid: row.get("profile_uuid")?,
-                look_name: row.get("look_name")?,
-                look_uuid: row.get("look_uuid")?,
-                source_profile_name: row.get("source_profile_name")?,
-                source_profile_uuid: row.get("source_profile_uuid")?,
+                profile_uuid: row.profile_uuid,
+                look_name: row.look_name,
+                look_uuid: row.look_uuid,
+                source_profile_name: row.source_profile_name,
+                source_profile_uuid: row.source_profile_uuid,
                 source_adjustments: ReviewProfileAdjustments::default(),
                 source_sharpening: ReviewProfileSharpening::default(),
                 emulation_adjustments: ReviewProfileAdjustments::default(),
                 emulation_sharpening: ReviewProfileSharpening::default(),
                 has_camera_raw_settings: i64_to_bool(
-                    row.get("has_camera_raw_settings")?,
+                    row.has_camera_raw_settings,
                     "has_camera_raw_settings",
                 )?,
                 grain,
-                has_hald: i64_to_bool(row.get("has_hald")?, "has_hald")?,
-                has_pp3: i64_to_bool(row.get("has_pp3")?, "has_pp3")?,
-                pp3_name: row.get("pp3_name")?,
+                has_hald: i64_to_bool(row.has_hald, "has_hald")?,
+                has_pp3: i64_to_bool(row.has_pp3, "has_pp3")?,
+                pp3_name: row.pp3_name,
                 pp3_adjustments: Vec::new(),
             })
         } else {
-            if profile_name.is_some() || grain.is_some() {
+            if row.profile_name.is_some() || grain.is_some() {
                 bail!("profile {profile_index} has metadata values without metadata_present");
             }
             None
         };
-        profiles.push(ReviewProfile {
+        result.push(ReviewProfile {
             index: profile_index,
-            selector: row.get("selector")?,
-            stem: row.get("stem")?,
+            selector: row.selector,
+            stem: row.stem,
             retouch_base: BasicRetouchAdjustments {
-                exposure: row.get("retouch_exposure")?,
-                highlights: row.get("retouch_highlights")?,
-                shadows: row.get("retouch_shadows")?,
-                whites: row.get("retouch_whites")?,
-                blacks: row.get("retouch_blacks")?,
-                temperature: row.get("retouch_temperature")?,
-                offset: row.get("retouch_offset")?,
-                clarity: row.get("retouch_clarity")?,
+                exposure: real(row.retouch_exposure),
+                highlights: real(row.retouch_highlights),
+                shadows: real(row.retouch_shadows),
+                whites: real(row.retouch_whites),
+                blacks: real(row.retouch_blacks),
+                temperature: real(row.retouch_temperature),
+                offset: real(row.retouch_offset),
+                clarity: real(row.retouch_clarity),
             },
             metadata,
             hald_path: None,
         });
     }
-    drop(rows);
-    drop(statement);
 
-    let indexes = profiles
+    let indexes = result
         .iter()
         .enumerate()
         .map(|(position, profile)| (profile.index, position))
         .collect::<HashMap<_, _>>();
-    if indexes.len() != profiles.len() {
+    if indexes.len() != result.len() {
         bail!("review database contains duplicate profile indexes");
     }
-    let adjustments = load_profile_adjustments(connection, &mut profiles, &indexes)?;
-    let sharpening = load_profile_sharpening(connection, &mut profiles, &indexes)?;
-    load_profile_hsl_values(connection, &mut profiles, &indexes)?;
-    load_profile_tone_curve_points(connection, &mut profiles, &indexes)?;
-    load_profile_pp3_sections(connection, &mut profiles, &indexes)?;
-    load_profile_pp3_entries(connection, &mut profiles, &indexes)?;
+    let adjustments = load_profile_adjustments(connection, &mut result, &indexes).await?;
+    let sharpening = load_profile_sharpening(connection, &mut result, &indexes).await?;
+    load_profile_hsl_values(connection, &mut result, &indexes).await?;
+    load_profile_tone_curve_points(connection, &mut result, &indexes).await?;
+    load_profile_pp3_sections(connection, &mut result, &indexes).await?;
+    load_profile_pp3_entries(connection, &mut result, &indexes).await?;
 
-    for profile in &profiles {
+    for profile in &result {
         if profile.metadata.is_some() {
             for scope in ["source", "emulation"] {
                 if !adjustments.contains(&(profile.index, scope)) {
@@ -158,64 +135,61 @@ fn load_profiles(connection: &rusqlite::Connection) -> Result<Vec<ReviewProfile>
             }
         }
     }
-    Ok(profiles)
+    Ok(result)
 }
 
-fn load_profile_adjustments(
-    connection: &rusqlite::Connection,
+async fn load_profile_adjustments<C>(
+    connection: &C,
     profiles: &mut [ReviewProfile],
     indexes: &HashMap<usize, usize>,
-) -> Result<HashSet<(usize, &'static str)>> {
-    let mut statement = connection.prepare(
-        "SELECT profile_index, scope, exposure, contrast, highlights, shadows, whites,
-                blacks, saturation, vibrance, clarity, parametric_shadows,
-                parametric_darks, parametric_lights, parametric_highlights,
-                parametric_shadow_split, parametric_midtone_split,
-                parametric_highlight_split, calibration_red_hue,
-                calibration_red_saturation, calibration_green_hue,
-                calibration_green_saturation, calibration_blue_hue,
-                calibration_blue_saturation
-         FROM profile_adjustments ORDER BY profile_index, scope",
-    )?;
-    let mut rows = statement.query([])?;
+) -> Result<HashSet<(usize, &'static str)>>
+where
+    C: ConnectionTrait,
+{
+    let rows = profile_adjustments::Entity::find()
+        .order_by_asc(profile_adjustments::Column::ProfileIndex)
+        .order_by_asc(profile_adjustments::Column::Scope)
+        .all(connection)
+        .await
+        .context("reading profile adjustments")?;
     let mut seen = HashSet::new();
-    while let Some(row) = rows.next()? {
-        let profile_index = i64_to_usize(row.get("profile_index")?, "profile index")?;
-        let scope = parse_scope(&row.get::<_, String>("scope")?)?;
+    for row in rows {
+        let profile_index = i64_to_usize(row.profile_index, "profile index")?;
+        let scope = parse_scope(&row.scope)?;
         if !seen.insert((profile_index, scope)) {
             bail!("profile {profile_index} has duplicate {scope} adjustments");
         }
-        let metadata = profile_metadata_mut(profiles, indexes, profile_index)?;
         let adjustments = ReviewProfileAdjustments {
-            exposure: row.get("exposure")?,
-            contrast: row.get("contrast")?,
-            highlights: row.get("highlights")?,
-            shadows: row.get("shadows")?,
-            whites: row.get("whites")?,
-            blacks: row.get("blacks")?,
-            saturation: row.get("saturation")?,
-            vibrance: row.get("vibrance")?,
-            clarity: row.get("clarity")?,
+            exposure: real(row.exposure),
+            contrast: real(row.contrast),
+            highlights: real(row.highlights),
+            shadows: real(row.shadows),
+            whites: real(row.whites),
+            blacks: real(row.blacks),
+            saturation: real(row.saturation),
+            vibrance: real(row.vibrance),
+            clarity: real(row.clarity),
             parametric: ReviewProfileParametricTone {
-                shadows: row.get("parametric_shadows")?,
-                darks: row.get("parametric_darks")?,
-                lights: row.get("parametric_lights")?,
-                highlights: row.get("parametric_highlights")?,
-                shadow_split: row.get("parametric_shadow_split")?,
-                midtone_split: row.get("parametric_midtone_split")?,
-                highlight_split: row.get("parametric_highlight_split")?,
+                shadows: real(row.parametric_shadows),
+                darks: real(row.parametric_darks),
+                lights: real(row.parametric_lights),
+                highlights: real(row.parametric_highlights),
+                shadow_split: real(row.parametric_shadow_split),
+                midtone_split: real(row.parametric_midtone_split),
+                highlight_split: real(row.parametric_highlight_split),
             },
             hsl: ReviewProfileHslAdjustments::default(),
             calibration: ReviewProfileCalibration {
-                red_hue: row.get("calibration_red_hue")?,
-                red_saturation: row.get("calibration_red_saturation")?,
-                green_hue: row.get("calibration_green_hue")?,
-                green_saturation: row.get("calibration_green_saturation")?,
-                blue_hue: row.get("calibration_blue_hue")?,
-                blue_saturation: row.get("calibration_blue_saturation")?,
+                red_hue: real(row.calibration_red_hue),
+                red_saturation: real(row.calibration_red_saturation),
+                green_hue: real(row.calibration_green_hue),
+                green_saturation: real(row.calibration_green_saturation),
+                blue_hue: real(row.calibration_blue_hue),
+                blue_saturation: real(row.calibration_blue_saturation),
             },
             tone_curve: ReviewProfileToneCurves::default(),
         };
+        let metadata = profile_metadata_mut(profiles, indexes, profile_index)?;
         match scope {
             "source" => metadata.source_adjustments = adjustments,
             "emulation" => metadata.emulation_adjustments = adjustments,
@@ -225,29 +199,33 @@ fn load_profile_adjustments(
     Ok(seen)
 }
 
-fn load_profile_sharpening(
-    connection: &rusqlite::Connection,
+async fn load_profile_sharpening<C>(
+    connection: &C,
     profiles: &mut [ReviewProfile],
     indexes: &HashMap<usize, usize>,
-) -> Result<HashSet<(usize, &'static str)>> {
-    let mut statement = connection.prepare(
-        "SELECT profile_index, scope, present, amount, radius, detail, masking
-         FROM profile_sharpening ORDER BY profile_index, scope",
-    )?;
-    let mut rows = statement.query([])?;
+) -> Result<HashSet<(usize, &'static str)>>
+where
+    C: ConnectionTrait,
+{
+    let rows = profile_sharpening::Entity::find()
+        .order_by_asc(profile_sharpening::Column::ProfileIndex)
+        .order_by_asc(profile_sharpening::Column::Scope)
+        .all(connection)
+        .await
+        .context("reading profile sharpening")?;
     let mut seen = HashSet::new();
-    while let Some(row) = rows.next()? {
-        let profile_index = i64_to_usize(row.get("profile_index")?, "profile index")?;
-        let scope = parse_scope(&row.get::<_, String>("scope")?)?;
+    for row in rows {
+        let profile_index = i64_to_usize(row.profile_index, "profile index")?;
+        let scope = parse_scope(&row.scope)?;
         if !seen.insert((profile_index, scope)) {
             bail!("profile {profile_index} has duplicate {scope} sharpening settings");
         }
         let sharpening = ReviewProfileSharpening {
-            present: i64_to_bool(row.get("present")?, "profile sharpening present")?,
-            amount: row.get("amount")?,
-            radius: row.get("radius")?,
-            detail: row.get("detail")?,
-            masking: row.get("masking")?,
+            present: i64_to_bool(row.present, "profile sharpening present")?,
+            amount: real(row.amount),
+            radius: real(row.radius),
+            detail: real(row.detail),
+            masking: real(row.masking),
         };
         let metadata = profile_metadata_mut(profiles, indexes, profile_index)?;
         match scope {
@@ -259,107 +237,129 @@ fn load_profile_sharpening(
     Ok(seen)
 }
 
-fn load_profile_hsl_values(
-    connection: &rusqlite::Connection,
+async fn load_profile_hsl_values<C>(
+    connection: &C,
     profiles: &mut [ReviewProfile],
     indexes: &HashMap<usize, usize>,
-) -> Result<()> {
-    let mut statement = connection.prepare(
-        "SELECT profile_index, scope, channel, value_index, value
-         FROM profile_hsl_values ORDER BY profile_index, scope, channel, value_index",
-    )?;
-    let mut rows = statement.query([])?;
-    while let Some(row) = rows.next()? {
-        let profile_index = i64_to_usize(row.get("profile_index")?, "profile index")?;
-        let scope = parse_scope(&row.get::<_, String>("scope")?)?;
-        let channel = row.get::<_, String>("channel")?;
-        let position = i64_to_usize(row.get("value_index")?, "HSL value position")?;
-        let metadata = profile_metadata_mut(profiles, indexes, profile_index)?;
-        let adjustments = profile_adjustments_mut(metadata, scope);
-        let values = match channel.as_str() {
+) -> Result<()>
+where
+    C: ConnectionTrait,
+{
+    let rows = profile_hsl_values::Entity::find()
+        .order_by_asc(profile_hsl_values::Column::ProfileIndex)
+        .order_by_asc(profile_hsl_values::Column::Scope)
+        .order_by_asc(profile_hsl_values::Column::Channel)
+        .order_by_asc(profile_hsl_values::Column::ValueIndex)
+        .all(connection)
+        .await
+        .context("reading profile HSL values")?;
+    for row in rows {
+        let profile_index = i64_to_usize(row.profile_index, "profile index")?;
+        let scope = parse_scope(&row.scope)?;
+        let position = i64_to_usize(row.value_index, "HSL value position")?;
+        let adjustments = profile_adjustments_mut(
+            profile_metadata_mut(profiles, indexes, profile_index)?,
+            scope,
+        );
+        let values = match row.channel.as_str() {
             "hue" => &mut adjustments.hsl.hue,
             "saturation" => &mut adjustments.hsl.saturation,
             "luminance" => &mut adjustments.hsl.luminance,
-            _ => bail!("profile {profile_index} has unsupported HSL channel {channel:?}"),
+            channel => bail!("profile {profile_index} has unsupported HSL channel {channel:?}"),
         };
         require_next_position(position, values.len(), "profile HSL value")?;
-        values.push(row.get("value")?);
+        values.push(real(row.value));
     }
     Ok(())
 }
 
-fn load_profile_tone_curve_points(
-    connection: &rusqlite::Connection,
+async fn load_profile_tone_curve_points<C>(
+    connection: &C,
     profiles: &mut [ReviewProfile],
     indexes: &HashMap<usize, usize>,
-) -> Result<()> {
-    let mut statement = connection.prepare(
-        "SELECT profile_index, scope, channel, point_index, x, y
-         FROM profile_tone_curve_points
-         ORDER BY profile_index, scope, channel, point_index",
-    )?;
-    let mut rows = statement.query([])?;
-    while let Some(row) = rows.next()? {
-        let profile_index = i64_to_usize(row.get("profile_index")?, "profile index")?;
-        let scope = parse_scope(&row.get::<_, String>("scope")?)?;
-        let channel = row.get::<_, String>("channel")?;
-        let position = i64_to_usize(row.get("point_index")?, "tone curve point position")?;
-        let metadata = profile_metadata_mut(profiles, indexes, profile_index)?;
-        let adjustments = profile_adjustments_mut(metadata, scope);
-        let points = match channel.as_str() {
+) -> Result<()>
+where
+    C: ConnectionTrait,
+{
+    let rows = profile_tone_curve_points::Entity::find()
+        .order_by_asc(profile_tone_curve_points::Column::ProfileIndex)
+        .order_by_asc(profile_tone_curve_points::Column::Scope)
+        .order_by_asc(profile_tone_curve_points::Column::Channel)
+        .order_by_asc(profile_tone_curve_points::Column::PointIndex)
+        .all(connection)
+        .await
+        .context("reading profile tone curves")?;
+    for row in rows {
+        let profile_index = i64_to_usize(row.profile_index, "profile index")?;
+        let scope = parse_scope(&row.scope)?;
+        let position = i64_to_usize(row.point_index, "tone curve point position")?;
+        let adjustments = profile_adjustments_mut(
+            profile_metadata_mut(profiles, indexes, profile_index)?,
+            scope,
+        );
+        let points = match row.channel.as_str() {
             "composite" => &mut adjustments.tone_curve.composite,
             "red" => &mut adjustments.tone_curve.red,
             "green" => &mut adjustments.tone_curve.green,
             "blue" => &mut adjustments.tone_curve.blue,
-            _ => bail!("profile {profile_index} has unsupported tone curve channel {channel:?}"),
+            channel => {
+                bail!("profile {profile_index} has unsupported tone curve channel {channel:?}")
+            }
         };
         require_next_position(position, points.len(), "tone curve point")?;
-        points.push([row.get("x")?, row.get("y")?]);
+        points.push([real(row.x), real(row.y)]);
     }
     Ok(())
 }
 
-fn load_profile_pp3_sections(
-    connection: &rusqlite::Connection,
+async fn load_profile_pp3_sections<C>(
+    connection: &C,
     profiles: &mut [ReviewProfile],
     indexes: &HashMap<usize, usize>,
-) -> Result<()> {
-    let mut statement = connection.prepare(
-        "SELECT profile_index, section_position, source, section
-         FROM profile_pp3_sections ORDER BY profile_index, section_position",
-    )?;
-    let mut rows = statement.query([])?;
-    while let Some(row) = rows.next()? {
-        let profile_index = i64_to_usize(row.get("profile_index")?, "profile index")?;
-        let position = i64_to_usize(row.get("section_position")?, "PP3 section position")?;
+) -> Result<()>
+where
+    C: ConnectionTrait,
+{
+    let rows = profile_pp3_sections::Entity::find()
+        .order_by_asc(profile_pp3_sections::Column::ProfileIndex)
+        .order_by_asc(profile_pp3_sections::Column::SectionPosition)
+        .all(connection)
+        .await
+        .context("reading profile PP3 sections")?;
+    for row in rows {
+        let profile_index = i64_to_usize(row.profile_index, "profile index")?;
+        let position = i64_to_usize(row.section_position, "PP3 section position")?;
         let metadata = profile_metadata_mut(profiles, indexes, profile_index)?;
         require_next_position(position, metadata.pp3_adjustments.len(), "PP3 section")?;
         metadata.pp3_adjustments.push(ReviewProfilePp3Section {
-            source: row.get("source")?,
-            section: row.get("section")?,
+            source: row.source,
+            section: row.section,
             entries: Vec::new(),
         });
     }
     Ok(())
 }
 
-fn load_profile_pp3_entries(
-    connection: &rusqlite::Connection,
+async fn load_profile_pp3_entries<C>(
+    connection: &C,
     profiles: &mut [ReviewProfile],
     indexes: &HashMap<usize, usize>,
-) -> Result<()> {
-    let mut statement = connection.prepare(
-        "SELECT profile_index, section_position, entry_position, key, value
-         FROM profile_pp3_entries
-         ORDER BY profile_index, section_position, entry_position",
-    )?;
-    let mut rows = statement.query([])?;
-    while let Some(row) = rows.next()? {
-        let profile_index = i64_to_usize(row.get("profile_index")?, "profile index")?;
-        let section_position = i64_to_usize(row.get("section_position")?, "PP3 section position")?;
-        let entry_position = i64_to_usize(row.get("entry_position")?, "PP3 entry position")?;
-        let metadata = profile_metadata_mut(profiles, indexes, profile_index)?;
-        let section = metadata
+) -> Result<()>
+where
+    C: ConnectionTrait,
+{
+    let rows = profile_pp3_entries::Entity::find()
+        .order_by_asc(profile_pp3_entries::Column::ProfileIndex)
+        .order_by_asc(profile_pp3_entries::Column::SectionPosition)
+        .order_by_asc(profile_pp3_entries::Column::EntryPosition)
+        .all(connection)
+        .await
+        .context("reading profile PP3 entries")?;
+    for row in rows {
+        let profile_index = i64_to_usize(row.profile_index, "profile index")?;
+        let section_position = i64_to_usize(row.section_position, "PP3 section position")?;
+        let entry_position = i64_to_usize(row.entry_position, "PP3 entry position")?;
+        let section = profile_metadata_mut(profiles, indexes, profile_index)?
             .pp3_adjustments
             .get_mut(section_position)
             .ok_or_else(|| {
@@ -369,8 +369,8 @@ fn load_profile_pp3_entries(
             })?;
         require_next_position(entry_position, section.entries.len(), "PP3 entry")?;
         section.entries.push(ReviewProfilePp3Entry {
-            key: row.get("key")?,
-            value: row.get("value")?,
+            key: row.key,
+            value: row.value,
         });
     }
     Ok(())
@@ -402,296 +402,292 @@ fn profile_adjustments_mut<'a>(
     }
 }
 
-fn load_images(connection: &rusqlite::Connection) -> Result<Vec<ReviewImage>> {
-    let mut statement = connection.prepare(
-        "SELECT
-            image_id, position, raw_path, sooc_sidecar_path, relative_path, file_name,
-            exif_capture_timestamp, exif_rating, exif_focal_length, exif_aperture,
-            exif_shutter_speed, exif_iso, exif_auto_iso, exif_iso_auto_hi_limit,
-            exif_white_balance_mode, exif_white_balance_temperature, exif_white_balance_offset,
-            exif_camera_model, exif_shutter_count,
-            exif_shutter_mode, exif_silent_photography, exif_release_mode, exif_lens_model,
-            exif_shooting_mode, exif_exposure_compensation, exif_flash, exif_note,
-            exif_active_d_lighting, source_file_size_bytes, source_width, source_height,
-            preview_status, preview_path, preview_error, preview_duration_ms,
-            preview_render_key, preview_updated_at, selected_profile_index, rating,
-            label, notes, rating_source, tags_source, notes_source, codex_status,
-            codex_flags_tags, codex_flags_note, codex_flags_rating, codex_model,
-            codex_analysis_key, codex_error, codex_updated_at, retouch_exposure,
-            retouch_highlights, retouch_shadows, retouch_whites, retouch_blacks,
-            retouch_temperature, retouch_offset, retouch_clarity, retouch_crop_x,
-            retouch_crop_y, retouch_crop_width, retouch_crop_height,
-            retouch_rotation_degrees, publish_profiles_default, updated_at
-         FROM images ORDER BY position",
-    )?;
-    let mut rows = statement.query([])?;
-    let mut images = Vec::new();
-    while let Some(row) = rows.next()? {
-        let position = i64_to_usize(row.get("position")?, "image position")?;
-        require_next_position(position, images.len(), "image")?;
-        let image_id = i64_to_u64(row.get("image_id")?, "image id")?;
-        let crop_values = (
-            row.get::<_, Option<f32>>("retouch_crop_x")?,
-            row.get::<_, Option<f32>>("retouch_crop_y")?,
-            row.get::<_, Option<f32>>("retouch_crop_width")?,
-            row.get::<_, Option<f32>>("retouch_crop_height")?,
-        );
-        let crop = match crop_values {
+async fn load_images<C>(connection: &C) -> Result<Vec<ReviewImage>>
+where
+    C: ConnectionTrait,
+{
+    let rows = images::Entity::find()
+        .order_by_asc(images::Column::Position)
+        .all(connection)
+        .await
+        .context("reading review images")?;
+    let mut result = Vec::with_capacity(rows.len());
+    for row in rows {
+        let position = i64_to_usize(row.position, "image position")?;
+        require_next_position(position, result.len(), "image")?;
+        let image_id = i64_to_u64(row.image_id, "image id")?;
+        let crop = match (
+            row.retouch_crop_x,
+            row.retouch_crop_y,
+            row.retouch_crop_width,
+            row.retouch_crop_height,
+        ) {
             (None, None, None, None) => None,
             (Some(x), Some(y), Some(width), Some(height)) => {
                 Some(crate::app::retouch::RetouchCrop {
-                    x,
-                    y,
-                    width,
-                    height,
+                    x: real(x),
+                    y: real(y),
+                    width: real(width),
+                    height: real(height),
                 })
             }
             _ => bail!("image {image_id} has incomplete crop settings"),
         };
-        let publish_profiles_default = i64_to_bool(
-            row.get("publish_profiles_default")?,
-            "publish_profiles_default",
-        )?;
-        images.push(ReviewImage {
+        let publish_profiles_default =
+            i64_to_bool(row.publish_profiles_default, "publish_profiles_default")?;
+        result.push(ReviewImage {
             id: image_id,
-            raw_path: PathBuf::from(row.get::<_, String>("raw_path")?),
-            sooc_sidecar_path: row
-                .get::<_, Option<String>>("sooc_sidecar_path")?
-                .map(PathBuf::from),
-            relative_path: row.get("relative_path")?,
-            file_name: row.get("file_name")?,
+            raw_path: PathBuf::from(row.raw_path),
+            sooc_sidecar_path: row.sooc_sidecar_path.map(PathBuf::from),
+            relative_path: row.relative_path,
+            file_name: row.file_name,
             exif: GalleryExifData {
-                capture_timestamp: row.get("exif_capture_timestamp")?,
-                rating: row
-                    .get::<_, Option<i64>>("exif_rating")?
-                    .map(|value| i64_to_u8(value, "EXIF rating"))
-                    .transpose()?,
-                file_size_bytes: row
-                    .get::<_, Option<i64>>("source_file_size_bytes")?
-                    .map(|value| i64_to_u64(value, "source file size"))
-                    .transpose()?,
-                image_width: row
-                    .get::<_, Option<i64>>("source_width")?
-                    .map(|value| i64_to_u32(value, "source width"))
-                    .transpose()?,
-                image_height: row
-                    .get::<_, Option<i64>>("source_height")?
-                    .map(|value| i64_to_u32(value, "source height"))
-                    .transpose()?,
-                focal_length: row.get("exif_focal_length")?,
-                aperture: row.get("exif_aperture")?,
-                shutter_speed: row.get("exif_shutter_speed")?,
-                iso: row.get("exif_iso")?,
-                auto_iso: row
-                    .get::<_, Option<i64>>("exif_auto_iso")?
-                    .map(|value| i64_to_bool(value, "EXIF Auto ISO"))
-                    .transpose()?,
-                iso_auto_hi_limit: row.get("exif_iso_auto_hi_limit")?,
-                white_balance_mode: row.get("exif_white_balance_mode")?,
-                white_balance_temperature: row
-                    .get::<_, Option<i64>>("exif_white_balance_temperature")?
-                    .map(|value| i64_to_u32(value, "EXIF white balance temperature"))
-                    .transpose()?,
-                white_balance_offset: row
-                    .get::<_, Option<i64>>("exif_white_balance_offset")?
-                    .map(|value| i64_to_i32(value, "EXIF white balance offset"))
-                    .transpose()?,
-                camera_model: row.get("exif_camera_model")?,
-                shutter_count: row
-                    .get::<_, Option<i64>>("exif_shutter_count")?
-                    .map(|value| i64_to_u64(value, "EXIF shutter count"))
-                    .transpose()?,
-                shutter_mode: row.get("exif_shutter_mode")?,
-                silent_photography: row
-                    .get::<_, Option<i64>>("exif_silent_photography")?
-                    .map(|value| i64_to_bool(value, "EXIF silent photography"))
-                    .transpose()?,
-                release_mode: row.get("exif_release_mode")?,
-                lens_model: row.get("exif_lens_model")?,
-                shooting_mode: row.get("exif_shooting_mode")?,
-                exposure_compensation: row.get("exif_exposure_compensation")?,
-                flash: row.get("exif_flash")?,
-                active_d_lighting: row.get("exif_active_d_lighting")?,
+                capture_timestamp: row.exif_capture_timestamp,
+                rating: optional_i64(row.exif_rating, "EXIF rating", i64_to_u8)?,
+                file_size_bytes: optional_i64(
+                    row.source_file_size_bytes,
+                    "source file size",
+                    i64_to_u64,
+                )?,
+                image_width: optional_i64(row.source_width, "source width", i64_to_u32)?,
+                image_height: optional_i64(row.source_height, "source height", i64_to_u32)?,
+                focal_length: row.exif_focal_length,
+                aperture: row.exif_aperture,
+                shutter_speed: row.exif_shutter_speed,
+                iso: row.exif_iso,
+                auto_iso: optional_i64(row.exif_auto_iso, "EXIF Auto ISO", i64_to_bool)?,
+                iso_auto_hi_limit: row.exif_iso_auto_hi_limit,
+                white_balance_mode: row.exif_white_balance_mode,
+                white_balance_temperature: optional_i64(
+                    row.exif_white_balance_temperature,
+                    "EXIF white balance temperature",
+                    i64_to_u32,
+                )?,
+                white_balance_offset: optional_i64(
+                    row.exif_white_balance_offset,
+                    "EXIF white balance offset",
+                    i64_to_i32,
+                )?,
+                camera_model: row.exif_camera_model,
+                shutter_count: optional_i64(
+                    row.exif_shutter_count,
+                    "EXIF shutter count",
+                    i64_to_u64,
+                )?,
+                shutter_mode: row.exif_shutter_mode,
+                silent_photography: optional_i64(
+                    row.exif_silent_photography,
+                    "EXIF silent photography",
+                    i64_to_bool,
+                )?,
+                release_mode: row.exif_release_mode,
+                lens_model: row.exif_lens_model,
+                shooting_mode: row.exif_shooting_mode,
+                exposure_compensation: row.exif_exposure_compensation,
+                flash: row.exif_flash,
+                active_d_lighting: row.exif_active_d_lighting,
                 tags: Vec::new(),
-                note: row.get("exif_note")?,
+                note: row.exif_note,
             },
             preview: ReviewPreview {
-                status: parse_enum(&row.get::<_, String>("preview_status")?, "preview status")?,
-                path: row
-                    .get::<_, Option<String>>("preview_path")?
-                    .map(PathBuf::from),
-                error: row.get("preview_error")?,
-                duration_ms: row
-                    .get::<_, Option<i64>>("preview_duration_ms")?
-                    .map(|value| i64_to_u64(value, "preview duration"))
-                    .transpose()?,
-                render_key: row.get("preview_render_key")?,
-                updated_at: row.get("preview_updated_at")?,
+                status: parse_enum(&row.preview_status, "preview status")?,
+                path: row.preview_path.map(PathBuf::from),
+                error: row.preview_error,
+                duration_ms: optional_i64(row.preview_duration_ms, "preview duration", i64_to_u64)?,
+                render_key: row.preview_render_key,
+                updated_at: row.preview_updated_at,
             },
             selected_profile_index: i64_to_usize(
-                row.get("selected_profile_index")?,
+                row.selected_profile_index,
                 "selected profile index",
             )?,
-            rating: i64_to_u8(row.get("rating")?, "image rating")?,
-            label: parse_enum(&row.get::<_, String>("label")?, "image label")?,
+            rating: i64_to_u8(row.rating, "image rating")?,
+            label: parse_enum(&row.label, "image label")?,
             labels: Vec::new(),
             tags: Vec::new(),
-            notes: row.get("notes")?,
-            rating_source: parse_enum(&row.get::<_, String>("rating_source")?, "rating source")?,
-            tags_source: parse_enum(&row.get::<_, String>("tags_source")?, "tags source")?,
-            notes_source: parse_enum(&row.get::<_, String>("notes_source")?, "notes source")?,
+            notes: row.notes,
+            rating_source: parse_enum(&row.rating_source, "rating source")?,
+            tags_source: parse_enum(&row.tags_source, "tags source")?,
+            notes_source: parse_enum(&row.notes_source, "notes source")?,
             codex: ReviewCodexAnalysis {
-                status: parse_enum(&row.get::<_, String>("codex_status")?, "Codex status")?,
+                status: parse_enum(&row.codex_status, "Codex status")?,
                 flags: CodexAnalysisFlags {
-                    tags: i64_to_bool(row.get("codex_flags_tags")?, "Codex tags flag")?,
-                    note: i64_to_bool(row.get("codex_flags_note")?, "Codex note flag")?,
-                    rating: i64_to_bool(row.get("codex_flags_rating")?, "Codex rating flag")?,
+                    tags: i64_to_bool(row.codex_flags_tags, "Codex tags flag")?,
+                    note: i64_to_bool(row.codex_flags_note, "Codex note flag")?,
+                    rating: i64_to_bool(row.codex_flags_rating, "Codex rating flag")?,
                 },
-                model: row.get("codex_model")?,
-                analysis_key: row.get("codex_analysis_key")?,
-                error: row.get("codex_error")?,
-                updated_at: row.get("codex_updated_at")?,
+                model: row.codex_model,
+                analysis_key: row.codex_analysis_key,
+                error: row.codex_error,
+                updated_at: row.codex_updated_at,
             },
             retouch: RetouchSettings {
                 adjustments: BasicRetouchAdjustments {
-                    exposure: row.get("retouch_exposure")?,
-                    highlights: row.get("retouch_highlights")?,
-                    shadows: row.get("retouch_shadows")?,
-                    whites: row.get("retouch_whites")?,
-                    blacks: row.get("retouch_blacks")?,
-                    temperature: row.get("retouch_temperature")?,
-                    offset: row.get("retouch_offset")?,
-                    clarity: row.get("retouch_clarity")?,
+                    exposure: real(row.retouch_exposure),
+                    highlights: real(row.retouch_highlights),
+                    shadows: real(row.retouch_shadows),
+                    whites: real(row.retouch_whites),
+                    blacks: real(row.retouch_blacks),
+                    temperature: real(row.retouch_temperature),
+                    offset: real(row.retouch_offset),
+                    clarity: real(row.retouch_clarity),
                 },
                 crop,
-                rotation_degrees: row.get("retouch_rotation_degrees")?,
+                rotation_degrees: real(row.retouch_rotation_degrees),
             },
             publish_profile_indexes: (!publish_profiles_default).then(Vec::new),
             profile_bw_filters: Vec::new(),
             profiles: Vec::new(),
-            updated_at: row.get("updated_at")?,
+            updated_at: row.updated_at,
         });
     }
-    drop(rows);
-    drop(statement);
 
-    let indexes = images
+    let indexes = result
         .iter()
         .enumerate()
         .map(|(position, image)| (image.id, position))
         .collect::<HashMap<_, _>>();
-    if indexes.len() != images.len() {
+    if indexes.len() != result.len() {
         bail!("review database contains duplicate image ids");
     }
-    load_image_exif_tags(connection, &mut images, &indexes)?;
-    load_image_tags(connection, &mut images, &indexes)?;
-    load_image_labels(connection, &mut images, &indexes)?;
-    load_image_publish_profiles(connection, &mut images, &indexes)?;
-    load_image_profile_bw_filters(connection, &mut images, &indexes)?;
-    load_image_profile_renders(connection, &mut images, &indexes)?;
-    Ok(images)
+    load_image_exif_tags(connection, &mut result, &indexes).await?;
+    load_image_tags(connection, &mut result, &indexes).await?;
+    load_image_labels(connection, &mut result, &indexes).await?;
+    load_image_publish_profiles(connection, &mut result, &indexes).await?;
+    load_image_profile_bw_filters(connection, &mut result, &indexes).await?;
+    load_image_profile_renders(connection, &mut result, &indexes).await?;
+    Ok(result)
 }
 
-fn load_image_exif_tags(
-    connection: &rusqlite::Connection,
+async fn load_image_exif_tags<C>(
+    connection: &C,
     images: &mut [ReviewImage],
     indexes: &HashMap<u64, usize>,
-) -> Result<()> {
-    let mut statement = connection.prepare(
-        "SELECT image_id, position, tag
-         FROM image_exif_tags ORDER BY image_id, position",
-    )?;
-    let mut rows = statement.query([])?;
-    while let Some(row) = rows.next()? {
-        let image_id = i64_to_u64(row.get("image_id")?, "image id")?;
-        let position = i64_to_usize(row.get("position")?, "EXIF tag position")?;
+) -> Result<()>
+where
+    C: ConnectionTrait,
+{
+    let rows = image_exif_tags::Entity::find()
+        .order_by_asc(image_exif_tags::Column::ImageId)
+        .order_by_asc(image_exif_tags::Column::Position)
+        .all(connection)
+        .await
+        .context("reading image EXIF tags")?;
+    for row in rows {
+        let image_id = i64_to_u64(row.image_id, "image id")?;
+        let position = i64_to_usize(row.position, "EXIF tag position")?;
         let image = image_mut(images, indexes, image_id)?;
         require_next_position(position, image.exif.tags.len(), "EXIF tag")?;
-        image.exif.tags.push(row.get("tag")?);
+        image.exif.tags.push(row.tag);
     }
     Ok(())
 }
 
-fn load_image_tags(
-    connection: &rusqlite::Connection,
+async fn load_image_tags<C>(
+    connection: &C,
     images: &mut [ReviewImage],
     indexes: &HashMap<u64, usize>,
-) -> Result<()> {
-    let mut statement = connection.prepare(
-        "SELECT image_tags.image_id, image_tags.position, tags.tag
-         FROM image_tags
-         JOIN tags ON tags.tag_id = image_tags.tag_id
-         ORDER BY image_tags.image_id, image_tags.position",
-    )?;
-    let mut rows = statement.query([])?;
-    while let Some(row) = rows.next()? {
-        let image_id = i64_to_u64(row.get("image_id")?, "image id")?;
-        let position = i64_to_usize(row.get("position")?, "image tag position")?;
+) -> Result<()>
+where
+    C: ConnectionTrait,
+{
+    let tags_by_id = tags::Entity::find()
+        .all(connection)
+        .await
+        .context("reading tags")?
+        .into_iter()
+        .map(|tag| (tag.tag_id, tag.tag))
+        .collect::<HashMap<_, _>>();
+    let rows = image_tags::Entity::find()
+        .order_by_asc(image_tags::Column::ImageId)
+        .order_by_asc(image_tags::Column::Position)
+        .all(connection)
+        .await
+        .context("reading image tags")?;
+    for row in rows {
+        let image_id = i64_to_u64(row.image_id, "image id")?;
+        let position = i64_to_usize(row.position, "image tag position")?;
+        let tag = tags_by_id
+            .get(&row.tag_id)
+            .ok_or_else(|| anyhow!("image {image_id} references missing tag {}", row.tag_id))?;
         let image = image_mut(images, indexes, image_id)?;
         require_next_position(position, image.tags.len(), "image tag")?;
-        image.tags.push(row.get("tag")?);
+        image.tags.push(tag.clone());
     }
     Ok(())
 }
 
-fn load_image_labels(
-    connection: &rusqlite::Connection,
+async fn load_image_labels<C>(
+    connection: &C,
     images: &mut [ReviewImage],
     indexes: &HashMap<u64, usize>,
-) -> Result<()> {
-    let mut statement = connection.prepare(
-        "SELECT image_id, position, label FROM image_labels ORDER BY image_id, position",
-    )?;
-    let mut rows = statement.query([])?;
-    while let Some(row) = rows.next()? {
-        let image_id = i64_to_u64(row.get("image_id")?, "image id")?;
-        let position = i64_to_usize(row.get("position")?, "image label position")?;
+) -> Result<()>
+where
+    C: ConnectionTrait,
+{
+    let rows = image_labels::Entity::find()
+        .order_by_asc(image_labels::Column::ImageId)
+        .order_by_asc(image_labels::Column::Position)
+        .all(connection)
+        .await
+        .context("reading image labels")?;
+    for row in rows {
+        let image_id = i64_to_u64(row.image_id, "image id")?;
+        let position = i64_to_usize(row.position, "image label position")?;
         let image = image_mut(images, indexes, image_id)?;
         require_next_position(position, image.labels.len(), "image label")?;
-        image
-            .labels
-            .push(parse_enum(&row.get::<_, String>("label")?, "image label")?);
+        image.labels.push(parse_enum(&row.label, "image label")?);
     }
     Ok(())
 }
 
-fn load_image_publish_profiles(
-    connection: &rusqlite::Connection,
+async fn load_image_publish_profiles<C>(
+    connection: &C,
     images: &mut [ReviewImage],
     indexes: &HashMap<u64, usize>,
-) -> Result<()> {
-    let mut statement = connection.prepare(
-        "SELECT image_id, position, profile_index
-         FROM image_publish_profiles ORDER BY image_id, position",
-    )?;
-    let mut rows = statement.query([])?;
-    while let Some(row) = rows.next()? {
-        let image_id = i64_to_u64(row.get("image_id")?, "image id")?;
-        let position = i64_to_usize(row.get("position")?, "publish profile position")?;
-        let profile_index = i64_to_usize(row.get("profile_index")?, "publish profile index")?;
-        let image = image_mut(images, indexes, image_id)?;
-        let profiles = image.publish_profile_indexes.as_mut().ok_or_else(|| {
-            anyhow!("image {image_id} has publish profiles while configured to use defaults")
-        })?;
+) -> Result<()>
+where
+    C: ConnectionTrait,
+{
+    let rows = image_publish_profiles::Entity::find()
+        .order_by_asc(image_publish_profiles::Column::ImageId)
+        .order_by_asc(image_publish_profiles::Column::Position)
+        .all(connection)
+        .await
+        .context("reading image publish profiles")?;
+    for row in rows {
+        let image_id = i64_to_u64(row.image_id, "image id")?;
+        let position = i64_to_usize(row.position, "publish profile position")?;
+        let profile_index = i64_to_usize(row.profile_index, "publish profile index")?;
+        let profiles = image_mut(images, indexes, image_id)?
+            .publish_profile_indexes
+            .as_mut()
+            .ok_or_else(|| {
+                anyhow!("image {image_id} has publish profiles while configured to use defaults")
+            })?;
         require_next_position(position, profiles.len(), "publish profile")?;
         profiles.push(profile_index);
     }
     Ok(())
 }
 
-fn load_image_profile_bw_filters(
-    connection: &rusqlite::Connection,
+async fn load_image_profile_bw_filters<C>(
+    connection: &C,
     images: &mut [ReviewImage],
     indexes: &HashMap<u64, usize>,
-) -> Result<()> {
-    let mut statement = connection.prepare(
-        "SELECT image_id, position, profile_index, bw_filter
-         FROM image_profile_bw_filters ORDER BY image_id, position",
-    )?;
-    let mut rows = statement.query([])?;
-    while let Some(row) = rows.next()? {
-        let image_id = i64_to_u64(row.get("image_id")?, "image id")?;
-        let position = i64_to_usize(row.get("position")?, "profile BW filter position")?;
+) -> Result<()>
+where
+    C: ConnectionTrait,
+{
+    let rows = image_profile_bw_filters::Entity::find()
+        .order_by_asc(image_profile_bw_filters::Column::ImageId)
+        .order_by_asc(image_profile_bw_filters::Column::Position)
+        .all(connection)
+        .await
+        .context("reading image profile BW filters")?;
+    for row in rows {
+        let image_id = i64_to_u64(row.image_id, "image id")?;
+        let position = i64_to_usize(row.position, "profile BW filter position")?;
         let image = image_mut(images, indexes, image_id)?;
         require_next_position(
             position,
@@ -699,54 +695,45 @@ fn load_image_profile_bw_filters(
             "profile BW filter",
         )?;
         image.profile_bw_filters.push(ReviewProfileBwFilter {
-            profile_index: i64_to_usize(row.get("profile_index")?, "profile BW filter index")?,
-            filter: parse_enum(&row.get::<_, String>("bw_filter")?, "BW filter")?,
+            profile_index: i64_to_usize(row.profile_index, "profile BW filter index")?,
+            filter: parse_enum(&row.bw_filter, "BW filter")?,
         });
     }
     Ok(())
 }
 
-fn load_image_profile_renders(
-    connection: &rusqlite::Connection,
+async fn load_image_profile_renders<C>(
+    connection: &C,
     images: &mut [ReviewImage],
     indexes: &HashMap<u64, usize>,
-) -> Result<()> {
-    let mut statement = connection.prepare(
-        "SELECT image_id, position, profile_index, profile_stem, display_name, status,
-                output_path, error, duration_ms, render_key, processing_key, width,
-                height, updated_at
-         FROM image_profile_renders ORDER BY image_id, position",
-    )?;
-    let mut rows = statement.query([])?;
-    while let Some(row) = rows.next()? {
-        let image_id = i64_to_u64(row.get("image_id")?, "image id")?;
-        let position = i64_to_usize(row.get("position")?, "profile render position")?;
+) -> Result<()>
+where
+    C: ConnectionTrait,
+{
+    let rows = image_profile_renders::Entity::find()
+        .order_by_asc(image_profile_renders::Column::ImageId)
+        .order_by_asc(image_profile_renders::Column::Position)
+        .all(connection)
+        .await
+        .context("reading image profile renders")?;
+    for row in rows {
+        let image_id = i64_to_u64(row.image_id, "image id")?;
+        let position = i64_to_usize(row.position, "profile render position")?;
         let image = image_mut(images, indexes, image_id)?;
         require_next_position(position, image.profiles.len(), "profile render")?;
         image.profiles.push(ReviewProfileRender {
-            profile_index: i64_to_usize(row.get("profile_index")?, "profile render index")?,
-            profile_stem: row.get("profile_stem")?,
-            display_name: row.get("display_name")?,
-            status: parse_enum(&row.get::<_, String>("status")?, "profile render status")?,
-            output_path: row
-                .get::<_, Option<String>>("output_path")?
-                .map(PathBuf::from),
-            error: row.get("error")?,
-            duration_ms: row
-                .get::<_, Option<i64>>("duration_ms")?
-                .map(|value| i64_to_u64(value, "profile render duration"))
-                .transpose()?,
-            render_key: row.get("render_key")?,
-            processing_key: row.get("processing_key")?,
-            width: row
-                .get::<_, Option<i64>>("width")?
-                .map(|value| i64_to_u32(value, "profile render width"))
-                .transpose()?,
-            height: row
-                .get::<_, Option<i64>>("height")?
-                .map(|value| i64_to_u32(value, "profile render height"))
-                .transpose()?,
-            updated_at: row.get("updated_at")?,
+            profile_index: i64_to_usize(row.profile_index, "profile render index")?,
+            profile_stem: row.profile_stem,
+            display_name: row.display_name,
+            status: parse_enum(&row.status, "profile render status")?,
+            output_path: row.output_path.map(PathBuf::from),
+            error: row.error,
+            duration_ms: optional_i64(row.duration_ms, "profile render duration", i64_to_u64)?,
+            render_key: row.render_key,
+            processing_key: row.processing_key,
+            width: optional_i64(row.width, "profile render width", i64_to_u32)?,
+            height: optional_i64(row.height, "profile render height", i64_to_u32)?,
+            updated_at: row.updated_at,
         });
     }
     Ok(())
@@ -785,7 +772,19 @@ fn require_next_position(position: usize, expected: usize, name: &str) -> Result
     }
 }
 
-fn i64_to_bool(value: i64, name: &str) -> Result<bool> {
+fn optional_i64<T>(
+    value: Option<i64>,
+    name: &str,
+    convert: fn(i64, &str) -> Result<T>,
+) -> Result<Option<T>> {
+    value.map(|value| convert(value, name)).transpose()
+}
+
+fn real(value: f64) -> f32 {
+    value as f32
+}
+
+pub(super) fn i64_to_bool(value: i64, name: &str) -> Result<bool> {
     match value {
         0 => Ok(false),
         1 => Ok(true),

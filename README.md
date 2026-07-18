@@ -517,17 +517,23 @@ the shared filter moves to the next rating level.
 
 Review data and the shared browser position are persisted in
 `<output>/mini-film-review.sqlite` as normalized relational rows; the active
-database does not keep an opaque JSON copy of the review store. Databases from
-older mini-film releases are migrated automatically in one SQLite transaction
-and the old snapshot is removed only after the relational data reconstructs the
-complete review state exactly and passes SQLite integrity checks. Existing
-`<output>/mini-film-review.json` state files use the same verified relational
-migration and are renamed only after the new database is installed. A
-human-readable audit trail of review, render, and publish state changes is
-appended to `<output>/history.txt`. Together those files make it possible to
-restart the daemon, reopen the browser, and continue the multi-pass culling flow
-where it stopped. A typical pass is to rate everything `0` or `1`, filter to
-`>= 1`, rate the survivors higher, and repeat until the final subset is ready.
+database does not keep an opaque JSON copy of the review store. SeaORM models
+own the schema and a migration ledger applies future database changes
+automatically. On its first open, mini-film 18 validates a normalized schema-v11
+database from the final 17.x release, creates the one-time
+`mini-film-review.sqlite.pre-seaorm-v11` backup without overwriting an existing
+backup, adopts the database, and verifies that every reconstructed review value
+still matches. SQLite integrity and foreign-key checks must also pass.
+
+Mini-film 18 does not read legacy `mini-film-review.json` state or SQLite schema
+versions 1 through 10. It rejects either format without modifying it; run the
+final mini-film 17.x release once to convert that state to normalized SQLite v11,
+then open it with mini-film 18. A human-readable audit trail of review, render,
+and publish state changes is appended to `<output>/history.txt`. Together those
+files make it possible to restart the daemon, reopen the browser, and continue
+the multi-pass culling flow where it stopped. A typical pass is to rate
+everything `0` or `1`, filter to `>= 1`, rate the survivors higher, and repeat
+until the final subset is ready.
 
 The review workflow is optimized for keyboard operation. Press `?` in the
 browser UI to show the shortcuts overlay. `§` rates `0` and advances, `1`-`5`

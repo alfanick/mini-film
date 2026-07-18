@@ -390,6 +390,8 @@ pub(crate) struct ReviewHandle {
     pub(super) subscribers: Arc<broadcast::Sender<String>>,
     pub(super) state_cache: Arc<ArcSwapOption<serde_json::Value>>,
     pub(super) state_path: PathBuf,
+    pub(super) database: super::db::ReviewDatabase,
+    pub(super) database_runtime: Arc<tokio::runtime::Runtime>,
     pub(super) input_root: PathBuf,
     pub(super) output_root: PathBuf,
     pub(super) hald_dir: PathBuf,

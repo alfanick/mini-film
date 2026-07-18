@@ -296,20 +296,6 @@ fn fully_populated_review_store() -> ReviewStore {
     store
 }
 
-fn create_v5_review_database(path: &Path, store: &ReviewStore) {
-    let connection = open_database_at_version_for_test(path, 5).unwrap();
-    let store_json = serde_json::to_string_pretty(store).unwrap();
-    connection
-        .execute(
-            "INSERT INTO review_state(
-                id, next_id, current_image_id, min_rating, exif_schema_version,
-                store_json, store_sha1, updated_at
-             ) VALUES (1, 1, NULL, 0, 4, ?1, 'test-sha1', ?2)",
-            rusqlite::params![store_json, now_string()],
-        )
-        .unwrap();
-}
-
 fn bw_profile(
     index: usize,
     stem: &str,
@@ -340,11 +326,37 @@ fn test_export_options() -> ExportOptions {
 fn test_handle(input: PathBuf, output: PathBuf, profiles: Vec<ReviewProfile>) -> ReviewHandle {
     let export = test_export_options();
     let (subscribers, _) = broadcast::channel(256);
+    let database_runtime = Arc::new(
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap(),
+    );
+    let store = ReviewStore::new(profiles);
+    let database = {
+        let database_runtime = Arc::clone(&database_runtime);
+        let output = output.clone();
+        let store = store.clone();
+        std::thread::spawn(move || {
+            let (database, _) = database_runtime
+                .block_on(ReviewDatabase::open_output(&output))
+                .unwrap();
+            database_runtime
+                .block_on(database.replace_store(&store))
+                .unwrap();
+            database
+        })
+        .join()
+        .unwrap()
+    };
     ReviewHandle {
-        state: Arc::new(ArcSwap::from_pointee(ReviewStore::new(profiles))),
+        state: Arc::new(ArcSwap::from_pointee(store)),
         subscribers: Arc::new(subscribers),
         state_cache: Arc::new(ArcSwapOption::empty()),
         state_path: output.join(SQLITE_STATE_FILE),
+        database,
+        database_runtime,
         input_root: input.clone(),
         output_root: output.clone(),
         hald_dir: output.join("hald"),
@@ -383,6 +395,13 @@ fn test_handle(input: PathBuf, output: PathBuf, profiles: Vec<ReviewProfile>) ->
         codex_scheduler: Arc::new(ReviewCodexScheduler::default()),
         invocation: None,
     }
+}
+
+fn test_async_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
 }
 
 fn test_publish_options(album: &str) -> ReviewPublishOptions {
@@ -1012,7 +1031,9 @@ fn sqlite_restart_adds_profiles_to_compressed_images_without_losing_review_metad
     image.notes = "keep this note".to_string();
     save_store(&output.join(SQLITE_STATE_FILE), &store).unwrap();
 
-    let (mut restored, _) = load_or_migrate_store(&output).unwrap();
+    let mut restored = load_store(&output.join(SQLITE_STATE_FILE))
+        .unwrap()
+        .unwrap();
     restored.sync_profiles(vec![profile(0, "Classic"), profile(1, "Fade")]);
     let image = restored
         .images
@@ -1128,7 +1149,7 @@ fn discovered_raw_merges_existing_standalone_sidecar_and_ignores_stale_jpeg_call
 }
 
 #[test]
-fn review_state_sqlite_round_trips_and_populates_query_tables() {
+fn review_state_seaorm_round_trips_every_normalized_collection() {
     let temp = tempfile::tempdir().unwrap();
     let state_path = temp.path().join(SQLITE_STATE_FILE);
     let store = fully_populated_review_store();
@@ -1140,439 +1161,204 @@ fn review_state_sqlite_round_trips_and_populates_query_tables() {
         serde_json::to_value(&loaded).unwrap(),
         serde_json::to_value(&store).unwrap()
     );
-    assert!(!table_exists(&state_path, "review_state").unwrap());
-    assert_eq!(table_count(&state_path, "review_settings").unwrap(), 1);
-    assert_eq!(table_count(&state_path, "profiles").unwrap(), 2);
-    assert_eq!(table_count(&state_path, "images").unwrap(), 3);
-    assert_eq!(table_count(&state_path, "tags").unwrap(), 2);
-    assert_eq!(table_count(&state_path, "image_tags").unwrap(), 3);
-    assert_eq!(
-        table_count(&state_path, "image_profile_renders").unwrap(),
-        1
-    );
-    assert_eq!(
-        table_count(&state_path, "image_profile_bw_filters").unwrap(),
-        3
-    );
-    assert_eq!(table_count(&state_path, "profile_pp3_sections").unwrap(), 2);
-    assert_eq!(table_count(&state_path, "profile_pp3_entries").unwrap(), 2);
-    assert!(json_storage_columns(&state_path).unwrap().is_empty());
-    let connection = rusqlite::Connection::open(&state_path).unwrap();
-    let source_info = connection
-        .query_row(
-            "SELECT source_file_size_bytes, source_width, source_height, exif_shutter_count,
-                    exif_auto_iso, exif_iso_auto_hi_limit, exif_white_balance_mode,
-                    exif_white_balance_temperature, exif_white_balance_offset
-             FROM images WHERE image_id = 1",
-            [],
-            |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, String>(6)?,
-                    row.get::<_, i64>(7)?,
-                    row.get::<_, i64>(8)?,
-                ))
-            },
-        )
-        .unwrap();
-    assert_eq!(
-        source_info,
-        (
-            55_620_945,
-            8288,
-            5520,
-            66_278,
-            1,
-            "ISO 6400".to_string(),
-            "Auto1".to_string(),
-            4860,
-            -2
-        )
-    );
-    let shutter_details = connection
-        .query_row(
-            "SELECT exif_shutter_mode, exif_silent_photography, exif_release_mode
-             FROM images WHERE image_id = 1",
-            [],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            },
-        )
-        .unwrap();
-    assert_eq!(
-        shutter_details,
-        (
-            "Auto (Electronic Front Curtain)".to_string(),
-            1,
-            "Single Frame".to_string()
-        )
-    );
-    let publish_modes = connection
-        .prepare("SELECT image_id, publish_profiles_default FROM images ORDER BY image_id")
-        .unwrap()
-        .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))
-        .unwrap()
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .unwrap();
-    assert_eq!(publish_modes, vec![(1, 1), (2, 0), (3, 0)]);
-    let image_tag_columns = connection
-        .prepare("PRAGMA table_info('image_tags')")
-        .unwrap()
-        .query_map([], |row| row.get::<_, String>(1))
-        .unwrap()
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .unwrap();
-    assert_eq!(image_tag_columns, vec!["image_id", "tag_id", "position"]);
-    let tags = connection
-        .prepare("SELECT tag FROM tags ORDER BY tag")
-        .unwrap()
-        .query_map([], |row| row.get::<_, String>(0))
-        .unwrap()
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .unwrap();
-    assert_eq!(tags, vec!["keeper", "publish"]);
-    let schema_version = connection
-        .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
-        .unwrap();
-    assert_eq!(schema_version, LATEST_SCHEMA_VERSION);
+    let facts = database_facts(&state_path).unwrap();
+    assert_eq!(facts.schema_version, 12);
+    assert!(facts.has_seaql_ledger);
+    assert_eq!(facts.seaql_migration_count, 1);
+    assert_eq!(facts.seaql_migrations, ["m20260718_000001_v18_baseline"]);
+    assert!(!facts.has_legacy_ledger);
+    assert!(!facts.has_review_state);
+    assert!(!facts.has_json_storage_columns);
+    assert_eq!(facts.counts["review_settings"], 1);
+    assert_eq!(facts.counts["profiles"], 2);
+    assert_eq!(facts.counts["images"], 3);
+    assert_eq!(facts.counts["tags"], 2);
+    assert_eq!(facts.counts["image_tags"], 3);
+    assert_eq!(facts.counts["image_profile_renders"], 1);
+    assert_eq!(facts.counts["image_profile_bw_filters"], 3);
+    assert_eq!(facts.counts["profile_pp3_sections"], 2);
+    assert_eq!(facts.counts["profile_pp3_entries"], 2);
+    assert_eq!(facts.indexes.len(), 13);
+    assert_domain_constraints(&state_path).unwrap();
 }
 
 #[test]
-fn legacy_json_review_state_is_migrated_once_after_verified_round_trip() {
-    let temp = tempfile::tempdir().unwrap();
-    let output = temp.path();
-    let legacy_path = output.join(LEGACY_JSON_STATE_FILE);
-    let sqlite_path = output.join(SQLITE_STATE_FILE);
-    let mut store = ReviewStore::new(vec![profile(0, "Classic")]);
-    store.ui.min_rating = 1;
-    fs::write(&legacy_path, serde_json::to_string_pretty(&store).unwrap()).unwrap();
-    fs::write(&sqlite_path, b"").unwrap();
-
-    let (loaded, state_path) = load_or_migrate_store(output).unwrap();
-
-    assert_eq!(state_path, sqlite_path);
-    assert_eq!(
-        serde_json::to_value(&loaded).unwrap(),
-        serde_json::to_value(&store).unwrap()
-    );
-    assert!(sqlite_path.is_file());
-    assert!(!legacy_path.exists());
-    assert!(fs::read_dir(output).unwrap().any(|entry| {
-        entry
-            .unwrap()
-            .file_name()
-            .to_string_lossy()
-            .starts_with("mini-film-review.json.migrated-")
-    }));
-    let loaded_again = load_store(&sqlite_path).unwrap().unwrap();
-    assert_eq!(
-        serde_json::to_value(&loaded_again).unwrap(),
-        serde_json::to_value(&store).unwrap()
-    );
-    assert!(!table_exists(&sqlite_path, "review_state").unwrap());
-    assert!(json_storage_columns(&sqlite_path).unwrap().is_empty());
-}
-
-#[test]
-fn existing_v5_sqlite_state_is_migrated_losslessly_and_only_once() {
+fn normalized_v11_database_is_backed_up_and_adopted_losslessly_once() {
     let temp = tempfile::tempdir().unwrap();
     let state_path = temp.path().join(SQLITE_STATE_FILE);
+    let backup_path = temp.path().join("mini-film-review.sqlite.pre-seaorm-v11");
     let store = fully_populated_review_store();
-    create_v5_review_database(&state_path, &store);
+    make_v11_database(&state_path, &store).unwrap();
+
+    let before_facts = database_facts(&state_path).unwrap();
+    assert_eq!(before_facts.schema_version, 11);
+    assert!(before_facts.has_legacy_ledger);
+    assert!(!before_facts.has_seaql_ledger);
+    assert!(!backup_path.exists());
 
     let loaded = load_store(&state_path).unwrap().unwrap();
     assert_eq!(
         serde_json::to_value(&loaded).unwrap(),
         serde_json::to_value(&store).unwrap()
     );
-    assert!(!table_exists(&state_path, "review_state").unwrap());
-    assert!(json_storage_columns(&state_path).unwrap().is_empty());
+    assert!(backup_path.is_file());
+    let backup_bytes = fs::read(&backup_path).unwrap();
 
-    let connection = rusqlite::Connection::open(&state_path).unwrap();
-    let schema_version = connection
-        .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
-        .unwrap();
-    assert_eq!(schema_version, LATEST_SCHEMA_VERSION);
-    let migration_count = connection
-        .query_row(
-            "SELECT COUNT(*) FROM schema_migrations WHERE version = ?1",
-            [LATEST_SCHEMA_VERSION],
-            |row| row.get::<_, i64>(0),
-        )
-        .unwrap();
-    assert_eq!(migration_count, 1);
-    drop(connection);
+    let after_facts = database_facts(&state_path).unwrap();
+    assert_eq!(after_facts.schema_version, 12);
+    assert!(!after_facts.has_legacy_ledger);
+    assert!(after_facts.has_seaql_ledger);
+    assert_eq!(after_facts.seaql_migration_count, 1);
+    assert_eq!(
+        after_facts.seaql_migrations,
+        ["m20260718_000001_v18_baseline"]
+    );
+    assert!(!after_facts.has_json_storage_columns);
 
     let loaded_again = load_store(&state_path).unwrap().unwrap();
     assert_eq!(
-        serde_json::to_value(loaded_again).unwrap(),
-        serde_json::to_value(store).unwrap()
+        serde_json::to_value(&loaded_again).unwrap(),
+        serde_json::to_value(&store).unwrap()
     );
-    let connection = rusqlite::Connection::open(&state_path).unwrap();
-    let migration_count = connection
-        .query_row(
-            "SELECT COUNT(*) FROM schema_migrations WHERE version = ?1",
-            [LATEST_SCHEMA_VERSION],
-            |row| row.get::<_, i64>(0),
-        )
-        .unwrap();
-    assert_eq!(migration_count, 1);
+    assert_eq!(fs::read(&backup_path).unwrap(), backup_bytes);
+    let backup_facts = database_facts(&backup_path).unwrap();
+    assert_eq!(backup_facts.schema_version, 11);
+    assert!(backup_facts.has_legacy_ledger);
+    assert!(!backup_facts.has_seaql_ledger);
 }
 
 #[test]
-fn failed_v5_normalization_rolls_back_schema_and_snapshot() {
+fn pre_release_two_entry_seaorm_ledger_is_collapsed_without_data_loss() {
     let temp = tempfile::tempdir().unwrap();
     let state_path = temp.path().join(SQLITE_STATE_FILE);
-    let mut store = fully_populated_review_store();
-    store.next_id = u64::MAX;
-    create_v5_review_database(&state_path, &store);
-    let original_json = serde_json::to_string_pretty(&store).unwrap();
+    let store = fully_populated_review_store();
+    make_pre_release_seaorm_database(&state_path, &store).unwrap();
 
-    let error = load_store(&state_path).unwrap_err();
+    let before = database_facts(&state_path).unwrap();
+    assert_eq!(
+        before.seaql_migrations,
+        [
+            "m20260718_000001_create_review_schema",
+            "m20260718_000002_adopt_seaorm",
+        ]
+    );
+
+    let loaded = load_store(&state_path).unwrap().unwrap();
+    assert_eq!(
+        serde_json::to_value(&loaded).unwrap(),
+        serde_json::to_value(&store).unwrap()
+    );
+    let after = database_facts(&state_path).unwrap();
+    assert_eq!(after.seaql_migration_count, 1);
+    assert_eq!(after.seaql_migrations, ["m20260718_000001_v18_baseline"]);
+}
+
+#[test]
+fn json_only_state_is_rejected_without_modification() {
+    let temp = tempfile::tempdir().unwrap();
+    let json_path = temp.path().join("mini-film-review.json");
+    let sqlite_path = temp.path().join(SQLITE_STATE_FILE);
+    let bytes = serde_json::to_vec_pretty(&fully_populated_review_store()).unwrap();
+    fs::write(&json_path, &bytes).unwrap();
+
+    let error = load_store(&json_path).unwrap_err();
+
+    assert!(
+        format!("{error:#}").contains("final mini-film 17.x"),
+        "{error:#}"
+    );
+    assert_eq!(fs::read(&json_path).unwrap(), bytes);
+    assert!(!sqlite_path.exists());
+}
+
+#[test]
+fn sqlite_v1_through_v10_are_rejected_without_modification() {
+    for version in 1..=10 {
+        let temp = tempfile::tempdir().unwrap();
+        let state_path = temp.path().join(SQLITE_STATE_FILE);
+        make_legacy_version_database(&state_path, version).unwrap();
+        let before = fs::read(&state_path).unwrap();
+
+        let error = load_store(&state_path).unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("final mini-film 17.x"),
+            "v{version}: {error:#}"
+        );
+        assert_eq!(fs::read(&state_path).unwrap(), before, "schema v{version}");
+        assert!(
+            !temp
+                .path()
+                .join("mini-film-review.sqlite.pre-seaorm-v11")
+                .exists()
+        );
+    }
+}
+
+#[test]
+fn incremental_store_delta_preserves_complete_state() {
+    let temp = tempfile::tempdir().unwrap();
+    let state_path = temp.path().join(SQLITE_STATE_FILE);
+    let before = fully_populated_review_store();
+    save_store(&state_path, &before).unwrap();
+    let facts_before = database_facts(&state_path).unwrap();
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (database, loaded) = runtime
+        .block_on(ReviewDatabase::open_output(temp.path()))
+        .unwrap();
+    let loaded = loaded.unwrap();
+    let mut after = loaded.clone();
+    after.images[0].rating = 2;
+    after.images[0].rating_source = ReviewMetadataSource::Manual;
+    after.images[0].updated_at = now_string();
+    runtime
+        .block_on(database.apply_delta(&loaded, &after))
+        .unwrap();
+    drop(database);
+
+    let restored = load_store(&state_path).unwrap().unwrap();
+    assert_eq!(
+        serde_json::to_value(&restored).unwrap(),
+        serde_json::to_value(&after).unwrap()
+    );
+    let facts_after = database_facts(&state_path).unwrap();
+    assert_eq!(facts_after.counts, facts_before.counts);
+    assert_eq!(facts_after.indexes, facts_before.indexes);
+}
+
+#[test]
+fn failed_database_write_does_not_publish_memory_state_and_marks_handle_unhealthy() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let handle = test_handle(input, output.clone(), vec![profile(0, "Classic")]);
+
+    let error = handle
+        .update_store(|store| {
+            store.next_id = u64::MAX;
+            Ok(())
+        })
+        .unwrap_err();
+
     assert!(
         format!("{error:#}").contains("does not fit sqlite INTEGER"),
         "{error:#}"
     );
-
-    let connection = rusqlite::Connection::open(&state_path).unwrap();
-    let schema_version = connection
-        .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
-        .unwrap();
-    assert_eq!(schema_version, 5);
-    let stored_json = connection
-        .query_row(
-            "SELECT store_json FROM review_state WHERE id = 1",
-            [],
-            |row| row.get::<_, String>(0),
-        )
-        .unwrap();
-    assert_eq!(stored_json, original_json);
-    let migration_count = connection
-        .query_row(
-            "SELECT COUNT(*) FROM schema_migrations WHERE version = 6",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .unwrap();
-    assert_eq!(migration_count, 0);
-    let settings_table_count = connection
-        .query_row(
-            "SELECT COUNT(*) FROM sqlite_master
-             WHERE type = 'table' AND name = 'review_settings'",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .unwrap();
-    assert_eq!(settings_table_count, 0);
-    let image_json_column_count = connection
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('images') WHERE name = 'image_json'",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .unwrap();
-    assert_eq!(image_json_column_count, 1);
-}
-
-#[test]
-fn existing_v6_sqlite_adds_shutter_metadata_columns() {
-    let temp = tempfile::tempdir().unwrap();
-    let state_path = temp.path().join(SQLITE_STATE_FILE);
-    let connection = open_database_at_version_for_test(&state_path, 6).unwrap();
-    connection
-        .execute_batch(
-            "ALTER TABLE images DROP COLUMN exif_shutter_count;
-             ALTER TABLE images DROP COLUMN exif_shutter_mode;
-             ALTER TABLE images DROP COLUMN exif_silent_photography;
-             ALTER TABLE images DROP COLUMN exif_release_mode;",
-        )
-        .unwrap();
-    drop(connection);
-
-    assert!(load_store(&state_path).unwrap().is_none());
-
-    let connection = rusqlite::Connection::open(&state_path).unwrap();
-    let column_count = connection
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('images')
-             WHERE name IN (
-                 'exif_shutter_count', 'exif_shutter_mode',
-                 'exif_silent_photography', 'exif_release_mode'
-             )",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .unwrap();
-    assert_eq!(column_count, 4);
-    let schema_version = connection
-        .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
-        .unwrap();
-    assert_eq!(schema_version, LATEST_SCHEMA_VERSION);
-}
-
-#[test]
-fn existing_v7_sqlite_adds_shutter_detail_columns() {
-    let temp = tempfile::tempdir().unwrap();
-    let state_path = temp.path().join(SQLITE_STATE_FILE);
-    let connection = open_database_at_version_for_test(&state_path, 7).unwrap();
-    connection
-        .execute_batch(
-            "ALTER TABLE images DROP COLUMN exif_shutter_mode;
-             ALTER TABLE images DROP COLUMN exif_silent_photography;
-             ALTER TABLE images DROP COLUMN exif_release_mode;",
-        )
-        .unwrap();
-    drop(connection);
-
-    assert!(load_store(&state_path).unwrap().is_none());
-
-    let connection = rusqlite::Connection::open(&state_path).unwrap();
-    let column_count = connection
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('images')
-             WHERE name IN (
-                 'exif_shutter_mode', 'exif_silent_photography', 'exif_release_mode'
-             )",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .unwrap();
-    assert_eq!(column_count, 3);
-    let schema_version = connection
-        .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
-        .unwrap();
-    assert_eq!(schema_version, LATEST_SCHEMA_VERSION);
-}
-
-#[test]
-fn existing_v8_sqlite_adds_auto_iso_columns() {
-    let temp = tempfile::tempdir().unwrap();
-    let state_path = temp.path().join(SQLITE_STATE_FILE);
-    let connection = open_database_at_version_for_test(&state_path, 8).unwrap();
-    connection
-        .execute_batch(
-            "ALTER TABLE images DROP COLUMN exif_auto_iso;
-             ALTER TABLE images DROP COLUMN exif_iso_auto_hi_limit;",
-        )
-        .unwrap();
-    drop(connection);
-
-    assert!(load_store(&state_path).unwrap().is_none());
-
-    let connection = rusqlite::Connection::open(&state_path).unwrap();
-    let column_count = connection
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('images')
-             WHERE name IN ('exif_auto_iso', 'exif_iso_auto_hi_limit')",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .unwrap();
-    assert_eq!(column_count, 2);
-    let schema_version = connection
-        .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
-        .unwrap();
-    assert_eq!(schema_version, LATEST_SCHEMA_VERSION);
-}
-
-#[test]
-fn existing_v9_sqlite_adds_white_balance_columns() {
-    let temp = tempfile::tempdir().unwrap();
-    let state_path = temp.path().join(SQLITE_STATE_FILE);
-    let connection = open_database_at_version_for_test(&state_path, 9).unwrap();
-    connection
-        .execute_batch(
-            "ALTER TABLE images DROP COLUMN exif_white_balance_mode;
-             ALTER TABLE images DROP COLUMN exif_white_balance_temperature;",
-        )
-        .unwrap();
-    drop(connection);
-
-    assert!(load_store(&state_path).unwrap().is_none());
-
-    let connection = rusqlite::Connection::open(&state_path).unwrap();
-    let column_count = connection
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('images')
-             WHERE name IN ('exif_white_balance_mode', 'exif_white_balance_temperature')",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .unwrap();
-    assert_eq!(column_count, 2);
-    let schema_version = connection
-        .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
-        .unwrap();
-    assert_eq!(schema_version, LATEST_SCHEMA_VERSION);
-}
-
-#[test]
-fn existing_v10_sqlite_adds_white_balance_offset_column() {
-    let temp = tempfile::tempdir().unwrap();
-    let state_path = temp.path().join(SQLITE_STATE_FILE);
-    let connection = open_database_at_version_for_test(&state_path, 10).unwrap();
-    connection
-        .execute_batch("ALTER TABLE images DROP COLUMN exif_white_balance_offset;")
-        .unwrap();
-    drop(connection);
-
-    assert!(load_store(&state_path).unwrap().is_none());
-
-    let connection = rusqlite::Connection::open(&state_path).unwrap();
-    let column_count = connection
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('images')
-             WHERE name = 'exif_white_balance_offset'",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .unwrap();
-    assert_eq!(column_count, 1);
-    let schema_version = connection
-        .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
-        .unwrap();
-    assert_eq!(schema_version, LATEST_SCHEMA_VERSION);
-}
-
-#[test]
-fn newer_sqlite_schema_is_rejected_without_modification() {
-    let temp = tempfile::tempdir().unwrap();
-    let state_path = temp.path().join(SQLITE_STATE_FILE);
-    let connection = rusqlite::Connection::open(&state_path).unwrap();
-    connection
-        .execute_batch("PRAGMA user_version = 12;")
-        .unwrap();
-    drop(connection);
-
-    let error = load_store(&state_path).unwrap_err();
-    assert!(
-        format!("{error:#}").contains("newer than supported version"),
-        "{error:#}"
+    assert_eq!(handle.store_snapshot().next_id, 1);
+    assert!(handle.ensure_database_healthy().is_err());
+    assert_eq!(
+        load_store(&output.join(SQLITE_STATE_FILE))
+            .unwrap()
+            .unwrap()
+            .next_id,
+        1
     );
-
-    let connection = rusqlite::Connection::open(&state_path).unwrap();
-    let schema_version = connection
-        .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
-        .unwrap();
-    assert_eq!(schema_version, 12);
-    let migration_table_count = connection
-        .query_row(
-            "SELECT COUNT(*) FROM sqlite_master
-             WHERE type = 'table' AND name = 'schema_migrations'",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .unwrap();
-    assert_eq!(migration_table_count, 0);
 }
 
 #[test]
@@ -2373,8 +2159,8 @@ fn review_route_path_accepts_reverse_proxy_prefixes() {
     assert_eq!(review_route_path("/mini-film/"), "/");
 }
 
-#[tokio::test]
-async fn original_response_serves_typed_compressed_source_files_inline() {
+#[test]
+fn original_response_serves_typed_compressed_source_files_inline() {
     let temp = tempfile::tempdir().unwrap();
     let input = temp.path().join("in");
     let output = temp.path().join("out");
@@ -2387,14 +2173,14 @@ async fn original_response_serves_typed_compressed_source_files_inline() {
     handle
         .record_compressed_queued(&jpg, &output.join("frame.jpg"))
         .unwrap();
+    let runtime = test_async_runtime();
 
-    let response = route_request(
+    let response = runtime.block_on(route_request(
         axum::http::Method::GET,
         "/original/1",
         axum::body::Bytes::new(),
         &handle,
-    )
-    .await;
+    ));
     assert_eq!(response.status(), axum::http::StatusCode::OK);
     assert_eq!(
         response
@@ -2409,8 +2195,8 @@ async fn original_response_serves_typed_compressed_source_files_inline() {
             .get(axum::http::header::CONTENT_DISPOSITION)
             .is_none()
     );
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
+    let body = runtime
+        .block_on(axum::body::to_bytes(response.into_body(), usize::MAX))
         .unwrap();
     assert_eq!(&body[..], b"original jpeg bytes");
 
@@ -2419,13 +2205,12 @@ async fn original_response_serves_typed_compressed_source_files_inline() {
     handle
         .record_compressed_queued(&heic, &output.join("frame-2.jpg"))
         .unwrap();
-    let response = route_request(
+    let response = runtime.block_on(route_request(
         axum::http::Method::GET,
         "/original/2",
         axum::body::Bytes::new(),
         &handle,
-    )
-    .await;
+    ));
     assert_eq!(response.status(), axum::http::StatusCode::OK);
     assert_eq!(
         response
@@ -2443,18 +2228,17 @@ async fn original_response_serves_typed_compressed_source_files_inline() {
             Ok(())
         })
         .unwrap();
-    let response = route_request(
+    let response = runtime.block_on(route_request(
         axum::http::Method::GET,
         "/original/3",
         axum::body::Bytes::new(),
         &handle,
-    )
-    .await;
+    ));
     assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
 }
 
-#[tokio::test]
-async fn published_gallery_download_route_archives_portable_assets() {
+#[test]
+fn published_gallery_download_route_archives_portable_assets() {
     let temp = tempfile::tempdir().unwrap();
     let input = temp.path().join("in");
     let output = temp.path().join("out");
@@ -2507,14 +2291,14 @@ async fn published_gallery_download_route_archives_portable_assets() {
             },
         )
         .unwrap();
+    let runtime = test_async_runtime();
 
-    let response = route_request(
+    let response = runtime.block_on(route_request(
         axum::http::Method::GET,
         "/api/publish/1/gallery.zip",
         axum::body::Bytes::new(),
         &handle,
-    )
-    .await;
+    ));
     assert_eq!(response.status(), axum::http::StatusCode::OK);
     assert_eq!(
         response
@@ -2530,8 +2314,8 @@ async fn published_gallery_download_route_archives_portable_assets() {
             .unwrap(),
         "attachment; filename=\"finals.zip\""
     );
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
+    let body = runtime
+        .block_on(axum::body::to_bytes(response.into_body(), usize::MAX))
         .unwrap();
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(body)).unwrap();
     let names = (0..archive.len())
@@ -2552,8 +2336,8 @@ async fn published_gallery_download_route_archives_portable_assets() {
     assert_eq!(photo, "full jpeg");
 }
 
-#[tokio::test]
-async fn compressed_review_media_routes_serve_distinct_cached_sizes_and_full_output() {
+#[test]
+fn compressed_review_media_routes_serve_distinct_cached_sizes_and_full_output() {
     let temp = tempfile::tempdir().unwrap();
     let input = temp.path().join("in");
     let output = temp.path().join("out");
@@ -2599,21 +2383,21 @@ async fn compressed_review_media_routes_serve_distinct_cached_sizes_and_full_out
     );
     assert_eq!(image["source_width"], 8288);
     assert_eq!(image["source_height"], 5520);
+    let runtime = test_async_runtime();
 
     for (route, expected) in [
         ("/thumbnail/1", &b"thumbnail bytes"[..]),
         ("/preview/1", &b"preview bytes"[..]),
     ] {
-        let response = route_request(
+        let response = runtime.block_on(route_request(
             axum::http::Method::GET,
             route,
             axum::body::Bytes::new(),
             &handle,
-        )
-        .await;
+        ));
         assert_eq!(response.status(), axum::http::StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
+        let body = runtime
+            .block_on(axum::body::to_bytes(response.into_body(), usize::MAX))
             .unwrap();
         assert_eq!(&body[..], expected);
     }
@@ -2628,16 +2412,15 @@ async fn compressed_review_media_routes_serve_distinct_cached_sizes_and_full_out
         .unwrap();
     let state = handle.api_state_value().unwrap();
     assert_eq!(state["images"][0]["full_url"], "original/1");
-    let response = route_request(
+    let response = runtime.block_on(route_request(
         axum::http::Method::GET,
         "/media/1",
         axum::body::Bytes::new(),
         &handle,
-    )
-    .await;
+    ));
     assert_eq!(response.status(), axum::http::StatusCode::OK);
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
+    let body = runtime
+        .block_on(axum::body::to_bytes(response.into_body(), usize::MAX))
         .unwrap();
     assert_eq!(&body[..], b"full output bytes");
 }
@@ -2688,8 +2471,8 @@ fn profiled_compressed_review_state_exposes_profiles_and_original_source() {
     assert_eq!(image["publish_profile_indexes"], json!([0]));
 }
 
-#[tokio::test]
-async fn profile_pp3_route_includes_complete_per_image_adjustment_chain() {
+#[test]
+fn profile_pp3_route_includes_complete_per_image_adjustment_chain() {
     let temp = tempfile::tempdir().unwrap();
     let input = temp.path().join("in");
     let output = temp.path().join("out");
@@ -2729,14 +2512,14 @@ async fn profile_pp3_route_includes_complete_per_image_adjustment_chain() {
             Ok(())
         })
         .unwrap();
+    let runtime = test_async_runtime();
 
-    let response = route_request(
+    let response = runtime.block_on(route_request(
         axum::http::Method::GET,
         "/api/profile/0/pp3/1",
         axum::body::Bytes::new(),
         &handle,
-    )
-    .await;
+    ));
 
     assert_eq!(response.status(), axum::http::StatusCode::OK);
     assert_eq!(
@@ -2753,8 +2536,8 @@ async fn profile_pp3_route_includes_complete_per_image_adjustment_chain() {
             .unwrap(),
         "attachment"
     );
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
+    let body = runtime
+        .block_on(axum::body::to_bytes(response.into_body(), usize::MAX))
         .unwrap();
     let body = String::from_utf8(body.to_vec()).unwrap();
     assert!(body.contains("# Layer 1/3: Classic.pp3"));
@@ -2771,8 +2554,8 @@ async fn profile_pp3_route_includes_complete_per_image_adjustment_chain() {
     assert!(!body.contains("lens-corrections.pp3"));
 }
 
-#[tokio::test]
-async fn crop_source_and_profile_base_routes_serve_uncropped_media() {
+#[test]
+fn crop_source_and_profile_base_routes_serve_uncropped_media() {
     let temp = tempfile::tempdir().unwrap();
     let input = temp.path().join("in");
     let output = temp.path().join("out");
@@ -2813,21 +2596,21 @@ async fn crop_source_and_profile_base_routes_serve_uncropped_media() {
         state["images"][0]["profiles"][0]["base_url"],
         "media/1/0/base"
     );
+    let runtime = test_async_runtime();
 
     for (route, expected) in [
         ("/crop-source/1", &b"crop source"[..]),
         ("/media/1/0/base", &b"uncropped profile"[..]),
     ] {
-        let response = route_request(
+        let response = runtime.block_on(route_request(
             axum::http::Method::GET,
             route,
             axum::body::Bytes::new(),
             &handle,
-        )
-        .await;
+        ));
         assert_eq!(response.status(), axum::http::StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
+        let body = runtime
+            .block_on(axum::body::to_bytes(response.into_body(), usize::MAX))
             .unwrap();
         assert_eq!(&body[..], expected);
     }

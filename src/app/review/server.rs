@@ -103,33 +103,55 @@ pub(super) async fn route_request(
             Err(error) => json_error(500, error).into_response(),
         },
         (Method::POST, "/api/review") => {
+            if let Err(error) = handle.ensure_database_healthy() {
+                return json_error(503, error).into_response();
+            }
             let previous = match handle.api_state_value() {
                 Ok(state) => state,
                 Err(error) => return json_error(500, error).into_response(),
             };
-            match serde_json::from_slice::<ReviewUpdateRequest>(&body)
+            let result = match serde_json::from_slice::<ReviewUpdateRequest>(&body)
                 .context("parsing review update")
-                .and_then(|update| handle.apply_review_update(update))
-                .and_then(|()| handle.api_state_patch_json_since(&previous))
             {
+                Ok(update) => handle
+                    .apply_review_update_async(update)
+                    .await
+                    .and_then(|()| handle.api_state_patch_json_since(&previous)),
+                Err(error) => Err(error),
+            };
+            match result {
                 Ok(body) => {
                     text_response(200, "application/json; charset=utf-8", &body).into_response()
+                }
+                Err(error) if handle.ensure_database_healthy().is_err() => {
+                    json_error(503, error).into_response()
                 }
                 Err(error) => json_error(400, error).into_response(),
             }
         }
         (Method::POST, "/api/ui") => {
+            if let Err(error) = handle.ensure_database_healthy() {
+                return json_error(503, error).into_response();
+            }
             let previous = match handle.api_state_value() {
                 Ok(state) => state,
                 Err(error) => return json_error(500, error).into_response(),
             };
-            match serde_json::from_slice::<ReviewUiUpdateRequest>(&body)
+            let result = match serde_json::from_slice::<ReviewUiUpdateRequest>(&body)
                 .context("parsing review UI update")
-                .and_then(|update| handle.apply_ui_update(update))
-                .and_then(|()| handle.api_state_patch_json_since(&previous))
             {
+                Ok(update) => handle
+                    .apply_ui_update_async(update)
+                    .await
+                    .and_then(|()| handle.api_state_patch_json_since(&previous)),
+                Err(error) => Err(error),
+            };
+            match result {
                 Ok(body) => {
                     text_response(200, "application/json; charset=utf-8", &body).into_response()
+                }
+                Err(error) if handle.ensure_database_healthy().is_err() => {
+                    json_error(503, error).into_response()
                 }
                 Err(error) => json_error(400, error).into_response(),
             }

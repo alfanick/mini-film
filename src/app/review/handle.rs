@@ -23,7 +23,19 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
 
     fs::create_dir_all(&config.output_root)
         .with_context(|| format!("creating {}", config.output_root.display()))?;
-    let (mut store, state_path) = load_or_migrate_store(&config.output_root)?;
+    let database_runtime = Arc::new(
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name("mini-film-review-db")
+            .enable_all()
+            .build()
+            .context("building review database runtime")?,
+    );
+    let (database, stored) =
+        database_runtime.block_on(ReviewDatabase::open_output(&config.output_root))?;
+    let mut store = stored
+        .clone()
+        .unwrap_or_else(|| ReviewStore::new(Vec::new()));
     let needs_exif_schema_refresh = store.needs_exif_schema_refresh();
     store.sync_profiles(config.profiles);
     if needs_exif_schema_refresh {
@@ -32,7 +44,12 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
     } else {
         store.refresh_missing_exif_data();
     }
-    save_store(&state_path, &store)?;
+    if let Some(stored) = &stored {
+        database_runtime.block_on(database.apply_delta(stored, &store))?;
+    } else {
+        database_runtime.block_on(database.replace_store(&store))?;
+    }
+    let state_path = database.path().to_path_buf();
     let history_profiles = store.profiles.clone();
 
     let gallery_defaults = handle_gallery_defaults(&config.gallery);
@@ -58,6 +75,8 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
         subscribers: Arc::new(subscribers),
         state_cache: Arc::new(ArcSwapOption::empty()),
         state_path,
+        database,
+        database_runtime,
         input_root: config.input_root,
         output_root: config.output_root,
         hald_dir: config.hald_dir,
@@ -1582,147 +1601,186 @@ impl ReviewHandle {
         )
     }
 
+    #[cfg(test)]
     pub(super) fn apply_review_update(&self, update: ReviewUpdateRequest) -> Result<()> {
-        let (history_entries, retouch_jobs) = self.update_store(|store| {
-            let mut retouch_jobs = Vec::new();
-            let mut history_entries = Vec::new();
-            let before_ui = store.ui.clone();
-            let profiles_by_index = store
-                .profiles
-                .iter()
-                .cloned()
-                .map(|profile| (profile.index, profile))
-                .collect::<HashMap<_, _>>();
-            let advance = update
-                .advance_after_update
-                .then(|| store.planned_advance_after(update.image_id));
-            {
-                let Some(image) = store
-                    .images
-                    .iter_mut()
-                    .find(|image| image.id == update.image_id)
-                else {
-                    bail!("review image {} does not exist", update.image_id);
-                };
-                let direct_compressed = image_is_direct_compressed(image);
-                if let Some(selected_profile_index) = update.selected_profile_index
-                    && !direct_compressed
-                    && !image
-                        .profiles
-                        .iter()
-                        .any(|profile| profile.profile_index == selected_profile_index)
+        self.database_runtime
+            .block_on(self.apply_review_update_async(update))
+    }
+
+    pub(super) async fn apply_review_update_async(
+        &self,
+        update: ReviewUpdateRequest,
+    ) -> Result<()> {
+        let (history_entries, retouch_jobs) = self
+            .update_store_async(|store| {
+                let mut retouch_jobs = Vec::new();
+                let mut history_entries = Vec::new();
+                let before_ui = store.ui.clone();
+                let profiles_by_index = store
+                    .profiles
+                    .iter()
+                    .cloned()
+                    .map(|profile| (profile.index, profile))
+                    .collect::<HashMap<_, _>>();
+                let advance = update
+                    .advance_after_update
+                    .then(|| store.planned_advance_after(update.image_id));
                 {
-                    bail!(
-                        "selected profile index {} is not available for image {}",
-                        selected_profile_index,
-                        update.image_id
-                    );
-                }
-                let before_image = image.clone();
-                let before_rating = image.rating;
-                let before_tags = image.tags.clone();
-                let before_notes = image.notes.clone();
-                image.rating = update.rating.min(5);
-                image.labels = if update.labels.is_empty() {
-                    normalize_review_labels([update.label])
-                } else {
-                    normalize_review_labels(update.labels.clone())
-                };
-                image.label = first_review_label(&image.labels);
-                image.tags = normalize_tags(update.tags.clone());
-                image.notes = update.notes.trim().to_string();
-                if image.rating != before_rating {
-                    image.rating_source = ReviewMetadataSource::Manual;
-                }
-                if image.tags != before_tags {
-                    image.tags_source = ReviewMetadataSource::Manual;
-                }
-                if image.notes != before_notes {
-                    image.notes_source = ReviewMetadataSource::Manual;
-                }
-                let retouch_changed = update
-                    .retouch
-                    .as_ref()
-                    .is_some_and(|retouch| retouch.clone().normalized() != image.retouch);
-                if let Some(retouch) = update.retouch.clone() {
-                    image.retouch = retouch.normalized();
-                }
-                if let Some(selected_profile_index) =
-                    update.selected_profile_index.filter(|_| !direct_compressed)
-                {
-                    image.selected_profile_index = selected_profile_index;
-                }
-                if let Some(indexes) = update.publish_profile_indexes.clone() {
-                    if direct_compressed {
-                        image.publish_profile_indexes = Some(Vec::new());
-                    } else {
-                        validate_publish_profile_indexes(&indexes, &image.profiles)?;
-                        image.publish_profile_indexes =
-                            Some(normalize_publish_profile_indexes(&indexes, &image.profiles));
-                    }
-                }
-                let mut changed_bw_profile_indexes = Vec::new();
-                if let Some(filters) = update.profile_bw_filters.clone() {
-                    let normalized_filters = if direct_compressed {
-                        Vec::new()
-                    } else {
-                        normalize_profile_bw_filters(&filters, &image.profiles)
+                    let Some(image) = store
+                        .images
+                        .iter_mut()
+                        .find(|image| image.id == update.image_id)
+                    else {
+                        bail!("review image {} does not exist", update.image_id);
                     };
-                    if normalized_filters != image.profile_bw_filters {
-                        changed_bw_profile_indexes = changed_bw_filter_profile_indexes(
-                            &image.profile_bw_filters,
-                            &normalized_filters,
-                            &image.profiles,
-                            &profiles_by_index,
-                        );
-                        image.profile_bw_filters = normalized_filters;
-                    }
-                }
-                if retouch_changed {
-                    if direct_compressed {
-                        let render_key = image.retouch.render_key();
-                        image.preview.status = ReviewRenderStatus::Queued;
-                        image.preview.error = None;
-                        image.preview.duration_ms = None;
-                        image.preview.render_key = Some(render_key.clone());
-                        image.preview.updated_at = now_string();
-                        if let Some(output) = &image.preview.path {
-                            retouch_jobs.push((
-                                image.raw_path.clone(),
-                                None,
-                                output.clone(),
-                                render_key.clone(),
-                            ));
-                        }
-                    } else {
-                        let publish_indexes = effective_publish_profile_indexes(image);
-                        let visible_profile_index =
-                            preferred_preview_profile_index(image, &publish_indexes);
-                        let publish_index_set =
-                            publish_indexes.iter().copied().collect::<HashSet<_>>();
-                        let mut render_order = image
+                    let direct_compressed = image_is_direct_compressed(image);
+                    if let Some(selected_profile_index) = update.selected_profile_index
+                        && !direct_compressed
+                        && !image
                             .profiles
                             .iter()
-                            .enumerate()
-                            .map(|(index, render)| {
-                                let priority =
-                                    if Some(render.profile_index) == visible_profile_index {
+                            .any(|profile| profile.profile_index == selected_profile_index)
+                    {
+                        bail!(
+                            "selected profile index {} is not available for image {}",
+                            selected_profile_index,
+                            update.image_id
+                        );
+                    }
+                    let before_image = image.clone();
+                    let before_rating = image.rating;
+                    let before_tags = image.tags.clone();
+                    let before_notes = image.notes.clone();
+                    image.rating = update.rating.min(5);
+                    image.labels = if update.labels.is_empty() {
+                        normalize_review_labels([update.label])
+                    } else {
+                        normalize_review_labels(update.labels.clone())
+                    };
+                    image.label = first_review_label(&image.labels);
+                    image.tags = normalize_tags(update.tags.clone());
+                    image.notes = update.notes.trim().to_string();
+                    if image.rating != before_rating {
+                        image.rating_source = ReviewMetadataSource::Manual;
+                    }
+                    if image.tags != before_tags {
+                        image.tags_source = ReviewMetadataSource::Manual;
+                    }
+                    if image.notes != before_notes {
+                        image.notes_source = ReviewMetadataSource::Manual;
+                    }
+                    let retouch_changed = update
+                        .retouch
+                        .as_ref()
+                        .is_some_and(|retouch| retouch.clone().normalized() != image.retouch);
+                    if let Some(retouch) = update.retouch.clone() {
+                        image.retouch = retouch.normalized();
+                    }
+                    if let Some(selected_profile_index) =
+                        update.selected_profile_index.filter(|_| !direct_compressed)
+                    {
+                        image.selected_profile_index = selected_profile_index;
+                    }
+                    if let Some(indexes) = update.publish_profile_indexes.clone() {
+                        if direct_compressed {
+                            image.publish_profile_indexes = Some(Vec::new());
+                        } else {
+                            validate_publish_profile_indexes(&indexes, &image.profiles)?;
+                            image.publish_profile_indexes =
+                                Some(normalize_publish_profile_indexes(&indexes, &image.profiles));
+                        }
+                    }
+                    let mut changed_bw_profile_indexes = Vec::new();
+                    if let Some(filters) = update.profile_bw_filters.clone() {
+                        let normalized_filters = if direct_compressed {
+                            Vec::new()
+                        } else {
+                            normalize_profile_bw_filters(&filters, &image.profiles)
+                        };
+                        if normalized_filters != image.profile_bw_filters {
+                            changed_bw_profile_indexes = changed_bw_filter_profile_indexes(
+                                &image.profile_bw_filters,
+                                &normalized_filters,
+                                &image.profiles,
+                                &profiles_by_index,
+                            );
+                            image.profile_bw_filters = normalized_filters;
+                        }
+                    }
+                    if retouch_changed {
+                        if direct_compressed {
+                            let render_key = image.retouch.render_key();
+                            image.preview.status = ReviewRenderStatus::Queued;
+                            image.preview.error = None;
+                            image.preview.duration_ms = None;
+                            image.preview.render_key = Some(render_key.clone());
+                            image.preview.updated_at = now_string();
+                            if let Some(output) = &image.preview.path {
+                                retouch_jobs.push((
+                                    image.raw_path.clone(),
+                                    None,
+                                    output.clone(),
+                                    render_key.clone(),
+                                ));
+                            }
+                        } else {
+                            let publish_indexes = effective_publish_profile_indexes(image);
+                            let visible_profile_index =
+                                preferred_preview_profile_index(image, &publish_indexes);
+                            let publish_index_set =
+                                publish_indexes.iter().copied().collect::<HashSet<_>>();
+                            let mut render_order = image
+                                .profiles
+                                .iter()
+                                .enumerate()
+                                .map(|(index, render)| {
+                                    let priority = if Some(render.profile_index)
+                                        == visible_profile_index
+                                    {
                                         0
                                     } else if publish_index_set.contains(&render.profile_index) {
                                         1
                                     } else {
                                         2
                                     };
-                                (priority, index)
-                            })
-                            .collect::<Vec<_>>();
-                        render_order.sort_by_key(|(priority, index)| (*priority, *index));
-                        for (_, index) in render_order {
+                                    (priority, index)
+                                })
+                                .collect::<Vec<_>>();
+                            render_order.sort_by_key(|(priority, index)| (*priority, *index));
+                            for (_, index) in render_order {
+                                let profile_index = image.profiles[index].profile_index;
+                                let bw_filter = profiles_by_index
+                                    .get(&profile_index)
+                                    .map(|profile| effective_bw_filter_for_profile(image, profile))
+                                    .unwrap_or_default();
+                                let render_key = profile_render_key_value(
+                                    &image.retouch,
+                                    retouch_white_balance_for_image(image),
+                                    bw_filter,
+                                );
+                                queue_profile_retouch_render(
+                                    image,
+                                    index,
+                                    render_key,
+                                    profile_retouch_uses_base_output(&image.retouch, bw_filter),
+                                    &mut retouch_jobs,
+                                );
+                            }
+                        }
+                    } else if !changed_bw_profile_indexes.is_empty() && !direct_compressed {
+                        let changed_indexes = changed_bw_profile_indexes
+                            .iter()
+                            .copied()
+                            .collect::<HashSet<_>>();
+                        for index in 0..image.profiles.len() {
                             let profile_index = image.profiles[index].profile_index;
-                            let bw_filter = profiles_by_index
-                                .get(&profile_index)
-                                .map(|profile| effective_bw_filter_for_profile(image, profile))
-                                .unwrap_or_default();
+                            if !changed_indexes.contains(&profile_index) {
+                                continue;
+                            }
+                            let Some(profile) = profiles_by_index.get(&profile_index) else {
+                                continue;
+                            };
+                            let bw_filter = effective_bw_filter_for_profile(image, profile);
                             let render_key = profile_render_key_value(
                                 &image.retouch,
                                 retouch_white_balance_for_image(image),
@@ -1737,49 +1795,22 @@ impl ReviewHandle {
                             );
                         }
                     }
-                } else if !changed_bw_profile_indexes.is_empty() && !direct_compressed {
-                    let changed_indexes = changed_bw_profile_indexes
-                        .iter()
-                        .copied()
-                        .collect::<HashSet<_>>();
-                    for index in 0..image.profiles.len() {
-                        let profile_index = image.profiles[index].profile_index;
-                        if !changed_indexes.contains(&profile_index) {
-                            continue;
-                        }
-                        let Some(profile) = profiles_by_index.get(&profile_index) else {
-                            continue;
-                        };
-                        let bw_filter = effective_bw_filter_for_profile(image, profile);
-                        let render_key = profile_render_key_value(
-                            &image.retouch,
-                            retouch_white_balance_for_image(image),
-                            bw_filter,
-                        );
-                        queue_profile_retouch_render(
-                            image,
-                            index,
-                            render_key,
-                            profile_retouch_uses_base_output(&image.retouch, bw_filter),
-                            &mut retouch_jobs,
-                        );
+                    image.updated_at = now_string();
+                    if let Some(entry) = history_review_changed(&before_image, image) {
+                        history_entries.push(entry);
                     }
                 }
-                image.updated_at = now_string();
-                if let Some(entry) = history_review_changed(&before_image, image) {
+                if let Some(advance) = advance {
+                    store.apply_advance(advance);
+                } else {
+                    store.normalize_ui();
+                }
+                if let Some(entry) = history_ui_changed(store, &before_ui, &store.ui) {
                     history_entries.push(entry);
                 }
-            }
-            if let Some(advance) = advance {
-                store.apply_advance(advance);
-            } else {
-                store.normalize_ui();
-            }
-            if let Some(entry) = history_ui_changed(store, &before_ui, &store.ui) {
-                history_entries.push(entry);
-            }
-            Ok((history_entries, retouch_jobs))
-        })?;
+                Ok((history_entries, retouch_jobs))
+            })
+            .await?;
         for entry in history_entries {
             self.append_history(entry)?;
         }
@@ -1790,12 +1821,20 @@ impl ReviewHandle {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) fn apply_ui_update(&self, update: ReviewUiUpdateRequest) -> Result<()> {
-        let history_entry = self.update_store(|store| {
-            let before_ui = store.ui.clone();
-            store.set_ui(update)?;
-            Ok(history_ui_changed(store, &before_ui, &store.ui))
-        })?;
+        self.database_runtime
+            .block_on(self.apply_ui_update_async(update))
+    }
+
+    pub(super) async fn apply_ui_update_async(&self, update: ReviewUiUpdateRequest) -> Result<()> {
+        let history_entry = self
+            .update_store_async(|store| {
+                let before_ui = store.ui.clone();
+                store.set_ui(update)?;
+                Ok(history_ui_changed(store, &before_ui, &store.ui))
+            })
+            .await?;
         if let Some(entry) = history_entry {
             self.append_history(entry)?;
         }
@@ -2550,21 +2589,34 @@ impl ReviewHandle {
         self.state.load_full()
     }
 
-    pub(super) fn update_store<R, F>(&self, mut update: F) -> Result<R>
-    where
-        F: FnMut(&mut ReviewStore) -> Result<R>,
-    {
-        loop {
-            let current = self.state.load_full();
-            let mut next = (*current).clone();
-            let result = update(&mut next)?;
-            let next = Arc::new(next);
-            let previous = self.state.compare_and_swap(&current, Arc::clone(&next));
-            if Arc::ptr_eq(&previous, &current) {
-                save_store(&self.state_path, &next)?;
-                return Ok(result);
-            }
+    pub(crate) fn ensure_database_healthy(&self) -> Result<()> {
+        if let Some(error) = self.database.health_error() {
+            bail!("review database is unhealthy: {error}");
         }
+        Ok(())
+    }
+
+    pub(super) fn update_store<R, F>(&self, update: F) -> Result<R>
+    where
+        F: FnOnce(&mut ReviewStore) -> Result<R>,
+    {
+        self.database_runtime
+            .block_on(self.update_store_async(update))
+    }
+
+    pub(super) async fn update_store_async<R, F>(&self, update: F) -> Result<R>
+    where
+        F: FnOnce(&mut ReviewStore) -> Result<R>,
+    {
+        self.ensure_database_healthy()?;
+        let _write_guard = self.database.write_lock.lock().await;
+        self.ensure_database_healthy()?;
+        let current = self.state.load_full();
+        let mut next = (*current).clone();
+        let result = update(&mut next)?;
+        self.database.apply_delta(&current, &next).await?;
+        self.state.store(Arc::new(next));
+        Ok(result)
     }
 }
 

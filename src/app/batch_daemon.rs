@@ -539,6 +539,9 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
     )?;
 
     loop {
+        if let Some(review) = &review {
+            review.ensure_database_healthy()?;
+        }
         drain_nikon_wtu_logs(nikon_wtu_receiver.as_ref(), &batch, start);
         drain_watch_events(&watch_rx, &mut pending, debounce, args.input_file_filter);
         schedule_pending_due_paths(
