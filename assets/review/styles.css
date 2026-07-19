@@ -143,10 +143,6 @@ button:disabled {
   flex: 0 0 auto;
 }
 
-.sidebar-tools[hidden] {
-  display: none;
-}
-
 .sidebar-tools-title {
   color: #77776f;
   font-size: 9px;
@@ -154,13 +150,17 @@ button:disabled {
   text-transform: uppercase;
 }
 
-.sidebar-tools .panorama-button {
+.sidebar-tools .sidebar-tool-button {
   width: 100%;
   min-height: 26px;
   padding: 3px 7px;
   font-size: 10px;
   font-weight: 700;
   text-align: left;
+}
+
+.sidebar-tools .sidebar-tool-button[hidden] {
+  display: none;
 }
 
 .status {
@@ -807,7 +807,7 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 8px;
-  width: min(680px, calc(100% - 24px));
+  width: min(900px, calc(100% - 24px));
   transform: translateX(-50%);
   border: 1px solid rgba(255, 255, 255, 0.2);
   border-radius: 7px;
@@ -867,6 +867,46 @@ button:disabled {
 
 .crop-tools output {
   text-align: right;
+}
+
+.crop-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  padding-left: 8px;
+  border-left: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.crop-actions[hidden] {
+  display: none;
+}
+
+.crop-actions button {
+  min-width: 52px;
+}
+
+.crop-actions .crop-apply {
+  border-color: #fff;
+  background: #fff;
+  color: #161616;
+  font-weight: 700;
+}
+
+@media (max-width: 700px) {
+  .crop-tools {
+    flex-wrap: wrap;
+  }
+
+  .crop-actions {
+    flex: 1 0 100%;
+    justify-content: flex-end;
+    margin-left: 0;
+    padding-top: 6px;
+    padding-left: 0;
+    border-top: 1px solid rgba(255, 255, 255, 0.2);
+    border-left: 0;
+  }
 }
 
 .empty {
@@ -1281,12 +1321,15 @@ button:disabled {
   display: none;
 }
 
-.retouch-header,
-.retouch-actions {
+.retouch-header {
   display: flex;
   align-items: center;
   gap: 4px;
   min-width: 0;
+  min-height: 24px;
+}
+
+.retouch-spacer {
   min-height: 24px;
 }
 
@@ -1336,11 +1379,6 @@ button:disabled {
 .retouch output {
   color: #242421;
   text-align: right;
-}
-
-.retouch-actions {
-  justify-content: start;
-  flex-wrap: wrap;
 }
 
 .retouch button {
@@ -2525,6 +2563,25 @@ kbd {
     border-bottom: 1px solid #d8d8d2;
   }
 
+  .sidebar-tools {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 8px 5px;
+  }
+
+  .sidebar-tools-title {
+    padding-right: 4px;
+    flex: 0 0 auto;
+  }
+
+  .sidebar-tools .sidebar-tool-button {
+    width: auto;
+    min-width: 0;
+    flex: 1 1 0;
+    text-align: center;
+  }
+
   .image-row {
     grid-template-columns: 24px minmax(0, 1fr) 9px;
     grid-template-rows: auto auto;
@@ -2896,8 +2953,11 @@ kbd {
     padding-top: 6px;
   }
 
-  .retouch-header,
-  .retouch-actions {
+  .retouch-spacer {
+    display: none;
+  }
+
+  .retouch-header {
     min-height: 30px;
   }
 

@@ -196,9 +196,9 @@ Required external dependencies at startup for image-generation commands:
 
 Panorama mode additionally requires the Hugin CLI suite: `pto_gen`, `cpfind`,
 `cpclean`, `pto_var`, `autooptimiser`, `pano_modify`, `hugin_executor`, `nona`, and
-`enblend`. The review Tools section stays hidden when that complete suite is not
-available. Use `--hugin-bin-dir` or `MINI_FILM_HUGIN_BIN_DIR` when those binaries
-are outside `PATH`.
+`enblend`. The Panorama entry in review Tools stays hidden when that complete
+suite is not available. Use `--hugin-bin-dir` or `MINI_FILM_HUGIN_BIN_DIR` when
+those binaries are outside `PATH`.
 
 The `update` command also requires `curl` for downloading the Lensfun database.
 
@@ -221,12 +221,13 @@ The command validates every required Hugin executable before preparing any
 source and fails without creating an output when the suite is incomplete.
 
 In daemon review, the bottom of the picture sidebar contains a small Tools
-section when Hugin is available. The Panorama wizard stores projects, ordered
-source relationships, projection previews, progress, and errors as normalized
-SQLite rows. Interrupted work is preserved across restarts. Preview stitching
-uses auto-oriented images with a maximum 2048-pixel long edge and renders all
-four projections for comparison. The selected final projection is rebuilt from
-full-resolution, 16-bit `RTv4_sRGB` TIFF sources. RAW preparation uses as-shot
+section on desktop and tablet, with Crop/rotate above Panorama. Phone layouts do
+not show Tools. Panorama appears only when Hugin is available. The wizard stores
+projects, ordered source relationships, projection previews, progress, and
+errors as normalized SQLite rows. Interrupted work is preserved across restarts.
+Preview stitching uses auto-oriented images with a maximum 2048-pixel long edge
+and renders all four projections for comparison. The selected final projection
+is rebuilt from full-resolution, 16-bit `RTv4_sRGB` TIFF sources. RAW preparation uses as-shot
 white balance, the normal camera tone and optional lens/denoise corrections, but
 does not apply a creative profile, grain, retouch, or sharpening.
 
@@ -614,9 +615,11 @@ values. Exposure, highlights, shadows, whites, and blacks display the combined
 source-profile and emulation values for the selected profile plus any manual
 per-picture adjustment. Manual edits remain stored as deltas, so changing the
 selected profile updates those five slider baselines without applying profile
-values twice. Direct JPEG/HEIC inputs without
-a profile do not expose retouch controls. The browser applies a fast draft preview while
-edits are being made, then queues a high-quality mini-film render and swaps in
+values twice. Crop/rotate is opened from the sidebar Tools section on desktop and
+tablet; Clear, Cancel, and OK join the rotation and aspect-ratio bar only while
+crop mode is open. Direct JPEG/HEIC inputs without a profile do not expose
+retouch controls. The browser applies a fast draft preview while edits are being
+made, then queues a high-quality mini-film render and swaps in
 the finished output when it is ready. Crop and rotation are persisted with the
 review state and are used by publish rerenders. Reopening crop mode shows an
 uncropped camera preview or original SOOC image, with the finished crop aligned

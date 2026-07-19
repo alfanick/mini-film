@@ -186,16 +186,27 @@ function ReviewShell() {
         h("div", { id: "image-list", class: "image-list" }),
         h(
           "section",
-          { id: "sidebar-tools", class: "sidebar-tools", hidden: true, "aria-label": "Tools" },
+          { class: "sidebar-tools", "aria-label": "Tools" },
           h("div", { class: "sidebar-tools-title" }, "Tools"),
           h(
             "button",
             {
+              id: "crop-toggle",
+              class: "sidebar-tool-button",
+              type: "button",
+              disabled: true,
+            },
+            "Crop/rotate",
+          ),
+          h(
+            "button",
+            {
               id: "panorama",
-              class: "panorama-button",
+              class: "sidebar-tool-button",
               type: "button",
               title: "Create panorama",
               "aria-label": "Create panorama",
+              hidden: true,
             },
             "Panorama",
           ),
@@ -276,6 +287,13 @@ function ReviewShell() {
                 CROP_RATIO_PRESETS.map(([value, label]) => h("option", { key: value, value }, label)),
               ),
             ),
+            h(
+              "div",
+              { id: "crop-actions", class: "crop-actions", hidden: true, "aria-label": "Crop actions" },
+              h("button", { id: "crop-reset", type: "button" }, "Clear"),
+              h("button", { id: "crop-cancel", type: "button" }, "Cancel"),
+              h("button", { id: "crop-ok", class: "crop-apply", type: "button" }, "OK"),
+            ),
           ),
         ),
         h(
@@ -304,7 +322,6 @@ function ReviewShell() {
             h("button", { id: "mobile-save-original", type: "button", hidden: true }, "Save Photo"),
             h("button", { "data-mobile-drawer": "metadata", type: "button" }, "Meta"),
             h("button", { id: "mobile-publish", type: "button" }, "Publish"),
-            h("button", { id: "mobile-panorama", type: "button", hidden: true }, "Pano"),
           ),
           h("div", { id: "profiles", class: "profiles" }),
           h(ControlsShell),
@@ -952,14 +969,7 @@ function ControlsShell() {
         value: "0",
         output: "0K",
       }),
-      h(
-        "div",
-        { class: "retouch-actions" },
-        h("button", { id: "crop-toggle", type: "button" }, "Crop/rotate"),
-        h("button", { id: "crop-ok", type: "button", hidden: true }, "OK"),
-        h("button", { id: "crop-cancel", type: "button", hidden: true }, "Cancel"),
-        h("button", { id: "crop-reset", type: "button" }, "Clear"),
-      ),
+      h("div", { class: "retouch-spacer", "aria-hidden": "true" }),
       h(RetouchSlider, { id: "retouch-clarity", label: "Contrast", min: "-100", max: "100", step: "1", value: "0" }),
       h(RetouchSlider, { id: "retouch-shadows", label: "Shadows", min: "-100", max: "100", step: "1", value: "0" }),
       h(RetouchSlider, { id: "retouch-blacks", label: "Blacks", min: "-100", max: "100", step: "1", value: "0" }),
@@ -1049,11 +1059,11 @@ function ShortcutsOverlay() {
         [["?", "Esc"], "Show or hide this shortcuts overlay."],
       ],
     ],
+    ["Retouch", [[["Double-click"], "Double-click a retouch control name to reset that value."]]],
     [
-      "Retouch",
+      "Tools",
       [
-        [["Double-click"], "Double-click a retouch control name to reset that value."],
-        [["Crop", "OK"], "Open crop/rotate, adjust the frame, then apply it with OK."],
+        [["Crop", "OK"], "Open crop/rotate from Tools, adjust the frame, then apply it with OK."],
         [["r"], "Rotate the selected crop ratio while crop mode is open."],
       ],
     ],
@@ -1598,6 +1608,7 @@ const els = {
   cropOverlay: document.getElementById("crop-overlay"),
   cropBox: document.getElementById("crop-box"),
   cropTools: document.getElementById("crop-tools"),
+  cropActions: document.getElementById("crop-actions"),
   cropRotation: document.getElementById("crop-rotation"),
   cropRotationValue: document.getElementById("crop-rotation-value"),
   cropRotateLeft: document.getElementById("crop-rotate-left"),
@@ -1629,14 +1640,12 @@ const els = {
   cropReset: document.getElementById("crop-reset"),
   publish: document.getElementById("publish"),
   panorama: document.getElementById("panorama"),
-  sidebarTools: document.getElementById("sidebar-tools"),
   minRating: document.getElementById("min-rating"),
   app: document.querySelector(".app"),
   shortcutsHelp: document.getElementById("shortcuts-help"),
   mobileDrawerButtons: document.querySelectorAll("[data-mobile-drawer]"),
   mobileSaveOriginal: document.getElementById("mobile-save-original"),
   mobilePublish: document.getElementById("mobile-publish"),
-  mobilePanorama: document.getElementById("mobile-panorama"),
   shortcutsOverlay: document.getElementById("shortcuts-overlay"),
   shortcutsClose: document.getElementById("shortcuts-close"),
   profileInfoOverlay: document.getElementById("profile-info-overlay"),
@@ -1799,8 +1808,7 @@ function render() {
   renderCommandInvocation();
   renderPanoramaWizard();
   const panoramaAvailable = Boolean(state.data?.capabilities?.panorama?.available);
-  els.sidebarTools.hidden = !panoramaAvailable;
-  els.mobilePanorama.hidden = !panoramaAvailable;
+  els.panorama.hidden = !panoramaAvailable;
   syncProfilesPlacement();
   const images = filteredImages();
   const total = state.data?.images?.length || 0;
@@ -4276,6 +4284,7 @@ function clearCropDraftState() {
   els.cropStage.hidden = true;
   els.cropOverlay.hidden = true;
   els.cropTools.hidden = true;
+  els.cropActions.hidden = true;
   els.app.classList.remove("crop-mode");
 }
 
@@ -4355,8 +4364,7 @@ function updateCropButtons(image) {
   const adjusted = editing || hasCropAdjustment(image);
   els.cropToggle.classList.toggle("active", adjusted);
   els.cropToggle.title = adjusted ? "Crop or rotation adjustment active" : "Crop/rotate";
-  els.cropOk.hidden = !editing;
-  els.cropCancel.hidden = !editing;
+  els.cropActions.hidden = !editing;
 }
 
 function updateCropRotationControls() {
@@ -5432,7 +5440,6 @@ function clearRetouchSaveTimer() {
 els.publish.addEventListener("click", () => togglePublishWizard(true));
 els.mobilePublish.addEventListener("click", () => togglePublishWizard(true));
 els.panorama.addEventListener("click", openPanoramaWizard);
-els.mobilePanorama.addEventListener("click", openPanoramaWizard);
 els.panoramaOverlay.addEventListener("click", (event) => {
   if (event.target === els.panoramaOverlay) closePanoramaWizard();
 });
