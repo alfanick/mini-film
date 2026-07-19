@@ -136,6 +136,10 @@ pub struct Model {
     pub review_settings: HasMany<super::review_settings::Entity>,
     #[sea_orm(has_many, via = "image_tags")]
     pub tags: HasMany<super::tags::Entity>,
+    #[sea_orm(has_many)]
+    pub panorama_project_images: HasMany<super::panorama_project_images::Entity>,
+    #[sea_orm(has_many)]
+    pub panorama_results: HasMany<super::panorama_projects::Entity>,
 }
 
 impl ActiveModelBehavior for ActiveModel {}

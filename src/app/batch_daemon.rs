@@ -39,8 +39,8 @@ use crate::app::review::{
 use crate::app::system_stats::{ResourceUsageSummary, sample_usage_block};
 use crate::app::util::{
     InputFileFilter, coalesce_due_input_sidecars, coalesce_input_sidecars, half_cpu_thread_count,
-    input_filter_name, is_raw_input_file, is_supported_input_file, matching_raw_for_sidecar,
-    matching_sidecar_for_raw, time_of_day_seed,
+    input_filter_name, is_jpeg_input_file, is_raw_input_file, is_supported_input_file,
+    matching_raw_for_sidecar, matching_sidecar_for_raw, time_of_day_seed,
 };
 use crate::cli::{
     BatchOutputFormat, CodexAnalysisFlags, ExportOptions, GalleryTemplate, LensCorrections,
@@ -75,6 +75,7 @@ pub(crate) struct BatchDaemonArgs {
     pub(crate) nikon_wtu_name: Option<String>,
     pub(crate) nikon_wtu_guid: Option<String>,
     pub(crate) review_address: Option<String>,
+    pub(crate) hugin_bin_dir: Option<PathBuf>,
     pub(crate) codex: Option<CodexAnalysisFlags>,
     pub(crate) codex_binary: PathBuf,
     pub(crate) codex_model: String,
@@ -315,6 +316,7 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
     let profiles = profiles.into_iter().map(Arc::new).collect::<Vec<_>>();
     let profiles = Arc::new(profiles);
     let base_seed = args.grain_seed.unwrap_or_else(time_of_day_seed);
+    let (trusted_input_tx, trusted_input_rx) = mpsc::channel();
     let review = if let Some(address) = args
         .review_address
         .clone()
@@ -364,6 +366,9 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
             codex_model: args.codex_model.clone(),
             codex_timeout: Duration::from_secs(args.codex_timeout),
             invocation: args.invocation.clone(),
+            hugin_bin_dir: args.hugin_bin_dir.clone(),
+            trusted_input_sender: (!matches!(args.input_file_filter, InputFileFilter::All))
+                .then_some(trusted_input_tx),
         })?)
     } else {
         None
@@ -544,6 +549,22 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
         }
         drain_nikon_wtu_logs(nikon_wtu_receiver.as_ref(), &batch, start);
         drain_watch_events(&watch_rx, &mut pending, debounce, args.input_file_filter);
+        while let Ok(input) = trusted_input_rx.try_recv() {
+            let queued = enqueue_profile_jobs(
+                &mut queue,
+                &profiles,
+                input,
+                &ProfileScheduleContext {
+                    input_root: &args.input,
+                    output_root: &args.output,
+                    output_format: args.output_format,
+                    input_file_filter: InputFileFilter::All,
+                    skip_existing: false,
+                    review: review.as_ref(),
+                },
+            )?;
+            batch.inc_length(queued as u64);
+        }
         schedule_pending_due_paths(
             &mut pending,
             debounce,
@@ -1568,7 +1589,7 @@ fn publish_daemon_profile_output(input: &Path, staged: TempPath, output: &Path) 
 }
 
 fn compressed_profile_has_matching_raw(input: &Path) -> bool {
-    !is_raw_input_file(input) && matching_raw_for_sidecar(input).is_some()
+    is_jpeg_input_file(input) && matching_raw_for_sidecar(input).is_some()
 }
 
 fn process_single_compressed(
@@ -2109,6 +2130,7 @@ mod tests {
             nikon_wtu_name: None,
             nikon_wtu_guid: None,
             review_address: None,
+            hugin_bin_dir: None,
             codex: None,
             codex_binary: PathBuf::from("codex"),
             codex_model: "gpt-5.4-mini".to_string(),
@@ -2251,6 +2273,7 @@ mod tests {
             nikon_wtu_name: None,
             nikon_wtu_guid: None,
             review_address: None,
+            hugin_bin_dir: None,
             codex: None,
             codex_binary: PathBuf::from("codex"),
             codex_model: "gpt-5.4-mini".to_string(),

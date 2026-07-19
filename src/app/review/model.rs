@@ -41,6 +41,8 @@ pub(crate) struct ReviewConfig {
     pub(crate) codex_model: String,
     pub(crate) codex_timeout: Duration,
     pub(crate) invocation: Option<String>,
+    pub(crate) hugin_bin_dir: Option<PathBuf>,
+    pub(crate) trusted_input_sender: Option<std::sync::mpsc::Sender<PathBuf>>,
 }
 
 #[derive(Clone, Debug)]
@@ -419,6 +421,156 @@ pub(crate) struct ReviewHandle {
     pub(super) codex: Option<ReviewCodexConfig>,
     pub(super) codex_scheduler: Arc<ReviewCodexScheduler>,
     pub(super) invocation: Option<String>,
+    pub(super) panorama_config: crate::app::panorama::PanoramaConfig,
+    pub(super) panorama_capability: crate::app::panorama::PanoramaCapability,
+    pub(super) panorama_projects: Arc<ArcSwap<Vec<ReviewPanoramaProject>>>,
+    pub(super) panorama_operation: Arc<std::sync::atomic::AtomicBool>,
+    pub(super) trusted_input_sender: Option<std::sync::mpsc::Sender<PathBuf>>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(super) enum ReviewPanoramaStatus {
+    Draft,
+    Previewing,
+    Ready,
+    Rendering,
+    Complete,
+    Failed,
+    Interrupted,
+    Cancelled,
+}
+
+impl ReviewPanoramaStatus {
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Draft => "draft",
+            Self::Previewing => "previewing",
+            Self::Ready => "ready",
+            Self::Rendering => "rendering",
+            Self::Complete => "complete",
+            Self::Failed => "failed",
+            Self::Interrupted => "interrupted",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    pub(super) fn parse(value: &str) -> Result<Self> {
+        match value {
+            "draft" => Ok(Self::Draft),
+            "previewing" => Ok(Self::Previewing),
+            "ready" => Ok(Self::Ready),
+            "rendering" => Ok(Self::Rendering),
+            "complete" => Ok(Self::Complete),
+            "failed" => Ok(Self::Failed),
+            "interrupted" => Ok(Self::Interrupted),
+            "cancelled" => Ok(Self::Cancelled),
+            _ => bail!("invalid panorama project status {value:?}"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(super) enum ReviewPanoramaPreviewStatus {
+    Queued,
+    Processing,
+    Done,
+    Failed,
+    Cancelled,
+}
+
+impl ReviewPanoramaPreviewStatus {
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Processing => "processing",
+            Self::Done => "done",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    pub(super) fn parse(value: &str) -> Result<Self> {
+        match value {
+            "queued" => Ok(Self::Queued),
+            "processing" => Ok(Self::Processing),
+            "done" => Ok(Self::Done),
+            "failed" => Ok(Self::Failed),
+            "cancelled" => Ok(Self::Cancelled),
+            _ => bail!("invalid panorama preview status {value:?}"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct ReviewPanoramaPreview {
+    pub(super) matching_mode: PanoramaMatchingMode,
+    pub(super) projection: PanoramaProjection,
+    pub(super) status: ReviewPanoramaPreviewStatus,
+    #[serde(skip)]
+    pub(super) path: Option<PathBuf>,
+    pub(super) cache_key: Option<String>,
+    pub(super) duration_ms: Option<u64>,
+    pub(super) error: Option<String>,
+    pub(super) updated_at: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct ReviewPanoramaProject {
+    pub(super) id: u64,
+    pub(super) name: String,
+    pub(super) status: ReviewPanoramaStatus,
+    pub(super) matching_mode: PanoramaMatchingMode,
+    pub(super) selected_projection: Option<PanoramaProjection>,
+    #[serde(skip)]
+    pub(super) output_path: Option<PathBuf>,
+    pub(super) result_image_id: Option<u64>,
+    pub(super) progress_stage: Option<String>,
+    pub(super) progress_completed: usize,
+    pub(super) progress_total: usize,
+    pub(super) error: Option<String>,
+    pub(super) created_at: String,
+    pub(super) updated_at: String,
+    pub(super) image_ids: Vec<u64>,
+    pub(super) previews: Vec<ReviewPanoramaPreview>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub(super) struct ReviewPanoramaCreateRequest {
+    pub(super) image_ids: Vec<u64>,
+    #[serde(default)]
+    pub(super) name: Option<String>,
+    #[serde(default)]
+    pub(super) matching_mode: PanoramaMatchingMode,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub(super) struct ReviewPanoramaUpdateRequest {
+    #[serde(default)]
+    pub(super) image_ids: Option<Vec<u64>>,
+    #[serde(default)]
+    pub(super) name: Option<String>,
+    #[serde(default)]
+    pub(super) matching_mode: Option<PanoramaMatchingMode>,
+    #[serde(default)]
+    pub(super) selected_projection: Option<PanoramaProjection>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub(super) struct ReviewPanoramaPreviewRequest {
+    #[serde(default)]
+    pub(super) image_ids: Option<Vec<u64>>,
+    #[serde(default)]
+    pub(super) matching_mode: Option<PanoramaMatchingMode>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub(super) struct ReviewPanoramaRenderRequest {
+    #[serde(default)]
+    pub(super) name: Option<String>,
+    #[serde(default)]
+    pub(super) projection: Option<PanoramaProjection>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -629,7 +781,7 @@ pub(super) fn image_sooc_source(image: &ReviewImage) -> Option<&Path> {
     image
         .sooc_sidecar_path
         .as_deref()
-        .or_else(|| is_jpeg_input_file(&image.raw_path).then_some(image.raw_path.as_path()))
+        .or_else(|| is_rendered_input_file(&image.raw_path).then_some(image.raw_path.as_path()))
 }
 
 pub(super) fn review_profile_bw_filter_eligible(profile: &ReviewProfile) -> bool {

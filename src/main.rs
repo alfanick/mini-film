@@ -19,6 +19,7 @@ use crate::app::batch_daemon::{BatchDaemonArgs, run_batch_daemon};
 use crate::app::desktop::run_desktop_app;
 use crate::app::info::{InfoArgs, run_info};
 use crate::app::nikon::{NikonArgs, run_nikon};
+use crate::app::panorama::{PanoramaCommandArgs, PanoramaConfig, run_panorama};
 use crate::app::pp3::{Pp3Args, run_pp3};
 use crate::app::review::{ReviewPublishCommandArgs, run_review_publish};
 use crate::app::run_hald;
@@ -157,6 +158,35 @@ fn main() -> Result<()> {
             retouch_white_balance: crate::app::retouch::RetouchWhiteBalance::default(),
             bw_filter: crate::app::retouch::BwFilter::None,
         }),
+        CommandKind::Panorama {
+            input,
+            output,
+            matching,
+            projection,
+            hugin_bin_dir,
+            rawtherapee,
+            convert,
+            jobs,
+            color_noise_iso_threshold,
+            lens_corrections,
+            lcp_root,
+            overwrite,
+        } => run_panorama(PanoramaCommandArgs {
+            input,
+            output,
+            matching,
+            projection,
+            config: PanoramaConfig {
+                hugin_bin_dir,
+                rawtherapee,
+                convert,
+                jobs: jobs.unwrap_or_else(half_cpu_thread_count),
+                color_noise_iso_threshold,
+                lens_corrections: lens_corrections.unwrap_or_default(),
+                lcp_root: resolve_lcp_root(lcp_root),
+            },
+            overwrite,
+        }),
         CommandKind::Batch {
             input,
             output,
@@ -249,6 +279,7 @@ fn main() -> Result<()> {
             nikon_wtu_name,
             nikon_wtu_guid,
             review_address,
+            hugin_bin_dir,
             codex,
             codex_binary,
             codex_model,
@@ -291,6 +322,7 @@ fn main() -> Result<()> {
             nikon_wtu_name,
             nikon_wtu_guid,
             review_address,
+            hugin_bin_dir,
             codex: codex.filter(|flags| flags.is_enabled()),
             codex_binary,
             codex_model,
@@ -486,6 +518,7 @@ fn startup_dependency_check(args: &[String]) -> Result<()> {
         Some("apply")
         | Some("batch")
         | Some("daemon")
+        | Some("panorama")
         | Some("sampler")
         | Some("review-publish") => true,
         Some(_) => false,

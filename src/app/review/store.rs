@@ -3,6 +3,7 @@ use super::prelude::*;
 
 const SOOC_RENDER_PIPELINE_KEY: &str = "sooc-sidecar-v2-tone-equalizer";
 const PROFILED_COMPRESSED_RENDER_PIPELINE_KEY: &str = "profiled-compressed-render-v3-no-sharpening";
+const PROFILED_TIFF_RENDER_PIPELINE_KEY: &str = "profiled-tiff-render-v1-sharpening";
 
 impl ReviewStore {
     const EXIF_SCHEMA_VERSION: u32 = 9;
@@ -18,6 +19,7 @@ impl ReviewStore {
     }
 
     pub(super) fn sync_profiles(&mut self, profiles: Vec<ReviewProfile>) {
+        self.remove_internal_staging_images();
         let old_profiles = self
             .profiles
             .iter()
@@ -89,6 +91,12 @@ impl ReviewStore {
         input_root: &Path,
         raw: &Path,
     ) -> Result<&mut ReviewImage> {
+        if is_internal_staging_input_file(raw) {
+            bail!(
+                "refusing internal panorama staging input: {}",
+                raw.display()
+            );
+        }
         if let Some(index) = self.images.iter().position(|image| image.raw_path == raw) {
             refresh_image_exif_data(&mut self.images[index], false);
             return Ok(&mut self.images[index]);
@@ -142,6 +150,11 @@ impl ReviewStore {
         self.normalize_ui();
         let index = self.images.len() - 1;
         Ok(&mut self.images[index])
+    }
+
+    fn remove_internal_staging_images(&mut self) {
+        self.images
+            .retain(|image| !is_internal_staging_input_file(&image.raw_path));
     }
 
     pub(super) fn claim_sooc_sidecar(&mut self, sidecar: &Path) -> bool {
@@ -223,7 +236,7 @@ impl ReviewStore {
 
     fn matching_raw_image_index_for_sidecar(&self, sidecar: &Path) -> Option<usize> {
         if let Some(index) = self.images.iter().position(|image| {
-            !is_jpeg_input_file(&image.raw_path)
+            is_raw_input_file(&image.raw_path)
                 && image.sooc_sidecar_path.as_deref() == Some(sidecar)
         }) {
             return Some(index);
@@ -231,7 +244,7 @@ impl ReviewStore {
         let raw = matching_raw_for_sidecar(sidecar)?;
         self.images
             .iter()
-            .position(|image| !is_jpeg_input_file(&image.raw_path) && image.raw_path == raw)
+            .position(|image| is_raw_input_file(&image.raw_path) && image.raw_path == raw)
     }
 
     pub(super) fn normalize_ui(&mut self) {
@@ -528,7 +541,7 @@ pub(super) fn sync_image_profile_renders(
     let profiles_apply_to_compressed = profiles
         .iter()
         .any(|profile| !profile.selector.trim().is_empty());
-    if is_jpeg_input_file(&image.raw_path) && !profiles_apply_to_compressed {
+    if is_rendered_input_file(&image.raw_path) && !profiles_apply_to_compressed {
         image.profiles.clear();
         image.selected_profile_index = 0;
         image.publish_profile_indexes = Some(Vec::new());
@@ -536,7 +549,7 @@ pub(super) fn sync_image_profile_renders(
         return;
     }
 
-    let enabling_profiled_compressed = is_jpeg_input_file(&image.raw_path)
+    let enabling_profiled_compressed = is_rendered_input_file(&image.raw_path)
         && profiles_apply_to_compressed
         && image.profiles.is_empty();
 
@@ -574,7 +587,7 @@ pub(super) fn sync_image_profile_renders(
         })
         .collect();
     let include_sooc_profile = image.sooc_sidecar_path.is_some()
-        || (is_jpeg_input_file(&image.raw_path) && profiles_apply_to_compressed);
+        || (is_rendered_input_file(&image.raw_path) && profiles_apply_to_compressed);
     if include_sooc_profile {
         let processing_key = review_render_processing_key(SOOC_PROFILE_INDEX);
         image.profiles.push(
@@ -640,6 +653,8 @@ pub(super) fn review_render_processing_key_for_input(
 ) -> &'static str {
     if profile_index == SOOC_PROFILE_INDEX {
         SOOC_RENDER_PIPELINE_KEY
+    } else if is_tiff_input_file(input) {
+        PROFILED_TIFF_RENDER_PIPELINE_KEY
     } else if is_jpeg_input_file(input) {
         PROFILED_COMPRESSED_RENDER_PIPELINE_KEY
     } else {
@@ -685,11 +700,11 @@ pub(super) fn effective_publish_profile_indexes(image: &ReviewImage) -> Vec<usiz
 }
 
 pub(super) fn image_uses_profile_pipeline(image: &ReviewImage) -> bool {
-    !is_jpeg_input_file(&image.raw_path) || !image.profiles.is_empty()
+    !is_rendered_input_file(&image.raw_path) || !image.profiles.is_empty()
 }
 
 pub(super) fn image_is_direct_compressed(image: &ReviewImage) -> bool {
-    is_jpeg_input_file(&image.raw_path) && !image_uses_profile_pipeline(image)
+    is_rendered_input_file(&image.raw_path) && !image_uses_profile_pipeline(image)
 }
 
 pub(super) fn preferred_preview_profile_index(

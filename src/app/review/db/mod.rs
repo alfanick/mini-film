@@ -1,5 +1,6 @@
 mod entities;
 mod migrations;
+mod panorama;
 mod read;
 mod sqlite_compat;
 mod write;
@@ -12,12 +13,12 @@ use migrations::{
     FIRST_SEAORM_SCHEMA_VERSION, LATEST_SCHEMA_VERSION, LEGACY_SCHEMA_VERSION, Migrator,
     PRE_RELEASE_SEAORM_LEDGER, V11_LEDGER, V18_BASELINE_MIGRATION,
 };
+#[cfg(test)]
+use sea_orm::{ColumnTrait, EntityName, IntoActiveModel, PaginatorTrait, QueryFilter, Schema};
 use sea_orm::{
     DatabaseConnection, EntityTrait, QueryOrder, SqlxSqliteConnector, TransactionTrait,
     sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions},
 };
-#[cfg(test)]
-use sea_orm::{IntoActiveModel, PaginatorTrait, Schema};
 use sea_orm_migration::{MigratorTrait, SchemaManager};
 use tokio::sync::Mutex;
 
@@ -165,7 +166,7 @@ async fn prepare_database(
             Ok((connection, after))
         }
         version if (FIRST_SEAORM_SCHEMA_VERSION..=LATEST_SCHEMA_VERSION).contains(&version) => {
-            verify_seaorm_database(&connection).await?;
+            verify_seaorm_database_before_migration(&connection).await?;
             normalize_pre_release_seaql_ledger(&connection).await?;
             Migrator::up(&connection, None)
                 .await
@@ -302,6 +303,23 @@ async fn verify_current_database(connection: &DatabaseConnection) -> Result<()> 
 }
 
 async fn verify_seaorm_database(connection: &DatabaseConnection) -> Result<()> {
+    verify_seaorm_database_before_migration(connection).await?;
+    let manager = SchemaManager::new(connection);
+    for table in required_panorama_tables() {
+        if !manager
+            .has_table(table)
+            .await
+            .with_context(|| format!("checking review table {table}"))?
+        {
+            bail!("SeaORM review database is missing required table {table}");
+        }
+    }
+    sqlite_compat::verify_integrity(connection)
+        .await
+        .context("validating SeaORM review database")
+}
+
+async fn verify_seaorm_database_before_migration(connection: &DatabaseConnection) -> Result<()> {
     let manager = SchemaManager::new(connection);
     if !manager
         .has_table("seaql_migrations")
@@ -317,7 +335,7 @@ async fn verify_seaorm_database(connection: &DatabaseConnection) -> Result<()> {
     {
         bail!("SeaORM review database still contains obsolete schema_migrations");
     }
-    for table in required_review_tables() {
+    for table in required_base_review_tables() {
         if !manager
             .has_table(table)
             .await
@@ -435,10 +453,10 @@ fn ensure_path_within(path: &Path, root: &Path) -> Result<()> {
 }
 
 fn required_v11_tables() -> impl Iterator<Item = &'static str> {
-    std::iter::once("schema_migrations").chain(required_review_tables())
+    std::iter::once("schema_migrations").chain(required_base_review_tables())
 }
 
-fn required_review_tables() -> impl Iterator<Item = &'static str> {
+fn required_base_review_tables() -> impl Iterator<Item = &'static str> {
     [
         "review_settings",
         "profiles",
@@ -456,6 +474,15 @@ fn required_review_tables() -> impl Iterator<Item = &'static str> {
         "image_publish_profiles",
         "image_profile_bw_filters",
         "image_profile_renders",
+    ]
+    .into_iter()
+}
+
+fn required_panorama_tables() -> impl Iterator<Item = &'static str> {
+    [
+        "panorama_projects",
+        "panorama_project_images",
+        "panorama_previews",
     ]
     .into_iter()
 }
@@ -560,6 +587,37 @@ pub(super) fn database_facts(path: &Path) -> Result<TestDatabaseFacts> {
             entities::profile_pp3_entries::Entity::find()
                 .count(&connection)
                 .await?,
+        );
+        let panorama_tables_present = manager.has_table("panorama_projects").await?;
+        counts.insert(
+            "panorama_projects",
+            if panorama_tables_present {
+                entities::panorama_projects::Entity::find()
+                    .count(&connection)
+                    .await?
+            } else {
+                0
+            },
+        );
+        counts.insert(
+            "panorama_project_images",
+            if panorama_tables_present {
+                entities::panorama_project_images::Entity::find()
+                    .count(&connection)
+                    .await?
+            } else {
+                0
+            },
+        );
+        counts.insert(
+            "panorama_previews",
+            if panorama_tables_present {
+                entities::panorama_previews::Entity::find()
+                    .count(&connection)
+                    .await?
+            } else {
+                0
+            },
         );
         let mut indexes = HashSet::new();
         for (table, index) in expected_indexes() {
@@ -758,6 +816,42 @@ pub(super) fn make_pre_release_seaorm_database(path: &Path, store: &ReviewStore)
 }
 
 #[cfg(test)]
+pub(super) fn make_schema_v12_database(path: &Path, store: &ReviewStore) -> Result<()> {
+    save_store(path, store)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("building review database runtime")?;
+    runtime.block_on(async {
+        let connection = connect_database(path, false).await?;
+        let manager = SchemaManager::new(&connection);
+        for table in [
+            entities::panorama_previews::Entity.table_name(),
+            entities::panorama_project_images::Entity.table_name(),
+            entities::panorama_projects::Entity.table_name(),
+        ] {
+            manager
+                .drop_table(
+                    sea_orm_migration::prelude::Table::drop()
+                        .table(sea_orm_migration::prelude::Alias::new(table))
+                        .to_owned(),
+                )
+                .await?;
+        }
+        sea_orm_migration::seaql_migrations::Entity::delete_many()
+            .filter(
+                sea_orm_migration::seaql_migrations::Column::Version
+                    .eq(migrations::PANORAMA_PROJECTS_MIGRATION),
+            )
+            .exec(&connection)
+            .await?;
+        sqlite_compat::set_user_version(&connection, FIRST_SEAORM_SCHEMA_VERSION).await?;
+        connection.close().await?;
+        Ok(())
+    })
+}
+
+#[cfg(test)]
 pub(super) fn make_legacy_version_database(path: &Path, version: i64) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -772,7 +866,7 @@ pub(super) fn make_legacy_version_database(path: &Path, version: i64) -> Result<
 }
 
 #[cfg(test)]
-fn expected_indexes() -> [(&'static str, &'static str); 13] {
+fn expected_indexes() -> [(&'static str, &'static str); 17] {
     [
         ("profiles", "idx_profiles_position"),
         ("images", "idx_images_position"),
@@ -796,5 +890,12 @@ fn expected_indexes() -> [(&'static str, &'static str); 13] {
         ),
         ("profile_pp3_sections", "idx_profile_pp3_sections_section"),
         ("profile_pp3_entries", "idx_profile_pp3_entries_key"),
+        ("panorama_projects", "idx_panorama_projects_updated_at"),
+        ("panorama_projects", "idx_panorama_projects_result_image"),
+        (
+            "panorama_project_images",
+            "idx_panorama_project_images_image",
+        ),
+        ("panorama_previews", "idx_panorama_previews_status"),
     ]
 }

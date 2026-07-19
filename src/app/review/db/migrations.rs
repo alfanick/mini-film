@@ -4,8 +4,9 @@ use sea_orm_migration::{MigratorTrait, prelude::*};
 
 pub(super) const LEGACY_SCHEMA_VERSION: i64 = 11;
 pub(super) const FIRST_SEAORM_SCHEMA_VERSION: i64 = 12;
-pub(super) const LATEST_SCHEMA_VERSION: i64 = 12;
+pub(super) const LATEST_SCHEMA_VERSION: i64 = 13;
 pub(super) const V18_BASELINE_MIGRATION: &str = "m20260718_000001_v18_baseline";
+pub(super) const PANORAMA_PROJECTS_MIGRATION: &str = "m20260719_000002_panorama_projects";
 pub(super) const PRE_RELEASE_SEAORM_LEDGER: [&str; 2] = [
     "m20260718_000001_create_review_schema",
     "m20260718_000002_adopt_seaorm",
@@ -30,7 +31,7 @@ pub(super) struct Migrator;
 #[async_trait::async_trait]
 impl MigratorTrait for Migrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-        vec![Box::new(V18Baseline)]
+        vec![Box::new(V18Baseline), Box::new(PanoramaProjects)]
     }
 }
 
@@ -76,7 +77,7 @@ impl MigrationTrait for V18Baseline {
                     .to_owned(),
             )
             .await?;
-        sqlite_compat::set_user_version(manager.get_connection(), LATEST_SCHEMA_VERSION).await
+        sqlite_compat::set_user_version(manager.get_connection(), FIRST_SEAORM_SCHEMA_VERSION).await
     }
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
@@ -108,6 +109,48 @@ impl MigrationTrait for V18Baseline {
                 .await?;
         }
         sqlite_compat::set_user_version(manager.get_connection(), 0).await
+    }
+}
+
+struct PanoramaProjects;
+
+impl MigrationName for PanoramaProjects {
+    fn name(&self) -> &str {
+        PANORAMA_PROJECTS_MIGRATION
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for PanoramaProjects {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        let schema = Schema::new(DbBackend::Sqlite);
+        create_entity_table(manager, &schema, panorama_projects::Entity).await?;
+        create_entity_table(manager, &schema, panorama_project_images::Entity).await?;
+        create_entity_table(manager, &schema, panorama_previews::Entity).await?;
+        create_panorama_indexes(manager).await?;
+        sqlite_compat::set_user_version(manager.get_connection(), LATEST_SCHEMA_VERSION).await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        for table in [
+            panorama_previews::Entity.table_name(),
+            panorama_project_images::Entity.table_name(),
+            panorama_projects::Entity.table_name(),
+        ] {
+            manager
+                .drop_table(
+                    Table::drop()
+                        .table(Alias::new(table))
+                        .if_exists()
+                        .to_owned(),
+                )
+                .await?;
+        }
+        sqlite_compat::set_user_version(manager.get_connection(), FIRST_SEAORM_SCHEMA_VERSION).await
     }
 }
 
@@ -164,6 +207,59 @@ where
         }
         "review_settings" => {
             statement.check(Expr::col(review_settings::Column::Id).eq(1));
+        }
+        "panorama_projects" => {
+            statement
+                .check(Expr::col(panorama_projects::Column::Status).is_in([
+                    "draft",
+                    "previewing",
+                    "ready",
+                    "rendering",
+                    "complete",
+                    "failed",
+                    "interrupted",
+                    "cancelled",
+                ]))
+                .check(Expr::col(panorama_projects::Column::MatchingMode).is_in([
+                    "automatic",
+                    "sequential",
+                    "multi-row",
+                    "flat-mosaic",
+                ]))
+                .check(
+                    Expr::col(panorama_projects::Column::SelectedProjection)
+                        .is_null()
+                        .or(
+                            Expr::col(panorama_projects::Column::SelectedProjection).is_in([
+                                "rectilinear",
+                                "cylindrical",
+                                "equirectangular",
+                                "panini",
+                            ]),
+                        ),
+                );
+        }
+        "panorama_previews" => {
+            statement
+                .check(Expr::col(panorama_previews::Column::MatchingMode).is_in([
+                    "automatic",
+                    "sequential",
+                    "multi-row",
+                    "flat-mosaic",
+                ]))
+                .check(Expr::col(panorama_previews::Column::Projection).is_in([
+                    "rectilinear",
+                    "cylindrical",
+                    "equirectangular",
+                    "panini",
+                ]))
+                .check(Expr::col(panorama_previews::Column::Status).is_in([
+                    "queued",
+                    "processing",
+                    "done",
+                    "failed",
+                    "cancelled",
+                ]));
         }
         _ => {}
     }
@@ -252,6 +348,39 @@ async fn create_indexes(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
             .name("idx_profile_pp3_entries_key")
             .table(profile_pp3_entries::Entity)
             .col(profile_pp3_entries::Column::Key)
+            .if_not_exists()
+            .to_owned(),
+    ];
+    for index in indexes {
+        manager.create_index(index).await?;
+    }
+    Ok(())
+}
+
+async fn create_panorama_indexes(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
+    let indexes = [
+        Index::create()
+            .name("idx_panorama_projects_updated_at")
+            .table(panorama_projects::Entity)
+            .col(panorama_projects::Column::UpdatedAt)
+            .if_not_exists()
+            .to_owned(),
+        Index::create()
+            .name("idx_panorama_projects_result_image")
+            .table(panorama_projects::Entity)
+            .col(panorama_projects::Column::ResultImageId)
+            .if_not_exists()
+            .to_owned(),
+        Index::create()
+            .name("idx_panorama_project_images_image")
+            .table(panorama_project_images::Entity)
+            .col(panorama_project_images::Column::ImageId)
+            .if_not_exists()
+            .to_owned(),
+        Index::create()
+            .name("idx_panorama_previews_status")
+            .table(panorama_previews::Entity)
+            .col(panorama_previews::Column::Status)
             .if_not_exists()
             .to_owned(),
     ];

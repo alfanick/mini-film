@@ -394,6 +394,22 @@ fn test_handle(input: PathBuf, output: PathBuf, profiles: Vec<ReviewProfile>) ->
         codex: None,
         codex_scheduler: Arc::new(ReviewCodexScheduler::default()),
         invocation: None,
+        panorama_config: crate::app::panorama::PanoramaConfig {
+            hugin_bin_dir: None,
+            rawtherapee: PathBuf::from("rawtherapee-cli"),
+            convert: PathBuf::from("convert"),
+            jobs: 1,
+            color_noise_iso_threshold: 1600,
+            lens_corrections: LensCorrections::default(),
+            lcp_root: None,
+        },
+        panorama_capability: crate::app::panorama::PanoramaCapability {
+            available: false,
+            reason: Some("not available in tests".to_string()),
+        },
+        panorama_projects: Arc::new(ArcSwap::from_pointee(Vec::new())),
+        panorama_operation: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        trusted_input_sender: None,
     }
 }
 
@@ -916,7 +932,7 @@ fn sync_profiles_invalidates_renders_from_old_processing_pipeline() {
 }
 
 #[test]
-fn compressed_profile_processing_key_tracks_no_sharpening_pipeline() {
+fn rendered_profile_processing_keys_track_input_sharpening_policy() {
     for input in [Path::new("frame.jpg"), Path::new("frame.HEIC")] {
         assert_eq!(
             review_render_processing_key_for_input(input, 0),
@@ -927,6 +943,32 @@ fn compressed_profile_processing_key_tracks_no_sharpening_pipeline() {
         review_render_processing_key_for_input(Path::new("frame.NEF"), 0),
         RAW_RENDER_PIPELINE_KEY
     );
+    assert_eq!(
+        review_render_processing_key_for_input(Path::new("frame.TIFF"), 0),
+        "profiled-tiff-render-v1-sharpening"
+    );
+}
+
+#[test]
+fn sync_profiles_removes_internal_panorama_staging_records() {
+    let mut store = fully_populated_review_store();
+    let mut staging = store.images[0].clone();
+    staging.id = 99;
+    staging.raw_path = PathBuf::from("/in/Panoramas/.mini-film-panorama-result-AbC123.tif");
+    staging.relative_path = "Panoramas/.mini-film-panorama-result-AbC123.tif".to_string();
+    staging.file_name = ".mini-film-panorama-result-AbC123.tif".to_string();
+    store.images.push(staging);
+    store.ui.current_image_id = Some(99);
+
+    store.sync_profiles(store.profiles.clone());
+
+    assert!(
+        store
+            .images
+            .iter()
+            .all(|image| !is_internal_staging_input_file(&image.raw_path))
+    );
+    assert_ne!(store.ui.current_image_id, Some(99));
 }
 
 #[test]
@@ -1176,10 +1218,16 @@ fn review_state_seaorm_round_trips_every_normalized_collection() {
         serde_json::to_value(&store).unwrap()
     );
     let facts = database_facts(&state_path).unwrap();
-    assert_eq!(facts.schema_version, 12);
+    assert_eq!(facts.schema_version, 13);
     assert!(facts.has_seaql_ledger);
-    assert_eq!(facts.seaql_migration_count, 1);
-    assert_eq!(facts.seaql_migrations, ["m20260718_000001_v18_baseline"]);
+    assert_eq!(facts.seaql_migration_count, 2);
+    assert_eq!(
+        facts.seaql_migrations,
+        [
+            "m20260718_000001_v18_baseline",
+            "m20260719_000002_panorama_projects",
+        ]
+    );
     assert!(!facts.has_legacy_ledger);
     assert!(!facts.has_review_state);
     assert!(!facts.has_json_storage_columns);
@@ -1192,7 +1240,10 @@ fn review_state_seaorm_round_trips_every_normalized_collection() {
     assert_eq!(facts.counts["image_profile_bw_filters"], 3);
     assert_eq!(facts.counts["profile_pp3_sections"], 2);
     assert_eq!(facts.counts["profile_pp3_entries"], 2);
-    assert_eq!(facts.indexes.len(), 13);
+    assert_eq!(facts.counts["panorama_projects"], 0);
+    assert_eq!(facts.counts["panorama_project_images"], 0);
+    assert_eq!(facts.counts["panorama_previews"], 0);
+    assert_eq!(facts.indexes.len(), 17);
     assert_domain_constraints(&state_path).unwrap();
 }
 
@@ -1219,13 +1270,16 @@ fn normalized_v11_database_is_backed_up_and_adopted_losslessly_once() {
     let backup_bytes = fs::read(&backup_path).unwrap();
 
     let after_facts = database_facts(&state_path).unwrap();
-    assert_eq!(after_facts.schema_version, 12);
+    assert_eq!(after_facts.schema_version, 13);
     assert!(!after_facts.has_legacy_ledger);
     assert!(after_facts.has_seaql_ledger);
-    assert_eq!(after_facts.seaql_migration_count, 1);
+    assert_eq!(after_facts.seaql_migration_count, 2);
     assert_eq!(
         after_facts.seaql_migrations,
-        ["m20260718_000001_v18_baseline"]
+        [
+            "m20260718_000001_v18_baseline",
+            "m20260719_000002_panorama_projects",
+        ]
     );
     assert!(!after_facts.has_json_storage_columns);
 
@@ -1263,8 +1317,100 @@ fn pre_release_two_entry_seaorm_ledger_is_collapsed_without_data_loss() {
         serde_json::to_value(&store).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.seaql_migration_count, 1);
-    assert_eq!(after.seaql_migrations, ["m20260718_000001_v18_baseline"]);
+    assert_eq!(after.seaql_migration_count, 2);
+    assert_eq!(
+        after.seaql_migrations,
+        [
+            "m20260718_000001_v18_baseline",
+            "m20260719_000002_panorama_projects",
+        ]
+    );
+}
+
+#[test]
+fn schema_v12_migrates_to_panorama_schema_without_review_data_loss() {
+    let temp = tempfile::tempdir().unwrap();
+    let state_path = temp.path().join(SQLITE_STATE_FILE);
+    let store = fully_populated_review_store();
+    make_schema_v12_database(&state_path, &store).unwrap();
+
+    let before = database_facts(&state_path).unwrap();
+    assert_eq!(before.schema_version, 12);
+    assert_eq!(before.seaql_migrations, ["m20260718_000001_v18_baseline"]);
+
+    let loaded = load_store(&state_path).unwrap().unwrap();
+    assert_eq!(
+        serde_json::to_value(&loaded).unwrap(),
+        serde_json::to_value(&store).unwrap()
+    );
+    let after = database_facts(&state_path).unwrap();
+    assert_eq!(after.schema_version, 13);
+    assert_eq!(after.seaql_migration_count, 2);
+    assert_eq!(after.counts["panorama_projects"], 0);
+    assert_eq!(after.counts["panorama_project_images"], 0);
+    assert_eq!(after.counts["panorama_previews"], 0);
+}
+
+#[test]
+fn panorama_projects_round_trip_normalized_relationships() {
+    let temp = tempfile::tempdir().unwrap();
+    let runtime = test_async_runtime();
+    let (database, _) = runtime
+        .block_on(ReviewDatabase::open_output(temp.path()))
+        .unwrap();
+    runtime
+        .block_on(database.replace_store(&fully_populated_review_store()))
+        .unwrap();
+    let timestamp = "2026-07-19T12:34:56+02:00".to_string();
+    let mut project = ReviewPanoramaProject {
+        id: 0,
+        name: "Alps sweep".to_string(),
+        status: ReviewPanoramaStatus::Ready,
+        matching_mode: PanoramaMatchingMode::MultiRow,
+        selected_projection: Some(PanoramaProjection::Panini),
+        output_path: Some(PathBuf::from("/in/Panoramas/Alps sweep.tif")),
+        result_image_id: Some(3),
+        progress_stage: Some("complete".to_string()),
+        progress_completed: 4,
+        progress_total: 4,
+        error: None,
+        created_at: timestamp.clone(),
+        updated_at: timestamp.clone(),
+        image_ids: vec![3, 1, 2],
+        previews: vec![ReviewPanoramaPreview {
+            matching_mode: PanoramaMatchingMode::MultiRow,
+            projection: PanoramaProjection::Panini,
+            status: ReviewPanoramaPreviewStatus::Done,
+            path: Some(PathBuf::from("/cache/panini.jpg")),
+            cache_key: Some("preview-key".to_string()),
+            duration_ms: Some(4321),
+            error: None,
+            updated_at: timestamp,
+        }],
+    };
+
+    runtime
+        .block_on(database.create_panorama_project(&mut project))
+        .unwrap();
+    assert!(project.id > 0);
+    let loaded = runtime.block_on(database.load_panorama_projects()).unwrap();
+    assert_eq!(loaded, vec![project.clone()]);
+
+    project.status = ReviewPanoramaStatus::Complete;
+    project.progress_completed = 1;
+    project.progress_total = 1;
+    runtime
+        .block_on(database.save_panorama_project(&project))
+        .unwrap();
+    assert_eq!(
+        runtime.block_on(database.load_panorama_projects()).unwrap(),
+        vec![project]
+    );
+
+    let facts = database_facts(&temp.path().join(SQLITE_STATE_FILE)).unwrap();
+    assert_eq!(facts.counts["panorama_projects"], 1);
+    assert_eq!(facts.counts["panorama_project_images"], 3);
+    assert_eq!(facts.counts["panorama_previews"], 1);
 }
 
 #[test]

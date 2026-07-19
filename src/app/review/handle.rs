@@ -2,6 +2,9 @@ use super::{
     db::*, gallery_download::*, history::*, model::*, prelude::*, preview::*, publish::*,
     scheduler::*, server::*, store::*,
 };
+use crate::app::panorama::{
+    PanoramaPreview, PanoramaProgress, PanoramaProgressSink, render_final, render_preview_row,
+};
 
 pub(super) const REVIEW_CODEX_WORKERS: usize = 2;
 pub(super) const REVIEW_THUMBNAIL_WORKERS: usize = 1;
@@ -51,6 +54,31 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
     }
     let state_path = database.path().to_path_buf();
     let history_profiles = store.profiles.clone();
+    let panorama_config = crate::app::panorama::PanoramaConfig {
+        hugin_bin_dir: config.hugin_bin_dir.clone(),
+        rawtherapee: config.rawtherapee.clone(),
+        convert: config.convert.clone(),
+        jobs: config.jobs,
+        color_noise_iso_threshold: config.color_noise_iso_threshold,
+        lens_corrections: config.lens_corrections,
+        lcp_root: config.lcp_root.clone(),
+    };
+    let panorama_capability =
+        crate::app::panorama::PanoramaCapability::probe(panorama_config.hugin_bin_dir.as_deref());
+    let mut panorama_projects = database_runtime.block_on(database.load_panorama_projects())?;
+    for project in &mut panorama_projects {
+        if matches!(
+            project.status,
+            ReviewPanoramaStatus::Previewing | ReviewPanoramaStatus::Rendering
+        ) {
+            project.status = ReviewPanoramaStatus::Interrupted;
+            project.progress_stage = None;
+            project.error =
+                Some("mini-film restarted before this panorama operation completed".to_string());
+            project.updated_at = now_string();
+            database_runtime.block_on(database.save_panorama_project(project))?;
+        }
+    }
 
     let gallery_defaults = handle_gallery_defaults(&config.gallery);
     let publish_defaults = ReviewPublishDefaults::new(
@@ -104,6 +132,11 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
         codex,
         codex_scheduler: Arc::new(ReviewCodexScheduler::default()),
         invocation: config.invocation,
+        panorama_config,
+        panorama_capability,
+        panorama_projects: Arc::new(ArcSwap::from_pointee(panorama_projects)),
+        panorama_operation: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        trusted_input_sender: config.trusted_input_sender,
     };
     handle.refresh_state_cache()?;
     handle.append_history(history_server_started(
@@ -155,6 +188,526 @@ impl ReviewHandle {
         self.output_root.join(".mini-film-review-previews")
     }
 
+    pub(super) fn panorama_cache_root(&self) -> PathBuf {
+        self.output_root.join(".mini-film-panoramas")
+    }
+
+    pub(super) fn panorama_projects_snapshot(&self) -> Arc<Vec<ReviewPanoramaProject>> {
+        self.panorama_projects.load_full()
+    }
+
+    pub(super) async fn create_panorama_project_async(
+        &self,
+        request: ReviewPanoramaCreateRequest,
+    ) -> Result<u64> {
+        self.ensure_panorama_available()?;
+        let sources = self.panorama_source_paths(&request.image_ids)?;
+        let default_name = sources
+            .first()
+            .and_then(|path| path.file_stem())
+            .and_then(|stem| stem.to_str())
+            .map(|stem| format!("{stem} panorama"))
+            .unwrap_or_else(|| "Panorama".to_string());
+        let now = now_string();
+        let mut project = ReviewPanoramaProject {
+            id: 0,
+            name: normalize_panorama_name(request.name.as_deref().unwrap_or(&default_name))?,
+            status: ReviewPanoramaStatus::Draft,
+            matching_mode: request.matching_mode,
+            selected_projection: None,
+            output_path: None,
+            result_image_id: None,
+            progress_stage: None,
+            progress_completed: 0,
+            progress_total: 0,
+            error: None,
+            created_at: now.clone(),
+            updated_at: now,
+            image_ids: request.image_ids,
+            previews: Vec::new(),
+        };
+        let _write_guard = self.database.write_lock.lock().await;
+        self.database.create_panorama_project(&mut project).await?;
+        let id = project.id;
+        self.cache_panorama_project(project);
+        drop(_write_guard);
+        self.broadcast_state()?;
+        Ok(id)
+    }
+
+    pub(super) async fn update_panorama_project_async(
+        &self,
+        project_id: u64,
+        request: ReviewPanoramaUpdateRequest,
+    ) -> Result<()> {
+        let mut project = self.panorama_project(project_id)?;
+        if matches!(
+            project.status,
+            ReviewPanoramaStatus::Previewing | ReviewPanoramaStatus::Rendering
+        ) {
+            bail!("panorama project {project_id} is currently processing");
+        }
+        let mut invalidates_previews = false;
+        if let Some(image_ids) = request.image_ids {
+            self.panorama_source_paths(&image_ids)?;
+            invalidates_previews |= project.image_ids != image_ids;
+            project.image_ids = image_ids;
+        }
+        if let Some(name) = request.name {
+            let name = normalize_panorama_name(&name)?;
+            if project.name != name {
+                project.name = name;
+                project.output_path = None;
+            }
+        }
+        if let Some(matching_mode) = request.matching_mode {
+            invalidates_previews |= project.matching_mode != matching_mode;
+            project.matching_mode = matching_mode;
+        }
+        if invalidates_previews {
+            project.previews.clear();
+            project.selected_projection = None;
+            project.status = ReviewPanoramaStatus::Draft;
+        } else if let Some(projection) = request.selected_projection {
+            project.selected_projection = Some(projection);
+        }
+        project.error = None;
+        project.updated_at = now_string();
+        self.save_panorama_project_async(project).await?;
+        self.broadcast_state()
+    }
+
+    pub(super) async fn start_panorama_previews_async(
+        &self,
+        project_id: u64,
+        request: ReviewPanoramaPreviewRequest,
+    ) -> Result<()> {
+        self.ensure_panorama_available()?;
+        self.claim_panorama_operation()?;
+        let result = self.prepare_panorama_preview_job(project_id, request).await;
+        let (project, sources) = match result {
+            Ok(job) => job,
+            Err(error) => {
+                self.panorama_operation.store(false, Ordering::Release);
+                return Err(error);
+            }
+        };
+        let handle = self.clone();
+        let spawn = thread::Builder::new()
+            .name("mini-film-panorama-preview".to_string())
+            .spawn(move || handle.run_panorama_preview_job(project, sources));
+        if let Err(error) = spawn {
+            self.panorama_operation.store(false, Ordering::Release);
+            self.fail_panorama_project(
+                project_id,
+                format!("starting panorama preview worker: {error}"),
+            )?;
+            return Err(error).context("starting panorama preview worker");
+        }
+        Ok(())
+    }
+
+    pub(super) async fn start_panorama_render_async(
+        &self,
+        project_id: u64,
+        request: ReviewPanoramaRenderRequest,
+    ) -> Result<()> {
+        self.ensure_panorama_available()?;
+        self.claim_panorama_operation()?;
+        let result = self.prepare_panorama_render_job(project_id, request).await;
+        let (project, sources, output) = match result {
+            Ok(job) => job,
+            Err(error) => {
+                self.panorama_operation.store(false, Ordering::Release);
+                return Err(error);
+            }
+        };
+        let handle = self.clone();
+        let spawn = thread::Builder::new()
+            .name("mini-film-panorama-render".to_string())
+            .spawn(move || handle.run_panorama_render_job(project, sources, output));
+        if let Err(error) = spawn {
+            self.panorama_operation.store(false, Ordering::Release);
+            self.fail_panorama_project(
+                project_id,
+                format!("starting panorama render worker: {error}"),
+            )?;
+            return Err(error).context("starting panorama render worker");
+        }
+        Ok(())
+    }
+
+    pub(super) fn panorama_preview_media_path(
+        &self,
+        project_id: u64,
+        matching: PanoramaMatchingMode,
+        projection: PanoramaProjection,
+    ) -> Result<PathBuf> {
+        let project = self.panorama_project(project_id)?;
+        let preview = project
+            .previews
+            .iter()
+            .find(|preview| preview.matching_mode == matching && preview.projection == projection)
+            .ok_or_else(|| anyhow!("panorama preview is not available"))?;
+        if preview.status != ReviewPanoramaPreviewStatus::Done {
+            bail!("panorama preview is not ready");
+        }
+        let path = preview
+            .path
+            .as_ref()
+            .ok_or_else(|| anyhow!("panorama preview has no output path"))?;
+        if !path.starts_with(self.panorama_cache_root()) || !path.is_file() {
+            bail!("panorama preview is missing: {}", path.display());
+        }
+        Ok(path.clone())
+    }
+
+    fn ensure_panorama_available(&self) -> Result<()> {
+        if self.panorama_capability.available {
+            Ok(())
+        } else {
+            bail!(
+                "panorama mode is unavailable: {}",
+                self.panorama_capability
+                    .reason
+                    .as_deref()
+                    .unwrap_or("Hugin CLI tools were not found")
+            )
+        }
+    }
+
+    fn claim_panorama_operation(&self) -> Result<()> {
+        self.panorama_operation
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| ())
+            .map_err(|_| anyhow!("another panorama operation is already running"))
+    }
+
+    fn panorama_project(&self, project_id: u64) -> Result<ReviewPanoramaProject> {
+        self.panorama_projects
+            .load()
+            .iter()
+            .find(|project| project.id == project_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("panorama project {project_id} does not exist"))
+    }
+
+    fn panorama_source_paths(&self, image_ids: &[u64]) -> Result<Vec<PathBuf>> {
+        if image_ids.len() < 2 {
+            bail!("a panorama requires at least two review images");
+        }
+        let unique = image_ids.iter().copied().collect::<HashSet<_>>();
+        if unique.len() != image_ids.len() {
+            bail!("a panorama cannot contain the same review image more than once");
+        }
+        let store = self.store_snapshot();
+        image_ids
+            .iter()
+            .map(|image_id| {
+                let image = store
+                    .images
+                    .iter()
+                    .find(|image| image.id == *image_id)
+                    .ok_or_else(|| anyhow!("review image {image_id} does not exist"))?;
+                if !image.raw_path.is_file() {
+                    bail!("panorama source is missing: {}", image.raw_path.display());
+                }
+                Ok(image.raw_path.clone())
+            })
+            .collect()
+    }
+
+    async fn prepare_panorama_preview_job(
+        &self,
+        project_id: u64,
+        request: ReviewPanoramaPreviewRequest,
+    ) -> Result<(ReviewPanoramaProject, Vec<PathBuf>)> {
+        let mut project = self.panorama_project(project_id)?;
+        if let Some(image_ids) = request.image_ids {
+            project.image_ids = image_ids;
+        }
+        if let Some(matching_mode) = request.matching_mode {
+            project.matching_mode = matching_mode;
+        }
+        let sources = self.panorama_source_paths(&project.image_ids)?;
+        let updated_at = now_string();
+        project.status = ReviewPanoramaStatus::Previewing;
+        project.selected_projection = None;
+        project.output_path = None;
+        project.result_image_id = None;
+        project.progress_stage = Some("queued".to_string());
+        project.progress_completed = 0;
+        project.progress_total = 1;
+        project.error = None;
+        project.updated_at = updated_at.clone();
+        project.previews = PanoramaProjection::ALL
+            .into_iter()
+            .map(|projection| ReviewPanoramaPreview {
+                matching_mode: project.matching_mode,
+                projection,
+                status: ReviewPanoramaPreviewStatus::Queued,
+                path: None,
+                cache_key: None,
+                duration_ms: None,
+                error: None,
+                updated_at: updated_at.clone(),
+            })
+            .collect();
+        self.save_panorama_project_async(project.clone()).await?;
+        self.broadcast_state()?;
+        Ok((project, sources))
+    }
+
+    async fn prepare_panorama_render_job(
+        &self,
+        project_id: u64,
+        request: ReviewPanoramaRenderRequest,
+    ) -> Result<(ReviewPanoramaProject, Vec<PathBuf>, PathBuf)> {
+        let mut project = self.panorama_project(project_id)?;
+        if let Some(name) = request.name {
+            let name = normalize_panorama_name(&name)?;
+            if project.name != name {
+                project.name = name;
+                project.output_path = None;
+            }
+        }
+        if let Some(projection) = request.projection {
+            project.selected_projection = Some(projection);
+        }
+        let projection = project
+            .selected_projection
+            .ok_or_else(|| anyhow!("select a panorama projection before final rendering"))?;
+        if !project.previews.iter().any(|preview| {
+            preview.matching_mode == project.matching_mode
+                && preview.projection == projection
+                && preview.status == ReviewPanoramaPreviewStatus::Done
+        }) {
+            bail!("render previews before starting the full panorama");
+        }
+        let sources = self.panorama_source_paths(&project.image_ids)?;
+        let projects = self.panorama_projects_snapshot();
+        let output = project.output_path.clone().unwrap_or_else(|| {
+            unique_panorama_output(
+                &self.input_root,
+                &project.name,
+                project.id,
+                projects.as_ref(),
+            )
+        });
+        project.status = ReviewPanoramaStatus::Rendering;
+        project.output_path = Some(output.clone());
+        project.result_image_id = None;
+        project.progress_stage = Some("queued".to_string());
+        project.progress_completed = 0;
+        project.progress_total = 1;
+        project.error = None;
+        project.updated_at = now_string();
+        self.save_panorama_project_async(project.clone()).await?;
+        self.broadcast_state()?;
+        Ok((project, sources, output))
+    }
+
+    fn run_panorama_preview_job(&self, project: ReviewPanoramaProject, sources: Vec<PathBuf>) {
+        let started = Instant::now();
+        let project_id = project.id;
+        let progress_handle = self.clone();
+        let progress: PanoramaProgressSink = Arc::new(move |progress| {
+            if let Err(error) = progress_handle.update_panorama_progress(project_id, progress) {
+                eprintln!("panorama preview progress update failed: {error:#}");
+            }
+        });
+        let result = render_preview_row(
+            &self.panorama_config,
+            &sources,
+            &self
+                .panorama_cache_root()
+                .join(format!("project-{project_id}")),
+            project.matching_mode,
+            Some(progress),
+        );
+        self.panorama_operation.store(false, Ordering::Release);
+        let finish = match result {
+            Ok(previews) => self.finish_panorama_previews(project_id, previews, started.elapsed()),
+            Err(error) => self.fail_panorama_project(project_id, format!("{error:#}")),
+        };
+        if let Err(error) = finish {
+            eprintln!("panorama preview completion update failed: {error:#}");
+        }
+    }
+
+    fn run_panorama_render_job(
+        &self,
+        project: ReviewPanoramaProject,
+        sources: Vec<PathBuf>,
+        output: PathBuf,
+    ) {
+        let project_id = project.id;
+        let progress_handle = self.clone();
+        let progress: PanoramaProgressSink = Arc::new(move |progress| {
+            if let Err(error) = progress_handle.update_panorama_progress(project_id, progress) {
+                eprintln!("panorama render progress update failed: {error:#}");
+            }
+        });
+        let projection = project
+            .selected_projection
+            .expect("validated panorama projection");
+        let result = render_final(
+            &self.panorama_config,
+            &sources,
+            &self
+                .panorama_cache_root()
+                .join(format!("project-{project_id}")),
+            project.matching_mode,
+            projection,
+            &output,
+            false,
+            Some(progress),
+        )
+        .and_then(|()| self.record_profiled_compressed_discovered(&output))
+        .and_then(|()| {
+            if let Some(sender) = &self.trusted_input_sender {
+                sender
+                    .send(output.clone())
+                    .context("queueing panorama result in daemon")?;
+            }
+            Ok(())
+        })
+        .and_then(|()| {
+            let image_id = self
+                .store_snapshot()
+                .images
+                .iter()
+                .find(|image| image.raw_path == output)
+                .map(|image| image.id)
+                .ok_or_else(|| anyhow!("panorama result was not added to review"))?;
+            Ok(image_id)
+        });
+        self.panorama_operation.store(false, Ordering::Release);
+        let completion = match result {
+            Ok(image_id) => self.finish_panorama_render(project_id, image_id),
+            Err(error) => self.fail_panorama_project(project_id, format!("{error:#}")),
+        };
+        if let Err(error) = completion {
+            eprintln!("panorama render completion update failed: {error:#}");
+        }
+    }
+
+    fn update_panorama_progress(&self, project_id: u64, progress: PanoramaProgress) -> Result<()> {
+        self.update_panorama_project_sync(project_id, |project| {
+            project.progress_stage = Some(progress.stage);
+            project.progress_completed = progress.completed;
+            project.progress_total = progress.total;
+            project.updated_at = now_string();
+            Ok(())
+        })
+    }
+
+    fn finish_panorama_previews(
+        &self,
+        project_id: u64,
+        previews: Vec<PanoramaPreview>,
+        duration: Duration,
+    ) -> Result<()> {
+        self.update_panorama_project_sync(project_id, |project| {
+            let duration_ms = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
+            let updated_at = now_string();
+            project.previews = previews
+                .into_iter()
+                .map(|preview| ReviewPanoramaPreview {
+                    matching_mode: project.matching_mode,
+                    projection: preview.projection,
+                    status: ReviewPanoramaPreviewStatus::Done,
+                    cache_key: Some(short_path_sha1(&preview.path)),
+                    path: Some(preview.path),
+                    duration_ms: Some(duration_ms),
+                    error: None,
+                    updated_at: updated_at.clone(),
+                })
+                .collect();
+            project.status = ReviewPanoramaStatus::Ready;
+            project.selected_projection = Some(PanoramaProjection::Cylindrical);
+            project.progress_stage = Some("complete".to_string());
+            project.progress_completed = PanoramaProjection::ALL.len();
+            project.progress_total = PanoramaProjection::ALL.len();
+            project.error = None;
+            project.updated_at = updated_at;
+            Ok(())
+        })
+    }
+
+    fn finish_panorama_render(&self, project_id: u64, result_image_id: u64) -> Result<()> {
+        self.update_panorama_project_sync(project_id, |project| {
+            project.status = ReviewPanoramaStatus::Complete;
+            project.result_image_id = Some(result_image_id);
+            project.progress_stage = Some("complete".to_string());
+            project.progress_completed = 1;
+            project.progress_total = 1;
+            project.error = None;
+            project.updated_at = now_string();
+            Ok(())
+        })
+    }
+
+    fn fail_panorama_project(&self, project_id: u64, error: String) -> Result<()> {
+        self.update_panorama_project_sync(project_id, |project| {
+            project.status = ReviewPanoramaStatus::Failed;
+            project.progress_stage = Some("failed".to_string());
+            project.error = Some(error.clone());
+            let updated_at = now_string();
+            for preview in &mut project.previews {
+                if matches!(
+                    preview.status,
+                    ReviewPanoramaPreviewStatus::Queued | ReviewPanoramaPreviewStatus::Processing
+                ) {
+                    preview.status = ReviewPanoramaPreviewStatus::Failed;
+                    preview.error = Some(error.clone());
+                    preview.updated_at = updated_at.clone();
+                }
+            }
+            project.updated_at = updated_at;
+            Ok(())
+        })
+    }
+
+    fn update_panorama_project_sync<F>(&self, project_id: u64, update: F) -> Result<()>
+    where
+        F: FnOnce(&mut ReviewPanoramaProject) -> Result<()>,
+    {
+        self.database_runtime.block_on(async {
+            let mut project = self.panorama_project(project_id)?;
+            update(&mut project)?;
+            self.save_panorama_project_async(project).await?;
+            self.broadcast_state()
+        })
+    }
+
+    async fn save_panorama_project_async(&self, project: ReviewPanoramaProject) -> Result<()> {
+        let _write_guard = self.database.write_lock.lock().await;
+        self.database.save_panorama_project(&project).await?;
+        self.cache_panorama_project(project);
+        Ok(())
+    }
+
+    fn cache_panorama_project(&self, project: ReviewPanoramaProject) {
+        loop {
+            let current = self.panorama_projects.load_full();
+            let mut next = (*current).clone();
+            if let Some(existing) = next.iter_mut().find(|existing| existing.id == project.id) {
+                *existing = project.clone();
+            } else {
+                next.push(project.clone());
+            }
+            next.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+            let next = Arc::new(next);
+            let previous = self
+                .panorama_projects
+                .compare_and_swap(&current, Arc::clone(&next));
+            if Arc::ptr_eq(&previous, &current) {
+                break;
+            }
+        }
+    }
+
     pub(super) fn preview_path_for(&self, raw: &Path, image_id: u64) -> PathBuf {
         self.preview_root()
             .join(format!("{image_id:08}-{}.jpg", short_path_sha1(raw)))
@@ -181,6 +734,12 @@ impl ReviewHandle {
     pub(super) fn crop_source_preview_path_for(&self, source: &Path, image_id: u64) -> PathBuf {
         self.preview_root()
             .join(CROP_SOURCE_CACHE_VERSION)
+            .join(compressed_review_cache_file_name(source, image_id))
+    }
+
+    pub(super) fn rendered_full_preview_path_for(&self, source: &Path, image_id: u64) -> PathBuf {
+        self.preview_root()
+            .join(RENDERED_FULL_PREVIEW_CACHE_VERSION)
             .join(compressed_review_cache_file_name(source, image_id))
     }
 
@@ -417,7 +976,7 @@ impl ReviewHandle {
         let Some(image) = store.images.iter().find(|image| image.raw_path == input) else {
             return;
         };
-        if !is_jpeg_input_file(&image.raw_path) {
+        if !is_rendered_input_file(&image.raw_path) {
             return;
         }
         self.media_scheduler.schedule(
@@ -1124,7 +1683,7 @@ impl ReviewHandle {
                 model: config.model.clone(),
                 timeout: config.timeout,
                 flags: config.flags,
-                resize_preview: is_jpeg_input_file(&image.raw_path),
+                resize_preview: is_rendered_input_file(&image.raw_path),
             },
         )))
     }
@@ -1856,7 +2415,8 @@ impl ReviewHandle {
             .map(|image| {
                 let mut exif = image.exif.clone();
                 exif.sanitize_text_fields();
-                let compressed = is_jpeg_input_file(&image.raw_path);
+                let compressed = is_rendered_input_file(&image.raw_path);
+                let tiff = is_tiff_input_file(&image.raw_path);
                 let profiled = image_uses_profile_pipeline(image);
                 let preview_ready = if compressed {
                     self.compressed_display_preview_path_for(&image.raw_path, image.id)
@@ -1951,7 +2511,9 @@ impl ReviewHandle {
                     } else {
                         &image.preview.updated_at
                     },
-                    "full_url": if full_source_ready {
+                    "full_url": if full_source_ready && tiff {
+                        Some(format!("full-preview/{}", image.id))
+                    } else if full_source_ready {
                         Some(format!("original/{}", image.id))
                     } else {
                         None
@@ -1984,6 +2546,53 @@ impl ReviewHandle {
                 })
             })
             .collect::<Vec<_>>();
+        let panorama_projects = self
+            .panorama_projects_snapshot()
+            .iter()
+            .map(|project| {
+                let previews = project
+                    .previews
+                    .iter()
+                    .map(|preview| {
+                        json!({
+                            "matching_mode": preview.matching_mode,
+                            "projection": preview.projection,
+                            "status": preview.status,
+                            "url": if preview.status == ReviewPanoramaPreviewStatus::Done
+                                && preview.path.as_ref().is_some_and(|path| path.is_file())
+                            {
+                                Some(format!(
+                                    "panorama-preview/{}/{}/{}",
+                                    project.id, preview.matching_mode, preview.projection
+                                ))
+                            } else {
+                                None
+                            },
+                            "duration_ms": preview.duration_ms,
+                            "error": preview.error,
+                            "updated_at": preview.updated_at,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                json!({
+                    "id": project.id,
+                    "name": project.name,
+                    "status": project.status,
+                    "matching_mode": project.matching_mode,
+                    "selected_projection": project.selected_projection,
+                    "output_file_name": project.output_path.as_ref().and_then(|path| path.file_name()).and_then(|name| name.to_str()),
+                    "result_image_id": project.result_image_id,
+                    "progress_stage": project.progress_stage,
+                    "progress_completed": project.progress_completed,
+                    "progress_total": project.progress_total,
+                    "error": project.error,
+                    "created_at": project.created_at,
+                    "updated_at": project.updated_at,
+                    "image_ids": project.image_ids,
+                    "previews": previews,
+                })
+            })
+            .collect::<Vec<_>>();
 
         Ok(json!({
             "version": env!("CARGO_PKG_VERSION"),
@@ -2001,6 +2610,13 @@ impl ReviewHandle {
             },
             "publish_defaults": self.publish_defaults,
             "publish_jobs": self.publish_jobs_snapshot()?,
+            "capabilities": {
+                "panorama": self.panorama_capability,
+            },
+            "panorama": {
+                "busy": self.panorama_operation.load(Ordering::Acquire),
+                "projects": panorama_projects,
+            },
             "ui": {
                 "current_image_id": store.ui.current_image_id,
                 "min_rating": store.ui.min_rating,
@@ -2197,7 +2813,7 @@ impl ReviewHandle {
             .iter()
             .find(|image| image.id == image_id)
             .ok_or_else(|| anyhow!("review image {image_id} does not exist"))?;
-        if !is_jpeg_input_file(&image.raw_path) {
+        if !is_rendered_input_file(&image.raw_path) {
             if image.preview.status != ReviewRenderStatus::Done {
                 bail!("review preview is not ready");
             }
@@ -2226,7 +2842,7 @@ impl ReviewHandle {
             .iter()
             .find(|image| image.id == image_id)
             .ok_or_else(|| anyhow!("review image {image_id} does not exist"))?;
-        if !is_jpeg_input_file(&image.raw_path) {
+        if !is_rendered_input_file(&image.raw_path) {
             bail!("dedicated thumbnails are only available for compressed inputs");
         }
         let path = self.compressed_thumbnail_path_for(&image.raw_path, image.id);
@@ -2243,13 +2859,28 @@ impl ReviewHandle {
             .iter()
             .find(|image| image.id == image_id)
             .ok_or_else(|| anyhow!("review image {image_id} does not exist"))?;
-        if !is_jpeg_input_file(&image.raw_path) {
+        if !is_rendered_input_file(&image.raw_path) {
             bail!("original download is only available for compressed inputs");
         }
         if !image.raw_path.is_file() {
             bail!("original media is missing: {}", image.raw_path.display());
         }
         Ok(image.raw_path.clone())
+    }
+
+    pub(super) fn rendered_full_preview_media_path(&self, image_id: u64) -> Result<PathBuf> {
+        let store = self.store_snapshot();
+        let image = store
+            .images
+            .iter()
+            .find(|image| image.id == image_id)
+            .ok_or_else(|| anyhow!("review image {image_id} does not exist"))?;
+        if !is_tiff_input_file(&image.raw_path) {
+            bail!("full JPEG proxies are only available for TIFF inputs");
+        }
+        let path = self.rendered_full_preview_path_for(&image.raw_path, image.id);
+        ensure_rendered_full_preview(&image.raw_path, &path, &self.convert)?;
+        Ok(path)
     }
 
     pub(super) fn start_publish_job(&self, request: PublishRequest) -> Result<ReviewPublishJob> {
@@ -2620,6 +3251,60 @@ impl ReviewHandle {
     }
 }
 
+fn normalize_panorama_name(name: &str) -> Result<String> {
+    let name = name.trim();
+    if name.is_empty() {
+        bail!("panorama name cannot be empty");
+    }
+    let name = name.chars().take(120).collect::<String>();
+    if name == "." || name == ".." {
+        bail!("invalid panorama name");
+    }
+    Ok(name)
+}
+
+fn panorama_file_stem(name: &str, project_id: u64) -> String {
+    let stem = name
+        .chars()
+        .map(|character| match character {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '-',
+            character if character.is_control() => '-',
+            character => character,
+        })
+        .collect::<String>();
+    let stem = stem.trim().trim_matches('.');
+    if stem.is_empty() {
+        format!("Panorama-{project_id}")
+    } else {
+        stem.to_string()
+    }
+}
+
+fn unique_panorama_output(
+    input_root: &Path,
+    name: &str,
+    project_id: u64,
+    projects: &[ReviewPanoramaProject],
+) -> PathBuf {
+    let root = input_root.join("Panoramas");
+    let stem = panorama_file_stem(name, project_id);
+    for suffix in 1_u32.. {
+        let file_name = if suffix == 1 {
+            format!("{stem}.tif")
+        } else {
+            format!("{stem}-{suffix}.tif")
+        };
+        let candidate = root.join(file_name);
+        let reserved = projects.iter().any(|project| {
+            project.id != project_id && project.output_path.as_deref() == Some(candidate.as_path())
+        });
+        if !candidate.exists() && !reserved {
+            return candidate;
+        }
+    }
+    unreachable!("panorama output suffix space is exhausted")
+}
+
 fn review_state_patch_value(
     previous: &serde_json::Value,
     current: &serde_json::Value,
@@ -2641,6 +3326,8 @@ fn review_state_patch_value(
         "publish_defaults",
         "invocation",
         "publish_jobs",
+        "capabilities",
+        "panorama",
         "ui",
         "publish_root",
     ] {

@@ -134,6 +134,35 @@ button:disabled {
   font-weight: 700;
 }
 
+.sidebar-tools {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 5px;
+  padding: 7px 9px 9px;
+  border-top: 1px solid #e4e4de;
+  flex: 0 0 auto;
+}
+
+.sidebar-tools[hidden] {
+  display: none;
+}
+
+.sidebar-tools-title {
+  color: #77776f;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.sidebar-tools .panorama-button {
+  width: 100%;
+  min-height: 26px;
+  padding: 3px 7px;
+  font-size: 10px;
+  font-weight: 700;
+  text-align: left;
+}
+
 .status {
   display: flex;
   align-items: center;
@@ -1351,6 +1380,21 @@ button:disabled {
   backdrop-filter: blur(6px);
 }
 
+.panorama-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 56;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(18, 18, 17, 0.55);
+  backdrop-filter: blur(6px);
+}
+
+.panorama-overlay[hidden] {
+  display: none;
+}
+
 .publish-overlay[hidden] {
   display: none;
 }
@@ -1679,6 +1723,257 @@ button:disabled {
   background: #fbfbf8;
   box-shadow: 0 24px 72px rgba(0, 0, 0, 0.34);
   padding: 16px;
+}
+
+.panorama-card {
+  width: min(1120px, 100%);
+  max-height: min(820px, calc(100dvh - 36px));
+  overflow: hidden;
+  border: 1px solid #d8d8d2;
+  border-radius: 8px;
+  background: #fbfbf8;
+  box-shadow: 0 24px 72px rgba(0, 0, 0, 0.34);
+  padding: 16px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 14px;
+}
+
+.panorama-header,
+.panorama-footer,
+.panorama-header-actions,
+.panorama-footer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.panorama-header h2 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.panorama-header p {
+  margin: 4px 0 0;
+  color: #66665f;
+  font-size: 12px;
+}
+
+.panorama-header select {
+  min-height: 32px;
+  max-width: 280px;
+  border: 1px solid #c9c9c1;
+  border-radius: 5px;
+  background: #fff;
+  padding: 4px 7px;
+}
+
+.panorama-close {
+  width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border-radius: 999px;
+  font-size: 24px;
+  line-height: 1;
+}
+
+.panorama-layout {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(250px, 0.7fr) minmax(420px, 1.5fr);
+  gap: 14px;
+}
+
+.panorama-sources,
+.panorama-workflow {
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.panorama-sources {
+  grid-template-rows: auto minmax(0, 1fr);
+  padding-right: 14px;
+  border-right: 1px solid #deded7;
+}
+
+.panorama-sources h3 {
+  margin: 0;
+  font-size: 13px;
+  text-transform: uppercase;
+}
+
+.panorama-source-list {
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.panorama-source {
+  min-height: 44px;
+  display: grid;
+  grid-template-columns: 18px 22px 40px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  padding: 3px 4px;
+  background: #f2f2ed;
+  cursor: pointer;
+}
+
+.panorama-source.selected {
+  border-color: #8a8a81;
+  background: #fff;
+}
+
+.panorama-source img,
+.panorama-source-placeholder {
+  width: 40px;
+  height: 36px;
+  display: block;
+  object-fit: cover;
+  border-radius: 3px;
+  background: #d8d8d2;
+}
+
+.panorama-source-order {
+  color: #66665f;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.panorama-source-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+
+.panorama-source-move {
+  display: flex;
+  gap: 2px;
+}
+
+.panorama-source-move button {
+  width: 24px;
+  min-height: 24px;
+  padding: 0;
+  font-size: 13px;
+}
+
+.panorama-settings {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(150px, 0.55fr) auto;
+  align-items: end;
+  gap: 8px;
+}
+
+.panorama-settings label {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  color: #66665f;
+  font-size: 11px;
+}
+
+.panorama-settings input,
+.panorama-settings select {
+  width: 100%;
+  min-height: 32px;
+  border: 1px solid #c9c9c1;
+  border-radius: 5px;
+  background: #fff;
+  padding: 4px 7px;
+}
+
+.panorama-projections {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.panorama-projection {
+  min-width: 0;
+  min-height: 0;
+  padding: 5px;
+  display: grid;
+  grid-template-rows: minmax(110px, 1fr) auto;
+  gap: 5px;
+  border: 2px solid transparent;
+  background: #e8e8e2;
+}
+
+.panorama-projection.active,
+.panorama-projection.active:hover {
+  border-color: #171717;
+  background: #fff;
+  color: #171717;
+}
+
+.panorama-projection:disabled {
+  opacity: 1;
+}
+
+.panorama-projection-media {
+  min-height: 110px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: #292928;
+  color: #bcbcb4;
+  font-size: 11px;
+}
+
+.panorama-projection-media img {
+  width: 100%;
+  height: 100%;
+  max-height: 240px;
+  object-fit: contain;
+}
+
+.panorama-projection-label {
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.panorama-footer {
+  min-height: 34px;
+}
+
+.panorama-status {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+  color: #66665f;
+  font-size: 12px;
+}
+
+.panorama-status .error {
+  color: #9f281f;
+}
+
+.panorama-status progress {
+  width: min(360px, 45vw);
+  height: 7px;
+}
+
+.panorama-render {
+  background: #171717;
+  border-color: #171717;
+  color: #fff;
+  font-weight: 700;
+}
+
+.panorama-render:hover {
+  background: #363633;
 }
 
 .publish-header,
@@ -2308,8 +2603,17 @@ kbd {
   }
 
   .publish-grid,
-  .publish-section-wide {
+  .publish-section-wide,
+  .panorama-layout {
     grid-template-columns: 1fr;
+  }
+
+  .panorama-sources {
+    max-height: 240px;
+    padding-right: 0;
+    padding-bottom: 10px;
+    border-right: 0;
+    border-bottom: 1px solid #deded7;
   }
 
   .publish-labels {
@@ -2456,6 +2760,10 @@ kbd {
   }
 
   .publish-button {
+    display: none;
+  }
+
+  .sidebar-tools {
     display: none;
   }
 
@@ -2661,6 +2969,7 @@ kbd {
 
   .shortcuts-overlay,
   .publish-overlay,
+  .panorama-overlay,
   .profile-info-overlay,
   .command-invocation-overlay {
     padding: max(10px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right))
@@ -2669,6 +2978,7 @@ kbd {
 
   .shortcuts-card,
   .publish-card,
+  .panorama-card,
   .profile-info-card,
   .command-invocation-card {
     max-height: calc(100dvh - max(20px, env(safe-area-inset-top) + env(safe-area-inset-bottom)));
@@ -2684,8 +2994,24 @@ kbd {
   }
 
   .shortcuts-header h2,
-  .publish-header h2 {
+  .publish-header h2,
+  .panorama-header h2 {
     font-size: 18px;
+  }
+
+  .panorama-card {
+    overflow: auto;
+  }
+
+  .panorama-settings,
+  .panorama-projections {
+    grid-template-columns: 1fr;
+  }
+
+  .panorama-header,
+  .panorama-footer {
+    align-items: stretch;
+    flex-direction: column;
   }
 }
 

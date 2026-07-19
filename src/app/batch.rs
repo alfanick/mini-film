@@ -37,7 +37,8 @@ use crate::app::system_stats::{ResourceUsageSummary, sample_usage_block};
 use crate::app::timestamps::{GalleryExifData, extract_gallery_exif};
 use crate::app::util::{
     InputFileFilter, coalesce_input_sidecars, half_cpu_thread_count, input_filter_name,
-    is_raw_input_file, is_supported_input_file, matching_raw_for_sidecar, time_of_day_seed,
+    is_jpeg_input_file, is_raw_input_file, is_supported_input_file, matching_raw_for_sidecar,
+    time_of_day_seed,
 };
 use crate::cli::{BatchOutputFormat, ExportOptions, GalleryTemplate, LensCorrections};
 
@@ -873,7 +874,9 @@ fn batch_input_uses_profile_pipeline(args: &BatchArgs, input: &Path) -> bool {
 }
 
 fn batch_profile_input_is_eligible(input: &Path) -> bool {
-    is_raw_input_file(input) || matching_raw_for_sidecar(input).is_none()
+    is_raw_input_file(input)
+        || !is_jpeg_input_file(input)
+        || matching_raw_for_sidecar(input).is_none()
 }
 
 fn collect_batch_inputs(input: &Path, filter: InputFileFilter) -> Result<Vec<PathBuf>> {

@@ -16,6 +16,8 @@ pub const SUPPORTED_RAW_EXTENSIONS: &[&str] = &[
 
 pub const SUPPORTED_COMPRESSED_EXTENSIONS: &[&str] = &["jpg", "jpeg", "heic", "heif"];
 pub const SUPPORTED_HEIC_EXTENSIONS: &[&str] = &["heic", "heif"];
+pub const SUPPORTED_TIFF_EXTENSIONS: &[&str] = &["tif", "tiff"];
+const PANORAMA_RESULT_STAGING_PREFIX: &str = ".mini-film-panorama-result-";
 
 #[derive(Clone, Copy, Debug, Default)]
 pub enum InputFileFilter {
@@ -59,9 +61,36 @@ pub fn is_heic_input_file(path: &Path) -> bool {
         })
 }
 
+pub fn is_tiff_input_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|s| s.to_str())
+        .is_some_and(|ext| {
+            SUPPORTED_TIFF_EXTENSIONS
+                .iter()
+                .any(|supported| ext.eq_ignore_ascii_case(supported))
+        })
+}
+
+/// Return whether an input already contains rendered pixels rather than camera RAW data.
+///
+/// JPEG/HEIC remain the only camera-sidecar formats. TIFF joins their direct-conversion
+/// and browser-derivative behavior without participating in RAW sidecar coalescing.
+pub fn is_rendered_input_file(path: &Path) -> bool {
+    is_jpeg_input_file(path) || is_tiff_input_file(path)
+}
+
+pub fn is_internal_staging_input_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with(PANORAMA_RESULT_STAGING_PREFIX))
+}
+
 pub fn is_supported_input_file(path: &Path, filter: InputFileFilter) -> bool {
+    if is_internal_staging_input_file(path) {
+        return false;
+    }
     match filter {
-        InputFileFilter::All => is_raw_input_file(path) || is_jpeg_input_file(path),
+        InputFileFilter::All => is_raw_input_file(path) || is_rendered_input_file(path),
         InputFileFilter::RawOnly => is_raw_input_file(path),
         InputFileFilter::JpgOnly => is_jpeg_input_file(path),
     }
@@ -144,7 +173,7 @@ fn sidecar_match_stem(stem: &str) -> &str {
 #[allow(dead_code)]
 pub(crate) fn input_filter_name(filter: InputFileFilter) -> &'static str {
     match filter {
-        InputFileFilter::All => "RAW/JPEG/HEIC",
+        InputFileFilter::All => "RAW/JPEG/HEIC/TIFF",
         InputFileFilter::JpgOnly => "JPG/JPEG/HEIC/HEIF",
         InputFileFilter::RawOnly => "RAW",
     }
@@ -207,6 +236,29 @@ mod tests {
     fn unsupported_extensions_are_rejected() {
         assert!(!is_supported_raw_file(Path::new("foo.jpg")));
         assert!(!is_supported_raw_file(Path::new("foo.txt")));
+    }
+
+    #[test]
+    fn tiff_is_supported_rendered_input_but_never_a_camera_sidecar() {
+        for name in ["frame.tif", "frame.TIFF"] {
+            let path = Path::new(name);
+            assert!(is_tiff_input_file(path));
+            assert!(is_rendered_input_file(path));
+            assert!(is_supported_input_file(path, InputFileFilter::All));
+            assert!(!is_jpeg_input_file(path));
+            assert!(!is_supported_input_file(path, InputFileFilter::JpgOnly));
+            assert!(!is_supported_input_file(path, InputFileFilter::RawOnly));
+        }
+    }
+
+    #[test]
+    fn panorama_result_staging_files_are_never_inputs() {
+        let path = Path::new("Panoramas/.mini-film-panorama-result-AbC123.tif");
+        assert!(is_internal_staging_input_file(path));
+        assert!(is_tiff_input_file(path));
+        assert!(!is_supported_input_file(path, InputFileFilter::All));
+        assert!(!is_supported_input_file(path, InputFileFilter::JpgOnly));
+        assert!(!is_supported_input_file(path, InputFileFilter::RawOnly));
     }
 
     #[test]

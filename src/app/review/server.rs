@@ -69,7 +69,7 @@ pub(super) async fn route_request(
     body: Bytes,
     handle: &ReviewHandle,
 ) -> Response {
-    match (method, path) {
+    match (method.clone(), path) {
         (Method::GET, "/") | (Method::GET, "/review") => {
             text_response(200, "text/html; charset=utf-8", &review_index_html()).into_response()
         }
@@ -171,6 +171,10 @@ pub(super) async fn route_request(
                 Err(error) => json_error(500, error).into_response(),
             }
         }
+        (Method::POST, "/api/panoramas") => panorama_create_response(&body, handle).await,
+        (Method::PATCH, _) | (Method::POST, _) if path.starts_with("/api/panoramas/") => {
+            panorama_project_response(method, path, &body, handle).await
+        }
         (Method::GET, _) if path.starts_with("/api/publish/") => {
             gallery_archive_response(path, handle).await
         }
@@ -182,11 +186,17 @@ pub(super) async fn route_request(
             crop_source_response(path, handle).await
         }
         (Method::GET, _) if path.starts_with("/original/") => original_response(path, handle).await,
+        (Method::GET, _) if path.starts_with("/full-preview/") => {
+            full_preview_response(path, handle).await
+        }
         (Method::GET, _) if path.starts_with("/outputs/") => outputs_response(path, handle).await,
         (Method::GET, _) if path.starts_with("/thumbnail/") => {
             thumbnail_response(path, handle).await
         }
         (Method::GET, _) if path.starts_with("/preview/") => preview_response(path, handle).await,
+        (Method::GET, _) if path.starts_with("/panorama-preview/") => {
+            panorama_preview_response(path, handle).await
+        }
         _ => text_response(404, "text/plain; charset=utf-8", "not found").into_response(),
     }
 }
@@ -233,9 +243,11 @@ pub(super) fn review_route_path(path: &str) -> String {
         "/media/",
         "/crop-source/",
         "/original/",
+        "/full-preview/",
         "/outputs/",
         "/thumbnail/",
         "/preview/",
+        "/panorama-preview/",
     ] {
         if let Some(index) = path.find(marker) {
             return path[index..].to_string();
@@ -259,6 +271,133 @@ pub(super) fn review_route_path(path: &str) -> String {
         return "/".to_string();
     }
     path.to_string()
+}
+
+async fn panorama_create_response(body: &[u8], handle: &ReviewHandle) -> Response {
+    let previous = match handle.api_state_value() {
+        Ok(state) => state,
+        Err(error) => return json_error(500, error).into_response(),
+    };
+    let result = async {
+        let request = serde_json::from_slice::<ReviewPanoramaCreateRequest>(body)
+            .context("parsing panorama project")?;
+        handle.create_panorama_project_async(request).await?;
+        handle.api_state_patch_json_since(&previous)
+    }
+    .await;
+    match result {
+        Ok(body) => text_response(201, "application/json; charset=utf-8", &body).into_response(),
+        Err(error) => json_error(400, error).into_response(),
+    }
+}
+
+async fn panorama_project_response(
+    method: Method,
+    path: &str,
+    body: &[u8],
+    handle: &ReviewHandle,
+) -> Response {
+    let parts = path
+        .trim_start_matches("/api/panoramas/")
+        .split('/')
+        .collect::<Vec<_>>();
+    let Some(project_id) = parts.first().and_then(|value| value.parse::<u64>().ok()) else {
+        return text_response(400, "text/plain; charset=utf-8", "bad panorama project id")
+            .into_response();
+    };
+    let previous = match handle.api_state_value() {
+        Ok(state) => state,
+        Err(error) => return json_error(500, error).into_response(),
+    };
+    let result = match (method, parts.as_slice()) {
+        (Method::PATCH, [_]) => match serde_json::from_slice::<ReviewPanoramaUpdateRequest>(body)
+            .context("parsing panorama project update")
+        {
+            Ok(request) => {
+                handle
+                    .update_panorama_project_async(project_id, request)
+                    .await
+            }
+            Err(error) => Err(error),
+        },
+        (Method::POST, [_, "previews"]) => {
+            let request = if body.is_empty() {
+                Ok(ReviewPanoramaPreviewRequest::default())
+            } else {
+                serde_json::from_slice(body).context("parsing panorama preview request")
+            };
+            match request {
+                Ok(request) => {
+                    handle
+                        .start_panorama_previews_async(project_id, request)
+                        .await
+                }
+                Err(error) => Err(error),
+            }
+        }
+        (Method::POST, [_, "render"]) => {
+            let request = if body.is_empty() {
+                Ok(ReviewPanoramaRenderRequest::default())
+            } else {
+                serde_json::from_slice(body).context("parsing panorama render request")
+            };
+            match request {
+                Ok(request) => {
+                    handle
+                        .start_panorama_render_async(project_id, request)
+                        .await
+                }
+                Err(error) => Err(error),
+            }
+        }
+        _ => return text_response(404, "text/plain; charset=utf-8", "not found").into_response(),
+    };
+    match result.and_then(|()| handle.api_state_patch_json_since(&previous)) {
+        Ok(body) => text_response(202, "application/json; charset=utf-8", &body).into_response(),
+        Err(error) => json_error(400, error).into_response(),
+    }
+}
+
+async fn panorama_preview_response(path: &str, handle: &ReviewHandle) -> Response {
+    let parts = path
+        .trim_start_matches("/panorama-preview/")
+        .split('/')
+        .collect::<Vec<_>>();
+    let [project_id, matching, projection] = parts.as_slice() else {
+        return text_response(404, "text/plain; charset=utf-8", "not found").into_response();
+    };
+    let result = (|| {
+        let project_id = project_id
+            .parse::<u64>()
+            .context("parsing panorama project id")?;
+        let matching = parse_panorama_matching(matching)?;
+        let projection = parse_panorama_projection(projection)?;
+        handle.panorama_preview_media_path(project_id, matching, projection)
+    })();
+    match result {
+        Ok(path) => serve_review_file(path, "image/jpeg").await,
+        Err(error) => json_error(404, error).into_response(),
+    }
+}
+
+fn parse_panorama_matching(value: &str) -> Result<PanoramaMatchingMode> {
+    match value {
+        "automatic" => Ok(PanoramaMatchingMode::Automatic),
+        "sequential" => Ok(PanoramaMatchingMode::Sequential),
+        "multi-row" => Ok(PanoramaMatchingMode::MultiRow),
+        "flat-mosaic" => Ok(PanoramaMatchingMode::FlatMosaic),
+        _ => bail!("invalid panorama matching mode {value:?}"),
+    }
+}
+
+fn parse_panorama_projection(value: &str) -> Result<PanoramaProjection> {
+    match value {
+        "rectilinear" => Ok(PanoramaProjection::Rectilinear),
+        "cylindrical" => Ok(PanoramaProjection::Cylindrical),
+        "equirectangular" => Ok(PanoramaProjection::Equirectangular),
+        "panini" => Ok(PanoramaProjection::Panini),
+        _ => bail!("invalid panorama projection {value:?}"),
+    }
 }
 
 pub(super) async fn media_response(path: &str, handle: &ReviewHandle) -> Response {
@@ -342,7 +481,32 @@ fn original_media_content_type(path: &Path) -> &'static str {
         }
         Some(extension) if extension.eq_ignore_ascii_case("heic") => "image/heic",
         Some(extension) if extension.eq_ignore_ascii_case("heif") => "image/heif",
+        Some(extension)
+            if extension.eq_ignore_ascii_case("tif") || extension.eq_ignore_ascii_case("tiff") =>
+        {
+            "image/tiff"
+        }
         _ => "application/octet-stream",
+    }
+}
+
+async fn full_preview_response(path: &str, handle: &ReviewHandle) -> Response {
+    let id = path.trim_start_matches("/full-preview/");
+    let image_id = match id.parse::<u64>() {
+        Ok(id) => id,
+        Err(_) => {
+            return text_response(400, "text/plain; charset=utf-8", "bad image id").into_response();
+        }
+    };
+    let handle = handle.clone();
+    match tokio::task::spawn_blocking(move || handle.rendered_full_preview_media_path(image_id))
+        .await
+    {
+        Ok(Ok(path)) => serve_review_file(path, "image/jpeg").await,
+        Ok(Err(error)) => json_error(404, error).into_response(),
+        Err(error) => {
+            json_error(500, anyhow!("creating full TIFF preview: {error}")).into_response()
+        }
     }
 }
 

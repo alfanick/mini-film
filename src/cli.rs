@@ -9,7 +9,7 @@ const DEFAULT_HALD_LEVEL: u32 = 16;
 #[derive(Parser, Debug)]
 #[command(
     version,
-    about = "Review and publish RAW, JPEG, and HEIC photos with optional RAW film profiles"
+    about = "Review and publish RAW, JPEG, HEIC, and TIFF photos with optional film profiles"
 )]
 pub(crate) struct Cli {
     #[command(subcommand)]
@@ -113,11 +113,11 @@ pub(crate) enum CommandKind {
         hald_level: u32,
     },
 
-    /// Develop a RAW file or process a JPEG/HEIC input, optionally with a profile.
+    /// Develop a RAW file or process a JPEG/HEIC/TIFF input, optionally with a profile.
     Apply {
         /// Input file. RAW inputs support common camera RAW formats such as `.dng`,
         /// `.nef`, `.cr2`, `.cr3`, `.arw`, `.raf`, `.orf`, `.rw2`; compressed
-        /// inputs support `.jpg`, `.jpeg`, `.heic`, and `.heif`.
+        /// inputs support `.jpg`, `.jpeg`, `.heic`, `.heif`, `.tif`, and `.tiff`.
         raw: PathBuf,
 
         /// Output image path.
@@ -125,8 +125,8 @@ pub(crate) enum CommandKind {
         output: PathBuf,
 
         /// Optional profile selector: Hald PNG path/name, emulation XMP path/name, or RawTherapee PP3 path.
-        /// If omitted, RawTherapee develops RAW inputs with its defaults while JPEG/HEIC inputs are converted directly.
-        /// With a profile, JPEG is processed directly by RawTherapee and HEIC is prepared as a 16-bit TIFF first.
+        /// If omitted, RawTherapee develops RAW inputs with its defaults while JPEG/HEIC/TIFF inputs are converted directly.
+        /// With a profile, JPEG/TIFF are processed directly by RawTherapee and HEIC is prepared as a 16-bit TIFF first.
         #[arg(short, long)]
         profile: Option<String>,
 
@@ -231,21 +231,73 @@ pub(crate) enum CommandKind {
         progressive_jpeg: bool,
     },
 
+    /// Automatically stitch RAW, JPEG, HEIC, or TIFF files into a 16-bit TIFF panorama.
+    Panorama {
+        /// Source images in panorama order. At least two are required.
+        #[arg(required = true, num_args = 2..)]
+        input: Vec<PathBuf>,
+
+        /// Destination TIFF file.
+        #[arg(short, long)]
+        output: PathBuf,
+
+        /// Control-point matching strategy.
+        #[arg(long, value_enum, default_value_t = PanoramaMatchingMode::Automatic)]
+        matching: PanoramaMatchingMode,
+
+        /// Panorama output projection.
+        #[arg(long, value_enum, default_value_t = PanoramaProjection::Cylindrical)]
+        projection: PanoramaProjection,
+
+        /// Directory containing Hugin command-line tools. Defaults to
+        /// MINI_FILM_HUGIN_BIN_DIR, then PATH.
+        #[arg(long)]
+        hugin_bin_dir: Option<PathBuf>,
+
+        /// Path to rawtherapee-cli binary.
+        #[arg(long, default_value = "rawtherapee-cli")]
+        rawtherapee: PathBuf,
+
+        /// Path to convert binary.
+        #[arg(long, default_value = "convert")]
+        convert: PathBuf,
+
+        /// Number of source-preparation and Hugin worker threads.
+        #[arg(long)]
+        jobs: Option<usize>,
+
+        /// Minimum RAW ISO for directional-pyramid color denoise. Use 0 to disable.
+        #[arg(long, default_value_t = 1600)]
+        color_noise_iso_threshold: u32,
+
+        /// Enable RawTherapee lens corrections for RAW panorama sources.
+        #[arg(long, num_args = 0..=1, value_parser = parse_lens_corrections_arg, default_missing_value = "all")]
+        lens_corrections: Option<LensCorrections>,
+
+        /// Optional Lensfun profile root for RawTherapee LCP profiles.
+        #[arg(long)]
+        lcp_root: Option<PathBuf>,
+
+        /// Replace an existing destination file.
+        #[arg(long)]
+        overwrite: bool,
+    },
+
     /// Apply an optional profile or directly convert compressed inputs in a folder.
     Batch {
         /// Input folder scanned recursively for supported RAW and compressed image files.
         ///
         /// Without filters, both file groups are accepted: RAW (e.g. `.dng`, `.nef`, `.cr2`,
-        /// `.cr3`, `.arw`, `.raf`, `.orf`, `.rw2`, ...) and JPEG/HEIC (`.jpg`, `.jpeg`,
-        /// `.heic`, `.heif`).
+        /// `.cr3`, `.arw`, `.raf`, `.orf`, `.rw2`, ...), JPEG/HEIC (`.jpg`, `.jpeg`,
+        /// `.heic`, `.heif`), and TIFF (`.tif`, `.tiff`).
         input: PathBuf,
 
         /// Output folder. It is created if it does not exist.
         output: PathBuf,
 
         /// Optional profile selector: Hald PNG path/name, emulation XMP path/name, or RawTherapee PP3 path.
-        /// If omitted, RawTherapee develops each RAW with its defaults and JPEG/HEIC inputs are converted directly.
-        /// If provided, the profile is also applied to standalone JPEG/HEIC inputs.
+        /// If omitted, RawTherapee develops each RAW with its defaults and JPEG/HEIC/TIFF inputs are converted directly.
+        /// If provided, the profile is also applied to standalone JPEG/HEIC/TIFF inputs.
         #[arg(short, long)]
         profile: Option<String>,
 
@@ -475,14 +527,14 @@ pub(crate) enum CommandKind {
         /// Input folder to watch recursively for new RAW and compressed image files.
         ///
         /// Without filters, both file groups are accepted: RAW (e.g. `.dng`, `.nef`, `.cr2`,
-        /// `.cr3`, `.arw`, `.raf`, `.orf`, `.rw2`, ...) and JPEG/HEIC (`.jpg`, `.jpeg`,
-        /// `.heic`, `.heif`).
+        /// `.cr3`, `.arw`, `.raf`, `.orf`, `.rw2`, ...), JPEG/HEIC (`.jpg`, `.jpeg`,
+        /// `.heic`, `.heif`), and TIFF (`.tif`, `.tiff`).
         input: PathBuf,
 
         /// Output root folder. It is created if it does not exist.
         output: PathBuf,
 
-        /// Profile selectors to apply to each incoming RAW or standalone JPEG/HEIC. Repeat for each profile.
+        /// Profile selectors to apply to each incoming RAW or standalone JPEG/HEIC/TIFF. Repeat for each profile.
         /// If omitted, each RAW is developed once with RawTherapee defaults and compressed inputs are converted directly.
         #[arg(short = 'p', long = "profile")]
         profile: Vec<String>,
@@ -583,6 +635,11 @@ pub(crate) enum CommandKind {
         /// Serve the live review web UI at this host:port, for example 0.0.0.0:8090.
         #[arg(long)]
         review_address: Option<String>,
+
+        /// Directory containing Hugin command-line tools for the panorama review wizard.
+        /// Defaults to MINI_FILM_HUGIN_BIN_DIR, then PATH.
+        #[arg(long)]
+        hugin_bin_dir: Option<PathBuf>,
 
         /// Analyze rendered pictures with Codex using embedded RAW previews.
         ///
@@ -909,6 +966,64 @@ pub(crate) enum BatchOutputFormat {
     Tiff,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum PanoramaMatchingMode {
+    #[default]
+    Automatic,
+    Sequential,
+    MultiRow,
+    FlatMosaic,
+}
+
+impl std::fmt::Display for PanoramaMatchingMode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{}",
+            self.to_possible_value().expect("value enum").get_name()
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum PanoramaProjection {
+    Rectilinear,
+    #[default]
+    Cylindrical,
+    Equirectangular,
+    Panini,
+}
+
+impl PanoramaProjection {
+    pub(crate) const ALL: [Self; 4] = [
+        Self::Rectilinear,
+        Self::Cylindrical,
+        Self::Equirectangular,
+        Self::Panini,
+    ];
+
+    pub(crate) fn hugin_id(self) -> u8 {
+        match self {
+            Self::Rectilinear => 0,
+            Self::Cylindrical => 1,
+            Self::Equirectangular => 2,
+            Self::Panini => 19,
+        }
+    }
+}
+
+impl std::fmt::Display for PanoramaProjection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{}",
+            self.to_possible_value().expect("value enum").get_name()
+        )
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub(crate) enum GalleryTemplate {
     /// Light modern card grid with generous spacing.
@@ -1129,6 +1244,7 @@ pub(crate) struct ExportOptions {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     #[test]
     fn batch_output_format_extensions_match_generated_files() {
@@ -1150,6 +1266,51 @@ mod tests {
             JpegSubsampling::S420.graphicsmagick_sampling_factor(),
             "2x2,1x1,1x1"
         );
+    }
+
+    #[test]
+    fn cli_parses_panorama_sources_strategy_projection_and_tool_directory() {
+        let cli = Cli::parse_from([
+            "mini-film",
+            "panorama",
+            "one.nef",
+            "two.jpg",
+            "three.heic",
+            "--output",
+            "result.tif",
+            "--matching",
+            "multi-row",
+            "--projection",
+            "panini",
+            "--hugin-bin-dir",
+            "/opt/hugin/bin",
+            "--jobs",
+            "6",
+        ]);
+
+        assert!(matches!(
+            cli.command,
+            CommandKind::Panorama {
+                input,
+                output,
+                matching: PanoramaMatchingMode::MultiRow,
+                projection: PanoramaProjection::Panini,
+                hugin_bin_dir: Some(hugin_bin_dir),
+                jobs: Some(6),
+                ..
+            } if input == vec![PathBuf::from("one.nef"), PathBuf::from("two.jpg"), PathBuf::from("three.heic")]
+                && output.as_path() == Path::new("result.tif")
+                && hugin_bin_dir.as_path() == Path::new("/opt/hugin/bin")
+        ));
+    }
+
+    #[test]
+    fn cli_requires_at_least_two_panorama_sources() {
+        let error =
+            Cli::try_parse_from(["mini-film", "panorama", "one.nef", "--output", "result.tif"])
+                .unwrap_err();
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::TooFewValues);
     }
 
     #[test]

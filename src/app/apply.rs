@@ -36,7 +36,8 @@ use crate::app::retouch::{
 };
 use crate::app::util::{
     OutputEditMetadata, extract_capture_iso, is_heic_input_file, is_jpeg_input_file,
-    is_raw_input_file, remove_temp_file, sync_output_metadata_from_image_with_color_profile,
+    is_raw_input_file, is_rendered_input_file, is_tiff_input_file, remove_temp_file,
+    sync_output_metadata_from_image_with_color_profile,
     sync_output_metadata_from_raw_with_color_profile, sync_output_timestamps_from_exif,
     time_of_day_seed,
 };
@@ -130,12 +131,12 @@ pub(crate) fn run_apply(args: ApplyArgs) -> Result<()> {
         .profile
         .as_deref()
         .is_some_and(|profile| !profile.trim().is_empty());
-    if is_jpeg_input_file(&args.raw) && !explicit_profile {
+    if is_rendered_input_file(&args.raw) && !explicit_profile {
         if args.lens_corrections.is_enabled() {
             bail!("--lens-corrections is only supported for RAW inputs");
         }
         if args.grain.is_some() || args.grain_preset.is_some() {
-            bail!("--grain and --grain-preset require --profile for JPEG/HEIC inputs");
+            bail!("--grain and --grain-preset require --profile for JPEG/HEIC/TIFF inputs");
         }
 
         let file = ProgressBar::new(progress_length());
@@ -303,9 +304,9 @@ pub(crate) fn apply_compressed(
 /// Compute whether sharpening and color-noise denoising are expected to be active for
 /// a specific input before invoking expensive processing.
 ///
-/// Sharpening is derived from resolved emulation metadata for RAW inputs and is
-/// always disabled for compressed inputs. Denoise reflects the same threshold/ISO
-/// logic used by `with_optional_color_noise_profile`.
+/// Sharpening is derived from resolved emulation metadata for RAW and TIFF inputs.
+/// Camera-compressed JPEG/HEIC inputs remain unsharpened. Denoise reflects the
+/// RAW-only threshold/ISO logic used by `with_optional_color_noise_profile`.
 pub(crate) fn resolve_apply_effects(
     raw: &Path,
     resolved: &ResolvedProfile,
@@ -313,7 +314,10 @@ pub(crate) fn resolve_apply_effects(
 ) -> (bool, bool) {
     let raw_input = is_raw_input_file(raw);
     let denoise_applied = raw_input && denoise_profile_applied(raw, color_noise_iso_threshold);
-    (raw_input && resolved.sharpening_applied, denoise_applied)
+    (
+        (raw_input || is_tiff_input_file(raw)) && resolved.sharpening_applied,
+        denoise_applied,
+    )
 }
 
 /// Apply an already resolved profile to one RAW or compressed input.
@@ -757,10 +761,14 @@ pub(crate) fn rawtherapee_profiles_for_input(
         options.retouch_white_balance,
         options.bw_filter,
     )?;
-    if !is_raw_input_file(options.input) {
+    if is_jpeg_input_file(options.input) {
         profiles.push(write_rawtherapee_disable_sharpening_profile(
             &temp_dir.join("compressed-no-sharpening.pp3"),
         )?);
+        return Ok(profiles);
+    }
+
+    if is_tiff_input_file(options.input) {
         return Ok(profiles);
     }
 
@@ -1028,7 +1036,7 @@ mod tests {
     }
 
     #[test]
-    fn compressed_inputs_report_sharpening_as_disabled() {
+    fn camera_compressed_inputs_disable_sharpening_but_tiff_allows_it() {
         let mut resolved = resolved_profile(GrainSettings::default(), None);
         resolved.sharpening_applied = true;
 
@@ -1043,6 +1051,10 @@ mod tests {
         assert_eq!(
             resolve_apply_effects(Path::new("frame.HEIC"), &resolved, 0),
             (false, false)
+        );
+        assert_eq!(
+            resolve_apply_effects(Path::new("frame.TIFF"), &resolved, 0),
+            (true, false)
         );
     }
 
@@ -1096,6 +1108,20 @@ mod tests {
             profile.file_name().and_then(|name| name.to_str())
                 != Some("compressed-no-sharpening.pp3")
         }));
+        let tiff_profiles = rawtherapee_profiles_for_input(
+            RawTherapeeProfileOptions {
+                input: Path::new("frame.tif"),
+                retouch: None,
+                retouch_white_balance: RetouchWhiteBalance::default(),
+                bw_filter: BwFilter::None,
+                color_noise_iso_threshold: 0,
+                lens_corrections: LensCorrections::default(),
+            },
+            &resolved,
+            temp.path(),
+        )
+        .unwrap();
+        assert_eq!(tiff_profiles, [source]);
     }
 
     #[test]

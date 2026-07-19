@@ -412,6 +412,7 @@ mod enabled {
                 nikon_wtu_name: None,
                 nikon_wtu_guid: None,
                 review_address: Some(review_address),
+                hugin_bin_dir: None,
                 codex: codex_flags,
                 codex_binary,
                 codex_model,

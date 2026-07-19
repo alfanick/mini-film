@@ -1,9 +1,10 @@
 use super::prelude::*;
 use crate::app::export::{add_convert_thread_limit, add_convert_thread_limit_with_count};
-use crate::app::util::{half_cpu_thread_count, is_jpeg_input_file};
+use crate::app::util::{half_cpu_thread_count, is_rendered_input_file};
 
 pub(super) const COMPRESSED_REVIEW_CACHE_VERSION: &str = "compressed-v1";
 pub(super) const CROP_SOURCE_CACHE_VERSION: &str = "crop-source-v1";
+pub(super) const RENDERED_FULL_PREVIEW_CACHE_VERSION: &str = "full-v1";
 pub(super) const COMPRESSED_REVIEW_THUMBNAIL_LONG_EDGE: u32 = 512;
 pub(super) const COMPRESSED_REVIEW_THUMBNAIL_QUALITY: u8 = 55;
 pub(super) const COMPRESSED_REVIEW_PREVIEW_LONG_EDGE: u32 = 2048;
@@ -14,7 +15,7 @@ pub(super) fn extract_embedded_preview(raw: &Path, output: &Path, convert: &Path
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
 
-    if is_jpeg_input_file(raw) {
+    if is_rendered_input_file(raw) {
         return auto_orient_preview(convert, raw, output);
     }
 
@@ -94,6 +95,53 @@ pub(super) fn ensure_compressed_review_preview(
         COMPRESSED_REVIEW_PREVIEW_LONG_EDGE,
         COMPRESSED_REVIEW_PREVIEW_QUALITY,
     )
+}
+
+pub(super) fn ensure_rendered_full_preview(
+    source: &Path,
+    output: &Path,
+    convert: &Path,
+) -> Result<()> {
+    if output.is_file() {
+        return Ok(());
+    }
+    let parent = output
+        .parent()
+        .ok_or_else(|| anyhow!("full review preview has no parent: {}", output.display()))?;
+    fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    let temp = Builder::new()
+        .prefix(".mini-film-review-full-")
+        .suffix(".jpg")
+        .tempfile_in(parent)
+        .with_context(|| format!("creating temporary full preview in {}", parent.display()))?
+        .into_temp_path();
+    let temp_path: &Path = temp.as_ref();
+    let mut command = Command::new(convert);
+    add_convert_thread_limit_with_count(&mut command, convert, half_cpu_thread_count());
+    let result = command
+        .arg(source)
+        .arg("-auto-orient")
+        .arg("-strip")
+        .arg("-interlace")
+        .arg("Line")
+        .arg("-depth")
+        .arg("8")
+        .arg("-sampling-factor")
+        .arg("2x2,1x1,1x1")
+        .arg("-quality")
+        .arg("94")
+        .arg(temp_path)
+        .output()
+        .with_context(|| format!("creating full review preview with {}", convert.display()))?;
+    if !result.status.success() {
+        bail!(
+            "full review preview conversion failed with status {}\nstderr:\n{}",
+            result.status,
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+    fs::rename(temp_path, output)
+        .with_context(|| format!("moving full review preview to {}", output.display()))
 }
 
 fn ensure_compressed_review_derivative(

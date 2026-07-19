@@ -2,7 +2,7 @@
 
 `mini-film` is a complete photo-to-review-to-publish workflow for photographers
 who want film-emulation output without opening Lightroom. It watches an inbox of
-RAW, JPEG, and HEIC files, develops images through RawTherapee when profiles are
+RAW, JPEG, HEIC, and TIFF files, develops images through RawTherapee when profiles are
 configured, applies user-supplied film profiles and grain, serves a live review UI,
 records ratings/tags/notes, and publishes the final selection with metadata
 preserved.
@@ -22,7 +22,8 @@ still kept when launched from a shell, so long-running processing stays
 inspectable. `mini-film app` remains available as the explicit command form.
 
 For scripted use, every part of the workflow is still available as CLI commands:
-`apply`, `batch`, `daemon`, `sampler`, `pp3`, `info`, `nikon`, and `update`.
+`apply`, `batch`, `daemon`, `panorama`, `sampler`, `pp3`, `info`, `nikon`, and
+`update`.
 
 ## Screenshots
 
@@ -49,9 +50,12 @@ Available shortcuts:
   with live job progress. The review workflow is optimized for fast keyboard
   operation, while still supporting mouse, touch, and tablet use.
 - **Mixed RAW and processed-file input**: batch, daemon, review, and publish can
-  take RAW files plus existing JPEG/HEIC files. Explicit profiles apply to all
-  standalone inputs; without a profile, JPEG/HEIC keeps its existing look and
-  skips RawTherapee. Compressed originals remain available for saving.
+  take RAW files plus existing JPEG/HEIC/TIFF files. Explicit profiles apply to
+  all standalone inputs; without a profile, rendered inputs keep their existing
+  look and skip RawTherapee. JPEG/HEIC originals remain available for saving.
+- **Panorama workflow**: select ordered pictures in live review, compare four
+  projection previews, and render a full-resolution 16-bit TIFF that immediately
+  re-enters the normal review and profile workflow.
 - **Optional Codex review assist**: let Codex analyze small embedded RAW
   previews after rendering finishes and fill tags, notes, or initial ratings
   while the live review UI shows the same queued/processing status indicators.
@@ -83,7 +87,7 @@ emulations/   # user-facing emulation preset XMPs
 
 ## Quick Start
 
-Apply one profile to one RAW, JPEG, or HEIC image:
+Apply one profile to one RAW, JPEG, HEIC, or TIFF image:
 
 ```sh
 mini-film apply input.RAW \
@@ -92,7 +96,7 @@ mini-film apply input.RAW \
   --output output.jpg
 ```
 
-Batch-process a folder, accepting RAW plus JPEG/HEIC inputs by default:
+Batch-process a folder, accepting RAW plus JPEG/HEIC/TIFF inputs by default:
 
 ```sh
 mini-film batch /path/to/photos /path/to/output \
@@ -104,7 +108,7 @@ mini-film batch /path/to/photos /path/to/output \
 
 Use `--input-raw-only` or `--input-jpg-only` when a mixed input folder should be
 filtered before processing. JPEG and HEIC are treated as the same processed-file
-group for these filters.
+group for these filters; TIFF is accepted by the default unfiltered mode.
 
 In the default mixed mode, a JPEG/HEIC with the same normalized stem in the same
 folder as a RAW is treated as that RAW's straight-out-of-camera sidecar instead
@@ -190,7 +194,49 @@ Required external dependencies at startup for image-generation commands:
 - `exiftool`
 - `codex` only when daemon review analysis is enabled with `--codex`
 
+Panorama mode additionally requires the Hugin CLI suite: `pto_gen`, `cpfind`,
+`cpclean`, `pto_var`, `autooptimiser`, `pano_modify`, `hugin_executor`, `nona`, and
+`enblend`. The review Tools section stays hidden when that complete suite is not
+available. Use `--hugin-bin-dir` or `MINI_FILM_HUGIN_BIN_DIR` when those binaries
+are outside `PATH`.
+
 The `update` command also requires `curl` for downloading the Lensfun database.
+
+## Panorama
+
+Stitch an explicit ordered set of RAW, JPEG, HEIC, or TIFF sources from the CLI:
+
+```sh
+mini-film panorama left.NEF middle.NEF right.NEF \
+  --matching automatic \
+  --projection cylindrical \
+  --output sweep.tif
+```
+
+Matching strategies are `automatic`, `sequential`, `multi-row`, and
+`flat-mosaic`. Output projections are `rectilinear`, `cylindrical`,
+`equirectangular`, and General Panini (`panini`). Source preparation and Hugin
+run with `--jobs N` threads; the default is half of the available CPU threads.
+The command validates every required Hugin executable before preparing any
+source and fails without creating an output when the suite is incomplete.
+
+In daemon review, the bottom of the picture sidebar contains a small Tools
+section when Hugin is available. The Panorama wizard stores projects, ordered
+source relationships, projection previews, progress, and errors as normalized
+SQLite rows. Interrupted work is preserved across restarts. Preview stitching
+uses auto-oriented images with a maximum 2048-pixel long edge and renders all
+four projections for comparison. The selected final projection is rebuilt from
+full-resolution, 16-bit `RTv4_sRGB` TIFF sources. RAW preparation uses as-shot
+white balance, the normal camera tone and optional lens/denoise corrections, but
+does not apply a creative profile, grain, retouch, or sharpening.
+
+Final review panoramas are written collision-safely to
+`<input>/Panoramas/<name>.tif`, then added to review as ordinary TIFF input so
+film profiles and TIFF sharpening can be applied once. Reusable working files
+live under `<output>/.mini-film-panoramas/`; cache keys include source path,
+size, modification time, preparation settings, mini-film pipeline version, and
+Hugin tool versions. The application remains one binary; Hugin, RawTherapee,
+ImageMagick/GraphicsMagick, and ExifTool remain external executables.
 
 ## Coverage
 
@@ -310,14 +356,14 @@ Output metadata behavior for `apply`, `batch`, `daemon`, and `sampler`:
   `mini-film <version> usage=<command> profile=<profile-or-emulation>`
   or `profile=none` when no profile was configured
 
-For direct JPEG/HEIC inputs without a profile, source metadata is copied from the
-compressed source and mini-film only adds its basic version/comment marker and
-review/publish metadata. Profiled JPEG/HEIC outputs receive the same resolved
-profile, grain, and edit-history metadata as profiled RAW outputs.
+For direct JPEG/HEIC/TIFF inputs without a profile, source metadata is copied
+from the rendered source and mini-film only adds its basic version/comment
+marker and review/publish metadata. Profiled JPEG/HEIC/TIFF outputs receive the
+same resolved profile, grain, and edit-history metadata as profiled RAW outputs.
 
 ## Batch Apply
 
-Process every supported RAW file (`.dng`, `.nef`, `.cr2`, `.cr3`, `.arw`, `.raf`, `.orf`, `.rw2`, etc.) plus JPEG/HEIC files (`.jpg`, `.jpeg`, `.heic`, `.heif`) under an input directory and write JPGs or 16-bit TIFFs under an output directory:
+Process every supported RAW file (`.dng`, `.nef`, `.cr2`, `.cr3`, `.arw`, `.raf`, `.orf`, `.rw2`, etc.) plus JPEG/HEIC (`.jpg`, `.jpeg`, `.heic`, `.heif`) and TIFF (`.tif`, `.tiff`) files under an input directory and write JPGs or 16-bit TIFFs under an output directory:
 
 ```sh
 cargo run --release -- batch \
@@ -332,13 +378,15 @@ cargo run --release -- batch \
 The output directory is created if it does not exist. Nested input folders are
 preserved, and each input uses the same relative path with a `.jpg` extension by
 default. Use `--output-format tiff` to write `.tif` files through the 16-bit
-Zip-compressed TIFF path. With `--profile`, standalone JPEG/HEIC inputs use the
+Zip-compressed TIFF path. With `--profile`, standalone JPEG/HEIC/TIFF inputs use the
 same PP3, Hald, grain, retouch, and black-and-white profile pipeline as RAW.
 JPEG goes directly to RawTherapee; HEIC is first auto-oriented into a 16-bit
 Zip-compressed TIFF. A final PP3 layer disables standard, edge, microcontrast,
 capture, and post-resize sharpening for JPEG/HEIC inputs because these files are
 normally already sharpened in camera; output XMP also omits profile sharpening
-fields for these inputs. In daemon review, a straight-out-of-camera rendition
+fields for these inputs. TIFF permits resolved profile sharpening because a
+panorama enters the pipeline before creative output sharpening. In daemon
+review, a straight-out-of-camera rendition
 also appears as a profile and is excluded from publish until selected. Without
 `--profile`, compressed inputs retain the direct resize/crop/rotation and
 metadata-copy path. Camera tone matching, automatic ISO denoise, and lens
@@ -400,8 +448,8 @@ or regenerate thumbnails.
 
 Run a long-lived watcher that applies optional profiles whenever new files
 arrive in an input folder. If no `--profile` is provided, each RAW is developed
-once with RawTherapee defaults and JPEG/HEIC inputs are converted directly.
-When profiles are provided, each standalone RAW, JPEG, or HEIC gets one output
+once with RawTherapee defaults and JPEG/HEIC/TIFF inputs are converted directly.
+When profiles are provided, each standalone RAW, JPEG, HEIC, or TIFF gets one output
 per profile. Prepared HEIC TIFFs are reused from
 `<output>/.mini-film-profile-inputs/heic-v1/` across profile and retouch renders.
 If a matching RAW exists, its JPEG/HEIC sidecar is never profiled separately.
@@ -463,7 +511,7 @@ mini-film daemon \
 
 The review server assets are compiled into the binary, so a release executable
 does not need HTML/CSS/JS files next to it. The UI is live: the daemon records
-new RAW and JPEG/HEIC files immediately, extracts an embedded camera preview when
+new RAW, JPEG/HEIC, and TIFF files immediately, extracts an embedded camera preview when
 available, then updates the browser over server-sent events as each render moves
 from queued to processing to done. When no profiles are configured, the review UI
 shows the developed RawTherapee-default output without a profile rail and direct
@@ -518,7 +566,7 @@ rating-button clicks update that shared state and are replicated to every
 connected browser through the server-sent event stream. At the end of a pass,
 the shared filter moves to the next rating level.
 
-Review data and the shared browser position are persisted in
+Review data, panorama projects, and the shared browser position are persisted in
 `<output>/mini-film-review.sqlite` as normalized relational rows; the active
 database does not keep an opaque JSON copy of the review store. SeaORM models
 own the schema and a migration ledger applies future database changes
@@ -574,8 +622,9 @@ review state and are used by publish rerenders. Reopening crop mode shows an
 uncropped camera preview or original SOOC image, with the finished crop aligned
 over it, so an existing crop can be expanded or repositioned without losing the
 discarded area. Crop ratios can be locked to the auto-oriented original frame,
-`4:3`, `5:4`, `A3/A4`, `1:1`, `16:10`, `21:9`, or `3:1`; press `r` in crop mode
-to swap the selected ratio's orientation. The A3/A4 preset uses the shared ISO
+`Free`, `4:3`, `5:4`, `A3/A4`, `1:1`, `16:10`, `21:9`, `3:1`, `4:1`, `5:1`,
+or `6:1`; press `r` in crop mode to swap a locked ratio's orientation. The
+`Free` preset lets each crop edge move independently. The A3/A4 preset uses the shared ISO
 A-series `sqrt(2):1` paper ratio. The editable frame is constrained to the
 largest black-corner-free area after rotation, so neither crop handles nor the
 published result can include rotation triangles. Profile variants whose combined
@@ -840,8 +889,8 @@ Source-profile sharpening is applied before emulation sharpening. Explicit
 emulation sharpening overrides the source, but an emulation that omits
 sharpening preserves an explicit source setting. The minimal `5/0.6/10/0`
 fallback is added only when neither layer defines sharpening. These settings
-apply only to RAW renders; JPEG/HEIC profile renders append a final PP3 override
-that disables every RawTherapee sharpening stage.
+apply to RAW and TIFF renders; JPEG/HEIC profile renders append a final PP3
+override that disables every RawTherapee sharpening stage.
 
 mini-film internally handles:
 

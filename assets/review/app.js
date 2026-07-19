@@ -49,6 +49,13 @@ const state = {
   histogramOpen: false,
   histogramRequestId: 0,
   histogramTimer: null,
+  panoramaOpen: false,
+  panoramaProjectId: null,
+  panoramaImageIds: [],
+  panoramaName: "Panorama",
+  panoramaMatching: "automatic",
+  panoramaProjection: "cylindrical",
+  panoramaMessage: "",
   originalShare: {
     imageId: null,
     file: null,
@@ -93,6 +100,7 @@ const BW_FILTER_NAMES = new Map([
 ]);
 const CROP_RATIO_PRESETS = [
   ["original", "Original"],
+  ["free", "Free"],
   ["4:3", "4:3"],
   ["5:4", "5:4"],
   ["a3-a4", "A3/A4", "A3/A4 portrait"],
@@ -100,6 +108,21 @@ const CROP_RATIO_PRESETS = [
   ["16:10", "16:10"],
   ["21:9", "21:9"],
   ["3:1", "3:1"],
+  ["4:1", "4:1"],
+  ["5:1", "5:1"],
+  ["6:1", "6:1"],
+];
+const PANORAMA_MATCHING_MODES = [
+  ["automatic", "Automatic"],
+  ["sequential", "Sequential"],
+  ["multi-row", "Multi-row"],
+  ["flat-mosaic", "Flat mosaic"],
+];
+const PANORAMA_PROJECTIONS = [
+  ["rectilinear", "Rectilinear"],
+  ["cylindrical", "Cylindrical"],
+  ["equirectangular", "Equirectangular"],
+  ["panini", "General Panini"],
 ];
 
 let wheelNavigation = {
@@ -161,6 +184,22 @@ function ReviewShell() {
           h("span", { id: "status" }, "Connecting..."),
         ),
         h("div", { id: "image-list", class: "image-list" }),
+        h(
+          "section",
+          { id: "sidebar-tools", class: "sidebar-tools", hidden: true, "aria-label": "Tools" },
+          h("div", { class: "sidebar-tools-title" }, "Tools"),
+          h(
+            "button",
+            {
+              id: "panorama",
+              class: "panorama-button",
+              type: "button",
+              title: "Create panorama",
+              "aria-label": "Create panorama",
+            },
+            "Panorama",
+          ),
+        ),
       ),
       h(
         "main",
@@ -265,6 +304,7 @@ function ReviewShell() {
             h("button", { id: "mobile-save-original", type: "button", hidden: true }, "Save Photo"),
             h("button", { "data-mobile-drawer": "metadata", type: "button" }, "Meta"),
             h("button", { id: "mobile-publish", type: "button" }, "Publish"),
+            h("button", { id: "mobile-panorama", type: "button", hidden: true }, "Pano"),
           ),
           h("div", { id: "profiles", class: "profiles" }),
           h(ControlsShell),
@@ -275,6 +315,7 @@ function ReviewShell() {
     h("div", { id: "command-invocation-overlay", class: "command-invocation-overlay", hidden: true }),
     h("div", { id: "profile-info-overlay", class: "profile-info-overlay", hidden: true }),
     h(PublishOverlay),
+    h("div", { id: "panorama-overlay", class: "panorama-overlay", hidden: true }),
   );
 }
 
@@ -1269,6 +1310,261 @@ function PublishGallerySection() {
   );
 }
 
+function PanoramaOverlay() {
+  const project = currentPanoramaProject();
+  const projects = state.data?.panorama?.projects || [];
+  const images = state.data?.images || [];
+  const busy = Boolean(state.data?.panorama?.busy);
+  const operationRunning = ["previewing", "rendering"].includes(project?.status);
+  const anyProjectRunning = projects.some((candidate) => ["previewing", "rendering"].includes(candidate.status));
+  const selected = new Map(state.panoramaImageIds.map((imageId, index) => [imageId, index]));
+  const previews = new Map(
+    (project?.previews || [])
+      .filter((preview) => preview.matching_mode === state.panoramaMatching)
+      .map((preview) => [preview.projection, preview]),
+  );
+  const selectedPreview = previews.get(state.panoramaProjection);
+  const canPreview = state.panoramaImageIds.length >= 2 && !busy && !anyProjectRunning;
+  const canRender =
+    selectedPreview?.status === "done" && project?.status !== "complete" && !anyProjectRunning && !operationRunning;
+  const progressTotal = Math.max(1, Number(project?.progress_total) || 1);
+  const progressValue = Math.min(progressTotal, Number(project?.progress_completed) || 0);
+
+  return h(
+    "section",
+    { class: "panorama-card", role: "dialog", "aria-modal": "true", "aria-labelledby": "panorama-title" },
+    h(
+      "header",
+      { class: "panorama-header" },
+      h(
+        "div",
+        null,
+        h("h2", { id: "panorama-title" }, "Panorama"),
+        h(
+          "p",
+          null,
+          `${state.panoramaImageIds.length} selected | ${project ? capitalize(project.status) : "New project"}`,
+        ),
+      ),
+      h(
+        "div",
+        { class: "panorama-header-actions" },
+        h(
+          "select",
+          {
+            value: state.panoramaProjectId === null ? "new" : String(state.panoramaProjectId),
+            "aria-label": "Panorama project",
+            onChange: (event) => selectPanoramaProject(event.currentTarget.value),
+          },
+          h("option", { value: "new" }, "New panorama"),
+          projects.map((candidate) =>
+            h("option", { key: candidate.id, value: String(candidate.id) }, `${candidate.name} - ${candidate.status}`),
+          ),
+        ),
+        h(
+          "button",
+          { type: "button", class: "panorama-close", "aria-label": "Close panorama", onClick: closePanoramaWizard },
+          "×",
+        ),
+      ),
+    ),
+    h(
+      "div",
+      { class: "panorama-layout" },
+      h(
+        "section",
+        { class: "panorama-sources" },
+        h("h3", null, "Sources"),
+        h(
+          "div",
+          { class: "panorama-source-list" },
+          images.map((image) => {
+            const position = selected.get(image.id);
+            const checked = position !== undefined;
+            const thumb = image.thumbnail_url || image.preview_url;
+            return h(
+              "label",
+              { key: image.id, class: `panorama-source ${checked ? "selected" : ""}` },
+              h("input", {
+                type: "checkbox",
+                checked,
+                disabled: operationRunning,
+                onChange: () => togglePanoramaSource(image.id),
+              }),
+              h("span", { class: "panorama-source-order" }, checked ? String(position + 1) : ""),
+              thumb
+                ? h("img", {
+                    src: versionedUrl(thumb, image.preview_updated_at || image.updated_at),
+                    alt: "",
+                    loading: "lazy",
+                    decoding: "async",
+                  })
+                : h("span", { class: "panorama-source-placeholder" }),
+              h("span", { class: "panorama-source-name", title: image.relative_path }, image.file_name),
+              checked
+                ? h(
+                    "span",
+                    { class: "panorama-source-move" },
+                    h(
+                      "button",
+                      {
+                        type: "button",
+                        title: "Move earlier",
+                        "aria-label": `Move ${image.file_name} earlier`,
+                        disabled: position === 0 || operationRunning,
+                        onClick: (event) => {
+                          event.preventDefault();
+                          movePanoramaSource(image.id, -1);
+                        },
+                      },
+                      "↑",
+                    ),
+                    h(
+                      "button",
+                      {
+                        type: "button",
+                        title: "Move later",
+                        "aria-label": `Move ${image.file_name} later`,
+                        disabled: position === state.panoramaImageIds.length - 1 || operationRunning,
+                        onClick: (event) => {
+                          event.preventDefault();
+                          movePanoramaSource(image.id, 1);
+                        },
+                      },
+                      "↓",
+                    ),
+                  )
+                : null,
+            );
+          }),
+        ),
+      ),
+      h(
+        "section",
+        { class: "panorama-workflow" },
+        h(
+          "div",
+          { class: "panorama-settings" },
+          h(
+            "label",
+            null,
+            h("span", null, "Name"),
+            h("input", {
+              type: "text",
+              value: state.panoramaName,
+              disabled: operationRunning,
+              autocomplete: "off",
+              onInput: (event) => {
+                state.panoramaName = event.currentTarget.value;
+              },
+            }),
+          ),
+          h(
+            "label",
+            null,
+            h("span", null, "Matching"),
+            h(
+              "select",
+              {
+                value: state.panoramaMatching,
+                disabled: operationRunning,
+                onChange: (event) => {
+                  state.panoramaMatching = event.currentTarget.value;
+                  renderPanoramaWizard();
+                },
+              },
+              PANORAMA_MATCHING_MODES.map(([value, label]) => h("option", { key: value, value }, label)),
+            ),
+          ),
+          h(
+            "button",
+            { type: "button", disabled: !canPreview, onClick: generatePanoramaPreviews },
+            project?.previews?.length ? "Regenerate previews" : "Generate previews",
+          ),
+        ),
+        h(
+          "div",
+          { class: "panorama-projections" },
+          PANORAMA_PROJECTIONS.map(([value, label]) => {
+            const preview = previews.get(value);
+            const active = state.panoramaProjection === value;
+            return h(
+              "button",
+              {
+                key: value,
+                type: "button",
+                class: `panorama-projection ${active ? "active" : ""}`,
+                disabled: preview?.status !== "done",
+                onClick: () => {
+                  state.panoramaProjection = value;
+                  renderPanoramaWizard();
+                },
+              },
+              h(
+                "span",
+                { class: "panorama-projection-media" },
+                preview?.url
+                  ? h("img", {
+                      src: versionedUrl(preview.url, preview.updated_at),
+                      alt: `${label} panorama preview`,
+                      loading: "lazy",
+                      decoding: "async",
+                    })
+                  : h("span", null, preview ? capitalize(preview.status) : "Not rendered"),
+              ),
+              h("span", { class: "panorama-projection-label" }, label),
+            );
+          }),
+        ),
+      ),
+    ),
+    h(
+      "footer",
+      { class: "panorama-footer" },
+      h(
+        "div",
+        { class: "panorama-status" },
+        operationRunning
+          ? h(
+              Fragment,
+              null,
+              h("span", null, panoramaStatusText(project)),
+              h("progress", { max: progressTotal, value: progressValue }),
+            )
+          : h(
+              "span",
+              { class: project?.error ? "error" : "" },
+              state.panoramaMessage || project?.error || panoramaStatusText(project),
+            ),
+      ),
+      h(
+        "div",
+        { class: "panorama-footer-actions" },
+        project?.result_image_id
+          ? h(
+              "button",
+              {
+                type: "button",
+                onClick: () => {
+                  updateSharedUi({ current_image_id: project.result_image_id, min_rating: minRating() }).catch(
+                    (error) => console.error(error),
+                  );
+                  closePanoramaWizard();
+                },
+              },
+              "Open result",
+            )
+          : null,
+        h(
+          "button",
+          { type: "button", class: "panorama-render", disabled: !canRender, onClick: renderPanoramaFinal },
+          "Render full TIFF",
+        ),
+      ),
+    ),
+  );
+}
+
 function capitalize(value) {
   return value ? `${value[0].toUpperCase()}${value.slice(1)}` : "";
 }
@@ -1332,12 +1628,15 @@ const els = {
   cropCancel: document.getElementById("crop-cancel"),
   cropReset: document.getElementById("crop-reset"),
   publish: document.getElementById("publish"),
+  panorama: document.getElementById("panorama"),
+  sidebarTools: document.getElementById("sidebar-tools"),
   minRating: document.getElementById("min-rating"),
   app: document.querySelector(".app"),
   shortcutsHelp: document.getElementById("shortcuts-help"),
   mobileDrawerButtons: document.querySelectorAll("[data-mobile-drawer]"),
   mobileSaveOriginal: document.getElementById("mobile-save-original"),
   mobilePublish: document.getElementById("mobile-publish"),
+  mobilePanorama: document.getElementById("mobile-panorama"),
   shortcutsOverlay: document.getElementById("shortcuts-overlay"),
   shortcutsClose: document.getElementById("shortcuts-close"),
   profileInfoOverlay: document.getElementById("profile-info-overlay"),
@@ -1367,6 +1666,7 @@ const els = {
   publishGallery: document.getElementById("publish-gallery"),
   publishGalleryColumns: document.getElementById("publish-gallery-columns"),
   publishGalleryThumbnailLongEdge: document.getElementById("publish-gallery-thumbnail-long-edge"),
+  panoramaOverlay: document.getElementById("panorama-overlay"),
 };
 
 const wideProfilesQuery = window.matchMedia("(min-width: 901px) and (min-height: 620px)");
@@ -1420,6 +1720,8 @@ function applyStatePatch(patch) {
     "codex",
     "publish_defaults",
     "publish_jobs",
+    "capabilities",
+    "panorama",
     "ui",
     "publish_root",
     "invocation",
@@ -1495,6 +1797,10 @@ function render() {
   }
   renderProfileInfo();
   renderCommandInvocation();
+  renderPanoramaWizard();
+  const panoramaAvailable = Boolean(state.data?.capabilities?.panorama?.available);
+  els.sidebarTools.hidden = !panoramaAvailable;
+  els.mobilePanorama.hidden = !panoramaAvailable;
   syncProfilesPlacement();
   const images = filteredImages();
   const total = state.data?.images?.length || 0;
@@ -3040,6 +3346,165 @@ function togglePublishWizard(force) {
   els.publishOverlay.hidden = !show;
 }
 
+function currentPanoramaProject() {
+  if (state.panoramaProjectId === null) return null;
+  return (state.data?.panorama?.projects || []).find((project) => project.id === state.panoramaProjectId) || null;
+}
+
+function renderPanoramaWizard() {
+  if (!state.panoramaOpen) {
+    els.panoramaOverlay.hidden = true;
+    return;
+  }
+  els.panoramaOverlay.hidden = false;
+  preactRender(h(PanoramaOverlay), els.panoramaOverlay);
+}
+
+function openPanoramaWizard() {
+  if (!state.data?.capabilities?.panorama?.available) return;
+  state.panoramaOpen = true;
+  state.panoramaMessage = "";
+  if (state.panoramaProjectId === null) initializeNewPanorama();
+  renderPanoramaWizard();
+}
+
+function closePanoramaWizard() {
+  state.panoramaOpen = false;
+  els.panoramaOverlay.hidden = true;
+}
+
+function initializeNewPanorama() {
+  const images = state.data?.images || [];
+  const currentIndex = Math.max(
+    0,
+    images.findIndex((image) => image.id === state.currentId),
+  );
+  state.panoramaProjectId = null;
+  state.panoramaImageIds = images.slice(currentIndex, currentIndex + 3).map((image) => image.id);
+  if (state.panoramaImageIds.length < 2) {
+    state.panoramaImageIds = images.slice(Math.max(0, images.length - 3)).map((image) => image.id);
+  }
+  const current = images[currentIndex];
+  const stem = current?.file_name?.replace(/\.[^.]+$/, "") || "Panorama";
+  state.panoramaName = `${stem} panorama`;
+  state.panoramaMatching = "automatic";
+  state.panoramaProjection = "cylindrical";
+  state.panoramaMessage = "";
+}
+
+function selectPanoramaProject(value) {
+  if (value === "new") {
+    initializeNewPanorama();
+    renderPanoramaWizard();
+    return;
+  }
+  const projectId = Number(value);
+  const project = (state.data?.panorama?.projects || []).find((candidate) => candidate.id === projectId);
+  if (!project) return;
+  state.panoramaProjectId = project.id;
+  state.panoramaImageIds = [...(project.image_ids || [])];
+  state.panoramaName = project.name || "Panorama";
+  state.panoramaMatching = project.matching_mode || "automatic";
+  state.panoramaProjection = project.selected_projection || "cylindrical";
+  state.panoramaMessage = "";
+  renderPanoramaWizard();
+}
+
+function togglePanoramaSource(imageId) {
+  const index = state.panoramaImageIds.indexOf(imageId);
+  if (index >= 0) {
+    state.panoramaImageIds.splice(index, 1);
+  } else {
+    state.panoramaImageIds.push(imageId);
+  }
+  state.panoramaMessage = "";
+  renderPanoramaWizard();
+}
+
+function movePanoramaSource(imageId, direction) {
+  const index = state.panoramaImageIds.indexOf(imageId);
+  const target = index + direction;
+  if (index < 0 || target < 0 || target >= state.panoramaImageIds.length) return;
+  [state.panoramaImageIds[index], state.panoramaImageIds[target]] = [
+    state.panoramaImageIds[target],
+    state.panoramaImageIds[index],
+  ];
+  renderPanoramaWizard();
+}
+
+function panoramaStatusText(project) {
+  if (!project) return "Select at least two sources";
+  if (project.status === "ready") return "Previews ready";
+  if (project.status === "complete") return project.output_file_name || "Panorama complete";
+  if (project.status === "failed") return project.error || "Panorama failed";
+  if (project.status === "interrupted") return project.error || "Panorama interrupted";
+  if (project.status === "draft") return "Draft";
+  const stage = String(project.progress_stage || project.status).replaceAll("-", " ");
+  return capitalize(stage);
+}
+
+async function panoramaRequest(path, method, body) {
+  const response = await fetch(reviewUrl(path), {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || `panorama ${response.status}`);
+  applyStateMessage(data);
+  return data;
+}
+
+async function generatePanoramaPreviews() {
+  state.panoramaMessage = "Starting previews";
+  renderPanoramaWizard();
+  try {
+    if (state.panoramaProjectId === null) {
+      const existing = new Set((state.data?.panorama?.projects || []).map((project) => project.id));
+      await panoramaRequest("api/panoramas", "POST", {
+        image_ids: state.panoramaImageIds,
+        name: state.panoramaName,
+        matching_mode: state.panoramaMatching,
+      });
+      const created = (state.data?.panorama?.projects || [])
+        .filter((project) => !existing.has(project.id))
+        .sort((left, right) => right.id - left.id)[0];
+      if (!created) throw new Error("created panorama project was not returned");
+      state.panoramaProjectId = created.id;
+    } else {
+      await panoramaRequest(`api/panoramas/${state.panoramaProjectId}`, "PATCH", {
+        image_ids: state.panoramaImageIds,
+        name: state.panoramaName,
+        matching_mode: state.panoramaMatching,
+      });
+    }
+    await panoramaRequest(`api/panoramas/${state.panoramaProjectId}/previews`, "POST", {
+      image_ids: state.panoramaImageIds,
+      matching_mode: state.panoramaMatching,
+    });
+    state.panoramaMessage = "";
+  } catch (error) {
+    state.panoramaMessage = `Preview failed: ${error.message}`;
+    renderPanoramaWizard();
+  }
+}
+
+async function renderPanoramaFinal() {
+  if (state.panoramaProjectId === null) return;
+  state.panoramaMessage = "Starting full render";
+  renderPanoramaWizard();
+  try {
+    await panoramaRequest(`api/panoramas/${state.panoramaProjectId}/render`, "POST", {
+      name: state.panoramaName,
+      projection: state.panoramaProjection,
+    });
+    state.panoramaMessage = "";
+  } catch (error) {
+    state.panoramaMessage = `Render failed: ${error.message}`;
+    renderPanoramaWizard();
+  }
+}
+
 function publishDefaults() {
   return state.data?.publish_defaults || {};
 }
@@ -3900,6 +4365,7 @@ function updateCropRotationControls() {
 }
 
 function cropRatioBase(key = state.cropRatioKey) {
+  if (key === "free") return null;
   if (key === "current") return state.cropRatioBase || 1;
   if (key === "a3-a4") return Math.SQRT2;
   if (key === "original") {
@@ -3912,6 +4378,7 @@ function cropRatioBase(key = state.cropRatioKey) {
 
 function cropTargetRatio() {
   const base = cropRatioBase();
+  if (base === null) return null;
   return state.cropRatioRotated ? 1 / base : base;
 }
 
@@ -3923,12 +4390,14 @@ function cropPixelRatio(crop, rotation = state.cropDraftRotation) {
 }
 
 function ratiosMatch(left, right) {
+  if (!Number.isFinite(left) || !Number.isFinite(right)) return false;
   return Math.abs(Math.log(Math.max(0.0001, left) / Math.max(0.0001, right))) < 0.004;
 }
 
 function inferCropRatio(crop) {
   const actual = cropPixelRatio(crop);
   for (const [key] of CROP_RATIO_PRESETS) {
+    if (key === "free") continue;
     const base = cropRatioBase(key);
     if (ratiosMatch(actual, base)) {
       state.cropRatioKey = key;
@@ -3943,8 +4412,8 @@ function inferCropRatio(crop) {
       return;
     }
   }
-  state.cropRatioKey = "current";
-  state.cropRatioBase = actual;
+  state.cropRatioKey = "free";
+  state.cropRatioBase = null;
   state.cropRatioRotated = false;
 }
 
@@ -4013,7 +4482,7 @@ function cropRectAround(center, width, height) {
 
 function fitCropToRatio(crop, ratio) {
   const source = cropSourceDimensions();
-  if (!source || !Number.isFinite(ratio) || ratio <= 0) return normalizeCropRect(crop);
+  if (!source || ratio === null || !Number.isFinite(ratio) || ratio <= 0) return normalizeCropRect(crop);
   const rect = normalizeCropRect(crop);
   const safe = rotatedSafeDimensions(source.width, source.height, state.cropDraftRotation);
   let pixelWidth = rect.width * safe.width;
@@ -4047,7 +4516,7 @@ function rememberCropRatioGeometry(crop) {
 function cropForRememberedRatio(ratio) {
   const source = cropSourceDimensions();
   const geometry = state.cropRatioGeometry;
-  if (!source || !geometry || !Number.isFinite(ratio) || ratio <= 0) {
+  if (!source || !geometry || ratio === null || !Number.isFinite(ratio) || ratio <= 0) {
     return fitCropToRatio(state.cropDraft || fullFrameCrop(), ratio);
   }
   const safe = rotatedSafeDimensions(source.width, source.height, state.cropDraftRotation);
@@ -4070,7 +4539,7 @@ function setCropRatioPreset(key) {
 }
 
 function rotateCropRatio() {
-  if (!state.cropGeometryInitialized || ratiosMatch(cropTargetRatio(), 1)) return;
+  if (!state.cropGeometryInitialized || cropTargetRatio() === null || ratiosMatch(cropTargetRatio(), 1)) return;
   if (!state.cropRatioGeometry) rememberCropRatioGeometry(state.cropDraft);
   state.cropRatioRotated = !state.cropRatioRotated;
   state.cropDraft = cropForRememberedRatio(cropTargetRatio());
@@ -4218,13 +4687,26 @@ function aspectLockedCrop(start, handle, dx, dy) {
   const source = cropSourceDimensions();
   if (!source) return normalizeCropRect(start);
   const safe = rotatedSafeDimensions(source.width, source.height, state.cropDraftRotation);
-  const normalizedRatio = (cropTargetRatio() * safe.height) / safe.width;
+  const targetRatio = cropTargetRatio();
   const anchorX = handle.includes("w") ? start.x + start.width : start.x;
   const anchorY = handle.includes("n") ? start.y + start.height : start.y;
   const signX = handle.includes("w") ? -1 : 1;
   const signY = handle.includes("n") ? -1 : 1;
   const targetWidth = signX > 0 ? start.width + dx : start.width - dx;
   const targetHeight = signY > 0 ? start.height + dy : start.height - dy;
+  if (targetRatio === null) {
+    const maxWidth = signX > 0 ? 1 - anchorX : anchorX;
+    const maxHeight = signY > 0 ? 1 - anchorY : anchorY;
+    const width = clamp(Math.abs(targetWidth), Math.min(0.01, maxWidth), maxWidth);
+    const height = clamp(Math.abs(targetHeight), Math.min(0.01, maxHeight), maxHeight);
+    return normalizeCropRect({
+      x: signX > 0 ? anchorX : anchorX - width,
+      y: signY > 0 ? anchorY : anchorY - height,
+      width,
+      height,
+    });
+  }
+  const normalizedRatio = (targetRatio * safe.height) / safe.width;
   let width = Math.min(Math.abs(targetWidth), Math.abs(targetHeight) * normalizedRatio);
   const maxWidthX = signX > 0 ? 1 - anchorX : anchorX;
   const maxHeight = signY > 0 ? 1 - anchorY : anchorY;
@@ -4403,7 +4885,8 @@ function normalizeWheelDelta(event, value) {
 }
 
 function shouldIgnoreNavigationWheel(event) {
-  if (!els.publishOverlay.hidden || !els.shortcutsOverlay.hidden || state.cropEditing) return true;
+  if (!els.publishOverlay.hidden || !els.panoramaOverlay.hidden || !els.shortcutsOverlay.hidden || state.cropEditing)
+    return true;
   if (event.ctrlKey || event.metaKey || event.altKey) return true;
   return Boolean(
     event.target.closest("input, textarea, select, .retouch, .crop-tools, .publish-card, .shortcuts-card"),
@@ -4948,6 +5431,11 @@ function clearRetouchSaveTimer() {
 
 els.publish.addEventListener("click", () => togglePublishWizard(true));
 els.mobilePublish.addEventListener("click", () => togglePublishWizard(true));
+els.panorama.addEventListener("click", openPanoramaWizard);
+els.mobilePanorama.addEventListener("click", openPanoramaWizard);
+els.panoramaOverlay.addEventListener("click", (event) => {
+  if (event.target === els.panoramaOverlay) closePanoramaWizard();
+});
 els.mobileSaveOriginal.addEventListener("click", () => {
   saveOriginalPhoto().catch((error) => console.error(error));
 });
@@ -5019,6 +5507,13 @@ window.addEventListener("keydown", (event) => {
   if (state.commandInvocationOpen && event.key === "Escape") {
     event.preventDefault();
     closeCommandInvocation();
+    return;
+  }
+  if (state.panoramaOpen) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closePanoramaWizard();
+    }
     return;
   }
   if (!els.publishOverlay.hidden) {
