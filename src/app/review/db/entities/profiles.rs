@@ -10,9 +10,13 @@ pub struct Model {
     pub profile_index: i64,
     pub position: i64,
     #[sea_orm(column_type = "Text")]
+    pub identity: String,
+    #[sea_orm(column_type = "Text")]
     pub selector: String,
     #[sea_orm(column_type = "Text")]
     pub stem: String,
+    pub sampler_added: i64,
+    pub enabled_by_default: i64,
     #[sea_orm(column_type = "Double")]
     pub retouch_exposure: f64,
     #[sea_orm(column_type = "Double")]

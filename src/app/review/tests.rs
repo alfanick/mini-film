@@ -1,14 +1,19 @@
 use super::prelude::*;
 use super::{
-    db::*, handle::*, model::*, preview::*, publish::*, scheduler::*, server::*, store::*,
+    db::*, handle::*, model::*, preview::*, publish::*, sampler::*, scheduler::*, server::*,
+    store::*,
 };
 use std::sync::Mutex;
 
 fn profile(index: usize, stem: &str) -> ReviewProfile {
     ReviewProfile {
         index,
+        identity: format!("test:{stem}"),
         selector: stem.to_string(),
         stem: stem.to_string(),
+        sampler_added: false,
+        enabled_by_default: true,
+        configured_from_cli: true,
         retouch_base: BasicRetouchAdjustments::default(),
         hald_path: None,
         metadata: None,
@@ -130,6 +135,7 @@ fn fully_populated_review_store() -> ReviewStore {
         profile_index: 7,
         profile_stem: "Detailed".to_string(),
         display_name: Some("Detailed display".to_string()),
+        enabled: true,
         status: ReviewRenderStatus::Failed,
         output_path: Some(PathBuf::from("/out/detailed.jpg")),
         error: Some("render failed".to_string()),
@@ -296,6 +302,23 @@ fn fully_populated_review_store() -> ReviewStore {
     store
 }
 
+fn persisted_store(mut store: ReviewStore) -> ReviewStore {
+    for profile in &mut store.profiles {
+        profile.configured_from_cli = false;
+    }
+    store
+}
+
+fn migrated_pre_sampler_store(mut store: ReviewStore) -> ReviewStore {
+    store = persisted_store(store);
+    for profile in &mut store.profiles {
+        profile.identity = format!("legacy:{}:{}", profile.index, profile.selector.trim());
+        profile.sampler_added = false;
+        profile.enabled_by_default = true;
+    }
+    store
+}
+
 fn bw_profile(
     index: usize,
     stem: &str,
@@ -409,6 +432,7 @@ fn test_handle(input: PathBuf, output: PathBuf, profiles: Vec<ReviewProfile>) ->
         },
         panorama_projects: Arc::new(ArcSwap::from_pointee(Vec::new())),
         panorama_operation: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        sampler_registry: Arc::new(ReviewSamplerRegistry::default()),
         trusted_input_sender: None,
     }
 }
@@ -452,6 +476,7 @@ fn profile_render(index: usize, stem: &str) -> ReviewProfileRender {
         profile_index: index,
         profile_stem: stem.to_string(),
         display_name: None,
+        enabled: true,
         status: ReviewRenderStatus::Done,
         output_path: None,
         error: None,
@@ -1215,17 +1240,18 @@ fn review_state_seaorm_round_trips_every_normalized_collection() {
 
     assert_eq!(
         serde_json::to_value(&loaded).unwrap(),
-        serde_json::to_value(&store).unwrap()
+        serde_json::to_value(persisted_store(store)).unwrap()
     );
     let facts = database_facts(&state_path).unwrap();
-    assert_eq!(facts.schema_version, 13);
+    assert_eq!(facts.schema_version, 14);
     assert!(facts.has_seaql_ledger);
-    assert_eq!(facts.seaql_migration_count, 2);
+    assert_eq!(facts.seaql_migration_count, 3);
     assert_eq!(
         facts.seaql_migrations,
         [
             "m20260718_000001_v18_baseline",
             "m20260719_000002_panorama_projects",
+            "m20260721_000003_review_sampler",
         ]
     );
     assert!(!facts.has_legacy_ledger);
@@ -1243,7 +1269,7 @@ fn review_state_seaorm_round_trips_every_normalized_collection() {
     assert_eq!(facts.counts["panorama_projects"], 0);
     assert_eq!(facts.counts["panorama_project_images"], 0);
     assert_eq!(facts.counts["panorama_previews"], 0);
-    assert_eq!(facts.indexes.len(), 17);
+    assert_eq!(facts.indexes.len(), 19);
     assert_domain_constraints(&state_path).unwrap();
 }
 
@@ -1264,21 +1290,22 @@ fn normalized_v11_database_is_backed_up_and_adopted_losslessly_once() {
     let loaded = load_store(&state_path).unwrap().unwrap();
     assert_eq!(
         serde_json::to_value(&loaded).unwrap(),
-        serde_json::to_value(&store).unwrap()
+        serde_json::to_value(persisted_store(store.clone())).unwrap()
     );
     assert!(backup_path.is_file());
     let backup_bytes = fs::read(&backup_path).unwrap();
 
     let after_facts = database_facts(&state_path).unwrap();
-    assert_eq!(after_facts.schema_version, 13);
+    assert_eq!(after_facts.schema_version, 14);
     assert!(!after_facts.has_legacy_ledger);
     assert!(after_facts.has_seaql_ledger);
-    assert_eq!(after_facts.seaql_migration_count, 2);
+    assert_eq!(after_facts.seaql_migration_count, 3);
     assert_eq!(
         after_facts.seaql_migrations,
         [
             "m20260718_000001_v18_baseline",
             "m20260719_000002_panorama_projects",
+            "m20260721_000003_review_sampler",
         ]
     );
     assert!(!after_facts.has_json_storage_columns);
@@ -1286,7 +1313,7 @@ fn normalized_v11_database_is_backed_up_and_adopted_losslessly_once() {
     let loaded_again = load_store(&state_path).unwrap().unwrap();
     assert_eq!(
         serde_json::to_value(&loaded_again).unwrap(),
-        serde_json::to_value(&store).unwrap()
+        serde_json::to_value(persisted_store(store)).unwrap()
     );
     assert_eq!(fs::read(&backup_path).unwrap(), backup_bytes);
     let backup_facts = database_facts(&backup_path).unwrap();
@@ -1314,15 +1341,16 @@ fn pre_release_two_entry_seaorm_ledger_is_collapsed_without_data_loss() {
     let loaded = load_store(&state_path).unwrap().unwrap();
     assert_eq!(
         serde_json::to_value(&loaded).unwrap(),
-        serde_json::to_value(&store).unwrap()
+        serde_json::to_value(persisted_store(store)).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.seaql_migration_count, 2);
+    assert_eq!(after.seaql_migration_count, 3);
     assert_eq!(
         after.seaql_migrations,
         [
             "m20260718_000001_v18_baseline",
             "m20260719_000002_panorama_projects",
+            "m20260721_000003_review_sampler",
         ]
     );
 }
@@ -1334,21 +1362,137 @@ fn schema_v12_migrates_to_panorama_schema_without_review_data_loss() {
     let store = fully_populated_review_store();
     make_schema_v12_database(&state_path, &store).unwrap();
 
-    let before = database_facts(&state_path).unwrap();
-    assert_eq!(before.schema_version, 12);
-    assert_eq!(before.seaql_migrations, ["m20260718_000001_v18_baseline"]);
-
     let loaded = load_store(&state_path).unwrap().unwrap();
     assert_eq!(
         serde_json::to_value(&loaded).unwrap(),
-        serde_json::to_value(&store).unwrap()
+        serde_json::to_value(migrated_pre_sampler_store(store)).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 13);
-    assert_eq!(after.seaql_migration_count, 2);
+    assert_eq!(after.schema_version, 14);
+    assert_eq!(after.seaql_migration_count, 3);
     assert_eq!(after.counts["panorama_projects"], 0);
     assert_eq!(after.counts["panorama_project_images"], 0);
     assert_eq!(after.counts["panorama_previews"], 0);
+}
+
+#[test]
+fn schema_v13_migrates_sampler_state_without_review_data_loss() {
+    let temp = tempfile::tempdir().unwrap();
+    let state_path = temp.path().join(SQLITE_STATE_FILE);
+    let mut store = fully_populated_review_store();
+    store.images[0].publish_profile_indexes = Some(Vec::new());
+    store.images[0].profiles[0].enabled = false;
+    let expected = migrated_pre_sampler_store(store.clone());
+    make_schema_v13_database(&state_path, &store).unwrap();
+
+    let loaded = load_store(&state_path).unwrap().unwrap();
+
+    assert_eq!(
+        serde_json::to_value(&loaded).unwrap(),
+        serde_json::to_value(expected).unwrap()
+    );
+    assert!(!loaded.images[0].profiles[0].enabled);
+    assert!(loaded.profiles.iter().all(|profile| {
+        !profile.sampler_added
+            && profile.enabled_by_default
+            && profile.identity.starts_with("legacy:")
+    }));
+    let after = database_facts(&state_path).unwrap();
+    assert_eq!(after.schema_version, 14);
+    assert_eq!(after.seaql_migration_count, 3);
+    assert_eq!(after.indexes.len(), 19);
+}
+
+#[test]
+fn sampler_profiles_persist_with_current_and_all_availability() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let state_path = temp.path().join(SQLITE_STATE_FILE);
+    fs::create_dir_all(&input).unwrap();
+    let first = input.join("first.jpg");
+    let second = input.join("second.jpg");
+    let third = input.join("third.jpg");
+    fs::write(&first, b"jpg").unwrap();
+    fs::write(&second, b"jpg").unwrap();
+    fs::write(&third, b"jpg").unwrap();
+
+    let mut store = ReviewStore::new(Vec::new());
+    let first_id = store.ensure_image(&input, &first).unwrap().id;
+    let mut sampler_profile = profile(0, "Portra 400");
+    sampler_profile.identity = "xmp:portra-400".to_string();
+    sampler_profile.selector = "/profiles/Portra 400.xmp".to_string();
+    sampler_profile.sampler_added = true;
+    sampler_profile.enabled_by_default = false;
+    sampler_profile.configured_from_cli = false;
+    let profile_index = store.ensure_sampler_profile(sampler_profile).unwrap();
+    assert_eq!(profile_index, SAMPLER_PROFILE_INDEX_BASE);
+    assert!(!store.images[0].profiles[0].enabled);
+
+    store
+        .set_profile_enabled_for_image(first_id, profile_index, true)
+        .unwrap();
+    let second_id = store.ensure_image(&input, &second).unwrap().id;
+    assert!(
+        store.images[0]
+            .profiles
+            .iter()
+            .any(|render| render.profile_index == profile_index && render.enabled)
+    );
+    assert!(
+        store.images[1]
+            .profiles
+            .iter()
+            .any(|render| render.profile_index == profile_index && !render.enabled)
+    );
+
+    save_store(&state_path, &store).unwrap();
+    let mut restored = load_store(&state_path).unwrap().unwrap();
+    restored.sync_profiles(Vec::new());
+    assert_eq!(restored.profiles.len(), 1);
+    assert!(restored.profiles[0].sampler_added);
+    assert!(!restored.profiles[0].configured_from_cli);
+    assert!(
+        restored
+            .images
+            .iter()
+            .find(|image| image.id == first_id)
+            .unwrap()
+            .profiles
+            .iter()
+            .any(|render| render.profile_index == profile_index && render.enabled)
+    );
+    assert!(
+        restored
+            .images
+            .iter()
+            .find(|image| image.id == second_id)
+            .unwrap()
+            .profiles
+            .iter()
+            .any(|render| render.profile_index == profile_index && !render.enabled)
+    );
+
+    restored
+        .set_profile_enabled_for_all(profile_index, true)
+        .unwrap();
+    let third_id = restored.ensure_image(&input, &third).unwrap().id;
+    assert!(restored.profiles[0].enabled_by_default);
+    assert!(restored.images.iter().all(|image| {
+        image
+            .profiles
+            .iter()
+            .any(|render| render.profile_index == profile_index && render.enabled)
+    }));
+    assert_eq!(
+        effective_publish_profile_indexes(
+            restored
+                .images
+                .iter()
+                .find(|image| image.id == third_id)
+                .unwrap()
+        ),
+        vec![profile_index]
+    );
 }
 
 #[test]
@@ -1702,6 +1846,7 @@ fn base_render_done_triggers_pending_retouch_without_marking_done() {
         profile_index: 0,
         profile_stem: "Classic".to_string(),
         display_name: None,
+        enabled: true,
         status: ReviewRenderStatus::Queued,
         output_path: None,
         error: Some("old".to_string()),
@@ -1939,6 +2084,7 @@ fn review_update_uses_cached_bw_filter_output_without_scheduling() {
             retouch: None,
             selected_profile_index: Some(0),
             publish_profile_indexes: Some(vec![0]),
+            enabled_profile_indexes: None,
             profile_bw_filters: Some(vec![ReviewProfileBwFilter {
                 profile_index: 0,
                 filter: BwFilter::Yellow,
@@ -1958,6 +2104,51 @@ fn review_update_uses_cached_bw_filter_output_without_scheduling() {
     assert_eq!(render.output_path.as_deref(), Some(cached.as_path()));
     assert_eq!(render.render_key, None);
     assert!(handle.retouch_scheduler.pending.load_full().is_empty());
+}
+
+#[test]
+fn review_update_enables_sampler_profile_and_aligns_publish_selection() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let raw = input.join("frame.NEF");
+    fs::write(&raw, b"raw").unwrap();
+    let mut sampler_profile = profile(SAMPLER_PROFILE_INDEX_BASE, "Sampler Film");
+    sampler_profile.sampler_added = true;
+    sampler_profile.enabled_by_default = false;
+    sampler_profile.configured_from_cli = false;
+    let handle = test_handle(input, output, vec![sampler_profile]);
+    handle.record_discovered_raw(&raw).unwrap();
+    assert!(!handle.store_snapshot().images[0].profiles[0].enabled);
+
+    handle
+        .apply_review_update(ReviewUpdateRequest {
+            image_id: 1,
+            rating: 0,
+            label: ReviewLabel::None,
+            labels: Vec::new(),
+            tags: Vec::new(),
+            notes: String::new(),
+            retouch: None,
+            selected_profile_index: Some(SAMPLER_PROFILE_INDEX_BASE),
+            publish_profile_indexes: None,
+            enabled_profile_indexes: Some(vec![SAMPLER_PROFILE_INDEX_BASE]),
+            profile_bw_filters: None,
+            advance_after_update: false,
+        })
+        .unwrap();
+
+    let store = handle.store_snapshot();
+    let image = &store.images[0];
+    assert!(image.profiles[0].enabled);
+    assert_eq!(image.selected_profile_index, SAMPLER_PROFILE_INDEX_BASE);
+    assert_eq!(
+        effective_publish_profile_indexes(image),
+        vec![SAMPLER_PROFILE_INDEX_BASE]
+    );
+    assert_eq!(handle.retouch_scheduler.pending.load_full().len(), 1);
 }
 
 #[test]
@@ -2030,6 +2221,7 @@ fn review_update_advances_shared_server_ui_state() {
             retouch: None,
             selected_profile_index: Some(0),
             publish_profile_indexes: Some(vec![0, 1]),
+            enabled_profile_indexes: None,
             profile_bw_filters: None,
             advance_after_update: true,
         })
@@ -2051,6 +2243,7 @@ fn review_update_advances_shared_server_ui_state() {
             retouch: None,
             selected_profile_index: Some(0),
             publish_profile_indexes: Some(vec![0, 1]),
+            enabled_profile_indexes: None,
             profile_bw_filters: None,
             advance_after_update: true,
         })
@@ -2089,6 +2282,7 @@ fn review_update_without_profile_selection_preserves_current_profile() {
             retouch: None,
             selected_profile_index: Some(1),
             publish_profile_indexes: Some(vec![0, 1]),
+            enabled_profile_indexes: None,
             profile_bw_filters: None,
             advance_after_update: false,
         })
@@ -2105,6 +2299,7 @@ fn review_update_without_profile_selection_preserves_current_profile() {
             retouch: None,
             selected_profile_index: None,
             publish_profile_indexes: Some(vec![0, 1]),
+            enabled_profile_indexes: None,
             profile_bw_filters: None,
             advance_after_update: false,
         })
@@ -2145,6 +2340,7 @@ fn review_history_records_review_and_publish_state_changes() {
             retouch: None,
             selected_profile_index: Some(1),
             publish_profile_indexes: Some(vec![1]),
+            enabled_profile_indexes: None,
             profile_bw_filters: None,
             advance_after_update: false,
         })
@@ -2310,6 +2506,10 @@ fn review_route_path_accepts_reverse_proxy_prefixes() {
     assert_eq!(review_route_path("/mini-film/original/1"), "/original/1");
     assert_eq!(review_route_path("/mini-film/thumbnail/1"), "/thumbnail/1");
     assert_eq!(review_route_path("/mini-film/preview/1"), "/preview/1");
+    assert_eq!(
+        review_route_path("/mini-film/sampler-media/1/source"),
+        "/sampler-media/1/source"
+    );
     assert_eq!(
         review_route_path("/mini-film/outputs/galleries/day/index.html"),
         "/outputs/galleries/day/index.html"
@@ -2823,6 +3023,7 @@ fn publish_flat_album_filters_rating_label_and_tag() {
             profile_index: 0,
             profile_stem: "Classic".to_string(),
             display_name: None,
+            enabled: true,
             status: ReviewRenderStatus::Done,
             output_path: Some(source.clone()),
             error: None,
@@ -2883,6 +3084,7 @@ fn publish_flat_album_suffixes_non_default_profiles() {
                 profile_index: 0,
                 profile_stem: "Classic".to_string(),
                 display_name: None,
+                enabled: true,
                 status: ReviewRenderStatus::Done,
                 output_path: Some(classic.clone()),
                 error: None,
@@ -2897,6 +3099,7 @@ fn publish_flat_album_suffixes_non_default_profiles() {
                 profile_index: 1,
                 profile_stem: "Fade".to_string(),
                 display_name: None,
+                enabled: true,
                 status: ReviewRenderStatus::Done,
                 output_path: Some(fade.clone()),
                 error: None,
@@ -2956,6 +3159,7 @@ fn publish_store_reports_realtime_progress() {
                 profile_index: 0,
                 profile_stem: "Classic".to_string(),
                 display_name: None,
+                enabled: true,
                 status: ReviewRenderStatus::Done,
                 output_path: Some(classic.clone()),
                 error: None,
@@ -2970,6 +3174,7 @@ fn publish_store_reports_realtime_progress() {
                 profile_index: 1,
                 profile_stem: "Fade".to_string(),
                 display_name: None,
+                enabled: true,
                 status: ReviewRenderStatus::Done,
                 output_path: Some(fade.clone()),
                 error: None,

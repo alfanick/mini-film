@@ -6,6 +6,7 @@ mod model;
 mod prelude;
 mod preview;
 mod publish;
+mod sampler;
 mod scheduler;
 mod server;
 mod store;
@@ -16,6 +17,6 @@ mod tests;
 pub(crate) use handle::start_review_server;
 pub(crate) use model::{
     ReviewConfig, ReviewGalleryConfig, ReviewHandle, ReviewProfile, ReviewProfileMetadata,
-    ReviewPublishCommandArgs, SOOC_PROFILE_INDEX, SOOC_PROFILE_STEM,
+    ReviewPublishCommandArgs, SOOC_PROFILE_INDEX, SOOC_PROFILE_STEM, review_profile_identity,
 };
 pub(crate) use publish::run_review_publish;

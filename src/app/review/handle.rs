@@ -1,6 +1,6 @@
 use super::{
     db::*, gallery_download::*, history::*, model::*, prelude::*, preview::*, publish::*,
-    scheduler::*, server::*, store::*,
+    sampler::*, scheduler::*, server::*, store::*,
 };
 use crate::app::panorama::{
     PanoramaPreview, PanoramaProgress, PanoramaProgressSink, render_final, render_preview_row,
@@ -136,6 +136,7 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
         panorama_capability,
         panorama_projects: Arc::new(ArcSwap::from_pointee(panorama_projects)),
         panorama_operation: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        sampler_registry: Arc::new(ReviewSamplerRegistry::default()),
         trusted_input_sender: config.trusted_input_sender,
     };
     handle.refresh_state_cache()?;
@@ -161,6 +162,7 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
         .context("starting daemon review server thread")?;
     handle.start_media_scheduler()?;
     handle.start_retouch_scheduler()?;
+    handle.schedule_ready_sampler_profile_renders()?;
     handle.start_codex_scheduler()?;
     handle.schedule_ready_codex_jobs()?;
 
@@ -815,6 +817,7 @@ impl ReviewHandle {
         if let Some((image_id, source, output)) = crop_source_job {
             self.spawn_crop_source_preview_job(image_id, source, output);
         }
+        self.schedule_sampler_profiles_for_source(raw)?;
         Ok(())
     }
 
@@ -871,7 +874,8 @@ impl ReviewHandle {
         for entry in history_entries {
             self.append_history(entry)?;
         }
-        self.broadcast_state()
+        self.broadcast_state()?;
+        self.schedule_sampler_profiles_for_source(input)
     }
 
     pub(crate) fn record_profiled_compressed_discovered(&self, input: &Path) -> Result<()> {
@@ -910,7 +914,8 @@ impl ReviewHandle {
         for entry in history_entries {
             self.append_history(entry)?;
         }
-        self.broadcast_state()
+        self.broadcast_state()?;
+        self.schedule_sampler_profiles_for_source(input)
     }
 
     pub(crate) fn record_compressed_processing(&self, input: &Path) -> Result<()> {
@@ -1434,7 +1439,7 @@ impl ReviewHandle {
         else {
             return Ok(None);
         };
-        if render.render_key.as_deref() != Some(render_key) {
+        if !render.enabled || render.render_key.as_deref() != Some(render_key) {
             return Ok(None);
         }
         let Some(profile) = store
@@ -2192,9 +2197,8 @@ impl ReviewHandle {
                     else {
                         bail!("review image {} does not exist", update.image_id);
                     };
-                    let direct_compressed = image_is_direct_compressed(image);
+                    let mut direct_compressed = image_is_direct_compressed(image);
                     if let Some(selected_profile_index) = update.selected_profile_index
-                        && !direct_compressed
                         && !image
                             .profiles
                             .iter()
@@ -2232,8 +2236,48 @@ impl ReviewHandle {
                         .retouch
                         .as_ref()
                         .is_some_and(|retouch| retouch.clone().normalized() != image.retouch);
+                    let mut newly_enabled_profile_indexes = Vec::new();
                     if let Some(retouch) = update.retouch.clone() {
                         image.retouch = retouch.normalized();
+                    }
+                    if let Some(indexes) = update.enabled_profile_indexes.clone() {
+                        if image.profiles.is_empty() {
+                            bail!("profiles are not available for direct compressed review images");
+                        }
+                        validate_publish_profile_indexes(&indexes, &image.profiles)?;
+                        let enabled = indexes.into_iter().collect::<HashSet<_>>();
+                        for render in &mut image.profiles {
+                            if render.profile_index != SOOC_PROFILE_INDEX {
+                                let was_enabled = render.enabled;
+                                render.enabled = enabled.contains(&render.profile_index);
+                                if render.enabled && !was_enabled {
+                                    newly_enabled_profile_indexes.push(render.profile_index);
+                                } else if !render.enabled {
+                                    render.render_key = None;
+                                }
+                            }
+                        }
+                        if !image.profiles.iter().any(|render| {
+                            render.enabled && render.profile_index == image.selected_profile_index
+                        }) {
+                            image.selected_profile_index = image
+                                .profiles
+                                .iter()
+                                .find(|render| render.enabled)
+                                .map(|render| render.profile_index)
+                                .unwrap_or_default();
+                        }
+                        image.publish_profile_indexes = Some(
+                            image
+                                .profiles
+                                .iter()
+                                .filter(|render| {
+                                    render.enabled && render.profile_index != SOOC_PROFILE_INDEX
+                                })
+                                .map(|render| render.profile_index)
+                                .collect(),
+                        );
+                        direct_compressed = image_is_direct_compressed(image);
                     }
                     if let Some(selected_profile_index) =
                         update.selected_profile_index.filter(|_| !direct_compressed)
@@ -2292,6 +2336,7 @@ impl ReviewHandle {
                                 .profiles
                                 .iter()
                                 .enumerate()
+                                .filter(|(_, render)| render.enabled)
                                 .map(|(index, render)| {
                                     let priority = if Some(render.profile_index)
                                         == visible_profile_index
@@ -2308,6 +2353,18 @@ impl ReviewHandle {
                             render_order.sort_by_key(|(priority, index)| (*priority, *index));
                             for (_, index) in render_order {
                                 let profile_index = image.profiles[index].profile_index;
+                                if image.profiles[index].output_path.is_none()
+                                    && let Some(profile) = profiles_by_index.get(&profile_index)
+                                {
+                                    image.profiles[index].output_path =
+                                        Some(crate::app::batch_daemon::daemon_output_path(
+                                            &self.input_root,
+                                            &self.output_root,
+                                            self.output_format,
+                                            &image.raw_path,
+                                            &profile.stem,
+                                        )?);
+                                }
                                 let bw_filter = profiles_by_index
                                     .get(&profile_index)
                                     .map(|profile| effective_bw_filter_for_profile(image, profile))
@@ -2326,19 +2383,42 @@ impl ReviewHandle {
                                 );
                             }
                         }
-                    } else if !changed_bw_profile_indexes.is_empty() && !direct_compressed {
+                    } else if (!changed_bw_profile_indexes.is_empty()
+                        || !newly_enabled_profile_indexes.is_empty())
+                        && !direct_compressed
+                    {
                         let changed_indexes = changed_bw_profile_indexes
                             .iter()
+                            .chain(newly_enabled_profile_indexes.iter())
                             .copied()
                             .collect::<HashSet<_>>();
                         for index in 0..image.profiles.len() {
                             let profile_index = image.profiles[index].profile_index;
-                            if !changed_indexes.contains(&profile_index) {
+                            if !image.profiles[index].enabled
+                                || !changed_indexes.contains(&profile_index)
+                            {
                                 continue;
                             }
                             let Some(profile) = profiles_by_index.get(&profile_index) else {
                                 continue;
                             };
+                            if image.profiles[index].output_path.is_none() {
+                                image.profiles[index].output_path =
+                                    Some(crate::app::batch_daemon::daemon_output_path(
+                                        &self.input_root,
+                                        &self.output_root,
+                                        self.output_format,
+                                        &image.raw_path,
+                                        &profile.stem,
+                                    )?);
+                            }
+                            image.profiles[index].processing_key = Some(
+                                review_render_processing_key_for_input(
+                                    &image.raw_path,
+                                    profile_index,
+                                )
+                                .to_string(),
+                            );
                             let bw_filter = effective_bw_filter_for_profile(image, profile);
                             let render_key = profile_render_key_value(
                                 &image.retouch,
@@ -2456,6 +2536,7 @@ impl ReviewHandle {
                             "profile_index": render.profile_index,
                             "profile_stem": render.profile_stem,
                             "display_name": render.display_name,
+                            "enabled": render.enabled,
                             "status": render.status,
                             "url": if render.status == ReviewRenderStatus::Done {
                                 Some(format!("media/{}/{}", image.id, render.profile_index))
@@ -2612,6 +2693,7 @@ impl ReviewHandle {
             "publish_jobs": self.publish_jobs_snapshot()?,
             "capabilities": {
                 "panorama": self.panorama_capability,
+                "sampler": self.sampler_available(),
             },
             "panorama": {
                 "busy": self.panorama_operation.load(Ordering::Acquire),
@@ -3669,7 +3751,7 @@ fn apply_cached_profile_output(
     true
 }
 
-fn queue_profile_retouch_render(
+pub(super) fn queue_profile_retouch_render(
     image: &mut ReviewImage,
     render_index: usize,
     render_key: String,

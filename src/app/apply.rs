@@ -429,7 +429,7 @@ pub(crate) fn apply_resolved(
             job.grain_engine,
         )?;
         grain_stage.finish();
-        if progress.is_none() {
+        if progress.is_none() && !job.quiet {
             eprintln!(
                 "applied grain amount={} size={} frequency={} engine={}",
                 resolved.grain.amount,
@@ -467,7 +467,7 @@ pub(crate) fn apply_resolved(
             job.grain_engine,
         )?;
         grain_stage.finish();
-        if progress.is_none() {
+        if progress.is_none() && !job.quiet {
             eprintln!(
                 "applied grain amount={} size={} frequency={} engine={}",
                 resolved.grain.amount,

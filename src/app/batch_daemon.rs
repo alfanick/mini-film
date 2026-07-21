@@ -34,7 +34,7 @@ use crate::app::progress::{
 };
 use crate::app::review::{
     ReviewConfig, ReviewGalleryConfig, ReviewHandle, ReviewProfile, ReviewProfileMetadata,
-    SOOC_PROFILE_INDEX, SOOC_PROFILE_STEM, start_review_server,
+    SOOC_PROFILE_INDEX, SOOC_PROFILE_STEM, review_profile_identity, start_review_server,
 };
 use crate::app::system_stats::{ResourceUsageSummary, sample_usage_block};
 use crate::app::util::{
@@ -325,13 +325,20 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
         let review_profiles = profiles
             .iter()
             .enumerate()
-            .map(|(index, profile)| ReviewProfile {
-                index,
-                selector: profile.selector.clone(),
-                stem: profile.stem.clone(),
-                retouch_base: profile.resolved.retouch_base,
-                metadata: Some(ReviewProfileMetadata::from(&profile.resolved.metadata)),
-                hald_path: profile.resolved.hald_path.clone(),
+            .map(|(index, profile)| {
+                let metadata = ReviewProfileMetadata::from(&profile.resolved.metadata);
+                ReviewProfile {
+                    index,
+                    identity: review_profile_identity(&profile.selector, Some(&metadata)),
+                    selector: profile.selector.clone(),
+                    stem: profile.stem.clone(),
+                    sampler_added: false,
+                    enabled_by_default: true,
+                    configured_from_cli: true,
+                    retouch_base: profile.resolved.retouch_base,
+                    metadata: Some(metadata),
+                    hald_path: profile.resolved.hald_path.clone(),
+                }
             })
             .collect();
         Some(start_review_server(ReviewConfig {
@@ -1858,7 +1865,7 @@ fn release_worker_bar(bar_pool: &Arc<Mutex<Vec<ProgressBar>>>, file: ProgressBar
         .push(file);
 }
 
-fn daemon_output_path(
+pub(crate) fn daemon_output_path(
     input_root: &Path,
     output_root: &Path,
     output_format: BatchOutputFormat,

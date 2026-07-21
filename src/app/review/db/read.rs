@@ -85,8 +85,12 @@ where
         };
         result.push(ReviewProfile {
             index: profile_index,
+            identity: row.identity,
             selector: row.selector,
             stem: row.stem,
+            sampler_added: i64_to_bool(row.sampler_added, "profile sampler_added")?,
+            enabled_by_default: i64_to_bool(row.enabled_by_default, "profile enabled_by_default")?,
+            configured_from_cli: false,
             retouch_base: BasicRetouchAdjustments {
                 exposure: real(row.retouch_exposure),
                 highlights: real(row.retouch_highlights),
@@ -725,6 +729,7 @@ where
             profile_index: i64_to_usize(row.profile_index, "profile render index")?,
             profile_stem: row.profile_stem,
             display_name: row.display_name,
+            enabled: i64_to_bool(row.enabled, "profile render enabled")?,
             status: parse_enum(&row.status, "profile render status")?,
             output_path: row.output_path.map(PathBuf::from),
             error: row.error,

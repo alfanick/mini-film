@@ -56,6 +56,20 @@ const state = {
   panoramaMatching: "automatic",
   panoramaProjection: "cylindrical",
   panoramaMessage: "",
+  samplerOpen: false,
+  samplerLoading: false,
+  samplerError: "",
+  samplerJob: null,
+  samplerExpandedSections: new Set(),
+  samplerKnownEnabledKeys: new Set(),
+  samplerVisibleKeys: new Set(),
+  samplerSelectedKey: null,
+  samplerPendingSelections: new Set(),
+  samplerPollTimer: null,
+  samplerPriorityTimer: null,
+  samplerPrioritySignature: "",
+  samplerPriorityController: null,
+  samplerObserver: null,
   originalShare: {
     imageId: null,
     file: null,
@@ -124,6 +138,8 @@ const PANORAMA_PROJECTIONS = [
   ["equirectangular", "Equirectangular"],
   ["panini", "General Panini"],
 ];
+const SAMPLER_POLL_MS = 500;
+const SAMPLER_PRIORITY_DEBOUNCE_MS = 60;
 
 let wheelNavigation = {
   axis: null,
@@ -197,6 +213,18 @@ function ReviewShell() {
               disabled: true,
             },
             "Crop/rotate",
+          ),
+          h(
+            "button",
+            {
+              id: "sampler",
+              class: "sidebar-tool-button",
+              type: "button",
+              title: "Open profile sampler",
+              "aria-label": "Open profile sampler",
+              hidden: true,
+            },
+            "Sampler",
           ),
           h(
             "button",
@@ -327,6 +355,7 @@ function ReviewShell() {
           h(ControlsShell),
         ),
       ),
+      h("div", { id: "sampler-overlay", class: "sampler-overlay", hidden: true }),
     ),
     h(ShortcutsOverlay),
     h("div", { id: "command-invocation-overlay", class: "command-invocation-overlay", hidden: true }),
@@ -1009,7 +1038,7 @@ function ShortcutsOverlay() {
         [["Double-click"], "Toggle full-image zoom; move the cursor to pan the zoomed image."],
         [
           ["Profile"],
-          "Click a profile thumbnail to preview it; use its checkbox to include it in publishing. Double-click or double-tap a profile to publish only that profile.",
+          "Click a profile thumbnail to preview it; use its checkbox to make it available for this picture. Double-click or double-tap a profile to make only that profile available.",
         ],
       ],
     ],
@@ -1039,8 +1068,8 @@ function ShortcutsOverlay() {
       "Profiles",
       [
         [["PgUp", "PgDn"], "Preview the previous or next profile for the current picture."],
-        [["Space"], "Include or skip the selected profile when publishing."],
-        [["Double-click"], "Publish only that profile thumbnail and exclude the other profiles."],
+        [["Space"], "Enable or disable the selected profile for the current picture."],
+        [["Double-click"], "Enable only that profile thumbnail for the current picture."],
       ],
     ],
     [
@@ -1575,6 +1604,306 @@ function PanoramaOverlay() {
   );
 }
 
+function SamplerOverlay() {
+  const job = state.samplerJob;
+  const hierarchy = buildSamplerHierarchy(job?.entries || []);
+  const selectedEntry = samplerSelectedEntry(job);
+  const completed = Number(job?.completed || 0);
+  const total = Number(job?.total || 0);
+  const progressMax = Math.max(1, total);
+  const progressValue = Math.min(progressMax, completed);
+  const sourceStyle = samplerMediaStyle(job);
+  return h(
+    "section",
+    { class: "sampler-card", role: "dialog", "aria-modal": "true", "aria-labelledby": "sampler-title" },
+    h(
+      "header",
+      { class: "sampler-header" },
+      h(
+        "div",
+        null,
+        h("h2", { id: "sampler-title" }, "Sampler"),
+        h(
+          "p",
+          null,
+          job
+            ? `${job.file_name} | ${completed}/${total} | ${job.workers} workers`
+            : state.samplerLoading
+              ? "Preparing profile catalog"
+              : "Profile sampler",
+        ),
+      ),
+      h(
+        "button",
+        { type: "button", class: "sampler-close", "aria-label": "Close sampler", onClick: closeSampler },
+        "×",
+      ),
+    ),
+    job
+      ? h(
+          "div",
+          { class: "sampler-progress" },
+          h("progress", { max: progressMax, value: progressValue }),
+          h("span", { class: job.error ? "error" : "" }, job.error || samplerStatusText(job)),
+        )
+      : null,
+    state.samplerError ? h("div", { class: "sampler-error" }, state.samplerError) : null,
+    job?.source_url
+      ? h(
+          "section",
+          { class: "sampler-comparison", "aria-label": "Sampler comparison" },
+          h(
+            "figure",
+            null,
+            h("img", {
+              src: reviewUrl(job.source_url),
+              alt: "Neutral source",
+              style: sourceStyle,
+              decoding: "async",
+            }),
+            h("figcaption", null, "Neutral"),
+          ),
+          h(
+            "figure",
+            null,
+            h("img", {
+              src: reviewUrl(selectedEntry?.thumbnail_url || job.source_url),
+              alt: selectedEntry?.name || "Neutral source",
+              style: sourceStyle,
+              decoding: "async",
+            }),
+            h("figcaption", null, selectedEntry?.name || "Select a rendered profile"),
+          ),
+        )
+      : null,
+    h(
+      "div",
+      { class: "sampler-sections" },
+      hierarchy.sections.map((section) => h(SamplerSection, { key: section.key, section, job })),
+    ),
+  );
+}
+
+function SamplerSection({ section, job }) {
+  const expanded = state.samplerExpandedSections.has(section.key);
+  const done = section.allEntries.filter((entry) => entry.status === "done").length;
+  return h(
+    "details",
+    {
+      class: `sampler-section sampler-section-depth-${Math.min(section.depth, 3)}`,
+      open: expanded,
+      "data-sampler-section-key": section.key,
+      onToggle: (event) => toggleSamplerSection(section.key, event.currentTarget.open),
+    },
+    h(
+      "summary",
+      null,
+      h("span", null, section.label),
+      h("span", { class: "sampler-section-count" }, `${done}/${section.allEntries.length}`),
+    ),
+    section.entries.length > 0
+      ? h(
+          "div",
+          { class: "sampler-grid" },
+          section.entries.map((entry) => h(SamplerTile, { key: entry.key, entry, job })),
+        )
+      : null,
+    section.children.length > 0
+      ? h(
+          "div",
+          { class: "sampler-section-children" },
+          section.children.map((child) => h(SamplerSection, { key: child.key, section: child, job })),
+        )
+      : null,
+  );
+}
+
+function SamplerTile({ entry, job }) {
+  const selected = state.samplerSelectedKey === entry.key;
+  const ready = entry.status === "done" && Boolean(entry.thumbnail_url);
+  const currentPending = state.samplerPendingSelections.has(`${entry.key}:current`);
+  const allPending = state.samplerPendingSelections.has(`${entry.key}:all`);
+  const sourceStyle = samplerMediaStyle(job);
+  return h(
+    "article",
+    {
+      class: `sampler-tile ${selected ? "selected" : ""} sampler-${entry.status}`,
+      "data-sampler-key": entry.key,
+    },
+    h(
+      "button",
+      {
+        type: "button",
+        class: "sampler-thumbnail",
+        disabled: !ready,
+        title: entry.filename,
+        style: sourceStyle,
+        onClick: () => selectSamplerEntry(entry.key),
+      },
+      ready
+        ? h("img", {
+            src: reviewUrl(entry.thumbnail_url),
+            alt: entry.name,
+            style: sourceStyle,
+            loading: "lazy",
+            decoding: "async",
+          })
+        : h("span", { class: "sampler-thumbnail-placeholder" }, capitalize(entry.status)),
+    ),
+    h("div", { class: "sampler-tile-name", title: entry.filename }, entry.name),
+    entry.error ? h("div", { class: "sampler-tile-error", title: entry.error }, "Failed") : null,
+    h(
+      "div",
+      { class: "sampler-scope", "aria-label": `${entry.name} availability` },
+      h(
+        "label",
+        { title: "Available for the current picture" },
+        h("input", {
+          type: "checkbox",
+          checked: Boolean(entry.current_enabled),
+          disabled: !ready || currentPending,
+          onChange: (event) => updateSamplerSelection(entry, "current", event.currentTarget.checked),
+        }),
+        h("span", null, "Current"),
+      ),
+      h(
+        "label",
+        {
+          title: entry.configured_from_cli
+            ? "Command-line profiles remain available to all pictures"
+            : "Available for all current and future pictures",
+        },
+        h("input", {
+          type: "checkbox",
+          checked: Boolean(entry.all_enabled),
+          disabled: !ready || allPending || entry.configured_from_cli,
+          onChange: (event) => updateSamplerSelection(entry, "all", event.currentTarget.checked),
+        }),
+        h("span", null, "All"),
+      ),
+    ),
+  );
+}
+
+function samplerMediaStyle(job) {
+  const width = Number(job?.source_width);
+  const height = Number(job?.source_height);
+  return Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0
+    ? { aspectRatio: `${width} / ${height}` }
+    : undefined;
+}
+
+function buildSamplerHierarchy(entries) {
+  const root = samplerTrieNode("");
+  for (const entry of entries) {
+    const parts = Array.isArray(entry.parts) ? entry.parts.map((part) => String(part).trim()).filter(Boolean) : [];
+    let node = root;
+    for (const part of parts.length > 0 ? parts : ["Profiles"]) {
+      if (!node.children.has(part)) node.children.set(part, samplerTrieNode(part));
+      node = node.children.get(part);
+    }
+    node.entries.push(entry);
+  }
+  const entrySections = new Map();
+  const sections = samplerTrieChildren(root).map(([part, node]) =>
+    buildSamplerSection(node, [part], 0, [], entrySections),
+  );
+  return { sections, entrySections };
+}
+
+function samplerTrieNode(part) {
+  return { part, entries: [], children: new Map() };
+}
+
+function samplerTrieChildren(node) {
+  return Array.from(node.children.entries()).sort(([left], [right]) =>
+    left.localeCompare(right, undefined, { numeric: true }),
+  );
+}
+
+function buildSamplerSection(node, prefix, depth, ancestorKeys, entrySections) {
+  const key = prefix.map(encodeURIComponent).join("/");
+  const allEntries = collectSamplerTrieEntries(node);
+  const flatten = (depth >= 1 || samplerSubtreeDepth(node) <= 2) && !samplerContainsForcedBranch(node);
+  let entries;
+  let children;
+  if (flatten) {
+    entries = allEntries;
+    children = [];
+  } else {
+    entries = [...node.entries];
+    children = [];
+    for (const [part, child] of samplerTrieChildren(node)) {
+      if (child.children.size === 0 && child.entries.length > 0) {
+        entries.push(...child.entries);
+      } else {
+        children.push(buildSamplerSection(child, [...prefix, part], depth + 1, [...ancestorKeys, key], entrySections));
+      }
+    }
+  }
+  entries = samplerSortEntries(entries);
+  const section = {
+    key,
+    label: prefix.join(" "),
+    depth,
+    ancestorKeys,
+    entries,
+    allEntries,
+    children,
+  };
+  for (const entry of entries) entrySections.set(entry.key, section);
+  return section;
+}
+
+function collectSamplerTrieEntries(node) {
+  const entries = [...node.entries];
+  for (const child of node.children.values()) entries.push(...collectSamplerTrieEntries(child));
+  return samplerSortEntries(entries);
+}
+
+function samplerSortEntries(entries) {
+  return [...entries].sort((left, right) => left.name.localeCompare(right.name, undefined, { numeric: true }));
+}
+
+function samplerSubtreeDepth(node) {
+  if (node.children.size === 0) return 0;
+  return 1 + Math.max(...Array.from(node.children.values(), samplerSubtreeDepth));
+}
+
+function samplerContainsForcedBranch(node) {
+  return Array.from(
+    node.children,
+    ([part, child]) => samplerIsVersionPart(part) || samplerIsFilmSpeedPart(part) || samplerContainsForcedBranch(child),
+  ).some(Boolean);
+}
+
+function samplerIsVersionPart(part) {
+  return /^v\d+$/i.test(part);
+}
+
+function samplerIsFilmSpeedPart(part) {
+  if (!/^\d+$/.test(part)) return false;
+  const speed = Number(part);
+  return speed >= 25 && speed <= 12800;
+}
+
+function samplerSelectedEntry(job) {
+  const entries = job?.entries || [];
+  return (
+    entries.find((entry) => entry.key === state.samplerSelectedKey && entry.status === "done") ||
+    entries.find((entry) => entry.current_enabled && entry.status === "done") ||
+    entries.find((entry) => entry.status === "done") ||
+    null
+  );
+}
+
+function samplerStatusText(job) {
+  if (job.status === "preparing") return "Preparing neutral TIFF";
+  if (job.status === "rendering") return `Rendering profiles${job.failed ? ` | ${job.failed} failed` : ""}`;
+  if (job.status === "done") return job.failed ? `Complete | ${job.failed} failed` : "Complete";
+  return capitalize(job.status);
+}
+
 function capitalize(value) {
   return value ? `${value[0].toUpperCase()}${value.slice(1)}` : "";
 }
@@ -1639,6 +1968,7 @@ const els = {
   cropCancel: document.getElementById("crop-cancel"),
   cropReset: document.getElementById("crop-reset"),
   publish: document.getElementById("publish"),
+  sampler: document.getElementById("sampler"),
   panorama: document.getElementById("panorama"),
   minRating: document.getElementById("min-rating"),
   app: document.querySelector(".app"),
@@ -1676,6 +2006,7 @@ const els = {
   publishGalleryColumns: document.getElementById("publish-gallery-columns"),
   publishGalleryThumbnailLongEdge: document.getElementById("publish-gallery-thumbnail-long-edge"),
   panoramaOverlay: document.getElementById("panorama-overlay"),
+  samplerOverlay: document.getElementById("sampler-overlay"),
 };
 
 const wideProfilesQuery = window.matchMedia("(min-width: 901px) and (min-height: 620px)");
@@ -1807,8 +2138,11 @@ function render() {
   renderProfileInfo();
   renderCommandInvocation();
   renderPanoramaWizard();
+  renderSampler();
   const panoramaAvailable = Boolean(state.data?.capabilities?.panorama?.available);
   els.panorama.hidden = !panoramaAvailable;
+  els.sampler.hidden = !state.data?.capabilities?.sampler;
+  els.sampler.disabled = !findImage(state.currentId);
   syncProfilesPlacement();
   const images = filteredImages();
   const total = state.data?.images?.length || 0;
@@ -2467,7 +2801,7 @@ function selectedProfile(image) {
 
 function selectedProfileForImage(image) {
   if (isDirectCompressedImage(image)) return null;
-  const profiles = image?.profiles || [];
+  const profiles = (image?.profiles || []).filter((profile) => isSoocProfile(profile) || profile.enabled !== false);
   const selectedIndex = selectedProfileIndexForImage(image);
   const selected = profiles.find((profile) => profile.profile_index === selectedIndex);
   return selected || profiles[0] || null;
@@ -2688,21 +3022,24 @@ function profilesAreImplicitOnly(image = null) {
 }
 
 function visibleProfileCount(image = null) {
-  if (isDirectCompressedImage(image)) return 0;
   if (profilesAreImplicitOnly(image)) return 0;
   return image ? image.profiles?.length || 0 : state.data?.profiles?.length || 0;
 }
 
-function togglePublishProfile(image, profileIndex) {
-  const selected = new Set(publishProfileIndexes(image));
-  if (selected.has(profileIndex)) {
-    selected.delete(profileIndex);
+function enabledProfileIndexes(image) {
+  return (image?.profiles || [])
+    .filter((profile) => !isSoocProfile(profile) && profile.enabled !== false)
+    .map((profile) => profile.profile_index);
+}
+
+function toggleEnabledProfile(image, profileIndex) {
+  const enabled = new Set(enabledProfileIndexes(image));
+  if (enabled.has(profileIndex)) {
+    enabled.delete(profileIndex);
   } else {
-    selected.add(profileIndex);
+    enabled.add(profileIndex);
   }
-  return (image.profiles || [])
-    .map((profile) => profile.profile_index)
-    .filter((profileIndex) => selected.has(profileIndex));
+  return (image.profiles || []).map((profile) => profile.profile_index).filter((index) => enabled.has(index));
 }
 
 function normalizeBwFilter(value) {
@@ -2756,7 +3093,7 @@ async function setProfileBwFilter(image, profileIndex, filter) {
 }
 
 function renderProfiles(image) {
-  if (profilesAreImplicitOnly(image) || isDirectCompressedImage(image)) {
+  if (profilesAreImplicitOnly(image)) {
     preactRender(null, els.profiles);
     return;
   }
@@ -2764,15 +3101,19 @@ function renderProfiles(image) {
     h(ProfileList, {
       image,
       onSelect: async (profile) => {
-        await saveReview({ selected_profile_index: profile.profile_index });
+        const patch = { selected_profile_index: profile.profile_index };
+        if (profile.enabled === false) {
+          patch.enabled_profile_indexes = toggleEnabledProfile(image, profile.profile_index);
+        }
+        await saveReview(patch);
       },
-      onTogglePublish: async (profile) => {
-        await saveReview({ publish_profile_indexes: togglePublishProfile(image, profile.profile_index) });
+      onToggleEnabled: async (profile) => {
+        await saveReview({ enabled_profile_indexes: toggleEnabledProfile(image, profile.profile_index) });
       },
-      onSoloPublish: async (profile) => {
+      onSolo: async (profile) => {
         await saveReview({
           selected_profile_index: profile.profile_index,
-          publish_profile_indexes: [profile.profile_index],
+          enabled_profile_indexes: isSoocProfile(profile) ? [] : [profile.profile_index],
         });
       },
     }),
@@ -2785,16 +3126,15 @@ const profileDoubleTap = {
   at: 0,
 };
 
-function ProfileList({ image, onSelect, onTogglePublish, onSoloPublish }) {
+function ProfileList({ image, onSelect, onToggleEnabled, onSolo }) {
   if (!image) return null;
-  const publishIndexes = new Set(publishProfileIndexes(image));
   const previewProfile = selectedProfile(image);
   const profiles = image.profiles || [];
-  const canSoloPublish = profiles.length > 1;
+  const canSolo = profiles.length > 1;
   return profiles.map((profile) => {
     const displayName = profileDisplayName(profile);
     const cardUrl = profile.url || image.preview_url;
-    const publishSelected = publishIndexes.has(profile.profile_index);
+    const available = isSoocProfile(profile) || profile.enabled !== false;
     const display = profileDisplayState(image, profile);
     const isPortrait = isPortraitRenderProfile(profile);
     const sourceStatus = profile.url ? display.text : `${display.text} | preview`;
@@ -2804,7 +3144,7 @@ function ProfileList({ image, onSelect, onTogglePublish, onSoloPublish }) {
       profile.url ? "" : "pending",
       isPortrait ? "portrait" : "",
       display.state,
-      publishSelected ? "publish-selected" : "publish-excluded",
+      available ? "availability-enabled" : "availability-disabled",
     ]
       .filter(Boolean)
       .join(" ");
@@ -2821,12 +3161,12 @@ function ProfileList({ image, onSelect, onTogglePublish, onSoloPublish }) {
           class: classes,
           onClick: () => onSelect(profile).catch((error) => console.error(error)),
           onDblClick: (event) => {
-            if (!canSoloPublish) return;
+            if (!canSolo) return;
             event.preventDefault();
-            onSoloPublish(profile).catch((error) => console.error(error));
+            onSolo(profile).catch((error) => console.error(error));
           },
           onPointerUp: (event) => {
-            if (!canSoloPublish || event.pointerType === "mouse") return;
+            if (!canSolo || event.pointerType === "mouse") return;
             const now = Date.now();
             const sameProfile = profileDoubleTap.profileIndex === profile.profile_index;
             const isDoubleTap = sameProfile && now - profileDoubleTap.at < 450;
@@ -2834,19 +3174,24 @@ function ProfileList({ image, onSelect, onTogglePublish, onSoloPublish }) {
             profileDoubleTap.at = now;
             if (!isDoubleTap) return;
             event.preventDefault();
-            onSoloPublish(profile).catch((error) => console.error(error));
+            onSolo(profile).catch((error) => console.error(error));
           },
         },
         h("input", {
           type: "checkbox",
-          class: "profile-publish",
-          checked: publishSelected,
-          title: publishSelected ? "Included in publish" : "Skipped by publish",
-          "aria-label": `Publish ${displayName}`,
+          class: "profile-availability",
+          checked: available,
+          disabled: isSoocProfile(profile),
+          title: isSoocProfile(profile)
+            ? "SOOC remains available"
+            : available
+              ? "Available for this picture"
+              : "Disabled for this picture",
+          "aria-label": `Enable ${displayName}`,
           onClick: (event) => event.stopPropagation(),
           onChange: (event) => {
             event.stopPropagation();
-            onTogglePublish(profile).catch((error) => console.error(error));
+            onToggleEnabled(profile).catch((error) => console.error(error));
           },
         }),
         cardUrl
@@ -2871,7 +3216,7 @@ function ProfileList({ image, onSelect, onTogglePublish, onSoloPublish }) {
             class: "profile-status",
             title: display.title,
           },
-          `${sourceStatus} | ${publishSelected ? "publish" : "skip"}`,
+          `${sourceStatus} | ${available ? "available" : "off"}`,
         ),
       ),
       profile.url
@@ -3379,6 +3724,244 @@ function openPanoramaWizard() {
 function closePanoramaWizard() {
   state.panoramaOpen = false;
   els.panoramaOverlay.hidden = true;
+}
+
+function renderSampler() {
+  if (!state.samplerOpen) {
+    els.samplerOverlay.hidden = true;
+    return;
+  }
+  els.samplerOverlay.hidden = false;
+  preactRender(h(SamplerOverlay), els.samplerOverlay);
+  requestAnimationFrame(refreshSamplerPriorityObserver);
+}
+
+async function openSampler() {
+  const image = findImage(state.currentId);
+  if (!image || !state.data?.capabilities?.sampler) return;
+  state.samplerOpen = true;
+  state.samplerLoading = true;
+  state.samplerError = "";
+  state.samplerJob = null;
+  state.samplerExpandedSections.clear();
+  state.samplerKnownEnabledKeys.clear();
+  state.samplerVisibleKeys.clear();
+  state.samplerSelectedKey = null;
+  state.samplerPrioritySignature = "";
+  renderSampler();
+  try {
+    const job = await samplerRequest("api/sampler/jobs", "POST", { image_id: image.id });
+    if (!state.samplerOpen) return;
+    state.samplerJob = job;
+    state.samplerSelectedKey =
+      job.entries?.find((entry) => entry.selected)?.key ||
+      job.entries?.find((entry) => entry.current_enabled)?.key ||
+      null;
+    syncSamplerAutoExpandedSections(job);
+    state.samplerLoading = false;
+    renderSampler();
+    scheduleSamplerPoll();
+  } catch (error) {
+    if (!state.samplerOpen) return;
+    state.samplerLoading = false;
+    state.samplerError = error.message;
+    renderSampler();
+  }
+}
+
+function closeSampler() {
+  state.samplerOpen = false;
+  state.samplerLoading = false;
+  clearTimeout(state.samplerPollTimer);
+  clearTimeout(state.samplerPriorityTimer);
+  state.samplerPollTimer = null;
+  state.samplerPriorityTimer = null;
+  state.samplerObserver?.disconnect();
+  state.samplerObserver = null;
+  state.samplerPriorityController?.abort();
+  state.samplerPriorityController = null;
+  state.samplerVisibleKeys.clear();
+  els.samplerOverlay.hidden = true;
+  preactRender(null, els.samplerOverlay);
+}
+
+async function samplerRequest(path, method, body) {
+  const response = await fetch(reviewUrl(path), {
+    method,
+    cache: "no-store",
+    headers: { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  let data;
+  try {
+    data = await response.json();
+  } catch {
+    data = null;
+  }
+  if (!response.ok) throw new Error(data?.error || `sampler ${response.status}`);
+  return data;
+}
+
+function scheduleSamplerPoll() {
+  clearTimeout(state.samplerPollTimer);
+  state.samplerPollTimer = null;
+  if (!state.samplerOpen || !state.samplerJob || ["done", "failed"].includes(state.samplerJob.status)) return;
+  state.samplerPollTimer = setTimeout(pollSamplerJob, SAMPLER_POLL_MS);
+}
+
+async function pollSamplerJob() {
+  const jobId = state.samplerJob?.id;
+  if (!state.samplerOpen || !jobId) return;
+  try {
+    const job = await samplerRequest(`api/sampler/jobs/${jobId}`, "GET");
+    if (!state.samplerOpen || state.samplerJob?.id !== jobId) return;
+    state.samplerJob = job;
+    syncSamplerAutoExpandedSections(job);
+    state.samplerError = "";
+    renderSampler();
+  } catch (error) {
+    if (state.samplerOpen) {
+      state.samplerError = error.message;
+      renderSampler();
+    }
+  }
+  scheduleSamplerPoll();
+}
+
+function toggleSamplerSection(key, expanded) {
+  const changed = expanded ? !state.samplerExpandedSections.has(key) : state.samplerExpandedSections.has(key);
+  if (!changed) return;
+  if (expanded) {
+    state.samplerExpandedSections.add(key);
+  } else {
+    state.samplerExpandedSections.delete(key);
+  }
+  requestAnimationFrame(refreshSamplerPriorityObserver);
+}
+
+function syncSamplerAutoExpandedSections(job) {
+  const enabledKeys = new Set(
+    (job?.entries || []).filter((entry) => entry.current_enabled || entry.selected).map((entry) => entry.key),
+  );
+  const newlyEnabled = Array.from(enabledKeys).filter((key) => !state.samplerKnownEnabledKeys.has(key));
+  if (newlyEnabled.length > 0) {
+    const hierarchy = buildSamplerHierarchy(job.entries || []);
+    for (const entryKey of newlyEnabled) {
+      const section = hierarchy.entrySections.get(entryKey);
+      if (!section) continue;
+      for (const ancestorKey of section.ancestorKeys) state.samplerExpandedSections.add(ancestorKey);
+      state.samplerExpandedSections.add(section.key);
+    }
+  }
+  state.samplerKnownEnabledKeys = enabledKeys;
+}
+
+function selectSamplerEntry(key) {
+  state.samplerSelectedKey = key;
+  renderSampler();
+}
+
+async function updateSamplerSelection(entry, scope, enabled) {
+  const jobId = state.samplerJob?.id;
+  if (!jobId || entry.status !== "done") return;
+  const pendingKey = `${entry.key}:${scope}`;
+  state.samplerPendingSelections.add(pendingKey);
+  state.samplerError = "";
+  renderSampler();
+  try {
+    const job = await samplerRequest(`api/sampler/jobs/${jobId}/profiles/${entry.key}`, "POST", {
+      scope,
+      enabled,
+    });
+    if (state.samplerOpen && state.samplerJob?.id === jobId) {
+      state.samplerJob = job;
+      if (enabled) state.samplerSelectedKey = entry.key;
+      syncSamplerAutoExpandedSections(job);
+    }
+  } catch (error) {
+    if (state.samplerOpen) state.samplerError = error.message;
+  } finally {
+    state.samplerPendingSelections.delete(pendingKey);
+    if (state.samplerOpen) renderSampler();
+  }
+}
+
+function refreshSamplerPriorityObserver() {
+  state.samplerObserver?.disconnect();
+  state.samplerObserver = null;
+  if (!state.samplerOpen || !state.samplerJob) return;
+  const root = els.samplerOverlay.querySelector(".sampler-sections");
+  if (!root || !("IntersectionObserver" in window)) {
+    scheduleSamplerPriorityUpdate();
+    return;
+  }
+  const tiles = Array.from(root.querySelectorAll("[data-sampler-key]"));
+  const availableKeys = new Set(tiles.map((tile) => tile.dataset.samplerKey));
+  state.samplerVisibleKeys = new Set(Array.from(state.samplerVisibleKeys).filter((key) => availableKeys.has(key)));
+  state.samplerObserver = new IntersectionObserver(
+    (entries) => {
+      let changed = false;
+      for (const observed of entries) {
+        const key = observed.target.dataset.samplerKey;
+        if (!key) continue;
+        if (observed.isIntersecting && !state.samplerVisibleKeys.has(key)) {
+          state.samplerVisibleKeys.add(key);
+          changed = true;
+        } else if (!observed.isIntersecting && state.samplerVisibleKeys.delete(key)) {
+          changed = true;
+        }
+      }
+      if (changed) scheduleSamplerPriorityUpdate();
+    },
+    { root, rootMargin: "80px 0px", threshold: 0.01 },
+  );
+  tiles.forEach((tile) => state.samplerObserver.observe(tile));
+  scheduleSamplerPriorityUpdate();
+}
+
+function scheduleSamplerPriorityUpdate() {
+  clearTimeout(state.samplerPriorityTimer);
+  state.samplerPriorityTimer = setTimeout(sendSamplerPriority, SAMPLER_PRIORITY_DEBOUNCE_MS);
+}
+
+function expandedSamplerKeys() {
+  const keys = new Set();
+  const hierarchy = buildSamplerHierarchy(state.samplerJob?.entries || []);
+  const visit = (section, ancestorsExpanded) => {
+    const expanded = ancestorsExpanded && state.samplerExpandedSections.has(section.key);
+    if (expanded) {
+      for (const entry of section.entries) keys.add(entry.key);
+    }
+    section.children.forEach((child) => visit(child, expanded));
+  };
+  hierarchy.sections.forEach((section) => visit(section, true));
+  return Array.from(keys);
+}
+
+async function sendSamplerPriority() {
+  state.samplerPriorityTimer = null;
+  const jobId = state.samplerJob?.id;
+  if (!state.samplerOpen || !jobId) return;
+  const visibleKeys = Array.from(state.samplerVisibleKeys).sort();
+  const expandedKeys = expandedSamplerKeys().sort();
+  const signature = `${jobId}|${visibleKeys.join(",")}|${expandedKeys.join(",")}`;
+  if (signature === state.samplerPrioritySignature) return;
+  state.samplerPrioritySignature = signature;
+  state.samplerPriorityController?.abort();
+  const controller = new AbortController();
+  state.samplerPriorityController = controller;
+  try {
+    await fetch(reviewUrl(`api/sampler/jobs/${jobId}/priority`), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ visible_keys: visibleKeys, expanded_keys: expandedKeys }),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error.name !== "AbortError") console.error(error);
+  } finally {
+    if (state.samplerPriorityController === controller) state.samplerPriorityController = null;
+  }
 }
 
 function initializeNewPanorama() {
@@ -4785,7 +5368,11 @@ function reviewRequestBody(image, patch = {}, options = {}) {
     notes: patch.notes ?? (options.useInputs ? els.notes.value : image.notes || ""),
     retouch: patch.retouch ?? (options.useInputs ? retouchFromInputs(image) : image.retouch || defaultRetouch()),
     selected_profile_index: patch.selected_profile_index,
-    publish_profile_indexes: patch.publish_profile_indexes ?? publishProfileIndexes(image),
+    publish_profile_indexes:
+      patch.enabled_profile_indexes === undefined
+        ? (patch.publish_profile_indexes ?? publishProfileIndexes(image))
+        : undefined,
+    enabled_profile_indexes: patch.enabled_profile_indexes,
     profile_bw_filters: patch.profile_bw_filters ?? profileBwFilters(image),
     advance_after_update: Boolean(patch.advance_after_update),
   };
@@ -4854,19 +5441,19 @@ async function carrySelectedProfileToImage(imageId, profileIndex) {
 async function selectProfileRelative(delta) {
   const image = findImage(state.currentId);
   if (profilesAreImplicitOnly(image)) return;
-  const profiles = image?.profiles || [];
+  const profiles = (image?.profiles || []).filter((profile) => isSoocProfile(profile) || profile.enabled !== false);
   if (profiles.length === 0) return;
   const index = profiles.findIndex((profile) => profile.profile_index === image.selected_profile_index);
   const next = (Math.max(0, index) + delta + profiles.length) % profiles.length;
   await saveReview({ selected_profile_index: profiles[next].profile_index });
 }
 
-async function toggleSelectedProfilePublish() {
+async function toggleSelectedProfileAvailability() {
   const image = findImage(state.currentId);
   if (profilesAreImplicitOnly(image)) return;
   const profile = selectedProfile(image);
-  if (!image || !profile) return;
-  await saveReview({ publish_profile_indexes: togglePublishProfile(image, profile.profile_index) });
+  if (!image || !profile || isSoocProfile(profile)) return;
+  await saveReview({ enabled_profile_indexes: toggleEnabledProfile(image, profile.profile_index) });
 }
 
 function toggleCurrentLabel(label) {
@@ -4893,7 +5480,13 @@ function normalizeWheelDelta(event, value) {
 }
 
 function shouldIgnoreNavigationWheel(event) {
-  if (!els.publishOverlay.hidden || !els.panoramaOverlay.hidden || !els.shortcutsOverlay.hidden || state.cropEditing)
+  if (
+    !els.publishOverlay.hidden ||
+    !els.panoramaOverlay.hidden ||
+    !els.samplerOverlay.hidden ||
+    !els.shortcutsOverlay.hidden ||
+    state.cropEditing
+  )
     return true;
   if (event.ctrlKey || event.metaKey || event.altKey) return true;
   return Boolean(
@@ -5439,6 +6032,10 @@ function clearRetouchSaveTimer() {
 
 els.publish.addEventListener("click", () => togglePublishWizard(true));
 els.mobilePublish.addEventListener("click", () => togglePublishWizard(true));
+els.sampler.addEventListener("click", () => openSampler().catch((error) => console.error(error)));
+els.samplerOverlay.addEventListener("click", (event) => {
+  if (event.target === els.samplerOverlay) closeSampler();
+});
 els.panorama.addEventListener("click", openPanoramaWizard);
 els.panoramaOverlay.addEventListener("click", (event) => {
   if (event.target === els.panoramaOverlay) closePanoramaWizard();
@@ -5514,6 +6111,13 @@ window.addEventListener("keydown", (event) => {
   if (state.commandInvocationOpen && event.key === "Escape") {
     event.preventDefault();
     closeCommandInvocation();
+    return;
+  }
+  if (state.samplerOpen) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeSampler();
+    }
     return;
   }
   if (state.panoramaOpen) {
@@ -5609,7 +6213,7 @@ window.addEventListener("keydown", (event) => {
   }
   if (event.key === " ") {
     event.preventDefault();
-    toggleSelectedProfilePublish();
+    toggleSelectedProfileAvailability();
   }
   if (event.key === "ArrowUp") {
     event.preventDefault();

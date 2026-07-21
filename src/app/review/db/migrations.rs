@@ -1,12 +1,14 @@
 use super::{entities::*, sqlite_compat};
-use sea_orm::{DbBackend, EntityName, EntityTrait, Schema};
+use sea_orm::{ActiveModelTrait, DbBackend, EntityName, EntityTrait, IntoActiveModel, Schema, Set};
 use sea_orm_migration::{MigratorTrait, prelude::*};
 
 pub(super) const LEGACY_SCHEMA_VERSION: i64 = 11;
 pub(super) const FIRST_SEAORM_SCHEMA_VERSION: i64 = 12;
-pub(super) const LATEST_SCHEMA_VERSION: i64 = 13;
+const PANORAMA_SCHEMA_VERSION: i64 = 13;
+pub(super) const LATEST_SCHEMA_VERSION: i64 = 14;
 pub(super) const V18_BASELINE_MIGRATION: &str = "m20260718_000001_v18_baseline";
 pub(super) const PANORAMA_PROJECTS_MIGRATION: &str = "m20260719_000002_panorama_projects";
+pub(super) const REVIEW_SAMPLER_MIGRATION: &str = "m20260721_000003_review_sampler";
 pub(super) const PRE_RELEASE_SEAORM_LEDGER: [&str; 2] = [
     "m20260718_000001_create_review_schema",
     "m20260718_000002_adopt_seaorm",
@@ -31,7 +33,11 @@ pub(super) struct Migrator;
 #[async_trait::async_trait]
 impl MigratorTrait for Migrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-        vec![Box::new(V18Baseline), Box::new(PanoramaProjects)]
+        vec![
+            Box::new(V18Baseline),
+            Box::new(PanoramaProjects),
+            Box::new(ReviewSampler),
+        ]
     }
 }
 
@@ -120,6 +126,190 @@ impl MigrationName for PanoramaProjects {
     }
 }
 
+struct ReviewSampler;
+
+impl MigrationName for ReviewSampler {
+    fn name(&self) -> &str {
+        REVIEW_SAMPLER_MIGRATION
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for ReviewSampler {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        let add_profile_columns = !manager
+            .has_column(profiles::Entity.table_name(), "identity")
+            .await?;
+        if add_profile_columns {
+            for mut column in [
+                ColumnDef::new(profiles::Column::Identity)
+                    .text()
+                    .not_null()
+                    .default("")
+                    .to_owned(),
+                ColumnDef::new(profiles::Column::SamplerAdded)
+                    .big_integer()
+                    .not_null()
+                    .default(0)
+                    .to_owned(),
+                ColumnDef::new(profiles::Column::EnabledByDefault)
+                    .big_integer()
+                    .not_null()
+                    .default(1)
+                    .to_owned(),
+            ] {
+                manager
+                    .alter_table(
+                        Table::alter()
+                            .table(profiles::Entity)
+                            .add_column(&mut column)
+                            .to_owned(),
+                    )
+                    .await?;
+            }
+        }
+        let add_render_enabled = !manager
+            .has_column(image_profile_renders::Entity.table_name(), "enabled")
+            .await?;
+        if add_render_enabled {
+            manager
+                .alter_table(
+                    Table::alter()
+                        .table(image_profile_renders::Entity)
+                        .add_column(
+                            ColumnDef::new(image_profile_renders::Column::Enabled)
+                                .big_integer()
+                                .not_null()
+                                .default(1),
+                        )
+                        .to_owned(),
+                )
+                .await?;
+        }
+
+        backfill_sampler_profile_state(manager, add_render_enabled).await?;
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_profiles_identity")
+                    .table(profiles::Entity)
+                    .col(profiles::Column::Identity)
+                    .unique()
+                    .if_not_exists()
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_image_profile_renders_enabled")
+                    .table(image_profile_renders::Entity)
+                    .col(image_profile_renders::Column::ImageId)
+                    .col(image_profile_renders::Column::Enabled)
+                    .if_not_exists()
+                    .to_owned(),
+            )
+            .await?;
+        sqlite_compat::set_user_version(manager.get_connection(), LATEST_SCHEMA_VERSION).await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .drop_index(
+                Index::drop()
+                    .name("idx_image_profile_renders_enabled")
+                    .table(image_profile_renders::Entity)
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .drop_index(
+                Index::drop()
+                    .name("idx_profiles_identity")
+                    .table(profiles::Entity)
+                    .to_owned(),
+            )
+            .await?;
+        for column in [
+            profiles::Column::EnabledByDefault,
+            profiles::Column::SamplerAdded,
+            profiles::Column::Identity,
+        ] {
+            manager
+                .alter_table(
+                    Table::alter()
+                        .table(profiles::Entity)
+                        .drop_column(column)
+                        .to_owned(),
+                )
+                .await?;
+        }
+        manager
+            .alter_table(
+                Table::alter()
+                    .table(image_profile_renders::Entity)
+                    .drop_column(image_profile_renders::Column::Enabled)
+                    .to_owned(),
+            )
+            .await?;
+        sqlite_compat::set_user_version(manager.get_connection(), PANORAMA_SCHEMA_VERSION).await
+    }
+}
+
+async fn backfill_sampler_profile_state(
+    manager: &SchemaManager<'_>,
+    backfill_render_enabled: bool,
+) -> Result<(), DbErr> {
+    let connection = manager.get_connection();
+    for row in profiles::Entity::find().all(connection).await? {
+        if !row.identity.trim().is_empty() {
+            continue;
+        }
+        let mut active = row.clone().into_active_model();
+        active.identity = Set(format!(
+            "legacy:{}:{}",
+            row.profile_index,
+            row.selector.trim()
+        ));
+        active.update(connection).await?;
+    }
+
+    if !backfill_render_enabled {
+        return Ok(());
+    }
+
+    let images = images::Entity::find().all(connection).await?;
+    let publish_rows = image_publish_profiles::Entity::find()
+        .all(connection)
+        .await?;
+    let selected = publish_rows
+        .into_iter()
+        .map(|row| (row.image_id, row.profile_index))
+        .collect::<std::collections::HashSet<_>>();
+    let explicit_images = images
+        .into_iter()
+        .filter_map(|row| (row.publish_profiles_default == 0).then_some(row.image_id))
+        .collect::<std::collections::HashSet<_>>();
+    for row in image_profile_renders::Entity::find()
+        .all(connection)
+        .await?
+    {
+        if !explicit_images.contains(&row.image_id) {
+            continue;
+        }
+        let mut active = row.clone().into_active_model();
+        active.enabled = Set(i64::from(
+            selected.contains(&(row.image_id, row.profile_index)),
+        ));
+        active.update(connection).await?;
+    }
+    Ok(())
+}
+
 #[async_trait::async_trait]
 impl MigrationTrait for PanoramaProjects {
     fn use_transaction(&self) -> Option<bool> {
@@ -132,7 +322,7 @@ impl MigrationTrait for PanoramaProjects {
         create_entity_table(manager, &schema, panorama_project_images::Entity).await?;
         create_entity_table(manager, &schema, panorama_previews::Entity).await?;
         create_panorama_indexes(manager).await?;
-        sqlite_compat::set_user_version(manager.get_connection(), LATEST_SCHEMA_VERSION).await
+        sqlite_compat::set_user_version(manager.get_connection(), PANORAMA_SCHEMA_VERSION).await
     }
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {

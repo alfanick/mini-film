@@ -9,6 +9,7 @@ use mini_film::{
 };
 
 pub(crate) const SOOC_PROFILE_INDEX: usize = 1_000_000_000;
+pub(crate) const SAMPLER_PROFILE_INDEX_BASE: usize = 500_000_000;
 pub(crate) const SOOC_PROFILE_STEM: &str = "sooc";
 pub(super) const SOOC_PROFILE_DISPLAY_NAME: &str = "straight out of camera";
 
@@ -55,13 +56,35 @@ pub(crate) struct ReviewGalleryConfig {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub(crate) struct ReviewProfile {
     pub(crate) index: usize,
+    #[serde(default)]
+    pub(crate) identity: String,
     pub(crate) selector: String,
     pub(crate) stem: String,
+    #[serde(default)]
+    pub(crate) sampler_added: bool,
+    #[serde(default = "review_default_true")]
+    pub(crate) enabled_by_default: bool,
+    #[serde(default)]
+    pub(crate) configured_from_cli: bool,
     #[serde(default)]
     pub(crate) retouch_base: BasicRetouchAdjustments,
     pub(crate) metadata: Option<ReviewProfileMetadata>,
     #[serde(skip)]
     pub(crate) hald_path: Option<PathBuf>,
+}
+
+pub(crate) fn review_profile_identity(
+    selector: &str,
+    metadata: Option<&ReviewProfileMetadata>,
+) -> String {
+    if let Some(uuid) = metadata
+        .and_then(|metadata| metadata.profile_uuid.as_deref())
+        .map(str::trim)
+        .filter(|uuid| !uuid.is_empty())
+    {
+        return format!("xmp:{}", uuid.to_ascii_lowercase());
+    }
+    format!("selector:{}", selector.trim())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
@@ -425,6 +448,7 @@ pub(crate) struct ReviewHandle {
     pub(super) panorama_capability: crate::app::panorama::PanoramaCapability,
     pub(super) panorama_projects: Arc<ArcSwap<Vec<ReviewPanoramaProject>>>,
     pub(super) panorama_operation: Arc<std::sync::atomic::AtomicBool>,
+    pub(super) sampler_registry: Arc<super::sampler::ReviewSamplerRegistry>,
     pub(super) trusted_input_sender: Option<std::sync::mpsc::Sender<PathBuf>>,
 }
 
@@ -762,6 +786,8 @@ pub(super) struct ReviewProfileRender {
     pub(super) profile_stem: String,
     #[serde(default)]
     pub(super) display_name: Option<String>,
+    #[serde(default = "review_default_true")]
+    pub(super) enabled: bool,
     pub(super) status: ReviewRenderStatus,
     pub(super) output_path: Option<PathBuf>,
     pub(super) error: Option<String>,
@@ -775,6 +801,10 @@ pub(super) struct ReviewProfileRender {
     #[serde(default)]
     pub(super) height: Option<u32>,
     pub(super) updated_at: String,
+}
+
+const fn review_default_true() -> bool {
+    true
 }
 
 pub(super) fn image_sooc_source(image: &ReviewImage) -> Option<&Path> {
@@ -858,6 +888,8 @@ pub(super) struct ReviewUpdateRequest {
     pub(super) selected_profile_index: Option<usize>,
     #[serde(default)]
     pub(super) publish_profile_indexes: Option<Vec<usize>>,
+    #[serde(default)]
+    pub(super) enabled_profile_indexes: Option<Vec<usize>>,
     #[serde(default)]
     pub(super) profile_bw_filters: Option<Vec<ReviewProfileBwFilter>>,
     #[serde(default)]

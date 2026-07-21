@@ -20,6 +20,33 @@ impl ReviewStore {
 
     pub(super) fn sync_profiles(&mut self, profiles: Vec<ReviewProfile>) {
         self.remove_internal_staging_images();
+        let mut profiles = profiles;
+        for profile in &mut profiles {
+            profile.configured_from_cli = true;
+            profile.sampler_added = false;
+            profile.enabled_by_default = true;
+            if profile.identity.trim().is_empty() {
+                profile.identity =
+                    review_profile_identity(&profile.selector, profile.metadata.as_ref());
+            }
+        }
+        let configured_identities = profiles
+            .iter()
+            .map(|profile| profile.identity.clone())
+            .collect::<HashSet<_>>();
+        profiles.extend(
+            self.profiles
+                .iter()
+                .filter(|profile| {
+                    profile.sampler_added && !configured_identities.contains(&profile.identity)
+                })
+                .cloned()
+                .map(|mut profile| {
+                    profile.configured_from_cli = false;
+                    profile
+                }),
+        );
+        make_profile_identities_unique(&mut profiles);
         let old_profiles = self
             .profiles
             .iter()
@@ -60,6 +87,78 @@ impl ReviewStore {
         }
         self.merge_standalone_sooc_sidecars();
         self.normalize_ui();
+    }
+
+    pub(super) fn ensure_sampler_profile(&mut self, mut profile: ReviewProfile) -> Result<usize> {
+        if profile.identity.trim().is_empty() {
+            profile.identity =
+                review_profile_identity(&profile.selector, profile.metadata.as_ref());
+        }
+        if let Some(existing) = self
+            .profiles
+            .iter()
+            .find(|existing| existing.identity == profile.identity)
+        {
+            return Ok(existing.index);
+        }
+
+        let index = self
+            .profiles
+            .iter()
+            .filter(|profile| {
+                (SAMPLER_PROFILE_INDEX_BASE..SOOC_PROFILE_INDEX).contains(&profile.index)
+            })
+            .map(|profile| profile.index)
+            .max()
+            .map_or(SAMPLER_PROFILE_INDEX_BASE, |index| index + 1);
+        if index >= SOOC_PROFILE_INDEX {
+            bail!("review sampler profile index space is exhausted");
+        }
+        profile.index = index;
+        profile.stem = unique_sampler_profile_stem(&self.profiles, &profile.stem, index);
+        profile.sampler_added = true;
+        profile.configured_from_cli = false;
+        self.profiles.push(profile);
+
+        let profiles = self.profiles.clone();
+        for image in &mut self.images {
+            sync_image_profile_renders(image, &profiles, false, &HashSet::new());
+        }
+        Ok(index)
+    }
+
+    pub(super) fn set_profile_enabled_for_image(
+        &mut self,
+        image_id: u64,
+        profile_index: usize,
+        enabled: bool,
+    ) -> Result<bool> {
+        let image = self
+            .images
+            .iter_mut()
+            .find(|image| image.id == image_id)
+            .ok_or_else(|| anyhow!("review image {image_id} does not exist"))?;
+        set_image_profile_enabled(image, profile_index, enabled)
+    }
+
+    pub(super) fn set_profile_enabled_for_all(
+        &mut self,
+        profile_index: usize,
+        enabled: bool,
+    ) -> Result<Vec<u64>> {
+        let profile = self
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.index == profile_index)
+            .ok_or_else(|| anyhow!("review profile {profile_index} does not exist"))?;
+        profile.enabled_by_default = enabled;
+        let mut newly_enabled = Vec::new();
+        for image in &mut self.images {
+            if set_image_profile_enabled(image, profile_index, enabled)? {
+                newly_enabled.push(image.id);
+            }
+        }
+        Ok(newly_enabled)
     }
 
     pub(super) fn needs_exif_schema_refresh(&self) -> bool {
@@ -317,6 +416,87 @@ fn review_profiles_match(left: &ReviewProfile, right: &ReviewProfile) -> bool {
         && left.selector == right.selector
         && left.stem == right.stem
         && left.retouch_base == right.retouch_base
+}
+
+fn unique_sampler_profile_stem(
+    profiles: &[ReviewProfile],
+    requested: &str,
+    profile_index: usize,
+) -> String {
+    let requested = requested.trim();
+    let requested = if requested.is_empty() {
+        "sampler-profile"
+    } else {
+        requested
+    };
+    if profiles.iter().all(|profile| profile.stem != requested) {
+        return requested.to_string();
+    }
+    format!(
+        "{requested}-sampler-{}",
+        profile_index - SAMPLER_PROFILE_INDEX_BASE + 1
+    )
+}
+
+fn set_image_profile_enabled(
+    image: &mut ReviewImage,
+    profile_index: usize,
+    enabled: bool,
+) -> Result<bool> {
+    let render = image
+        .profiles
+        .iter_mut()
+        .find(|render| render.profile_index == profile_index)
+        .ok_or_else(|| {
+            anyhow!(
+                "review profile {profile_index} is not available for image {}",
+                image.id
+            )
+        })?;
+    let newly_enabled = enabled && !render.enabled;
+    render.enabled = enabled;
+    if !enabled {
+        render.render_key = None;
+    }
+
+    let mut publish = image
+        .publish_profile_indexes
+        .clone()
+        .unwrap_or_else(|| effective_publish_profile_indexes(image));
+    publish.retain(|index| *index != profile_index);
+    if enabled && profile_index != SOOC_PROFILE_INDEX {
+        publish.push(profile_index);
+    }
+    image.publish_profile_indexes =
+        Some(normalize_publish_profile_indexes(&publish, &image.profiles));
+    if !image
+        .profiles
+        .iter()
+        .any(|render| render.enabled && render.profile_index == image.selected_profile_index)
+    {
+        image.selected_profile_index = first_enabled_profile_index(image).unwrap_or_default();
+    }
+    image.updated_at = now_string();
+    Ok(newly_enabled)
+}
+
+fn make_profile_identities_unique(profiles: &mut [ReviewProfile]) {
+    let mut seen = HashSet::new();
+    for profile in profiles {
+        let base = profile.identity.clone();
+        if seen.insert(base.clone()) {
+            continue;
+        }
+        let mut suffix = 2usize;
+        loop {
+            let candidate = format!("{base}:duplicate-{suffix}");
+            if seen.insert(candidate.clone()) {
+                profile.identity = candidate;
+                break;
+            }
+            suffix += 1;
+        }
+    }
 }
 
 fn normalize_review_metadata_sources(image: &mut ReviewImage) {
@@ -581,6 +761,7 @@ pub(super) fn sync_image_profile_renders(
                         profile.index,
                         profile.stem.clone(),
                         None,
+                        profile.enabled_by_default,
                         processing_key,
                     )
                 })
@@ -605,6 +786,7 @@ pub(super) fn sync_image_profile_renders(
                         SOOC_PROFILE_INDEX,
                         SOOC_PROFILE_STEM.to_string(),
                         Some(SOOC_PROFILE_DISPLAY_NAME.to_string()),
+                        true,
                         processing_key,
                     )
                 }),
@@ -620,21 +802,21 @@ pub(super) fn sync_image_profile_renders(
         }
     }
     if profiles_changed || enabling_profiled_compressed {
-        image.selected_profile_index = profiles.first().map(|profile| profile.index).unwrap_or(0);
+        image.selected_profile_index = first_enabled_profile_index(image).unwrap_or(0);
         image.publish_profile_indexes = Some(
             image
                 .profiles
                 .iter()
-                .filter(|profile| profile.profile_index != SOOC_PROFILE_INDEX)
+                .filter(|profile| profile.enabled && profile.profile_index != SOOC_PROFILE_INDEX)
                 .map(|profile| profile.profile_index)
                 .collect(),
         );
     } else if !image
         .profiles
         .iter()
-        .any(|profile| profile.profile_index == image.selected_profile_index)
+        .any(|profile| profile.enabled && profile.profile_index == image.selected_profile_index)
     {
-        image.selected_profile_index = profiles.first().map(|profile| profile.index).unwrap_or(0);
+        image.selected_profile_index = first_enabled_profile_index(image).unwrap_or(0);
         image.publish_profile_indexes = Some(effective_publish_profile_indexes(image));
     } else {
         image.publish_profile_indexes = Some(effective_publish_profile_indexes(image));
@@ -666,12 +848,14 @@ fn missing_profile_render(
     profile_index: usize,
     profile_stem: String,
     display_name: Option<String>,
+    enabled: bool,
     processing_key: &str,
 ) -> ReviewProfileRender {
     ReviewProfileRender {
         profile_index,
         profile_stem,
         display_name,
+        enabled,
         status: ReviewRenderStatus::Missing,
         output_path: None,
         error: None,
@@ -693,14 +877,18 @@ pub(super) fn effective_publish_profile_indexes(image: &ReviewImage) -> Vec<usiz
         None => image
             .profiles
             .iter()
-            .filter(|profile| profile.profile_index != SOOC_PROFILE_INDEX)
+            .filter(|profile| profile.enabled && profile.profile_index != SOOC_PROFILE_INDEX)
             .map(|profile| profile.profile_index)
             .collect(),
     }
 }
 
 pub(super) fn image_uses_profile_pipeline(image: &ReviewImage) -> bool {
-    !is_rendered_input_file(&image.raw_path) || !image.profiles.is_empty()
+    !is_rendered_input_file(&image.raw_path)
+        || image
+            .profiles
+            .iter()
+            .any(|profile| profile.enabled && profile.profile_index != SOOC_PROFILE_INDEX)
 }
 
 pub(super) fn image_is_direct_compressed(image: &ReviewImage) -> bool {
@@ -714,8 +902,8 @@ pub(super) fn preferred_preview_profile_index(
     image
         .profiles
         .iter()
-        .find(|profile| profile.profile_index == image.selected_profile_index)
-        .or_else(|| image.profiles.first())
+        .find(|profile| profile.enabled && profile.profile_index == image.selected_profile_index)
+        .or_else(|| image.profiles.iter().find(|profile| profile.enabled))
         .map(|profile| profile.profile_index)
 }
 
@@ -727,11 +915,18 @@ pub(super) fn normalize_publish_profile_indexes(
     profiles
         .iter()
         .filter_map(|profile| {
-            selected
-                .contains(&profile.profile_index)
+            (profile.enabled && selected.contains(&profile.profile_index))
                 .then_some(profile.profile_index)
         })
         .collect()
+}
+
+fn first_enabled_profile_index(image: &ReviewImage) -> Option<usize> {
+    image
+        .profiles
+        .iter()
+        .find(|profile| profile.enabled)
+        .map(|profile| profile.profile_index)
 }
 
 pub(super) fn validate_publish_profile_indexes(

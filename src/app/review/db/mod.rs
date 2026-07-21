@@ -13,12 +13,12 @@ use migrations::{
     FIRST_SEAORM_SCHEMA_VERSION, LATEST_SCHEMA_VERSION, LEGACY_SCHEMA_VERSION, Migrator,
     PRE_RELEASE_SEAORM_LEDGER, V11_LEDGER, V18_BASELINE_MIGRATION,
 };
-#[cfg(test)]
-use sea_orm::{ColumnTrait, EntityName, IntoActiveModel, PaginatorTrait, QueryFilter, Schema};
 use sea_orm::{
     DatabaseConnection, EntityTrait, QueryOrder, SqlxSqliteConnector, TransactionTrait,
     sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions},
 };
+#[cfg(test)]
+use sea_orm::{IntoActiveModel, PaginatorTrait, Schema};
 use sea_orm_migration::{MigratorTrait, SchemaManager};
 use tokio::sync::Mutex;
 
@@ -824,28 +824,24 @@ pub(super) fn make_schema_v12_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        let manager = SchemaManager::new(&connection);
-        for table in [
-            entities::panorama_previews::Entity.table_name(),
-            entities::panorama_project_images::Entity.table_name(),
-            entities::panorama_projects::Entity.table_name(),
-        ] {
-            manager
-                .drop_table(
-                    sea_orm_migration::prelude::Table::drop()
-                        .table(sea_orm_migration::prelude::Alias::new(table))
-                        .to_owned(),
-                )
-                .await?;
-        }
-        sea_orm_migration::seaql_migrations::Entity::delete_many()
-            .filter(
-                sea_orm_migration::seaql_migrations::Column::Version
-                    .eq(migrations::PANORAMA_PROJECTS_MIGRATION),
-            )
-            .exec(&connection)
-            .await?;
-        sqlite_compat::set_user_version(&connection, FIRST_SEAORM_SCHEMA_VERSION).await?;
+        Migrator::down(&connection, Some(2)).await?;
+        sqlite_compat::verify_integrity(&connection).await?;
+        connection.close().await?;
+        Ok(())
+    })
+}
+
+#[cfg(test)]
+pub(super) fn make_schema_v13_database(path: &Path, store: &ReviewStore) -> Result<()> {
+    save_store(path, store)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("building review database runtime")?;
+    runtime.block_on(async {
+        let connection = connect_database(path, false).await?;
+        Migrator::down(&connection, Some(1)).await?;
+        sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
     })
@@ -866,7 +862,7 @@ pub(super) fn make_legacy_version_database(path: &Path, version: i64) -> Result<
 }
 
 #[cfg(test)]
-fn expected_indexes() -> [(&'static str, &'static str); 17] {
+fn expected_indexes() -> [(&'static str, &'static str); 19] {
     [
         ("profiles", "idx_profiles_position"),
         ("images", "idx_images_position"),
@@ -884,12 +880,14 @@ fn expected_indexes() -> [(&'static str, &'static str); 17] {
         ),
         ("image_tags", "idx_image_tags_tag_id"),
         ("image_profile_renders", "idx_image_profile_renders_profile"),
+        ("image_profile_renders", "idx_image_profile_renders_enabled"),
         (
             "image_profile_renders",
             "idx_image_profile_renders_image_profile",
         ),
         ("profile_pp3_sections", "idx_profile_pp3_sections_section"),
         ("profile_pp3_entries", "idx_profile_pp3_entries_key"),
+        ("profiles", "idx_profiles_identity"),
         ("panorama_projects", "idx_panorama_projects_updated_at"),
         ("panorama_projects", "idx_panorama_projects_result_image"),
         (

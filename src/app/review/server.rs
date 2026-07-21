@@ -17,7 +17,7 @@ use axum::{
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
 
-use super::{gallery_download::build_gallery_archive, model::*, prelude::*};
+use super::{gallery_download::build_gallery_archive, model::*, prelude::*, sampler::*};
 
 pub(super) fn run_review_listener(
     listener: std::net::TcpListener,
@@ -171,6 +171,10 @@ pub(super) async fn route_request(
                 Err(error) => json_error(500, error).into_response(),
             }
         }
+        (Method::POST, "/api/sampler/jobs") => sampler_start_response(&body, handle).await,
+        (Method::GET, _) | (Method::POST, _) if path.starts_with("/api/sampler/jobs/") => {
+            sampler_job_response(method, path, &body, handle).await
+        }
         (Method::POST, "/api/panoramas") => panorama_create_response(&body, handle).await,
         (Method::PATCH, _) | (Method::POST, _) if path.starts_with("/api/panoramas/") => {
             panorama_project_response(method, path, &body, handle).await
@@ -196,6 +200,9 @@ pub(super) async fn route_request(
         (Method::GET, _) if path.starts_with("/preview/") => preview_response(path, handle).await,
         (Method::GET, _) if path.starts_with("/panorama-preview/") => {
             panorama_preview_response(path, handle).await
+        }
+        (Method::GET, _) if path.starts_with("/sampler-media/") => {
+            sampler_media_response(path, handle).await
         }
         _ => text_response(404, "text/plain; charset=utf-8", "not found").into_response(),
     }
@@ -248,6 +255,7 @@ pub(super) fn review_route_path(path: &str) -> String {
         "/thumbnail/",
         "/preview/",
         "/panorama-preview/",
+        "/sampler-media/",
     ] {
         if let Some(index) = path.find(marker) {
             return path[index..].to_string();
@@ -271,6 +279,84 @@ pub(super) fn review_route_path(path: &str) -> String {
         return "/".to_string();
     }
     path.to_string()
+}
+
+async fn sampler_start_response(body: &[u8], handle: &ReviewHandle) -> Response {
+    if let Err(error) = handle.ensure_database_healthy() {
+        return json_error(503, error).into_response();
+    }
+    let result = serde_json::from_slice::<ReviewSamplerStartRequest>(body)
+        .context("parsing sampler request")
+        .and_then(|request| handle.start_sampler_job(request.image_id))
+        .and_then(|snapshot| serde_json::to_string(&snapshot).context("serializing sampler job"));
+    match result {
+        Ok(body) => text_response(202, "application/json; charset=utf-8", &body).into_response(),
+        Err(error) => json_error(400, error).into_response(),
+    }
+}
+
+async fn sampler_job_response(
+    method: Method,
+    path: &str,
+    body: &[u8],
+    handle: &ReviewHandle,
+) -> Response {
+    let parts = path
+        .trim_start_matches("/api/sampler/jobs/")
+        .split('/')
+        .collect::<Vec<_>>();
+    let Some(job_id) = parts.first().and_then(|value| value.parse::<u64>().ok()) else {
+        return text_response(400, "text/plain; charset=utf-8", "bad sampler job id")
+            .into_response();
+    };
+    let result = match (method, parts.as_slice()) {
+        (Method::GET, [_]) => handle.sampler_job_snapshot(job_id),
+        (Method::POST, [_, "priority"]) => {
+            match serde_json::from_slice::<ReviewSamplerPriorityRequest>(body)
+                .context("parsing sampler priority update")
+            {
+                Ok(request) => handle.prioritize_sampler_job(job_id, request),
+                Err(error) => Err(error),
+            }
+        }
+        (Method::POST, [_, "profiles", entry_key]) => {
+            match serde_json::from_slice::<ReviewSamplerSelectionRequest>(body)
+                .context("parsing sampler profile selection")
+            {
+                Ok(request) => {
+                    handle
+                        .apply_sampler_selection_async(job_id, entry_key, request)
+                        .await
+                }
+                Err(error) => Err(error),
+            }
+        }
+        _ => return text_response(404, "text/plain; charset=utf-8", "not found").into_response(),
+    };
+    match result
+        .and_then(|snapshot| serde_json::to_string(&snapshot).context("serializing sampler job"))
+    {
+        Ok(body) => text_response(200, "application/json; charset=utf-8", &body).into_response(),
+        Err(error) => json_error(400, error).into_response(),
+    }
+}
+
+async fn sampler_media_response(path: &str, handle: &ReviewHandle) -> Response {
+    let parts = path
+        .trim_start_matches("/sampler-media/")
+        .split('/')
+        .collect::<Vec<_>>();
+    let [job_id, key] = parts.as_slice() else {
+        return text_response(404, "text/plain; charset=utf-8", "not found").into_response();
+    };
+    let Some(job_id) = job_id.parse::<u64>().ok() else {
+        return text_response(400, "text/plain; charset=utf-8", "bad sampler job id")
+            .into_response();
+    };
+    match handle.sampler_media_path(job_id, key) {
+        Ok(path) => serve_review_file(path, "image/jpeg").await,
+        Err(error) => json_error(404, error).into_response(),
+    }
 }
 
 async fn panorama_create_response(body: &[u8], handle: &ReviewHandle) -> Response {

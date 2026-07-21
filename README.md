@@ -56,6 +56,9 @@ Available shortcuts:
 - **Panorama workflow**: select ordered pictures in live review, compare four
   projection previews, and render a full-resolution 16-bit TIFF that immediately
   re-enters the normal review and profile workflow.
+- **Live profile sampler**: compare the current picture across the XMP
+  emulation library, then add selected profiles to one picture or the whole
+  review without restarting the daemon.
 - **Optional Codex review assist**: let Codex analyze small embedded RAW
   previews after rendering finishes and fill tags, notes, or initial ratings
   while the live review UI shows the same queued/processing status indicators.
@@ -221,8 +224,8 @@ The command validates every required Hugin executable before preparing any
 source and fails without creating an output when the suite is incomplete.
 
 In daemon review, the bottom of the picture sidebar contains a small Tools
-section on desktop and tablet, with Crop/rotate above Panorama. Phone layouts do
-not show Tools. Panorama appears only when Hugin is available. The wizard stores
+section on desktop and tablet, with Crop/rotate, Sampler, and Panorama. Phone
+layouts do not show Tools. Panorama appears only when Hugin is available. The wizard stores
 projects, ordered source relationships, projection previews, progress, and
 errors as normalized SQLite rows. Interrupted work is preserved across restarts.
 Preview stitching uses auto-oriented images with a maximum 2048-pixel long edge
@@ -548,9 +551,10 @@ secure origins it opens the native file-share sheet, including iOS's Save Image
 action; on plain LAN HTTP it opens the correctly typed original image for
 Safari's image-save actions. The first
 `--profile` is the default selected look for RAW and standalone compressed files
-when profiles are configured. All configured profile variants are selected for publish by default;
-use the checkbox on each profile thumbnail to exclude or re-include a variant
-while reviewing.
+when profiles are configured. All configured profile variants are available and
+selected for publish by default. A profile thumbnail's checkbox controls its
+availability for that picture and keeps publish selection aligned; double-click
+or double-tap a thumbnail to make it the only available profile.
 Hover the filename in the review panel to see the source file size, pixel
 dimensions, and megapixel count rounded to one decimal place.
 When the source metadata contains a shutter count, hover the camera name in the
@@ -592,18 +596,17 @@ browser UI to show the shortcuts overlay. `§` rates `0` and advances, `1`-`5`
 rates and advances, arrow up/down changes the rating and advances, left/right
 navigates without rating, `h` toggles the luma/RGB histogram in the workspace's
 top-left corner on desktop, PageUp/PageDown cycles the profile preview for the
-current picture, Space includes or skips the
-selected profile for publish, and Escape leaves the tags or notes field without
-advancing. Double-click or
-double-tap a profile thumbnail to publish only that profile and exclude the
-others. `6`, `7`, `8`, `9`, and `0` toggle red, yellow, green, blue, and purple
+current picture, Space enables or disables the selected profile, and Escape
+leaves the tags or notes field without advancing. Double-click or double-tap a
+profile thumbnail to make only that profile available. `6`, `7`, `8`, `9`, and
+`0` toggle red, yellow, green, blue, and purple
 labels without advancing; `r`, `y`, `g`, `b`, and `p` provide the same mnemonic
 label toggles. `c` copies the current retouch slider adjustments, and `v` pastes
 them onto another picture. While crop mode is open, `r` rotates the selected
 crop ratio instead of toggling the red label.
 
-The review UI stores rating, label, tags, notes, active preview profile, and the
-set of profile variants selected for publish. RAW and explicitly profiled
+The review UI stores rating, label, tags, notes, active preview profile, and
+per-picture profile availability used by review and publish. RAW and explicitly profiled
 JPEG/HEIC inputs support per-picture
 retouch controls for exposure, highlights, shadows, whites, blacks, as-shot
 color temperature, clarity, rotation, and crop. The temperature control is
@@ -644,6 +647,32 @@ collapsible `Complete PP3` section shows and downloads every PP3 layer applied
 to that picture/profile in RawTherapee command-line order, including generated
 retouch, black-and-white filter, ISO denoise, lens correction, and auto-matched
 curve adjustments when active.
+
+The Sampler tool is shown when the configured profile library contains XMPs
+under `emulations/`. It prepares one reusable, auto-oriented 512-pixel 16-bit
+neutral TIFF for the current RAW, JPEG, HEIC, or TIFF, plus a progressive JPEG
+only for browser display. RAW preparation uses the normal camera tone,
+denoising, and lens corrections without a creative profile or sharpening.
+Sampler profiles cannot add sharpening to JPEG/HEIC sources; TIFF sources may
+use profile sharpening. Current review retouch, white balance, crop, and
+rotation are intentionally excluded from sampling.
+
+Profile names use the same multi-level trie grouping as the `sampler` command,
+including deeper film-speed and version branches. Sections start collapsed;
+the deepest sections containing profiles enabled by the command line or a
+previous Sampler selection open automatically, together with the ancestor path
+needed to reveal them. Thumbnail rendering is asynchronous on half of the
+available CPU threads: tiles currently visible in the sampler are queued first,
+the direct tiles in each expanded section next, and collapsed branches continue
+in the background. `Current` makes a rendered profile available only to the
+active picture; `All` applies it to existing pictures and makes it the default
+for future pictures. Command-line profiles are preselected and their `All`
+setting is locked. Sampler-added profiles and both availability scopes are
+stored in SQLite, survive daemon restarts even when omitted from later CLI
+arguments, and use the ordinary full-resolution render path after selection.
+Reusable inputs and thumbnails live under
+`<output>/.mini-film-sampler/review-sampler-v1/`; review HTML, CSS, and JavaScript
+remain embedded in the single executable.
 
 Optional Codex analysis can run after each image has a review preview and its
 configured renders have finished. RAW inputs use the embedded camera preview;

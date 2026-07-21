@@ -15,6 +15,7 @@ pub struct Model {
     pub profile_stem: String,
     #[sea_orm(column_type = "Text", nullable)]
     pub display_name: Option<String>,
+    pub enabled: i64,
     #[sea_orm(column_type = "Text")]
     pub status: String,
     #[sea_orm(column_type = "Text", nullable)]
