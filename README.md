@@ -517,6 +517,11 @@ If profile resolution fails for any selector, startup stops with a clear error.
 `daemon` processes input files in parallel and defaults to half the available
 CPU threads unless `--jobs` is set.
 
+When live review is enabled, startup EXIF and camera maker-note indexing runs
+with all available CPU threads. Metadata reads are cached by source path, size,
+and modification time so queueing multiple profiles does not invoke ExifTool
+again for the same unchanged image.
+
 ### Live Review
 
 Add `--review-address` to expose a browser-based review UI while the daemon is

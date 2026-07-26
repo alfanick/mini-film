@@ -169,20 +169,26 @@ impl ReviewStore {
         self.exif_schema_version = Self::EXIF_SCHEMA_VERSION;
     }
 
-    pub(super) fn refresh_missing_exif_data(&mut self) {
-        self.refresh_missing_exif_data_with_force(false);
+    pub(super) fn refresh_missing_exif_data(&mut self) -> usize {
+        self.refresh_missing_exif_data_with_force(false)
     }
 
-    pub(super) fn refresh_missing_exif_data_for_schema(&mut self) {
-        self.refresh_missing_exif_data_with_force(true);
+    pub(super) fn refresh_missing_exif_data_for_schema(&mut self) -> usize {
+        self.refresh_missing_exif_data_with_force(true)
     }
 
-    fn refresh_missing_exif_data_with_force(&mut self, force: bool) {
-        for image in &mut self.images {
+    fn refresh_missing_exif_data_with_force(&mut self, force: bool) -> usize {
+        let refresh_count = self
+            .images
+            .iter()
+            .filter(|image| gallery_exif_needs_refresh(&image.exif, force))
+            .count();
+        self.images.par_iter_mut().for_each(|image| {
             refresh_image_exif_data(image, force);
             normalize_review_metadata_sources(image);
-        }
+        });
         self.normalize_ui();
+        refresh_count
     }
 
     pub(super) fn ensure_image(
@@ -706,14 +712,7 @@ fn compare_review_images(left: &ReviewImage, right: &ReviewImage) -> std::cmp::O
 }
 
 fn refresh_image_exif_data(image: &mut ReviewImage, force: bool) {
-    if !force
-        && !image.exif.is_empty()
-        && image.exif.capture_timestamp.is_some()
-        && (image.exif.rating.is_some() || image.rating_source != ReviewMetadataSource::Default)
-        && image.exif.file_size_bytes.is_some()
-        && image.exif.image_width.is_some()
-        && image.exif.image_height.is_some()
-    {
+    if !gallery_exif_needs_refresh(&image.exif, force) {
         image.exif.sanitize_text_fields();
         return;
     }
@@ -808,6 +807,13 @@ fn refresh_image_exif_data(image: &mut ReviewImage, force: bool) {
         image.rating_source = ReviewMetadataSource::Camera;
     }
     image.exif.sanitize_text_fields();
+}
+
+pub(super) fn gallery_exif_needs_refresh(exif: &GalleryExifData, force: bool) -> bool {
+    force
+        || exif.file_size_bytes.is_none()
+        || exif.image_width.is_none()
+        || exif.image_height.is_none()
 }
 
 fn merge_refreshed_focus_data(
@@ -1137,6 +1143,19 @@ pub(super) fn review_labels_text(labels: &[ReviewLabel]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn absent_optional_exif_does_not_invalidate_cached_metadata() {
+        let exif = GalleryExifData {
+            file_size_bytes: Some(42),
+            image_width: Some(6000),
+            image_height: Some(4000),
+            ..GalleryExifData::default()
+        };
+
+        assert!(!gallery_exif_needs_refresh(&exif, false));
+        assert!(gallery_exif_needs_refresh(&exif, true));
+    }
 
     #[test]
     fn exif_schema_refresh_merges_focus_data_without_replacing_existing_metadata() {

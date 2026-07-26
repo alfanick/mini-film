@@ -1,14 +1,19 @@
-use std::fs::{self, File};
-use std::io::BufReader;
-use std::path::Path;
-use std::process::{Command, Stdio};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{
+    collections::HashMap,
+    fs::{self, File},
+    io::BufReader,
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+    sync::{Mutex, OnceLock},
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Local, NaiveDateTime, TimeZone, Utc};
 use exif::{Reader, Tag};
 use filetime::{FileTime, set_file_atime, set_file_mtime};
 use mini_film::{GrainEngine, GrainSettings, ProfileAdjustments, SharpeningSettings, ToneCurves};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -795,7 +800,37 @@ fn fmt_real(value: f32) -> String {
     }
 }
 
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct GalleryExifCacheKey {
+    path: PathBuf,
+    file_size: u64,
+    modified_nanos: Option<u128>,
+}
+
+static GALLERY_EXIF_CACHE: OnceLock<
+    Mutex<HashMap<PathBuf, (GalleryExifCacheKey, GalleryExifData)>>,
+> = OnceLock::new();
+
+pub(crate) fn prefetch_gallery_exif(files: &[PathBuf]) {
+    files.par_iter().for_each(|file| {
+        let _ = extract_gallery_exif(file);
+    });
+}
+
 pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
+    let cache_key = gallery_exif_cache_key(file);
+    if let Some(cached) = cache_key.as_ref().and_then(cached_gallery_exif) {
+        return Ok(cached);
+    }
+
+    let data = extract_gallery_exif_uncached(file)?;
+    if let Some(cache_key) = cache_key {
+        cache_gallery_exif(cache_key, data.clone());
+    }
+    Ok(data)
+}
+
+fn extract_gallery_exif_uncached(file: &Path) -> Result<GalleryExifData> {
     let file_size_bytes = fs::metadata(file).ok().map(|metadata| metadata.len());
     let direct_dimensions = crate::util::is_jpeg_input_file(file)
         .then(|| image::image_dimensions(file).ok())
@@ -935,6 +970,42 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
     };
     data.sanitize_text_fields();
     Ok(data)
+}
+
+fn gallery_exif_cache_key(file: &Path) -> Option<GalleryExifCacheKey> {
+    let metadata = fs::metadata(file).ok()?;
+    let modified_nanos = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos());
+    Some(GalleryExifCacheKey {
+        path: file.to_path_buf(),
+        file_size: metadata.len(),
+        modified_nanos,
+    })
+}
+
+fn cached_gallery_exif(cache_key: &GalleryExifCacheKey) -> Option<GalleryExifData> {
+    GALLERY_EXIF_CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .ok()
+        .and_then(|cache| {
+            cache
+                .get(&cache_key.path)
+                .filter(|(cached_key, _)| cached_key == cache_key)
+                .map(|(_, data)| data.clone())
+        })
+}
+
+fn cache_gallery_exif(cache_key: GalleryExifCacheKey, data: GalleryExifData) {
+    if let Ok(mut cache) = GALLERY_EXIF_CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    {
+        cache.insert(cache_key.path.clone(), (cache_key, data));
+    }
 }
 
 #[derive(Debug, Default)]
@@ -1749,7 +1820,7 @@ fn system_time_to_unix_seconds(timestamp: SystemTime) -> Option<i64> {
 mod tests {
     use super::{
         OutputEditMetadata, add_edit_metadata_args, clean_exif_display_text, extract_gallery_exif,
-        format_exif_aperture, json_bool_value, json_nikon_focus_regions,
+        format_exif_aperture, gallery_exif_cache_key, json_bool_value, json_nikon_focus_regions,
         json_nikon_white_balance_offset, json_u32_value, json_u64_value,
         nikon_shooting_mode_uses_auto_iso, parse_exif_datetime, parse_exif_datetime_with_offset,
         parse_iso_value, sync_output_timestamps_from_exif,
@@ -1761,6 +1832,19 @@ mod tests {
     use std::time::{Duration, UNIX_EPOCH};
     use std::{fs, path::Path, process::Command};
     use tempfile::tempdir;
+
+    #[test]
+    fn gallery_exif_cache_key_tracks_source_identity() {
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("source.nef");
+        fs::write(&source, b"raw").unwrap();
+
+        let initial = gallery_exif_cache_key(&source).unwrap();
+        assert_eq!(gallery_exif_cache_key(&source), Some(initial.clone()));
+
+        fs::write(&source, b"changed raw").unwrap();
+        assert_ne!(gallery_exif_cache_key(&source), Some(initial));
+    }
 
     #[test]
     fn edit_metadata_omits_profile_sharpening_when_pixels_were_not_sharpened() {

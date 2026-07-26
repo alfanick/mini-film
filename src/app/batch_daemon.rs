@@ -39,9 +39,9 @@ use crate::app::review::{
 };
 use crate::app::system_stats::{ResourceUsageSummary, sample_usage_block};
 use crate::app::util::{
-    InputFileFilter, coalesce_due_input_sidecars, coalesce_input_sidecars, half_cpu_thread_count,
-    input_filter_name, is_jpeg_input_file, is_raw_input_file, is_supported_input_file,
-    matching_raw_for_sidecar, matching_sidecar_for_raw, time_of_day_seed,
+    InputFileFilter, coalesce_due_input_sidecars, coalesce_input_sidecars, cpu_thread_count,
+    half_cpu_thread_count, input_filter_name, is_jpeg_input_file, is_raw_input_file,
+    is_supported_input_file, matching_raw_for_sidecar, matching_sidecar_for_raw, time_of_day_seed,
 };
 use crate::cli::{
     BatchOutputFormat, CodexAnalysisFlags, ExportOptions, GalleryTemplate, LensCorrections,
@@ -495,6 +495,17 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
     let mut pending: HashMap<PathBuf, PendingFile> = HashMap::new();
     let startup_inputs =
         collect_batch_inputs(&args.input, args.input_file_filter, &args.dng_fallback)?;
+    if let Some(review) = &review {
+        let metadata_count = review.prefetch_startup_exif_metadata(&startup_inputs);
+        if metadata_count > 0 {
+            batch.println(format!(
+                "[{}] startup: read review metadata for {} files with {} workers",
+                elapsed_human(start.elapsed()),
+                metadata_count,
+                cpu_thread_count()
+            ));
+        }
+    }
     for input in &startup_inputs {
         queue_input_file(
             &mut pending,

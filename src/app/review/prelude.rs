@@ -36,9 +36,11 @@ pub(super) use crate::{
     app::pp3::RAW_RENDER_PIPELINE_KEY,
     app::profile::resolve_profile,
     app::retouch::{BasicRetouchAdjustments, BwFilter, RetouchSettings, RetouchWhiteBalance},
-    app::timestamps::{GalleryExifData, GalleryFocusRegion, extract_gallery_exif},
+    app::timestamps::{
+        GalleryExifData, GalleryFocusRegion, extract_gallery_exif, prefetch_gallery_exif,
+    },
     app::util::{
-        is_internal_staging_input_file, is_jpeg_input_file, is_raw_input_file,
+        cpu_thread_count, is_internal_staging_input_file, is_jpeg_input_file, is_raw_input_file,
         is_rendered_input_file, is_tiff_input_file, matching_raw_for_sidecar,
     },
     cli::{

@@ -54,11 +54,18 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
     }
     let needs_exif_schema_refresh = store.needs_exif_schema_refresh();
     store.sync_profiles(config.profiles);
-    if needs_exif_schema_refresh {
-        store.refresh_missing_exif_data_for_schema();
+    let refreshed_exif_count = if needs_exif_schema_refresh {
+        let count = store.refresh_missing_exif_data_for_schema();
         store.mark_exif_schema_refreshed();
+        count
     } else {
-        store.refresh_missing_exif_data();
+        store.refresh_missing_exif_data()
+    };
+    if refreshed_exif_count > 0 {
+        eprintln!(
+            "review metadata: refreshed {refreshed_exif_count} images in parallel with {} workers",
+            cpu_thread_count()
+        );
     }
     if let Some(stored) = &stored {
         database_runtime.block_on(database.apply_delta(stored, &store))?;
@@ -188,6 +195,26 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
 impl ReviewHandle {
     pub(crate) fn state_path(&self) -> &Path {
         &self.state_path
+    }
+
+    pub(crate) fn prefetch_startup_exif_metadata(&self, inputs: &[PathBuf]) -> usize {
+        let store = self.state.load();
+        let mut seen = HashSet::new();
+        let files = inputs
+            .iter()
+            .filter(|path| seen.insert((*path).clone()))
+            .filter(|path| {
+                store
+                    .images
+                    .iter()
+                    .find(|image| image.raw_path.as_path() == path.as_path())
+                    .is_none_or(|image| gallery_exif_needs_refresh(&image.exif, false))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        drop(store);
+        prefetch_gallery_exif(&files);
+        files.len()
     }
 
     pub(crate) fn rebind_raw_source(&self, old_path: &Path, new_path: &Path) -> Result<bool> {

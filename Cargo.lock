@@ -3275,7 +3275,7 @@ dependencies = [
 
 [[package]]
 name = "mini-film"
-version = "20.2.1"
+version = "20.2.2"
 dependencies = [
  "anyhow",
  "arc-swap",
