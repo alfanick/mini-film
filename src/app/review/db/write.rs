@@ -33,12 +33,13 @@ struct ImageRows {
 pub(super) async fn replace_store(
     connection: &DatabaseConnection,
     store: &ReviewStore,
+    roots: &ReviewPathRoots,
 ) -> Result<()> {
     let transaction = connection
         .begin()
         .await
         .context("starting review state transaction")?;
-    let result = replace_store_in_transaction(&transaction, store).await;
+    let result = replace_store_in_transaction(&transaction, store, roots).await;
     finish_transaction(transaction, result, "replacing review state").await
 }
 
@@ -46,12 +47,13 @@ pub(super) async fn apply_store_delta(
     connection: &DatabaseConnection,
     before: &ReviewStore,
     after: &ReviewStore,
+    roots: &ReviewPathRoots,
 ) -> Result<()> {
     let transaction = connection
         .begin()
         .await
         .context("starting review state transaction")?;
-    let result = apply_store_delta_in_transaction(&transaction, before, after).await;
+    let result = apply_store_delta_in_transaction(&transaction, before, after, roots).await;
     finish_transaction(transaction, result, "updating review state").await
 }
 
@@ -79,6 +81,7 @@ async fn finish_transaction(
 async fn replace_store_in_transaction(
     transaction: &DatabaseTransaction,
     store: &ReviewStore,
+    roots: &ReviewPathRoots,
 ) -> Result<()> {
     clear_store(transaction).await?;
     for (position, profile) in store.profiles.iter().enumerate() {
@@ -86,9 +89,14 @@ async fn replace_store_in_transaction(
     }
     let mut tags_by_name = HashMap::new();
     for (position, image) in store.images.iter().enumerate() {
-        insert_image_rows(transaction, image_rows(position, image)?, &mut tags_by_name).await?;
+        insert_image_rows(
+            transaction,
+            image_rows(position, image, roots)?,
+            &mut tags_by_name,
+        )
+        .await?;
     }
-    review_settings::Entity::insert(settings_model(store)?.into_active_model())
+    review_settings::Entity::insert(settings_model(store, roots)?.into_active_model())
         .exec(transaction)
         .await
         .context("writing review settings")?;
@@ -99,6 +107,7 @@ async fn apply_store_delta_in_transaction(
     transaction: &DatabaseTransaction,
     before: &ReviewStore,
     after: &ReviewStore,
+    roots: &ReviewPathRoots,
 ) -> Result<()> {
     let before_profiles = profile_row_set(before)?;
     let after_profiles = profile_row_set(after)?;
@@ -109,8 +118,8 @@ async fn apply_store_delta_in_transaction(
         }
     }
 
-    let before_images = image_row_map(before)?;
-    let after_images = image_row_map(after)?;
+    let before_images = image_row_map(before, roots)?;
+    let after_images = image_row_map(after, roots)?;
     for image_id in before_images.keys() {
         if !after_images.contains_key(image_id) {
             images::Entity::delete_by_id(*image_id)
@@ -164,7 +173,7 @@ async fn apply_store_delta_in_transaction(
     }
 
     prune_unused_tags(transaction).await?;
-    settings_model(after)?
+    settings_model(after, roots)?
         .into_active_model()
         .reset_all()
         .update(transaction)
@@ -182,13 +191,13 @@ fn profile_row_set(store: &ReviewStore) -> Result<Vec<ProfileRows>> {
         .collect()
 }
 
-fn image_row_map(store: &ReviewStore) -> Result<HashMap<i64, ImageRows>> {
+fn image_row_map(store: &ReviewStore, roots: &ReviewPathRoots) -> Result<HashMap<i64, ImageRows>> {
     store
         .images
         .iter()
         .enumerate()
         .map(|(position, image)| {
-            let rows = image_rows(position, image)?;
+            let rows = image_rows(position, image, roots)?;
             Ok((rows.image.image_id, rows))
         })
         .collect()
@@ -441,15 +450,19 @@ where
     Ok(())
 }
 
-fn image_rows(position: usize, image: &ReviewImage) -> Result<ImageRows> {
+fn image_rows(position: usize, image: &ReviewImage, roots: &ReviewPathRoots) -> Result<ImageRows> {
     let image_id = u64_to_i64(image.id, "image id")?;
     let crop = image.retouch.crop;
     Ok(ImageRows {
         image: images::Model {
             image_id,
             position: usize_to_i64(position, "image position")?,
-            raw_path: path_text(&image.raw_path),
-            sooc_sidecar_path: option_path_text(image.sooc_sidecar_path.as_deref()),
+            raw_path: roots.source_to_storage(&image.raw_path, "images.raw_path")?,
+            sooc_sidecar_path: image
+                .sooc_sidecar_path
+                .as_deref()
+                .map(|path| roots.source_to_storage(path, "images.sooc_sidecar_path"))
+                .transpose()?,
             relative_path: image.relative_path.clone(),
             file_name: image.file_name.clone(),
             exif_capture_timestamp: image.exif.capture_timestamp,
@@ -465,7 +478,12 @@ fn image_rows(position: usize, image: &ReviewImage) -> Result<ImageRows> {
             exif_flash: image.exif.flash.clone(),
             exif_note: image.exif.note.clone(),
             preview_status: enum_text(&image.preview.status)?,
-            preview_path: option_path_text(image.preview.path.as_deref()),
+            preview_path: image
+                .preview
+                .path
+                .as_deref()
+                .map(|path| roots.output_to_storage(path, "images.preview_path"))
+                .transpose()?,
             preview_error: image.preview.error.clone(),
             preview_duration_ms: optional_u64_to_i64(
                 image.preview.duration_ms,
@@ -602,7 +620,7 @@ fn image_rows(position: usize, image: &ReviewImage) -> Result<ImageRows> {
             .profiles
             .iter()
             .enumerate()
-            .map(|(position, render)| profile_render_row(image_id, position, render))
+            .map(|(position, render)| profile_render_row(image_id, position, render, roots))
             .collect::<Result<_>>()?,
     })
 }
@@ -611,6 +629,7 @@ fn profile_render_row(
     image_id: i64,
     position: usize,
     render: &ReviewProfileRender,
+    roots: &ReviewPathRoots,
 ) -> Result<image_profile_renders::Model> {
     Ok(image_profile_renders::Model {
         image_id,
@@ -620,7 +639,11 @@ fn profile_render_row(
         display_name: render.display_name.clone(),
         enabled: bool_to_i64(render.enabled),
         status: enum_text(&render.status)?,
-        output_path: option_path_text(render.output_path.as_deref()),
+        output_path: render
+            .output_path
+            .as_deref()
+            .map(|path| roots.output_to_storage(path, "image_profile_renders.output_path"))
+            .transpose()?,
         error: render.error.clone(),
         duration_ms: optional_u64_to_i64(render.duration_ms, "profile render duration")?,
         render_key: render.render_key.clone(),
@@ -868,13 +891,15 @@ where
     Ok(())
 }
 
-fn settings_model(store: &ReviewStore) -> Result<review_settings::Model> {
+fn settings_model(store: &ReviewStore, roots: &ReviewPathRoots) -> Result<review_settings::Model> {
     Ok(review_settings::Model {
         id: 1,
         next_id: u64_to_i64(store.next_id, "review next_id")?,
         current_image_id: optional_u64_to_i64(store.ui.current_image_id, "current image id")?,
         min_rating: i64::from(store.ui.min_rating),
         exif_schema_version: i64::from(store.exif_schema_version),
+        input_root: roots.input_root().to_string_lossy().into_owned(),
+        output_root: roots.output_root().to_string_lossy().into_owned(),
     })
 }
 
@@ -883,14 +908,6 @@ fn enum_text<T: Serialize>(value: &T) -> Result<String> {
         serde_json::Value::String(text) => Ok(text),
         value => Ok(value.to_string()),
     }
-}
-
-fn path_text(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
-}
-
-fn option_path_text(path: Option<&Path>) -> Option<String> {
-    path.map(path_text)
 }
 
 fn real(value: f32) -> f64 {

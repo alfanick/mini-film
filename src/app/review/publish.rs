@@ -301,7 +301,8 @@ pub(super) fn publish_review_state(
     let input_root = canonical_existing_dir(&args.input_root)?;
     let output_root = canonical_existing_dir(&args.output_root)?;
     let state = resolve_review_state_for_publish(&args.state, &output_root)?;
-    let store = load_store_for_publish(&state)?.ok_or_else(|| anyhow!("review state is empty"))?;
+    let store = load_store_for_publish(&state, &input_root, &output_root)?
+        .ok_or_else(|| anyhow!("review state is empty"))?;
     let album = validate_relative_publish_album(&args.album)?;
     ensure_safe_dir_all(&output_root, &album)?;
 

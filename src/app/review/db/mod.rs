@@ -1,6 +1,7 @@
 mod entities;
 mod migrations;
 mod panorama;
+mod paths;
 mod read;
 mod sqlite_compat;
 mod write;
@@ -13,6 +14,7 @@ use migrations::{
     FIRST_SEAORM_SCHEMA_VERSION, LATEST_SCHEMA_VERSION, LEGACY_SCHEMA_VERSION, Migrator,
     PRE_RELEASE_SEAORM_LEDGER, V11_LEDGER, V18_BASELINE_MIGRATION,
 };
+use paths::ReviewPathRoots;
 use sea_orm::{
     DatabaseConnection, EntityTrait, QueryOrder, SqlxSqliteConnector, TransactionTrait,
     sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions},
@@ -30,23 +32,29 @@ const V11_BACKUP_FILE: &str = "mini-film-review.sqlite.pre-seaorm-v11";
 pub(super) struct ReviewDatabase {
     connection: DatabaseConnection,
     path: PathBuf,
+    roots: ReviewPathRoots,
     pub(super) write_lock: Arc<Mutex<()>>,
     fatal_error: Arc<ArcSwapOption<String>>,
 }
 
 impl ReviewDatabase {
-    pub(super) async fn open_output(output_root: &Path) -> Result<(Self, Option<ReviewStore>)> {
+    pub(super) async fn open_output(
+        input_root: &Path,
+        output_root: &Path,
+    ) -> Result<(Self, Option<ReviewStore>)> {
+        let roots = ReviewPathRoots::new(input_root, output_root)?;
         let path = review_state_path(output_root);
         if !path.exists() && output_root.join(LEGACY_JSON_STATE_FILE).exists() {
             bail!(legacy_upgrade_error(
                 &output_root.join(LEGACY_JSON_STATE_FILE)
             ));
         }
-        let (connection, store) = prepare_database(&path, !path.exists()).await?;
+        let (connection, store) = prepare_database(&path, !path.exists(), &roots).await?;
         Ok((
             Self {
                 connection,
                 path,
+                roots,
                 write_lock: Arc::new(Mutex::new(())),
                 fatal_error: Arc::new(ArcSwapOption::empty()),
             },
@@ -59,7 +67,7 @@ impl ReviewDatabase {
     }
 
     pub(super) async fn replace_store(&self, store: &ReviewStore) -> Result<()> {
-        write::replace_store(&self.connection, store)
+        write::replace_store(&self.connection, store, &self.roots)
             .await
             .with_context(|| format!("saving review state to {}", self.path.display()))
     }
@@ -69,7 +77,7 @@ impl ReviewDatabase {
         before: &ReviewStore,
         after: &ReviewStore,
     ) -> Result<()> {
-        let result = write::apply_store_delta(&self.connection, before, after)
+        let result = write::apply_store_delta(&self.connection, before, after, &self.roots)
             .await
             .with_context(|| format!("saving review state to {}", self.path.display()));
         if let Err(error) = &result {
@@ -104,14 +112,19 @@ pub(super) fn resolve_review_state_for_publish(
     Ok(state)
 }
 
-pub(super) fn load_store_for_publish(state: &Path) -> Result<Option<ReviewStore>> {
+pub(super) fn load_store_for_publish(
+    state: &Path,
+    input_root: &Path,
+    output_root: &Path,
+) -> Result<Option<ReviewStore>> {
     reject_json_state_path(state)?;
+    let roots = ReviewPathRoots::new(input_root, output_root)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("building review database runtime")?;
     runtime.block_on(async {
-        let (connection, store) = prepare_database(state, false).await?;
+        let (connection, store) = prepare_database(state, false, &roots).await?;
         connection
             .close()
             .await
@@ -123,6 +136,7 @@ pub(super) fn load_store_for_publish(state: &Path) -> Result<Option<ReviewStore>
 async fn prepare_database(
     path: &Path,
     create_if_missing: bool,
+    roots: &ReviewPathRoots,
 ) -> Result<(DatabaseConnection, Option<ReviewStore>)> {
     if create_if_missing {
         if let Some(parent) = path.parent() {
@@ -147,7 +161,7 @@ async fn prepare_database(
         .context("reading review database schema version")?;
     match user_version {
         LEGACY_SCHEMA_VERSION => {
-            let before = validate_v11_database(&connection).await?;
+            validate_v11_database(&connection).await?;
             connection
                 .close()
                 .await
@@ -159,11 +173,11 @@ async fn prepare_database(
                 .await
                 .context("adopting v11 review database with SeaORM")?;
             verify_current_database(&connection).await?;
-            let after = read::load_store(&connection)
+            paths::prepare_relative_path_storage(&connection, roots).await?;
+            let store = read::load_store(&connection, roots)
                 .await
                 .context("reading adopted review database")?;
-            ensure_same_optional_store(before.as_ref(), after.as_ref())?;
-            Ok((connection, after))
+            Ok((connection, store))
         }
         version if (FIRST_SEAORM_SCHEMA_VERSION..=LATEST_SCHEMA_VERSION).contains(&version) => {
             verify_seaorm_database_before_migration(&connection).await?;
@@ -172,7 +186,8 @@ async fn prepare_database(
                 .await
                 .context("running review database migrations")?;
             verify_current_database(&connection).await?;
-            let store = read::load_store(&connection)
+            paths::prepare_relative_path_storage(&connection, roots).await?;
+            let store = read::load_store(&connection, roots)
                 .await
                 .with_context(|| format!("reading review state from {}", path.display()))?;
             Ok((connection, store))
@@ -184,7 +199,7 @@ async fn prepare_database(
         version => {
             connection.close().await.ok();
             bail!(
-                "review database {} has unsupported schema version {version}; mini-film 18 supports only normalized v11 adoption and SeaORM schema v{LATEST_SCHEMA_VERSION}",
+                "review database {} has unsupported schema version {version}; this mini-film release supports only normalized v11 adoption and SeaORM schema v{LATEST_SCHEMA_VERSION}",
                 path.display()
             );
         }
@@ -241,7 +256,7 @@ async fn normalize_pre_release_seaql_ledger(connection: &DatabaseConnection) -> 
         .context("committing pre-release migration-ledger transaction")
 }
 
-async fn validate_v11_database(connection: &DatabaseConnection) -> Result<Option<ReviewStore>> {
+async fn validate_v11_database(connection: &DatabaseConnection) -> Result<()> {
     let manager = SchemaManager::new(connection);
     for table in required_v11_tables() {
         if !manager
@@ -284,10 +299,7 @@ async fn validate_v11_database(connection: &DatabaseConnection) -> Result<Option
     }
     sqlite_compat::verify_integrity(connection)
         .await
-        .context("validating v11 review database")?;
-    read::load_store(connection)
-        .await
-        .context("reading v11 review database before adoption")
+        .context("validating v11 review database")
 }
 
 async fn verify_current_database(connection: &DatabaseConnection) -> Result<()> {
@@ -406,28 +418,6 @@ fn create_v11_backup(path: &Path) -> Result<()> {
         .with_context(|| format!("installing v11 review database backup {}", backup.display()))
 }
 
-fn ensure_same_optional_store(
-    expected: Option<&ReviewStore>,
-    restored: Option<&ReviewStore>,
-) -> Result<()> {
-    match (expected, restored) {
-        (None, None) => Ok(()),
-        (Some(expected), Some(restored)) => ensure_same_store(expected, restored),
-        (Some(_), None) => bail!("adopted review database lost its review settings"),
-        (None, Some(_)) => bail!("adopted review database unexpectedly gained review settings"),
-    }
-}
-
-fn ensure_same_store(expected: &ReviewStore, restored: &ReviewStore) -> Result<()> {
-    let expected = serde_json::to_value(expected).context("canonicalizing source review state")?;
-    let restored =
-        serde_json::to_value(restored).context("canonicalizing restored review state")?;
-    if expected != restored {
-        bail!("SeaORM adoption verification failed: restored review state differs from v11 state");
-    }
-    Ok(())
-}
-
 fn reject_json_state_path(path: &Path) -> Result<()> {
     if path.file_name().and_then(|name| name.to_str()) == Some(LEGACY_JSON_STATE_FILE) {
         bail!(legacy_upgrade_error(path));
@@ -502,18 +492,38 @@ fn required_focus_tables() -> impl Iterator<Item = &'static str> {
 
 #[cfg(test)]
 pub(super) fn load_store(path: &Path) -> Result<Option<ReviewStore>> {
-    load_store_for_publish(path)
+    load_store_with_roots(path, Path::new("/in"), Path::new("/out"))
+}
+
+#[cfg(test)]
+pub(super) fn load_store_with_roots(
+    path: &Path,
+    input_root: &Path,
+    output_root: &Path,
+) -> Result<Option<ReviewStore>> {
+    load_store_for_publish(path, input_root, output_root)
 }
 
 #[cfg(test)]
 pub(super) fn save_store(path: &Path, store: &ReviewStore) -> Result<()> {
+    save_store_with_roots(path, store, Path::new("/in"), Path::new("/out"))
+}
+
+#[cfg(test)]
+pub(super) fn save_store_with_roots(
+    path: &Path,
+    store: &ReviewStore,
+    input_root: &Path,
+    output_root: &Path,
+) -> Result<()> {
+    let roots = ReviewPathRoots::new(input_root, output_root)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("building review database runtime")?;
     runtime.block_on(async {
-        let (connection, _) = prepare_database(path, !path.exists()).await?;
-        write::replace_store(&connection, store).await?;
+        let (connection, _) = prepare_database(path, !path.exists(), &roots).await?;
+        write::replace_store(&connection, store, &roots).await?;
         connection.close().await?;
         Ok(())
     })
@@ -531,6 +541,72 @@ pub(super) struct TestDatabaseFacts {
     pub(super) has_json_storage_columns: bool,
     pub(super) counts: HashMap<&'static str, u64>,
     pub(super) indexes: HashSet<&'static str>,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+pub(super) struct TestStoredPathFacts {
+    pub(super) input_root: String,
+    pub(super) output_root: String,
+    pub(super) source_paths: Vec<String>,
+    pub(super) output_paths: Vec<String>,
+}
+
+#[cfg(test)]
+pub(super) fn stored_path_facts(path: &Path) -> Result<TestStoredPathFacts> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("building review database runtime")?;
+    runtime.block_on(async {
+        let connection = connect_database(path, false).await?;
+        let settings = entities::review_settings::Entity::find_by_id(1)
+            .one(&connection)
+            .await?
+            .context("missing review settings")?;
+        let images = entities::images::Entity::find().all(&connection).await?;
+        let renders = entities::image_profile_renders::Entity::find()
+            .all(&connection)
+            .await?;
+        let projects = entities::panorama_projects::Entity::find()
+            .all(&connection)
+            .await?;
+        let previews = entities::panorama_previews::Entity::find()
+            .all(&connection)
+            .await?;
+        connection.close().await?;
+
+        let source_paths = images
+            .iter()
+            .map(|image| image.raw_path.clone())
+            .chain(
+                images
+                    .iter()
+                    .filter_map(|image| image.sooc_sidecar_path.clone()),
+            )
+            .chain(
+                projects
+                    .into_iter()
+                    .filter_map(|project| project.output_path),
+            )
+            .collect();
+        let output_paths = images
+            .into_iter()
+            .filter_map(|image| image.preview_path)
+            .chain(renders.into_iter().filter_map(|render| render.output_path))
+            .chain(
+                previews
+                    .into_iter()
+                    .filter_map(|preview| preview.preview_path),
+            )
+            .collect();
+        Ok(TestStoredPathFacts {
+            input_root: settings.input_root,
+            output_root: settings.output_root,
+            source_paths,
+            output_paths,
+        })
+    })
 }
 
 #[cfg(test)]
@@ -861,7 +937,7 @@ pub(super) fn make_schema_v12_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(3)).await?;
+        Migrator::down(&connection, Some(4)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -877,7 +953,7 @@ pub(super) fn make_schema_v13_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(2)).await?;
+        Migrator::down(&connection, Some(3)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -886,6 +962,22 @@ pub(super) fn make_schema_v13_database(path: &Path, store: &ReviewStore) -> Resu
 
 #[cfg(test)]
 pub(super) fn make_schema_v14_database(path: &Path, store: &ReviewStore) -> Result<()> {
+    save_store(path, store)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("building review database runtime")?;
+    runtime.block_on(async {
+        let connection = connect_database(path, false).await?;
+        Migrator::down(&connection, Some(2)).await?;
+        sqlite_compat::verify_integrity(&connection).await?;
+        connection.close().await?;
+        Ok(())
+    })
+}
+
+#[cfg(test)]
+pub(super) fn make_schema_v15_database(path: &Path, store: &ReviewStore) -> Result<()> {
     save_store(path, store)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

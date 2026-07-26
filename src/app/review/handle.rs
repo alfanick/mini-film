@@ -34,8 +34,10 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
             .build()
             .context("building review database runtime")?,
     );
-    let (database, stored) =
-        database_runtime.block_on(ReviewDatabase::open_output(&config.output_root))?;
+    let (database, stored) = database_runtime.block_on(ReviewDatabase::open_output(
+        &config.input_root,
+        &config.output_root,
+    ))?;
     let mut store = stored
         .clone()
         .unwrap_or_else(|| ReviewStore::new(Vec::new()));

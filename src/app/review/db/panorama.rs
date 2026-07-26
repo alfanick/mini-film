@@ -36,9 +36,9 @@ impl ReviewDatabase {
                 let previews = previews
                     .iter()
                     .filter(|preview| preview.panorama_id == panorama_id)
-                    .map(preview_from_row)
+                    .map(|preview| preview_from_row(preview, &self.roots))
                     .collect::<Result<Vec<_>>>()?;
-                project_from_row(project, image_ids, previews)
+                project_from_row(project, image_ids, previews, &self.roots)
             })
             .collect()
     }
@@ -52,12 +52,12 @@ impl ReviewDatabase {
             .begin()
             .await
             .context("starting panorama project transaction")?;
-        let inserted = project_active_model(project, false)
+        let inserted = project_active_model(project, false, &self.roots)?
             .insert(&transaction)
             .await
             .context("creating panorama project")?;
         project.id = db_u64(inserted.panorama_id, "new panorama project id")?;
-        if let Err(error) = replace_project_children(&transaction, project).await {
+        if let Err(error) = replace_project_children(&transaction, project, &self.roots).await {
             transaction.rollback().await.ok();
             return Err(error);
         }
@@ -77,11 +77,11 @@ impl ReviewDatabase {
             .await
             .context("starting panorama project transaction")?;
         let result = async {
-            project_active_model(project, true)
+            project_active_model(project, true, &self.roots)?
                 .update(&transaction)
                 .await
                 .with_context(|| format!("updating panorama project {}", project.id))?;
-            replace_project_children(&transaction, project).await
+            replace_project_children(&transaction, project, &self.roots).await
         }
         .await;
         match result {
@@ -101,6 +101,7 @@ fn project_from_row(
     row: panorama_projects::Model,
     image_ids: Vec<u64>,
     previews: Vec<ReviewPanoramaPreview>,
+    roots: &ReviewPathRoots,
 ) -> Result<ReviewPanoramaProject> {
     Ok(ReviewPanoramaProject {
         id: db_u64(row.panorama_id, "panorama project id")?,
@@ -112,7 +113,11 @@ fn project_from_row(
             .as_deref()
             .map(parse_projection)
             .transpose()?,
-        output_path: row.output_path.map(PathBuf::from),
+        output_path: row
+            .output_path
+            .as_deref()
+            .map(|path| roots.source_from_storage(path, "panorama_projects.output_path"))
+            .transpose()?,
         result_image_id: row
             .result_image_id
             .map(|value| db_u64(value, "panorama result image id"))
@@ -128,12 +133,19 @@ fn project_from_row(
     })
 }
 
-fn preview_from_row(row: &panorama_previews::Model) -> Result<ReviewPanoramaPreview> {
+fn preview_from_row(
+    row: &panorama_previews::Model,
+    roots: &ReviewPathRoots,
+) -> Result<ReviewPanoramaPreview> {
     Ok(ReviewPanoramaPreview {
         matching_mode: parse_matching_mode(&row.matching_mode)?,
         projection: parse_projection(&row.projection)?,
         status: ReviewPanoramaPreviewStatus::parse(&row.status)?,
-        path: row.preview_path.as_ref().map(PathBuf::from),
+        path: row
+            .preview_path
+            .as_deref()
+            .map(|path| roots.output_from_storage(path, "panorama_previews.preview_path"))
+            .transpose()?,
         cache_key: row.cache_key.clone(),
         duration_ms: row
             .duration_ms
@@ -147,8 +159,9 @@ fn preview_from_row(row: &panorama_previews::Model) -> Result<ReviewPanoramaPrev
 fn project_active_model(
     project: &ReviewPanoramaProject,
     include_id: bool,
-) -> panorama_projects::ActiveModel {
-    panorama_projects::ActiveModel {
+    roots: &ReviewPathRoots,
+) -> Result<panorama_projects::ActiveModel> {
+    Ok(panorama_projects::ActiveModel {
         panorama_id: if include_id {
             Set(db_i64(project.id))
         } else {
@@ -160,8 +173,9 @@ fn project_active_model(
         selected_projection: Set(project.selected_projection.map(|value| value.to_string())),
         output_path: Set(project
             .output_path
-            .as_ref()
-            .map(|path| path.to_string_lossy().into_owned())),
+            .as_deref()
+            .map(|path| roots.source_to_storage(path, "panorama_projects.output_path"))
+            .transpose()?),
         result_image_id: Set(project.result_image_id.map(db_i64)),
         progress_stage: Set(project.progress_stage.clone()),
         progress_completed: Set(db_i64_usize(project.progress_completed)),
@@ -169,12 +183,13 @@ fn project_active_model(
         error: Set(project.error.clone()),
         created_at: Set(project.created_at.clone()),
         updated_at: Set(project.updated_at.clone()),
-    }
+    })
 }
 
 async fn replace_project_children(
     transaction: &sea_orm::DatabaseTransaction,
     project: &ReviewPanoramaProject,
+    roots: &ReviewPathRoots,
 ) -> Result<()> {
     let panorama_id = db_i64(project.id);
     panorama_project_images::Entity::delete_many()
@@ -211,8 +226,9 @@ async fn replace_project_children(
             status: Set(preview.status.as_str().to_string()),
             preview_path: Set(preview
                 .path
-                .as_ref()
-                .map(|path| path.to_string_lossy().into_owned())),
+                .as_deref()
+                .map(|path| roots.output_to_storage(path, "panorama_previews.preview_path"))
+                .transpose()?),
             cache_key: Set(preview.cache_key.clone()),
             duration_ms: Set(preview.duration_ms.map(db_i64)),
             error: Set(preview.error.clone()),

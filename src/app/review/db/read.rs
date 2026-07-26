@@ -2,7 +2,10 @@ use super::{entities::*, *};
 use sea_orm::{ConnectionTrait, EntityTrait, QueryOrder};
 use serde::de::DeserializeOwned;
 
-pub(super) async fn load_store<C>(connection: &C) -> Result<Option<ReviewStore>>
+pub(super) async fn load_store<C>(
+    connection: &C,
+    roots: &ReviewPathRoots,
+) -> Result<Option<ReviewStore>>
 where
     C: ConnectionTrait,
 {
@@ -17,7 +20,7 @@ where
     Ok(Some(ReviewStore {
         next_id: i64_to_u64(settings.next_id, "review next_id")?,
         profiles: load_profiles(connection).await?,
-        images: load_images(connection).await?,
+        images: load_images(connection, roots).await?,
         ui: ReviewUiState {
             current_image_id: settings
                 .current_image_id
@@ -406,7 +409,7 @@ fn profile_adjustments_mut<'a>(
     }
 }
 
-async fn load_images<C>(connection: &C) -> Result<Vec<ReviewImage>>
+async fn load_images<C>(connection: &C, roots: &ReviewPathRoots) -> Result<Vec<ReviewImage>>
 where
     C: ConnectionTrait,
 {
@@ -439,10 +442,21 @@ where
         };
         let publish_profiles_default =
             i64_to_bool(row.publish_profiles_default, "publish_profiles_default")?;
+        let raw_path = roots.source_from_storage(&row.raw_path, "images.raw_path")?;
+        let sooc_sidecar_path = row
+            .sooc_sidecar_path
+            .as_deref()
+            .map(|path| roots.source_from_storage(path, "images.sooc_sidecar_path"))
+            .transpose()?;
+        let preview_path = row
+            .preview_path
+            .as_deref()
+            .map(|path| roots.output_from_storage(path, "images.preview_path"))
+            .transpose()?;
         result.push(ReviewImage {
             id: image_id,
-            raw_path: PathBuf::from(row.raw_path),
-            sooc_sidecar_path: row.sooc_sidecar_path.map(PathBuf::from),
+            raw_path,
+            sooc_sidecar_path,
             relative_path: row.relative_path,
             file_name: row.file_name,
             exif: GalleryExifData {
@@ -506,7 +520,7 @@ where
             },
             preview: ReviewPreview {
                 status: parse_enum(&row.preview_status, "preview status")?,
-                path: row.preview_path.map(PathBuf::from),
+                path: preview_path,
                 error: row.preview_error,
                 duration_ms: optional_i64(row.preview_duration_ms, "preview duration", i64_to_u64)?,
                 render_key: row.preview_render_key,
@@ -571,7 +585,7 @@ where
     load_image_labels(connection, &mut result, &indexes).await?;
     load_image_publish_profiles(connection, &mut result, &indexes).await?;
     load_image_profile_bw_filters(connection, &mut result, &indexes).await?;
-    load_image_profile_renders(connection, &mut result, &indexes).await?;
+    load_image_profile_renders(connection, roots, &mut result, &indexes).await?;
     Ok(result)
 }
 
@@ -750,6 +764,7 @@ where
 
 async fn load_image_profile_renders<C>(
     connection: &C,
+    roots: &ReviewPathRoots,
     images: &mut [ReviewImage],
     indexes: &HashMap<u64, usize>,
 ) -> Result<()>
@@ -773,7 +788,11 @@ where
             display_name: row.display_name,
             enabled: i64_to_bool(row.enabled, "profile render enabled")?,
             status: parse_enum(&row.status, "profile render status")?,
-            output_path: row.output_path.map(PathBuf::from),
+            output_path: row
+                .output_path
+                .as_deref()
+                .map(|path| roots.output_from_storage(path, "image_profile_renders.output_path"))
+                .transpose()?,
             error: row.error,
             duration_ms: optional_i64(row.duration_ms, "profile render duration", i64_to_u64)?,
             render_key: row.render_key,

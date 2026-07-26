@@ -281,7 +281,7 @@ struct ProfileScheduleContext<'a> {
 /// The input folder is monitored recursively. New/changed RAW files are queued on
 /// filesystem notifications and only processed after their size and mtime are
 /// observed as stable.
-pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
+pub(crate) fn run_batch_daemon(mut args: BatchDaemonArgs) -> Result<()> {
     validate_export_options(&args.export)?;
     let jobs = resolve_batch_daemon_jobs(args.jobs)?;
     if !args.input.is_dir() {
@@ -289,6 +289,10 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
     }
     fs::create_dir_all(&args.output)
         .with_context(|| format!("creating {}", args.output.display()))?;
+    args.input = fs::canonicalize(&args.input)
+        .with_context(|| format!("canonicalizing {}", args.input.display()))?;
+    args.output = fs::canonicalize(&args.output)
+        .with_context(|| format!("canonicalizing {}", args.output.display()))?;
     if args.codex.is_some() && args.review_address.is_none() {
         bail!(
             "--codex requires --review-address so generated ratings, tags, and notes can be stored in review state"

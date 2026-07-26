@@ -12,6 +12,10 @@ pub struct Model {
     pub current_image_id: Option<i64>,
     pub min_rating: i64,
     pub exif_schema_version: i64,
+    #[sea_orm(column_type = "Text")]
+    pub input_root: String,
+    #[sea_orm(column_type = "Text")]
+    pub output_root: String,
     #[sea_orm(
         belongs_to,
         from = "current_image_id",

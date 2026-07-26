@@ -1,4 +1,4 @@
-use super::{entities::*, sqlite_compat};
+use super::{entities::*, paths, sqlite_compat};
 use sea_orm::{
     ActiveModelTrait, DbBackend, EntityName, EntityTrait, IntoActiveModel, QuerySelect, Schema, Set,
 };
@@ -8,11 +8,13 @@ pub(super) const LEGACY_SCHEMA_VERSION: i64 = 11;
 pub(super) const FIRST_SEAORM_SCHEMA_VERSION: i64 = 12;
 const PANORAMA_SCHEMA_VERSION: i64 = 13;
 const REVIEW_SAMPLER_SCHEMA_VERSION: i64 = 14;
-pub(super) const LATEST_SCHEMA_VERSION: i64 = 15;
+const FOCUS_REGIONS_SCHEMA_VERSION: i64 = 15;
+pub(super) const LATEST_SCHEMA_VERSION: i64 = 16;
 pub(super) const V18_BASELINE_MIGRATION: &str = "m20260718_000001_v18_baseline";
 pub(super) const PANORAMA_PROJECTS_MIGRATION: &str = "m20260719_000002_panorama_projects";
 pub(super) const REVIEW_SAMPLER_MIGRATION: &str = "m20260721_000003_review_sampler";
 pub(super) const FOCUS_REGIONS_MIGRATION: &str = "m20260726_000004_focus_regions";
+pub(super) const RELATIVE_PATHS_MIGRATION: &str = "m20260726_000005_relative_paths";
 pub(super) const PRE_RELEASE_SEAORM_LEDGER: [&str; 2] = [
     "m20260718_000001_create_review_schema",
     "m20260718_000002_adopt_seaorm",
@@ -42,6 +44,7 @@ impl MigratorTrait for Migrator {
             Box::new(PanoramaProjects),
             Box::new(ReviewSampler),
             Box::new(FocusRegions),
+            Box::new(RelativePaths),
         ]
     }
 }
@@ -144,6 +147,14 @@ struct FocusRegions;
 impl MigrationName for FocusRegions {
     fn name(&self) -> &str {
         FOCUS_REGIONS_MIGRATION
+    }
+}
+
+struct RelativePaths;
+
+impl MigrationName for RelativePaths {
+    fn name(&self) -> &str {
+        RELATIVE_PATHS_MIGRATION
     }
 }
 
@@ -315,7 +326,8 @@ impl MigrationTrait for FocusRegions {
                     .to_owned(),
             )
             .await?;
-        sqlite_compat::set_user_version(manager.get_connection(), LATEST_SCHEMA_VERSION).await
+        sqlite_compat::set_user_version(manager.get_connection(), FOCUS_REGIONS_SCHEMA_VERSION)
+            .await
     }
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
@@ -349,6 +361,62 @@ impl MigrationTrait for FocusRegions {
                 .await?;
         }
         sqlite_compat::set_user_version(manager.get_connection(), REVIEW_SAMPLER_SCHEMA_VERSION)
+            .await
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for RelativePaths {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        for column in [
+            review_settings::Column::InputRoot,
+            review_settings::Column::OutputRoot,
+        ] {
+            let column_name = column.to_string();
+            if !manager
+                .has_column(review_settings::Entity.table_name(), &column_name)
+                .await?
+            {
+                manager
+                    .alter_table(
+                        Table::alter()
+                            .table(review_settings::Entity)
+                            .add_column(ColumnDef::new(column).text().not_null().default(""))
+                            .to_owned(),
+                    )
+                    .await?;
+            }
+        }
+        sqlite_compat::set_user_version(manager.get_connection(), LATEST_SCHEMA_VERSION).await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        paths::restore_absolute_path_storage(manager.get_connection())
+            .await
+            .map_err(|error| DbErr::Custom(format!("{error:#}")))?;
+        for column in [
+            review_settings::Column::OutputRoot,
+            review_settings::Column::InputRoot,
+        ] {
+            if manager
+                .has_column(review_settings::Entity.table_name(), &column.to_string())
+                .await?
+            {
+                manager
+                    .alter_table(
+                        Table::alter()
+                            .table(review_settings::Entity)
+                            .drop_column(column)
+                            .to_owned(),
+                    )
+                    .await?;
+            }
+        }
+        sqlite_compat::set_user_version(manager.get_connection(), FOCUS_REGIONS_SCHEMA_VERSION)
             .await
     }
 }

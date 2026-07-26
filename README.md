@@ -600,7 +600,14 @@ Review data, panorama projects, and the shared browser position are persisted in
 `<output>/mini-film-review.sqlite` as normalized relational rows; the active
 database does not keep an opaque JSON copy of the review store. SeaORM models
 own the schema and a migration ledger applies future database changes
-automatically. On its first open, mini-film 18 validates a normalized schema-v11
+automatically. Media paths in SQLite are stored relative to their input or
+output root, while the settings row records the last absolute roots used to open
+the database. The roots supplied to `daemon` or `review-publish` are
+authoritative, so an input tree and output tree can be moved and reopened at
+their new locations without rewriting review data or cached-output
+relationships. Existing schema-v15 absolute paths are converted transactionally
+on first open; an unmappable path stops migration instead of being discarded.
+On its first open, mini-film 18 validates a normalized schema-v11
 database from the final 17.x release, creates the one-time
 `mini-film-review.sqlite.pre-seaorm-v11` backup without overwriting an existing
 backup, adopts the database, and verifies that every reconstructed review value

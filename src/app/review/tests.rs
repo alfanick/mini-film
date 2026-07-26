@@ -137,7 +137,7 @@ fn fully_populated_review_store() -> ReviewStore {
         display_name: Some("Detailed display".to_string()),
         enabled: true,
         status: ReviewRenderStatus::Failed,
-        output_path: Some(PathBuf::from("/out/detailed.jpg")),
+        output_path: Some(PathBuf::from("/out/day/Detailed/detailed.jpg")),
         error: Some("render failed".to_string()),
         duration_ms: Some(987),
         render_key: Some("render-key".to_string()),
@@ -208,7 +208,7 @@ fn fully_populated_review_store() -> ReviewStore {
             },
             preview: ReviewPreview {
                 status: ReviewRenderStatus::Failed,
-                path: Some(PathBuf::from("/out/preview.jpg")),
+                path: Some(PathBuf::from("/out/.mini-film-review-previews/preview.jpg")),
                 error: Some("preview failed".to_string()),
                 duration_ms: Some(321),
                 render_key: Some("preview-key".to_string()),
@@ -327,6 +327,32 @@ fn persisted_store(mut store: ReviewStore) -> ReviewStore {
     store
 }
 
+fn rebase_review_store(
+    mut store: ReviewStore,
+    input_root: &Path,
+    output_root: &Path,
+) -> ReviewStore {
+    for image in &mut store.images {
+        image.raw_path = input_root.join(image.raw_path.strip_prefix("/in").unwrap());
+        image.sooc_sidecar_path = image
+            .sooc_sidecar_path
+            .as_deref()
+            .map(|path| input_root.join(path.strip_prefix("/in").unwrap()));
+        image.preview.path = image
+            .preview
+            .path
+            .as_deref()
+            .map(|path| output_root.join(path.strip_prefix("/out").unwrap()));
+        for render in &mut image.profiles {
+            render.output_path = render
+                .output_path
+                .as_deref()
+                .map(|path| output_root.join(path.strip_prefix("/out").unwrap()));
+        }
+    }
+    store
+}
+
 fn migrated_pre_sampler_store(mut store: ReviewStore) -> ReviewStore {
     store = persisted_store(store);
     for profile in &mut store.profiles {
@@ -382,11 +408,12 @@ fn test_handle(input: PathBuf, output: PathBuf, profiles: Vec<ReviewProfile>) ->
     let store = ReviewStore::new(profiles);
     let database = {
         let database_runtime = Arc::clone(&database_runtime);
+        let input = input.clone();
         let output = output.clone();
         let store = store.clone();
         std::thread::spawn(move || {
             let (database, _) = database_runtime
-                .block_on(ReviewDatabase::open_output(&output))
+                .block_on(ReviewDatabase::open_output(&input, &output))
                 .unwrap();
             database_runtime
                 .block_on(database.replace_store(&store))
@@ -691,7 +718,7 @@ fn dng_rebind_keeps_review_identity_and_user_data_in_sqlite() {
     fs::write(&nef, b"unsupported nef").unwrap();
     fs::write(&dng, b"validated elsewhere before rebinding").unwrap();
 
-    let mut before = fully_populated_review_store();
+    let mut before = rebase_review_store(fully_populated_review_store(), &input, &output);
     before.images.truncate(1);
     before.next_id = 2;
     before.ui.current_image_id = Some(1);
@@ -754,7 +781,7 @@ fn dng_rebind_keeps_review_identity_and_user_data_in_sqlite() {
 
     let runtime = test_async_runtime();
     let database = runtime
-        .block_on(ReviewDatabase::open_output(&output))
+        .block_on(ReviewDatabase::open_output(&input, &output))
         .unwrap()
         .0;
     runtime.block_on(database.replace_store(&before)).unwrap();
@@ -763,7 +790,7 @@ fn dng_rebind_keeps_review_identity_and_user_data_in_sqlite() {
         .unwrap();
     drop(database);
 
-    let restored = load_store(&output.join(SQLITE_STATE_FILE))
+    let restored = load_store_with_roots(&output.join(SQLITE_STATE_FILE), &input, &output)
         .unwrap()
         .unwrap();
     assert_eq!(restored.images.len(), 1);
@@ -1207,9 +1234,11 @@ fn sync_profiles_merges_standalone_sooc_sidecar_after_restart() {
         sidecar_image.notes_source = ReviewMetadataSource::Manual;
     }
     store.ui.current_image_id = Some(sidecar_id);
-    save_store(&state_path, &store).unwrap();
+    save_store_with_roots(&state_path, &store, &input, &output).unwrap();
 
-    let mut loaded = load_store(&state_path).unwrap().unwrap();
+    let mut loaded = load_store_with_roots(&state_path, &input, &output)
+        .unwrap()
+        .unwrap();
     loaded.sync_profiles(vec![profile(0, "Classic")]);
 
     assert_eq!(loaded.images.len(), 1);
@@ -1246,9 +1275,9 @@ fn sqlite_restart_adds_profiles_to_compressed_images_without_losing_review_metad
     image.rating = 4;
     image.tags = vec!["portrait".to_string()];
     image.notes = "keep this note".to_string();
-    save_store(&output.join(SQLITE_STATE_FILE), &store).unwrap();
+    save_store_with_roots(&output.join(SQLITE_STATE_FILE), &store, &input, &output).unwrap();
 
-    let mut restored = load_store(&output.join(SQLITE_STATE_FILE))
+    let mut restored = load_store_with_roots(&output.join(SQLITE_STATE_FILE), &input, &output)
         .unwrap()
         .unwrap();
     restored.sync_profiles(vec![profile(0, "Classic"), profile(1, "Fade")]);
@@ -1379,9 +1408,9 @@ fn review_state_seaorm_round_trips_every_normalized_collection() {
         serde_json::to_value(persisted_store(store)).unwrap()
     );
     let facts = database_facts(&state_path).unwrap();
-    assert_eq!(facts.schema_version, 15);
+    assert_eq!(facts.schema_version, 16);
     assert!(facts.has_seaql_ledger);
-    assert_eq!(facts.seaql_migration_count, 4);
+    assert_eq!(facts.seaql_migration_count, 5);
     assert_eq!(
         facts.seaql_migrations,
         [
@@ -1389,6 +1418,7 @@ fn review_state_seaorm_round_trips_every_normalized_collection() {
             "m20260719_000002_panorama_projects",
             "m20260721_000003_review_sampler",
             "m20260726_000004_focus_regions",
+            "m20260726_000005_relative_paths",
         ]
     );
     assert!(!facts.has_legacy_ledger);
@@ -1408,6 +1438,16 @@ fn review_state_seaorm_round_trips_every_normalized_collection() {
     assert_eq!(facts.counts["panorama_project_images"], 0);
     assert_eq!(facts.counts["panorama_previews"], 0);
     assert_eq!(facts.indexes.len(), 20);
+    let paths = stored_path_facts(&state_path).unwrap();
+    assert_eq!(paths.input_root, "/in");
+    assert_eq!(paths.output_root, "/out");
+    assert!(
+        paths
+            .source_paths
+            .iter()
+            .chain(&paths.output_paths)
+            .all(|path| Path::new(path).is_relative())
+    );
     assert_domain_constraints(&state_path).unwrap();
 }
 
@@ -1434,10 +1474,10 @@ fn normalized_v11_database_is_backed_up_and_adopted_losslessly_once() {
     let backup_bytes = fs::read(&backup_path).unwrap();
 
     let after_facts = database_facts(&state_path).unwrap();
-    assert_eq!(after_facts.schema_version, 15);
+    assert_eq!(after_facts.schema_version, 16);
     assert!(!after_facts.has_legacy_ledger);
     assert!(after_facts.has_seaql_ledger);
-    assert_eq!(after_facts.seaql_migration_count, 4);
+    assert_eq!(after_facts.seaql_migration_count, 5);
     assert_eq!(
         after_facts.seaql_migrations,
         [
@@ -1445,6 +1485,7 @@ fn normalized_v11_database_is_backed_up_and_adopted_losslessly_once() {
             "m20260719_000002_panorama_projects",
             "m20260721_000003_review_sampler",
             "m20260726_000004_focus_regions",
+            "m20260726_000005_relative_paths",
         ]
     );
     assert!(!after_facts.has_json_storage_columns);
@@ -1483,7 +1524,7 @@ fn pre_release_two_entry_seaorm_ledger_is_collapsed_without_data_loss() {
         serde_json::to_value(persisted_store(store)).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.seaql_migration_count, 4);
+    assert_eq!(after.seaql_migration_count, 5);
     assert_eq!(
         after.seaql_migrations,
         [
@@ -1491,6 +1532,7 @@ fn pre_release_two_entry_seaorm_ledger_is_collapsed_without_data_loss() {
             "m20260719_000002_panorama_projects",
             "m20260721_000003_review_sampler",
             "m20260726_000004_focus_regions",
+            "m20260726_000005_relative_paths",
         ]
     );
 }
@@ -1508,8 +1550,8 @@ fn schema_v12_migrates_to_panorama_schema_without_review_data_loss() {
         serde_json::to_value(migrated_pre_sampler_store(store)).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 15);
-    assert_eq!(after.seaql_migration_count, 4);
+    assert_eq!(after.schema_version, 16);
+    assert_eq!(after.seaql_migration_count, 5);
     assert_eq!(after.counts["panorama_projects"], 0);
     assert_eq!(after.counts["panorama_project_images"], 0);
     assert_eq!(after.counts["panorama_previews"], 0);
@@ -1538,8 +1580,8 @@ fn schema_v13_migrates_sampler_state_without_review_data_loss() {
             && profile.identity.starts_with("legacy:")
     }));
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 15);
-    assert_eq!(after.seaql_migration_count, 4);
+    assert_eq!(after.schema_version, 16);
+    assert_eq!(after.seaql_migration_count, 5);
     assert_eq!(after.indexes.len(), 20);
 }
 
@@ -1562,18 +1604,126 @@ fn schema_v14_adds_focus_region_storage_without_review_data_loss() {
         serde_json::to_value(persisted_store(store)).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 15);
-    assert_eq!(after.seaql_migration_count, 4);
+    assert_eq!(after.schema_version, 16);
+    assert_eq!(after.seaql_migration_count, 5);
     assert_eq!(after.counts["image_focus_regions"], 0);
     assert_eq!(after.indexes.len(), 20);
+}
+
+#[test]
+fn schema_v15_paths_migrate_and_rebase_after_input_and_output_move() {
+    let temp = tempfile::tempdir().unwrap();
+    let old_output = temp.path().join("old-output");
+    let new_input = temp.path().join("moved-input");
+    let new_output = temp.path().join("moved-output");
+    fs::create_dir_all(&old_output).unwrap();
+    fs::create_dir_all(&new_input).unwrap();
+    fs::create_dir_all(&new_output).unwrap();
+    let old_state = old_output.join(SQLITE_STATE_FILE);
+    let new_state = new_output.join(SQLITE_STATE_FILE);
+    let store = fully_populated_review_store();
+    make_schema_v15_database(&old_state, &store).unwrap();
+
+    fs::rename(&old_state, &new_state).unwrap();
+    let loaded = load_store_with_roots(&new_state, &new_input, &new_output)
+        .unwrap()
+        .unwrap();
+    let expected = rebase_review_store(persisted_store(store), &new_input, &new_output);
+    assert_eq!(
+        serde_json::to_value(loaded).unwrap(),
+        serde_json::to_value(expected).unwrap()
+    );
+
+    let facts = database_facts(&new_state).unwrap();
+    assert_eq!(facts.schema_version, 16);
+    assert_eq!(facts.seaql_migration_count, 5);
+    let paths = stored_path_facts(&new_state).unwrap();
+    assert_eq!(paths.input_root, new_input.to_string_lossy());
+    assert_eq!(paths.output_root, new_output.to_string_lossy());
+    assert!(
+        paths
+            .source_paths
+            .iter()
+            .chain(&paths.output_paths)
+            .all(|path| Path::new(path).is_relative())
+    );
+}
+
+#[test]
+fn schema_v15_render_paths_infer_moved_output_without_preview_cache() {
+    let temp = tempfile::tempdir().unwrap();
+    let old_output = temp.path().join("old-output");
+    let new_input = temp.path().join("moved-input");
+    let new_output = temp.path().join("moved-output");
+    fs::create_dir_all(&old_output).unwrap();
+    fs::create_dir_all(&new_input).unwrap();
+    fs::create_dir_all(&new_output).unwrap();
+    let old_state = old_output.join(SQLITE_STATE_FILE);
+    let new_state = new_output.join(SQLITE_STATE_FILE);
+    let mut store = fully_populated_review_store();
+    for image in &mut store.images {
+        image.preview.path = None;
+    }
+    make_schema_v15_database(&old_state, &store).unwrap();
+
+    fs::rename(&old_state, &new_state).unwrap();
+    let loaded = load_store_with_roots(&new_state, &new_input, &new_output)
+        .unwrap()
+        .unwrap();
+    let expected = rebase_review_store(persisted_store(store), &new_input, &new_output);
+    assert_eq!(
+        serde_json::to_value(loaded).unwrap(),
+        serde_json::to_value(expected).unwrap()
+    );
+    assert!(
+        stored_path_facts(&new_state)
+            .unwrap()
+            .output_paths
+            .iter()
+            .all(|path| Path::new(path).is_relative())
+    );
+}
+
+#[test]
+fn relative_path_database_rebases_when_roots_move_again() {
+    let temp = tempfile::tempdir().unwrap();
+    let state_path = temp.path().join(SQLITE_STATE_FILE);
+    let new_input = temp.path().join("moved-input");
+    let new_output = temp.path().join("moved-output");
+    fs::create_dir_all(&new_input).unwrap();
+    fs::create_dir_all(&new_output).unwrap();
+    let store = fully_populated_review_store();
+    save_store(&state_path, &store).unwrap();
+
+    let loaded = load_store_with_roots(&state_path, &new_input, &new_output)
+        .unwrap()
+        .unwrap();
+    let expected = rebase_review_store(persisted_store(store), &new_input, &new_output);
+    assert_eq!(
+        serde_json::to_value(loaded).unwrap(),
+        serde_json::to_value(expected).unwrap()
+    );
+
+    let paths = stored_path_facts(&state_path).unwrap();
+    assert_eq!(paths.input_root, new_input.to_string_lossy());
+    assert_eq!(paths.output_root, new_output.to_string_lossy());
+    assert!(
+        paths
+            .source_paths
+            .iter()
+            .chain(&paths.output_paths)
+            .all(|path| Path::new(path).is_relative())
+    );
 }
 
 #[test]
 fn sampler_profiles_persist_with_current_and_all_availability() {
     let temp = tempfile::tempdir().unwrap();
     let input = temp.path().join("in");
+    let output = temp.path().join("out");
     let state_path = temp.path().join(SQLITE_STATE_FILE);
     fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
     let first = input.join("first.jpg");
     let second = input.join("second.jpg");
     let third = input.join("third.jpg");
@@ -1610,8 +1760,10 @@ fn sampler_profiles_persist_with_current_and_all_availability() {
             .any(|render| render.profile_index == profile_index && !render.enabled)
     );
 
-    save_store(&state_path, &store).unwrap();
-    let mut restored = load_store(&state_path).unwrap().unwrap();
+    save_store_with_roots(&state_path, &store, &input, &output).unwrap();
+    let mut restored = load_store_with_roots(&state_path, &input, &output)
+        .unwrap()
+        .unwrap();
     restored.sync_profiles(Vec::new());
     assert_eq!(restored.profiles.len(), 1);
     assert!(restored.profiles[0].sampler_added);
@@ -1663,13 +1815,16 @@ fn sampler_profiles_persist_with_current_and_all_availability() {
 #[test]
 fn panorama_projects_round_trip_normalized_relationships() {
     let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
     let runtime = test_async_runtime();
     let (database, _) = runtime
-        .block_on(ReviewDatabase::open_output(temp.path()))
+        .block_on(ReviewDatabase::open_output(&input, &output))
         .unwrap();
-    runtime
-        .block_on(database.replace_store(&fully_populated_review_store()))
-        .unwrap();
+    let store = rebase_review_store(fully_populated_review_store(), &input, &output);
+    runtime.block_on(database.replace_store(&store)).unwrap();
     let timestamp = "2026-07-19T12:34:56+02:00".to_string();
     let mut project = ReviewPanoramaProject {
         id: 0,
@@ -1677,7 +1832,7 @@ fn panorama_projects_round_trip_normalized_relationships() {
         status: ReviewPanoramaStatus::Ready,
         matching_mode: PanoramaMatchingMode::MultiRow,
         selected_projection: Some(PanoramaProjection::Panini),
-        output_path: Some(PathBuf::from("/in/Panoramas/Alps sweep.tif")),
+        output_path: Some(input.join("Panoramas/Alps sweep.tif")),
         result_image_id: Some(3),
         progress_stage: Some("complete".to_string()),
         progress_completed: 4,
@@ -1690,7 +1845,7 @@ fn panorama_projects_round_trip_normalized_relationships() {
             matching_mode: PanoramaMatchingMode::MultiRow,
             projection: PanoramaProjection::Panini,
             status: ReviewPanoramaPreviewStatus::Done,
-            path: Some(PathBuf::from("/cache/panini.jpg")),
+            path: Some(output.join(".mini-film-panoramas/panini.jpg")),
             cache_key: Some("preview-key".to_string()),
             duration_ms: Some(4321),
             error: None,
@@ -1716,7 +1871,7 @@ fn panorama_projects_round_trip_normalized_relationships() {
         vec![project]
     );
 
-    let facts = database_facts(&temp.path().join(SQLITE_STATE_FILE)).unwrap();
+    let facts = database_facts(&output.join(SQLITE_STATE_FILE)).unwrap();
     assert_eq!(facts.counts["panorama_projects"], 1);
     assert_eq!(facts.counts["panorama_project_images"], 3);
     assert_eq!(facts.counts["panorama_previews"], 1);
@@ -1777,7 +1932,7 @@ fn incremental_store_delta_preserves_complete_state() {
         .build()
         .unwrap();
     let (database, loaded) = runtime
-        .block_on(ReviewDatabase::open_output(temp.path()))
+        .block_on(ReviewDatabase::open_output(Path::new("/in"), temp.path()))
         .unwrap();
     let loaded = loaded.unwrap();
     let mut after = loaded.clone();
@@ -1789,7 +1944,9 @@ fn incremental_store_delta_preserves_complete_state() {
         .unwrap();
     drop(database);
 
-    let restored = load_store(&state_path).unwrap().unwrap();
+    let restored = load_store_with_roots(&state_path, Path::new("/in"), temp.path())
+        .unwrap()
+        .unwrap();
     assert_eq!(
         serde_json::to_value(&restored).unwrap(),
         serde_json::to_value(&after).unwrap()
