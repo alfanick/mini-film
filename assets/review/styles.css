@@ -493,6 +493,37 @@ button:disabled {
   grid-area: 1 / 1;
 }
 
+.focus-overlay {
+  position: absolute;
+  z-index: 4;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.focus-overlay[hidden] {
+  display: none;
+}
+
+.focus-region {
+  fill: rgba(255, 183, 55, 0.08);
+  stroke: rgba(255, 205, 117, 0.92);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.focus-region-primary {
+  fill: rgba(255, 69, 58, 0.08);
+  stroke: #ff453a;
+  stroke-width: 2;
+}
+
+.viewer.zooming .focus-overlay,
+.viewer.zoom-full-active .focus-overlay,
+.app.crop-mode .focus-overlay {
+  display: none;
+}
+
 .gesture-feedback {
   position: absolute;
   z-index: 6;

@@ -22,6 +22,7 @@ struct ProfileRows {
 struct ImageRows {
     image: images::Model,
     exif_tags: Vec<image_exif_tags::Model>,
+    focus_regions: Vec<image_focus_regions::Model>,
     tags: Vec<String>,
     labels: Vec<image_labels::Model>,
     publish_profiles: Vec<image_publish_profiles::Model>,
@@ -142,6 +143,9 @@ async fn apply_store_delta_in_transaction(
         if before_rows.exif_tags != after_rows.exif_tags {
             replace_exif_tags(transaction, *image_id, &after_rows.exif_tags).await?;
         }
+        if before_rows.focus_regions != after_rows.focus_regions {
+            replace_focus_regions(transaction, *image_id, &after_rows.focus_regions).await?;
+        }
         if before_rows.tags != after_rows.tags {
             replace_image_tags(transaction, *image_id, &after_rows.tags, &mut tags_by_name).await?;
         }
@@ -209,6 +213,9 @@ where
     image_labels::Entity::delete_many().exec(connection).await?;
     image_tags::Entity::delete_many().exec(connection).await?;
     image_exif_tags::Entity::delete_many()
+        .exec(connection)
+        .await?;
+    image_focus_regions::Entity::delete_many()
         .exec(connection)
         .await?;
     images::Entity::delete_many().exec(connection).await?;
@@ -506,6 +513,8 @@ fn image_rows(position: usize, image: &ReviewImage) -> Result<ImageRows> {
             )?,
             source_width: image.exif.image_width.map(i64::from),
             source_height: image.exif.image_height.map(i64::from),
+            exif_focus_frame_width: image.exif.focus_frame_width.map(i64::from),
+            exif_focus_frame_height: image.exif.focus_frame_height.map(i64::from),
             exif_auto_iso: image.exif.auto_iso.map(bool_to_i64),
             exif_iso_auto_hi_limit: image.exif.iso_auto_hi_limit.clone(),
             exif_white_balance_mode: image.exif.white_balance_mode.clone(),
@@ -529,6 +538,23 @@ fn image_rows(position: usize, image: &ReviewImage) -> Result<ImageRows> {
                     image_id,
                     position: usize_to_i64(position, "EXIF tag position")?,
                     tag: tag.clone(),
+                })
+            })
+            .collect::<Result<_>>()?,
+        focus_regions: image
+            .exif
+            .focus_regions
+            .iter()
+            .enumerate()
+            .map(|(position, region)| {
+                Ok(image_focus_regions::Model {
+                    image_id,
+                    position: usize_to_i64(position, "focus region position")?,
+                    x: real(region.x),
+                    y: real(region.y),
+                    width: real(region.width),
+                    height: real(region.height),
+                    primary: bool_to_i64(region.primary),
                 })
             })
             .collect::<Result<_>>()?,
@@ -619,6 +645,7 @@ where
         .await
         .with_context(|| format!("writing review image {image_id}"))?;
     insert_models::<image_exif_tags::Entity, _>(connection, rows.exif_tags).await?;
+    insert_models::<image_focus_regions::Entity, _>(connection, rows.focus_regions).await?;
     insert_image_tags(connection, image_id, &rows.tags, tags_by_name).await?;
     insert_models::<image_labels::Entity, _>(connection, rows.labels).await?;
     insert_models::<image_publish_profiles::Entity, _>(connection, rows.publish_profiles).await?;
@@ -664,6 +691,21 @@ where
         .exec(connection)
         .await?;
     insert_models::<image_exif_tags::Entity, _>(connection, rows.to_vec()).await
+}
+
+async fn replace_focus_regions<C>(
+    connection: &C,
+    image_id: i64,
+    rows: &[image_focus_regions::Model],
+) -> Result<()>
+where
+    C: ConnectionTrait,
+{
+    image_focus_regions::Entity::delete_many()
+        .filter(image_focus_regions::Column::ImageId.eq(image_id))
+        .exec(connection)
+        .await?;
+    insert_models::<image_focus_regions::Entity, _>(connection, rows.to_vec()).await
 }
 
 async fn replace_labels<C>(

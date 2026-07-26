@@ -1,14 +1,18 @@
 use super::{entities::*, sqlite_compat};
-use sea_orm::{ActiveModelTrait, DbBackend, EntityName, EntityTrait, IntoActiveModel, Schema, Set};
+use sea_orm::{
+    ActiveModelTrait, DbBackend, EntityName, EntityTrait, IntoActiveModel, QuerySelect, Schema, Set,
+};
 use sea_orm_migration::{MigratorTrait, prelude::*};
 
 pub(super) const LEGACY_SCHEMA_VERSION: i64 = 11;
 pub(super) const FIRST_SEAORM_SCHEMA_VERSION: i64 = 12;
 const PANORAMA_SCHEMA_VERSION: i64 = 13;
-pub(super) const LATEST_SCHEMA_VERSION: i64 = 14;
+const REVIEW_SAMPLER_SCHEMA_VERSION: i64 = 14;
+pub(super) const LATEST_SCHEMA_VERSION: i64 = 15;
 pub(super) const V18_BASELINE_MIGRATION: &str = "m20260718_000001_v18_baseline";
 pub(super) const PANORAMA_PROJECTS_MIGRATION: &str = "m20260719_000002_panorama_projects";
 pub(super) const REVIEW_SAMPLER_MIGRATION: &str = "m20260721_000003_review_sampler";
+pub(super) const FOCUS_REGIONS_MIGRATION: &str = "m20260726_000004_focus_regions";
 pub(super) const PRE_RELEASE_SEAORM_LEDGER: [&str; 2] = [
     "m20260718_000001_create_review_schema",
     "m20260718_000002_adopt_seaorm",
@@ -37,6 +41,7 @@ impl MigratorTrait for Migrator {
             Box::new(V18Baseline),
             Box::new(PanoramaProjects),
             Box::new(ReviewSampler),
+            Box::new(FocusRegions),
         ]
     }
 }
@@ -134,6 +139,14 @@ impl MigrationName for ReviewSampler {
     }
 }
 
+struct FocusRegions;
+
+impl MigrationName for FocusRegions {
+    fn name(&self) -> &str {
+        FOCUS_REGIONS_MIGRATION
+    }
+}
+
 #[async_trait::async_trait]
 impl MigrationTrait for ReviewSampler {
     fn use_transaction(&self) -> Option<bool> {
@@ -214,7 +227,8 @@ impl MigrationTrait for ReviewSampler {
                     .to_owned(),
             )
             .await?;
-        sqlite_compat::set_user_version(manager.get_connection(), LATEST_SCHEMA_VERSION).await
+        sqlite_compat::set_user_version(manager.get_connection(), REVIEW_SAMPLER_SCHEMA_VERSION)
+            .await
     }
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
@@ -260,6 +274,85 @@ impl MigrationTrait for ReviewSampler {
     }
 }
 
+#[async_trait::async_trait]
+impl MigrationTrait for FocusRegions {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        for column in [
+            images::Column::ExifFocusFrameWidth,
+            images::Column::ExifFocusFrameHeight,
+        ] {
+            let column_name = column.to_string();
+            if !manager
+                .has_column(images::Entity.table_name(), &column_name)
+                .await?
+            {
+                let mut definition = ColumnDef::new(column).big_integer().to_owned();
+                manager
+                    .alter_table(
+                        Table::alter()
+                            .table(images::Entity)
+                            .add_column(&mut definition)
+                            .to_owned(),
+                    )
+                    .await?;
+            }
+        }
+
+        let schema = Schema::new(DbBackend::Sqlite);
+        create_entity_table(manager, &schema, image_focus_regions::Entity).await?;
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_image_focus_regions_primary")
+                    .table(image_focus_regions::Entity)
+                    .col(image_focus_regions::Column::ImageId)
+                    .col(image_focus_regions::Column::Primary)
+                    .if_not_exists()
+                    .to_owned(),
+            )
+            .await?;
+        sqlite_compat::set_user_version(manager.get_connection(), LATEST_SCHEMA_VERSION).await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .drop_index(
+                Index::drop()
+                    .name("idx_image_focus_regions_primary")
+                    .table(image_focus_regions::Entity)
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .drop_table(
+                Table::drop()
+                    .table(image_focus_regions::Entity)
+                    .if_exists()
+                    .to_owned(),
+            )
+            .await?;
+        for column in [
+            images::Column::ExifFocusFrameHeight,
+            images::Column::ExifFocusFrameWidth,
+        ] {
+            manager
+                .alter_table(
+                    Table::alter()
+                        .table(images::Entity)
+                        .drop_column(column)
+                        .to_owned(),
+                )
+                .await?;
+        }
+        sqlite_compat::set_user_version(manager.get_connection(), REVIEW_SAMPLER_SCHEMA_VERSION)
+            .await
+    }
+}
+
 async fn backfill_sampler_profile_state(
     manager: &SchemaManager<'_>,
     backfill_render_enabled: bool,
@@ -282,7 +375,13 @@ async fn backfill_sampler_profile_state(
         return Ok(());
     }
 
-    let images = images::Entity::find().all(connection).await?;
+    let images = images::Entity::find()
+        .select_only()
+        .column(images::Column::ImageId)
+        .column(images::Column::PublishProfilesDefault)
+        .into_tuple::<(i64, i64)>()
+        .all(connection)
+        .await?;
     let publish_rows = image_publish_profiles::Entity::find()
         .all(connection)
         .await?;
@@ -292,7 +391,9 @@ async fn backfill_sampler_profile_state(
         .collect::<std::collections::HashSet<_>>();
     let explicit_images = images
         .into_iter()
-        .filter_map(|row| (row.publish_profiles_default == 0).then_some(row.image_id))
+        .filter_map(|(image_id, publish_profiles_default)| {
+            (publish_profiles_default == 0).then_some(image_id)
+        })
         .collect::<std::collections::HashSet<_>>();
     for row in image_profile_renders::Entity::find()
         .all(connection)
@@ -394,6 +495,14 @@ where
                 Expr::col(image_profile_bw_filters::Column::BwFilter)
                     .is_in(["none", "yellow", "orange", "red", "green"]),
             );
+        }
+        "image_focus_regions" => {
+            statement
+                .check(Expr::col(image_focus_regions::Column::X).between(0.0, 1.0))
+                .check(Expr::col(image_focus_regions::Column::Y).between(0.0, 1.0))
+                .check(Expr::col(image_focus_regions::Column::Width).between(0.0, 1.0))
+                .check(Expr::col(image_focus_regions::Column::Height).between(0.0, 1.0))
+                .check(Expr::col(image_focus_regions::Column::Primary).is_in([0, 1]));
         }
         "review_settings" => {
             statement.check(Expr::col(review_settings::Column::Id).eq(1));

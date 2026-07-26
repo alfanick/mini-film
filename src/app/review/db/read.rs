@@ -455,6 +455,17 @@ where
                 )?,
                 image_width: optional_i64(row.source_width, "source width", i64_to_u32)?,
                 image_height: optional_i64(row.source_height, "source height", i64_to_u32)?,
+                focus_frame_width: optional_i64(
+                    row.exif_focus_frame_width,
+                    "focus frame width",
+                    i64_to_u32,
+                )?,
+                focus_frame_height: optional_i64(
+                    row.exif_focus_frame_height,
+                    "focus frame height",
+                    i64_to_u32,
+                )?,
+                focus_regions: Vec::new(),
                 focal_length: row.exif_focal_length,
                 aperture: row.exif_aperture,
                 shutter_speed: row.exif_shutter_speed,
@@ -555,12 +566,43 @@ where
         bail!("review database contains duplicate image ids");
     }
     load_image_exif_tags(connection, &mut result, &indexes).await?;
+    load_image_focus_regions(connection, &mut result, &indexes).await?;
     load_image_tags(connection, &mut result, &indexes).await?;
     load_image_labels(connection, &mut result, &indexes).await?;
     load_image_publish_profiles(connection, &mut result, &indexes).await?;
     load_image_profile_bw_filters(connection, &mut result, &indexes).await?;
     load_image_profile_renders(connection, &mut result, &indexes).await?;
     Ok(result)
+}
+
+async fn load_image_focus_regions<C>(
+    connection: &C,
+    images: &mut [ReviewImage],
+    indexes: &HashMap<u64, usize>,
+) -> Result<()>
+where
+    C: ConnectionTrait,
+{
+    let rows = image_focus_regions::Entity::find()
+        .order_by_asc(image_focus_regions::Column::ImageId)
+        .order_by_asc(image_focus_regions::Column::Position)
+        .all(connection)
+        .await
+        .context("reading image focus regions")?;
+    for row in rows {
+        let image_id = i64_to_u64(row.image_id, "image id")?;
+        let position = i64_to_usize(row.position, "focus region position")?;
+        let image = image_mut(images, indexes, image_id)?;
+        require_next_position(position, image.exif.focus_regions.len(), "focus region")?;
+        image.exif.focus_regions.push(GalleryFocusRegion {
+            x: real(row.x),
+            y: real(row.y),
+            width: real(row.width),
+            height: real(row.height),
+            primary: i64_to_bool(row.primary, "focus region primary")?,
+        });
+    }
+    Ok(())
 }
 
 async fn load_image_exif_tags<C>(

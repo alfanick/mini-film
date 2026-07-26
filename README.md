@@ -595,11 +595,15 @@ The review workflow is optimized for keyboard operation. Press `?` in the
 browser UI to show the shortcuts overlay. `§` rates `0` and advances, `1`-`5`
 rates and advances, arrow up/down changes the rating and advances, left/right
 navigates without rating, `h` toggles the luma/RGB histogram in the workspace's
-top-left corner on desktop, PageUp/PageDown cycles the profile preview for the
-current picture, Space enables or disables the selected profile, and Escape
-leaves the tags or notes field without advancing. Double-click or double-tap a
-profile thumbnail to make only that profile available. `6`, `7`, `8`, `9`, and
-`0` toggle red, yellow, green, blue, and purple
+top-left corner on desktop, and `i` toggles camera focus points over the main
+picture. Nikon AF area rectangles and 81-point phase-detect records are read
+from MakerNotes, normalized through EXIF orientation, and transformed through
+the active non-destructive crop and rotation. Pictures whose camera recorded no
+focus location show no rectangles. PageUp/PageDown cycles the profile preview
+for the current picture, Space enables or disables the selected profile, and
+Escape leaves the tags or notes field without advancing. Double-click or
+double-tap a profile thumbnail to make only that profile available. `6`, `7`,
+`8`, `9`, and `0` toggle red, yellow, green, blue, and purple
 labels without advancing; `r`, `y`, `g`, `b`, and `p` provide the same mnemonic
 label toggles. `c` copies the current retouch slider adjustments, and `v` pastes
 them onto another picture. While crop mode is open, `r` rotates the selected

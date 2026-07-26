@@ -6,7 +6,7 @@ const PROFILED_COMPRESSED_RENDER_PIPELINE_KEY: &str = "profiled-compressed-rende
 const PROFILED_TIFF_RENDER_PIPELINE_KEY: &str = "profiled-tiff-render-v1-sharpening";
 
 impl ReviewStore {
-    const EXIF_SCHEMA_VERSION: u32 = 9;
+    const EXIF_SCHEMA_VERSION: u32 = 11;
 
     pub(super) fn new(profiles: Vec<ReviewProfile>) -> Self {
         Self {
@@ -635,6 +635,7 @@ fn refresh_image_exif_data(image: &mut ReviewImage, force: bool) {
         if force || image.exif.image_height.is_none() {
             image.exif.image_height = refreshed.image_height.or(image.exif.image_height);
         }
+        merge_refreshed_focus_data(&mut image.exif, &refreshed, force);
         if image.exif.focal_length.is_none() {
             image.exif.focal_length = refreshed.focal_length;
         }
@@ -710,6 +711,22 @@ fn refresh_image_exif_data(image: &mut ReviewImage, force: bool) {
         image.rating_source = ReviewMetadataSource::Camera;
     }
     image.exif.sanitize_text_fields();
+}
+
+fn merge_refreshed_focus_data(
+    existing: &mut GalleryExifData,
+    refreshed: &GalleryExifData,
+    force: bool,
+) {
+    if force
+        || existing.focus_regions.is_empty()
+        || existing.focus_frame_width.is_none()
+        || existing.focus_frame_height.is_none()
+    {
+        existing.focus_frame_width = refreshed.focus_frame_width;
+        existing.focus_frame_height = refreshed.focus_frame_height;
+        existing.focus_regions.clone_from(&refreshed.focus_regions);
+    }
 }
 
 pub(super) fn sync_image_profile_renders(
@@ -1013,5 +1030,38 @@ pub(super) fn review_labels_text(labels: &[ReviewLabel]) -> String {
             .map(|label| review_label_name(*label))
             .collect::<Vec<_>>()
             .join(",")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exif_schema_refresh_merges_focus_data_without_replacing_existing_metadata() {
+        let mut existing = GalleryExifData {
+            camera_model: Some("Saved camera".to_string()),
+            ..GalleryExifData::default()
+        };
+        let refreshed = GalleryExifData {
+            camera_model: Some("Refreshed camera".to_string()),
+            focus_frame_width: Some(8256),
+            focus_frame_height: Some(5504),
+            focus_regions: vec![GalleryFocusRegion {
+                x: 0.4,
+                y: 0.45,
+                width: 0.05,
+                height: 0.08,
+                primary: true,
+            }],
+            ..GalleryExifData::default()
+        };
+
+        merge_refreshed_focus_data(&mut existing, &refreshed, true);
+
+        assert_eq!(existing.camera_model.as_deref(), Some("Saved camera"));
+        assert_eq!(existing.focus_frame_width, Some(8256));
+        assert_eq!(existing.focus_frame_height, Some(5504));
+        assert_eq!(existing.focus_regions, refreshed.focus_regions);
     }
 }

@@ -166,6 +166,24 @@ fn fully_populated_review_store() -> ReviewStore {
                 file_size_bytes: Some(55_620_945),
                 image_width: Some(8288),
                 image_height: Some(5520),
+                focus_frame_width: Some(5504),
+                focus_frame_height: Some(8256),
+                focus_regions: vec![
+                    GalleryFocusRegion {
+                        x: 0.25,
+                        y: 0.3,
+                        width: 0.1,
+                        height: 0.12,
+                        primary: true,
+                    },
+                    GalleryFocusRegion {
+                        x: 0.5,
+                        y: 0.45,
+                        width: 0.03,
+                        height: 0.06,
+                        primary: false,
+                    },
+                ],
                 focal_length: Some("85 mm".to_string()),
                 aperture: Some("f/1.8".to_string()),
                 shutter_speed: Some("1/250".to_string()),
@@ -315,6 +333,11 @@ fn migrated_pre_sampler_store(mut store: ReviewStore) -> ReviewStore {
         profile.identity = format!("legacy:{}:{}", profile.index, profile.selector.trim());
         profile.sampler_added = false;
         profile.enabled_by_default = true;
+    }
+    for image in &mut store.images {
+        image.exif.focus_frame_width = None;
+        image.exif.focus_frame_height = None;
+        image.exif.focus_regions.clear();
     }
     store
 }
@@ -1243,15 +1266,16 @@ fn review_state_seaorm_round_trips_every_normalized_collection() {
         serde_json::to_value(persisted_store(store)).unwrap()
     );
     let facts = database_facts(&state_path).unwrap();
-    assert_eq!(facts.schema_version, 14);
+    assert_eq!(facts.schema_version, 15);
     assert!(facts.has_seaql_ledger);
-    assert_eq!(facts.seaql_migration_count, 3);
+    assert_eq!(facts.seaql_migration_count, 4);
     assert_eq!(
         facts.seaql_migrations,
         [
             "m20260718_000001_v18_baseline",
             "m20260719_000002_panorama_projects",
             "m20260721_000003_review_sampler",
+            "m20260726_000004_focus_regions",
         ]
     );
     assert!(!facts.has_legacy_ledger);
@@ -1264,12 +1288,13 @@ fn review_state_seaorm_round_trips_every_normalized_collection() {
     assert_eq!(facts.counts["image_tags"], 3);
     assert_eq!(facts.counts["image_profile_renders"], 1);
     assert_eq!(facts.counts["image_profile_bw_filters"], 3);
+    assert_eq!(facts.counts["image_focus_regions"], 2);
     assert_eq!(facts.counts["profile_pp3_sections"], 2);
     assert_eq!(facts.counts["profile_pp3_entries"], 2);
     assert_eq!(facts.counts["panorama_projects"], 0);
     assert_eq!(facts.counts["panorama_project_images"], 0);
     assert_eq!(facts.counts["panorama_previews"], 0);
-    assert_eq!(facts.indexes.len(), 19);
+    assert_eq!(facts.indexes.len(), 20);
     assert_domain_constraints(&state_path).unwrap();
 }
 
@@ -1296,16 +1321,17 @@ fn normalized_v11_database_is_backed_up_and_adopted_losslessly_once() {
     let backup_bytes = fs::read(&backup_path).unwrap();
 
     let after_facts = database_facts(&state_path).unwrap();
-    assert_eq!(after_facts.schema_version, 14);
+    assert_eq!(after_facts.schema_version, 15);
     assert!(!after_facts.has_legacy_ledger);
     assert!(after_facts.has_seaql_ledger);
-    assert_eq!(after_facts.seaql_migration_count, 3);
+    assert_eq!(after_facts.seaql_migration_count, 4);
     assert_eq!(
         after_facts.seaql_migrations,
         [
             "m20260718_000001_v18_baseline",
             "m20260719_000002_panorama_projects",
             "m20260721_000003_review_sampler",
+            "m20260726_000004_focus_regions",
         ]
     );
     assert!(!after_facts.has_json_storage_columns);
@@ -1344,13 +1370,14 @@ fn pre_release_two_entry_seaorm_ledger_is_collapsed_without_data_loss() {
         serde_json::to_value(persisted_store(store)).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.seaql_migration_count, 3);
+    assert_eq!(after.seaql_migration_count, 4);
     assert_eq!(
         after.seaql_migrations,
         [
             "m20260718_000001_v18_baseline",
             "m20260719_000002_panorama_projects",
             "m20260721_000003_review_sampler",
+            "m20260726_000004_focus_regions",
         ]
     );
 }
@@ -1368,8 +1395,8 @@ fn schema_v12_migrates_to_panorama_schema_without_review_data_loss() {
         serde_json::to_value(migrated_pre_sampler_store(store)).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 14);
-    assert_eq!(after.seaql_migration_count, 3);
+    assert_eq!(after.schema_version, 15);
+    assert_eq!(after.seaql_migration_count, 4);
     assert_eq!(after.counts["panorama_projects"], 0);
     assert_eq!(after.counts["panorama_project_images"], 0);
     assert_eq!(after.counts["panorama_previews"], 0);
@@ -1398,9 +1425,34 @@ fn schema_v13_migrates_sampler_state_without_review_data_loss() {
             && profile.identity.starts_with("legacy:")
     }));
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 14);
-    assert_eq!(after.seaql_migration_count, 3);
-    assert_eq!(after.indexes.len(), 19);
+    assert_eq!(after.schema_version, 15);
+    assert_eq!(after.seaql_migration_count, 4);
+    assert_eq!(after.indexes.len(), 20);
+}
+
+#[test]
+fn schema_v14_adds_focus_region_storage_without_review_data_loss() {
+    let temp = tempfile::tempdir().unwrap();
+    let state_path = temp.path().join(SQLITE_STATE_FILE);
+    let mut store = fully_populated_review_store();
+    for image in &mut store.images {
+        image.exif.focus_frame_width = None;
+        image.exif.focus_frame_height = None;
+        image.exif.focus_regions.clear();
+    }
+    make_schema_v14_database(&state_path, &store).unwrap();
+
+    let loaded = load_store(&state_path).unwrap().unwrap();
+
+    assert_eq!(
+        serde_json::to_value(&loaded).unwrap(),
+        serde_json::to_value(persisted_store(store)).unwrap()
+    );
+    let after = database_facts(&state_path).unwrap();
+    assert_eq!(after.schema_version, 15);
+    assert_eq!(after.seaql_migration_count, 4);
+    assert_eq!(after.counts["image_focus_regions"], 0);
+    assert_eq!(after.indexes.len(), 20);
 }
 
 #[test]
@@ -2987,6 +3039,14 @@ fn review_vendor_assets_are_embedded_as_javascript() {
         review_asset_content_type("vendor/preact.module.js"),
         "application/javascript; charset=utf-8"
     );
+}
+
+#[test]
+fn focus_overlay_toggles_the_svg_hidden_attribute() {
+    let script = review_script();
+    assert!(script.contains(r#"els.focusOverlay.setAttribute("hidden", "")"#));
+    assert!(script.contains(r#"els.focusOverlay.removeAttribute("hidden")"#));
+    assert!(!script.contains("els.focusOverlay.hidden ="));
 }
 
 #[test]

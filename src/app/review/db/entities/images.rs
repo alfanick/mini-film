@@ -109,6 +109,8 @@ pub struct Model {
     pub source_file_size_bytes: Option<i64>,
     pub source_width: Option<i64>,
     pub source_height: Option<i64>,
+    pub exif_focus_frame_width: Option<i64>,
+    pub exif_focus_frame_height: Option<i64>,
     pub exif_auto_iso: Option<i64>,
     #[sea_orm(column_type = "Text", nullable)]
     pub exif_iso_auto_hi_limit: Option<String>,
@@ -124,6 +126,8 @@ pub struct Model {
     pub exif_release_mode: Option<String>,
     #[sea_orm(has_many)]
     pub image_exif_tags: HasMany<super::image_exif_tags::Entity>,
+    #[sea_orm(has_many)]
+    pub image_focus_regions: HasMany<super::image_focus_regions::Entity>,
     #[sea_orm(has_many)]
     pub image_labels: HasMany<super::image_labels::Entity>,
     #[sea_orm(has_many)]

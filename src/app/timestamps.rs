@@ -23,7 +23,42 @@ pub(crate) struct OutputEditMetadata<'a> {
     pub(crate) grain_engine: Option<GrainEngine>,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+pub(crate) struct GalleryFocusRegion {
+    pub(crate) x: f32,
+    pub(crate) y: f32,
+    pub(crate) width: f32,
+    pub(crate) height: f32,
+    #[serde(default)]
+    pub(crate) primary: bool,
+}
+
+impl GalleryFocusRegion {
+    fn normalized(self) -> Option<Self> {
+        if !self.x.is_finite()
+            || !self.y.is_finite()
+            || !self.width.is_finite()
+            || !self.height.is_finite()
+            || self.width <= 0.0
+            || self.height <= 0.0
+        {
+            return None;
+        }
+        let left = self.x.clamp(0.0, 1.0);
+        let top = self.y.clamp(0.0, 1.0);
+        let right = (self.x + self.width).clamp(0.0, 1.0);
+        let bottom = (self.y + self.height).clamp(0.0, 1.0);
+        (right > left && bottom > top).then_some(Self {
+            x: left,
+            y: top,
+            width: right - left,
+            height: bottom - top,
+            primary: self.primary,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub(crate) struct GalleryExifData {
     #[serde(default)]
     pub(crate) capture_timestamp: Option<i64>,
@@ -35,6 +70,12 @@ pub(crate) struct GalleryExifData {
     pub(crate) image_width: Option<u32>,
     #[serde(default)]
     pub(crate) image_height: Option<u32>,
+    #[serde(default)]
+    pub(crate) focus_frame_width: Option<u32>,
+    #[serde(default)]
+    pub(crate) focus_frame_height: Option<u32>,
+    #[serde(default)]
+    pub(crate) focus_regions: Vec<GalleryFocusRegion>,
     pub(crate) focal_length: Option<String>,
     pub(crate) aperture: Option<String>,
     pub(crate) shutter_speed: Option<String>,
@@ -84,6 +125,7 @@ impl GalleryExifData {
             && self.white_balance_temperature.is_none()
             && self.white_balance_offset.is_none()
             && self.camera_model.is_none()
+            && self.focus_regions.is_empty()
             && self.shutter_count.is_none()
             && self.shutter_mode.is_none()
             && self.silent_photography.is_none()
@@ -114,6 +156,17 @@ impl GalleryExifData {
         clean_optional_exif_text(&mut self.active_d_lighting);
         clean_optional_exif_text(&mut self.note);
         self.tags = normalize_gallery_tags(std::mem::take(&mut self.tags));
+        self.focus_regions = std::mem::take(&mut self.focus_regions)
+            .into_iter()
+            .filter_map(GalleryFocusRegion::normalized)
+            .collect();
+        if self.focus_regions.is_empty()
+            || self.focus_frame_width.is_none()
+            || self.focus_frame_height.is_none()
+        {
+            self.focus_frame_width = None;
+            self.focus_frame_height = None;
+        }
     }
 }
 
@@ -776,6 +829,9 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
                 data.release_mode = metadata.release_mode;
                 data.image_width = metadata.image_width.or(data.image_width);
                 data.image_height = metadata.image_height.or(data.image_height);
+                data.focus_frame_width = metadata.focus_frame_width;
+                data.focus_frame_height = metadata.focus_frame_height;
+                data.focus_regions = metadata.focus_regions;
             }
             data.sanitize_text_fields();
             return Ok(data);
@@ -812,6 +868,9 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
     let mut release_mode = None;
     let mut image_width = direct_dimensions.map(|(width, _)| width);
     let mut image_height = direct_dimensions.map(|(_, height)| height);
+    let mut focus_frame_width = None;
+    let mut focus_frame_height = None;
+    let mut focus_regions = Vec::new();
     if let Some(metadata) = extract_gallery_metadata_with_exiftool(file) {
         tags = metadata.tags;
         rating = metadata.rating;
@@ -828,6 +887,9 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
         release_mode = metadata.release_mode;
         image_width = metadata.image_width.or(image_width);
         image_height = metadata.image_height.or(image_height);
+        focus_frame_width = metadata.focus_frame_width;
+        focus_frame_height = metadata.focus_frame_height;
+        focus_regions = metadata.focus_regions;
         if flash.is_none() {
             flash = metadata
                 .flash
@@ -846,6 +908,9 @@ pub(crate) fn extract_gallery_exif(file: &Path) -> Result<GalleryExifData> {
         file_size_bytes,
         image_width,
         image_height,
+        focus_frame_width,
+        focus_frame_height,
+        focus_regions,
         focal_length,
         aperture: aperture.map(format_exif_aperture),
         shutter_speed,
@@ -891,6 +956,9 @@ struct GalleryMetadata {
     release_mode: Option<String>,
     image_width: Option<u32>,
     image_height: Option<u32>,
+    focus_frame_width: Option<u32>,
+    focus_frame_height: Option<u32>,
+    focus_regions: Vec<GalleryFocusRegion>,
 }
 
 fn extract_gallery_metadata_with_exiftool(file: &Path) -> Option<GalleryMetadata> {
@@ -916,6 +984,15 @@ fn extract_gallery_metadata_with_exiftool(file: &Path) -> Option<GalleryMetadata
         .arg("-Nikon:ReleaseMode")
         .arg("-ImageWidth#")
         .arg("-ImageHeight#")
+        .arg("-Orientation#")
+        .arg("-Nikon:AFImageWidth#")
+        .arg("-Nikon:AFImageHeight#")
+        .arg("-Nikon:AFAreaXPosition#")
+        .arg("-Nikon:AFAreaYPosition#")
+        .arg("-Nikon:AFAreaWidth#")
+        .arg("-Nikon:AFAreaHeight#")
+        .arg("-Nikon:PrimaryAFPoint")
+        .arg("-Nikon:AFPointsUsed")
         .arg("-Rating")
         .arg("-XMP-xmp:Rating")
         .arg("-XMP-nine:Rating")
@@ -989,6 +1066,7 @@ fn extract_gallery_metadata_with_exiftool(file: &Path) -> Option<GalleryMetadata
         .or_else(|| json_rating_value(object.get("EXIF:Rating")));
     let image_width = json_u32_value(object.get("ImageWidth"));
     let image_height = json_u32_value(object.get("ImageHeight"));
+    let (focus_frame_width, focus_frame_height, focus_regions) = json_nikon_focus_regions(&object);
     Some(GalleryMetadata {
         tags,
         note,
@@ -1007,6 +1085,9 @@ fn extract_gallery_metadata_with_exiftool(file: &Path) -> Option<GalleryMetadata
         release_mode,
         image_width,
         image_height,
+        focus_frame_width,
+        focus_frame_height,
+        focus_regions,
     })
 }
 
@@ -1047,6 +1128,169 @@ fn json_u32_value(value: Option<&Value>) -> Option<u32> {
         _ => None,
     }
     .filter(|value| *value > 0)
+}
+
+fn json_nonnegative_u32_value(value: Option<&Value>) -> Option<u32> {
+    match value {
+        Some(Value::Number(value)) => value.as_u64().and_then(|value| u32::try_from(value).ok()),
+        Some(Value::String(value)) => value.trim().parse::<u32>().ok(),
+        Some(Value::Array(values)) => values
+            .iter()
+            .find_map(|value| json_nonnegative_u32_value(Some(value))),
+        _ => None,
+    }
+}
+
+fn json_nikon_focus_regions(object: &Value) -> (Option<u32>, Option<u32>, Vec<GalleryFocusRegion>) {
+    let orientation = json_u32_value(object.get("Orientation"))
+        .filter(|orientation| (1..=8).contains(orientation))
+        .unwrap_or(1);
+    let frame_width = json_u32_value(object.get("AFImageWidth"))
+        .or_else(|| json_u32_value(object.get("ImageWidth")));
+    let frame_height = json_u32_value(object.get("AFImageHeight"))
+        .or_else(|| json_u32_value(object.get("ImageHeight")));
+    let (Some(frame_width), Some(frame_height)) = (frame_width, frame_height) else {
+        return (None, None, Vec::new());
+    };
+
+    let mut regions = match (
+        json_nonnegative_u32_value(object.get("AFAreaXPosition")),
+        json_nonnegative_u32_value(object.get("AFAreaYPosition")),
+        json_u32_value(object.get("AFAreaWidth")),
+        json_u32_value(object.get("AFAreaHeight")),
+    ) {
+        (Some(center_x), Some(center_y), Some(width), Some(height)) => {
+            let left = (f64::from(center_x) - f64::from(width) / 2.0) / f64::from(frame_width);
+            let top = (f64::from(center_y) - f64::from(height) / 2.0) / f64::from(frame_height);
+            let right = (f64::from(center_x) + f64::from(width) / 2.0) / f64::from(frame_width);
+            let bottom = (f64::from(center_y) + f64::from(height) / 2.0) / f64::from(frame_height);
+            oriented_focus_region(left, top, right, bottom, orientation, true)
+                .into_iter()
+                .collect()
+        }
+        _ => phase_detect_focus_regions(object, orientation),
+    };
+    regions = regions
+        .into_iter()
+        .filter_map(GalleryFocusRegion::normalized)
+        .collect();
+    if regions.is_empty() {
+        return (None, None, regions);
+    }
+
+    let (width, height) = oriented_dimensions(frame_width, frame_height, orientation);
+    (Some(width), Some(height), regions)
+}
+
+fn phase_detect_focus_regions(object: &Value, orientation: u32) -> Vec<GalleryFocusRegion> {
+    let primary = json_first_string(object.get("PrimaryAFPoint"))
+        .and_then(|value| parse_nikon_focus_point(&value));
+    let mut points = json_first_string(object.get("AFPointsUsed"))
+        .map(|value| {
+            value
+                .split(|character: char| character == ',' || character.is_whitespace())
+                .filter_map(parse_nikon_focus_point)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if let Some(primary) = primary
+        && !points.contains(&primary)
+    {
+        points.push(primary);
+    }
+    points.sort_unstable();
+    points.dedup();
+
+    points
+        .into_iter()
+        .filter_map(|point| {
+            let row = u32::from(point[0] - b'A');
+            let column = u32::from(point[1] - b'1');
+            let center_x = (f64::from(column) + 0.5) / 9.0;
+            let center_y = (f64::from(row) + 0.5) / 9.0;
+            let half_width = 0.5 / 29.0;
+            let half_height = 0.5 / 17.0;
+            oriented_focus_region(
+                center_x - half_width,
+                center_y - half_height,
+                center_x + half_width,
+                center_y + half_height,
+                orientation,
+                Some(point) == primary,
+            )
+        })
+        .collect()
+}
+
+fn parse_nikon_focus_point(value: &str) -> Option<[u8; 2]> {
+    let point = value.split_whitespace().next()?.as_bytes();
+    if point.len() != 2 {
+        return None;
+    }
+    let row = point[0].to_ascii_uppercase();
+    let column = point[1];
+    ((b'A'..=b'I').contains(&row) && (b'1'..=b'9').contains(&column)).then_some([row, column])
+}
+
+fn oriented_focus_region(
+    left: f64,
+    top: f64,
+    right: f64,
+    bottom: f64,
+    orientation: u32,
+    primary: bool,
+) -> Option<GalleryFocusRegion> {
+    let corners = [
+        oriented_focus_point(left, top, orientation),
+        oriented_focus_point(right, top, orientation),
+        oriented_focus_point(right, bottom, orientation),
+        oriented_focus_point(left, bottom, orientation),
+    ];
+    let min_x = corners
+        .iter()
+        .map(|(x, _)| *x)
+        .fold(f64::INFINITY, f64::min);
+    let min_y = corners
+        .iter()
+        .map(|(_, y)| *y)
+        .fold(f64::INFINITY, f64::min);
+    let max_x = corners
+        .iter()
+        .map(|(x, _)| *x)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let max_y = corners
+        .iter()
+        .map(|(_, y)| *y)
+        .fold(f64::NEG_INFINITY, f64::max);
+    GalleryFocusRegion {
+        x: min_x as f32,
+        y: min_y as f32,
+        width: (max_x - min_x) as f32,
+        height: (max_y - min_y) as f32,
+        primary,
+    }
+    .normalized()
+}
+
+fn oriented_focus_point(x: f64, y: f64, orientation: u32) -> (f64, f64) {
+    match orientation {
+        2 => (1.0 - x, y),
+        3 => (1.0 - x, 1.0 - y),
+        4 => (x, 1.0 - y),
+        5 => (y, x),
+        6 => (1.0 - y, x),
+        7 => (1.0 - y, 1.0 - x),
+        8 => (y, 1.0 - x),
+        _ => (x, y),
+    }
+}
+
+fn oriented_dimensions(width: u32, height: u32, orientation: u32) -> (u32, u32) {
+    if (5..=8).contains(&orientation) {
+        (height, width)
+    } else {
+        (width, height)
+    }
 }
 
 fn json_nikon_white_balance_offset(value: Option<&Value>) -> Option<i32> {
@@ -1505,9 +1749,10 @@ fn system_time_to_unix_seconds(timestamp: SystemTime) -> Option<i64> {
 mod tests {
     use super::{
         OutputEditMetadata, add_edit_metadata_args, clean_exif_display_text, extract_gallery_exif,
-        format_exif_aperture, json_bool_value, json_nikon_white_balance_offset, json_u32_value,
-        json_u64_value, nikon_shooting_mode_uses_auto_iso, parse_exif_datetime,
-        parse_exif_datetime_with_offset, parse_iso_value, sync_output_timestamps_from_exif,
+        format_exif_aperture, json_bool_value, json_nikon_focus_regions,
+        json_nikon_white_balance_offset, json_u32_value, json_u64_value,
+        nikon_shooting_mode_uses_auto_iso, parse_exif_datetime, parse_exif_datetime_with_offset,
+        parse_iso_value, sync_output_timestamps_from_exif,
     };
     use crate::app::profile::ResolvedProfileMetadata;
     use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
@@ -1581,6 +1826,69 @@ mod tests {
         assert_eq!(json_u32_value(Some(&serde_json::json!("5520"))), Some(5520));
         assert_eq!(json_u32_value(Some(&serde_json::json!(0))), None);
         assert_eq!(json_u32_value(Some(&serde_json::json!(-1))), None);
+    }
+
+    #[test]
+    fn nikon_focus_rectangle_is_normalized_in_display_orientation() {
+        let metadata = serde_json::json!({
+            "Orientation": 8,
+            "AFImageWidth": 8256,
+            "AFImageHeight": 5504,
+            "AFAreaXPosition": 5076,
+            "AFAreaYPosition": 1738,
+            "AFAreaWidth": 884,
+            "AFAreaHeight": 884,
+        });
+
+        let (width, height, regions) = json_nikon_focus_regions(&metadata);
+
+        assert_eq!((width, height), (Some(5504), Some(8256)));
+        assert_eq!(regions.len(), 1);
+        let region = regions[0];
+        assert!(region.primary);
+        assert!((region.x - 1296.0 / 5504.0).abs() < 0.000_01);
+        assert!((region.y - (1.0 - 5518.0 / 8256.0)).abs() < 0.000_01);
+        assert!((region.width - 884.0 / 5504.0).abs() < 0.000_01);
+        assert!((region.height - 884.0 / 8256.0).abs() < 0.000_01);
+    }
+
+    #[test]
+    fn nikon_phase_detect_points_use_the_81_point_grid() {
+        let metadata = serde_json::json!({
+            "Orientation": 1,
+            "ImageWidth": 8256,
+            "ImageHeight": 5504,
+            "PrimaryAFPoint": "E5 (Center)",
+            "AFPointsUsed": "E4,E5,F5",
+        });
+
+        let (width, height, regions) = json_nikon_focus_regions(&metadata);
+
+        assert_eq!((width, height), (Some(8256), Some(5504)));
+        assert_eq!(regions.len(), 3);
+        let primary = regions.iter().find(|region| region.primary).unwrap();
+        assert!((primary.x + primary.width / 2.0 - 0.5).abs() < 0.000_01);
+        assert!((primary.y + primary.height / 2.0 - 0.5).abs() < 0.000_01);
+        assert!((primary.width - 1.0 / 29.0).abs() < 0.000_01);
+        assert!((primary.height - 1.0 / 17.0).abs() < 0.000_01);
+    }
+
+    #[test]
+    fn nikon_empty_af_block_does_not_invent_a_focus_region() {
+        let metadata = serde_json::json!({
+            "Orientation": 1,
+            "ImageWidth": 8256,
+            "ImageHeight": 5504,
+            "AFAreaXPosition": 0,
+            "AFAreaYPosition": 0,
+            "PrimaryAFPoint": "(none)",
+            "AFPointsUsed": "(none)",
+        });
+
+        assert_eq!(
+            json_nikon_focus_regions(&metadata),
+            (None, None, Vec::new())
+        );
     }
 
     #[test]

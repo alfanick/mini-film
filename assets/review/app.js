@@ -49,6 +49,7 @@ const state = {
   histogramOpen: false,
   histogramRequestId: 0,
   histogramTimer: null,
+  informationOpen: false,
   panoramaOpen: false,
   panoramaProjectId: null,
   panoramaImageIds: [],
@@ -248,6 +249,14 @@ function ReviewShell() {
           { class: "viewer" },
           h("div", { id: "empty", class: "empty" }, "Waiting for pictures"),
           h("img", { id: "main-image", alt: "", draggable: false, decoding: "async", fetchpriority: "high" }),
+          h("svg", {
+            id: "focus-overlay",
+            class: "focus-overlay",
+            hidden: true,
+            viewBox: "0 0 1000 1000",
+            preserveAspectRatio: "none",
+            "aria-label": "Camera focus points",
+          }),
           h(
             "div",
             { id: "crop-stage", class: "crop-stage", hidden: true },
@@ -1027,6 +1036,7 @@ function ShortcutsOverlay() {
       ],
     ],
     ["Histogram", [[["h"], "Show or hide the luma and RGB histogram."]]],
+    ["Information", [[["i"], "Show or hide camera focus points on the picture."]]],
     [
       "Touch / Mouse",
       [
@@ -1916,6 +1926,7 @@ const els = {
   viewer: document.querySelector(".viewer"),
   panel: document.querySelector(".panel"),
   image: document.getElementById("main-image"),
+  focusOverlay: document.getElementById("focus-overlay"),
   gestureFeedback: document.getElementById("gesture-feedback"),
   zoomFull: document.getElementById("zoom-full"),
   zoomLoupe: document.getElementById("zoom-loupe"),
@@ -2314,6 +2325,7 @@ function updateViewerSafeArea() {
 
   els.workspace.style.setProperty("--review-panel-safe", `${panelSafe}px`);
   if (!els.retouchGrid.hidden) positionRetouchGrid();
+  if (!els.focusOverlay.hasAttribute("hidden")) positionFocusOverlay();
   if (!els.cropOverlay.hidden) positionCropOverlay();
   if (!els.gestureFeedback.hidden) positionGestureFeedback();
   if (state.zoomFullActive && state.zoomFullLastPoint) {
@@ -2578,6 +2590,7 @@ function renderCurrent(image) {
     els.tags.value = "";
     els.notes.value = "";
     if (state.histogramOpen) showHistogramEmpty("No image");
+    renderFocusOverlay(null);
     state.lastInputImageId = null;
     setActiveReviewButtons(null);
     updateMobileActionLabels(null);
@@ -2628,6 +2641,7 @@ function renderCurrent(image) {
   }
 
   applyDraftRetouch(image, selected);
+  renderFocusOverlay(image);
   scheduleHistogramRender();
   renderRetouchGrid(image, selected);
   renderCropOverlay(image);
@@ -4525,6 +4539,7 @@ function applyLocalRetouch(retouch, options = {}) {
   applyDraftRetouch(image, selectedProfile(image));
   scheduleHistogramRender({ debounce: true });
   renderRetouchGrid(image, selectedProfile(image));
+  renderFocusOverlay(image);
   renderCropOverlay(image);
   renderList(filteredImages());
   renderProfiles(image);
@@ -4651,6 +4666,116 @@ function positionRetouchGrid() {
   els.retouchGrid.style.top = `${imageRect.top - viewerRect.top}px`;
   els.retouchGrid.style.width = `${imageRect.width}px`;
   els.retouchGrid.style.height = `${imageRect.height}px`;
+}
+
+function toggleInformation(force) {
+  state.informationOpen = force ?? !state.informationOpen;
+  renderFocusOverlay(findImage(state.currentId));
+}
+
+function renderFocusOverlay(image = findImage(state.currentId)) {
+  els.focusOverlay.replaceChildren();
+  const selected = selectedProfile(image);
+  const renderPending =
+    state.localRetouchDirty || Boolean(image?.preview_retouch_pending) || Boolean(selected?.retouch_pending);
+  const visible =
+    state.informationOpen &&
+    image &&
+    !state.cropEditing &&
+    !renderPending &&
+    els.image.complete &&
+    els.image.naturalWidth > 0 &&
+    els.image.naturalHeight > 0;
+  if (!visible) {
+    els.focusOverlay.setAttribute("hidden", "");
+    return;
+  }
+
+  const polygons = focusRegionPolygons(image);
+  if (polygons.length === 0) {
+    els.focusOverlay.setAttribute("hidden", "");
+    return;
+  }
+  for (const polygon of polygons) {
+    const element = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+    element.setAttribute(
+      "points",
+      polygon.points.map((point) => `${(point.x * 1000).toFixed(3)},${(point.y * 1000).toFixed(3)}`).join(" "),
+    );
+    element.setAttribute("class", polygon.primary ? "focus-region focus-region-primary" : "focus-region");
+    els.focusOverlay.append(element);
+  }
+  positionFocusOverlay();
+  els.focusOverlay.removeAttribute("hidden");
+}
+
+function focusRegionPolygons(image) {
+  const frameWidth = Number(image?.exif?.focus_frame_width);
+  const frameHeight = Number(image?.exif?.focus_frame_height);
+  const regions = image?.exif?.focus_regions || [];
+  if (
+    !Number.isFinite(frameWidth) ||
+    frameWidth <= 0 ||
+    !Number.isFinite(frameHeight) ||
+    frameHeight <= 0 ||
+    regions.length === 0
+  ) {
+    return [];
+  }
+
+  const retouch = retouchForImage(image, image.retouch || defaultRetouch());
+  const rotation = normalizeRotation(retouch.rotation_degrees);
+  const safe = rotatedSafeDimensions(frameWidth, frameHeight, rotation);
+  const crop = retouch.crop || fullFrameCrop();
+  const cropLeft = crop.x * safe.width;
+  const cropTop = crop.y * safe.height;
+  const cropWidth = crop.width * safe.width;
+  const cropHeight = crop.height * safe.height;
+  const radians = (rotation * Math.PI) / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+
+  return regions.flatMap((region) => {
+    const left = Number(region.x) * frameWidth;
+    const top = Number(region.y) * frameHeight;
+    const right = (Number(region.x) + Number(region.width)) * frameWidth;
+    const bottom = (Number(region.y) + Number(region.height)) * frameHeight;
+    if (![left, top, right, bottom].every(Number.isFinite) || right <= left || bottom <= top) return [];
+    const points = [
+      { x: left, y: top },
+      { x: right, y: top },
+      { x: right, y: bottom },
+      { x: left, y: bottom },
+    ].map((point) => {
+      const x = point.x - frameWidth / 2;
+      const y = point.y - frameHeight / 2;
+      return {
+        x: (cos * x - sin * y + safe.width / 2 - cropLeft) / cropWidth,
+        y: (sin * x + cos * y + safe.height / 2 - cropTop) / cropHeight,
+      };
+    });
+    const xValues = points.map((point) => point.x);
+    const yValues = points.map((point) => point.y);
+    if (
+      Math.max(...xValues) <= 0 ||
+      Math.min(...xValues) >= 1 ||
+      Math.max(...yValues) <= 0 ||
+      Math.min(...yValues) >= 1
+    ) {
+      return [];
+    }
+    return [{ points, primary: Boolean(region.primary) }];
+  });
+}
+
+function positionFocusOverlay() {
+  const imageRect = els.image.getBoundingClientRect();
+  const viewerRect = els.viewer.getBoundingClientRect();
+  if (imageRect.width <= 1 || imageRect.height <= 1) return;
+  els.focusOverlay.style.left = `${imageRect.left - viewerRect.left}px`;
+  els.focusOverlay.style.top = `${imageRect.top - viewerRect.top}px`;
+  els.focusOverlay.style.width = `${imageRect.width}px`;
+  els.focusOverlay.style.height = `${imageRect.height}px`;
 }
 
 function renderCropOverlay(image) {
@@ -4902,6 +5027,7 @@ function beginCropEditing() {
   updateCropRotationControls();
   applyDraftRetouch(image, selected);
   renderRetouchGrid(image, selected);
+  renderFocusOverlay(image);
   renderCropOverlay(image);
   if (els.cropSourceImage.complete && els.cropSourceImage.naturalWidth > 0) initializeCropGeometry();
 }
@@ -4911,6 +5037,7 @@ function cancelCropEditing() {
   clearCropDraftState();
   applyDraftRetouch(image, selectedProfile(image));
   renderRetouchGrid(image, selectedProfile(image));
+  renderFocusOverlay(image);
   renderCropOverlay(image);
 }
 
@@ -5884,6 +6011,7 @@ els.image.addEventListener("load", () => {
   scheduleHistogramRender();
   scheduleViewerSafeAreaUpdate();
   renderRetouchGrid(findImage(state.currentId));
+  renderFocusOverlay(findImage(state.currentId));
   renderCropOverlay(findImage(state.currentId));
 });
 els.cropSourceImage.addEventListener("load", initializeCropGeometry);
@@ -6154,6 +6282,11 @@ window.addEventListener("keydown", (event) => {
     toggleHistogram(false);
     return;
   }
+  if (event.key === "Escape" && state.informationOpen) {
+    event.preventDefault();
+    toggleInformation(false);
+    return;
+  }
   if (event.key === "Escape" && state.mobileDrawer) {
     event.preventDefault();
     setMobileDrawer(null);
@@ -6199,6 +6332,11 @@ window.addEventListener("keydown", (event) => {
   if (plainShortcut && shortcutKey === "h") {
     event.preventDefault();
     toggleHistogram();
+    return;
+  }
+  if (plainShortcut && shortcutKey === "i") {
+    event.preventDefault();
+    toggleInformation();
     return;
   }
   if (event.key === "ArrowRight" || event.key === "Enter") move(1);

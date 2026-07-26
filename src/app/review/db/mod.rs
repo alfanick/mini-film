@@ -314,6 +314,15 @@ async fn verify_seaorm_database(connection: &DatabaseConnection) -> Result<()> {
             bail!("SeaORM review database is missing required table {table}");
         }
     }
+    for table in required_focus_tables() {
+        if !manager
+            .has_table(table)
+            .await
+            .with_context(|| format!("checking review table {table}"))?
+        {
+            bail!("SeaORM review database is missing required table {table}");
+        }
+    }
     sqlite_compat::verify_integrity(connection)
         .await
         .context("validating SeaORM review database")
@@ -487,6 +496,10 @@ fn required_panorama_tables() -> impl Iterator<Item = &'static str> {
     .into_iter()
 }
 
+fn required_focus_tables() -> impl Iterator<Item = &'static str> {
+    ["image_focus_regions"].into_iter()
+}
+
 #[cfg(test)]
 pub(super) fn load_store(path: &Path) -> Result<Option<ReviewStore>> {
     load_store_for_publish(path)
@@ -575,6 +588,16 @@ pub(super) fn database_facts(path: &Path) -> Result<TestDatabaseFacts> {
             entities::image_profile_bw_filters::Entity::find()
                 .count(&connection)
                 .await?,
+        );
+        counts.insert(
+            "image_focus_regions",
+            if manager.has_table("image_focus_regions").await? {
+                entities::image_focus_regions::Entity::find()
+                    .count(&connection)
+                    .await?
+            } else {
+                0
+            },
         );
         counts.insert(
             "profile_pp3_sections",
@@ -729,6 +752,20 @@ pub(super) fn assert_domain_constraints(path: &Path) -> Result<()> {
             "BW filter constraint accepted invalid data"
         );
 
+        let mut focus_region = entities::image_focus_regions::Entity::find()
+            .one(&connection)
+            .await?
+            .context("missing focus region fixture")?;
+        focus_region.position = 10_000;
+        focus_region.x = 2.0;
+        ensure!(
+            entities::image_focus_regions::Entity::insert(focus_region.into_active_model())
+                .exec(&connection)
+                .await
+                .is_err(),
+            "focus region coordinate constraint accepted invalid data"
+        );
+
         let mut settings = entities::review_settings::Entity::find_by_id(1)
             .one(&connection)
             .await?
@@ -824,7 +861,7 @@ pub(super) fn make_schema_v12_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(2)).await?;
+        Migrator::down(&connection, Some(3)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -833,6 +870,22 @@ pub(super) fn make_schema_v12_database(path: &Path, store: &ReviewStore) -> Resu
 
 #[cfg(test)]
 pub(super) fn make_schema_v13_database(path: &Path, store: &ReviewStore) -> Result<()> {
+    save_store(path, store)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("building review database runtime")?;
+    runtime.block_on(async {
+        let connection = connect_database(path, false).await?;
+        Migrator::down(&connection, Some(2)).await?;
+        sqlite_compat::verify_integrity(&connection).await?;
+        connection.close().await?;
+        Ok(())
+    })
+}
+
+#[cfg(test)]
+pub(super) fn make_schema_v14_database(path: &Path, store: &ReviewStore) -> Result<()> {
     save_store(path, store)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -862,13 +915,14 @@ pub(super) fn make_legacy_version_database(path: &Path, version: i64) -> Result<
 }
 
 #[cfg(test)]
-fn expected_indexes() -> [(&'static str, &'static str); 19] {
+fn expected_indexes() -> [(&'static str, &'static str); 20] {
     [
         ("profiles", "idx_profiles_position"),
         ("images", "idx_images_position"),
         ("images", "idx_images_rating_position"),
         ("images", "idx_images_updated_at"),
         ("image_exif_tags", "idx_image_exif_tags_tag"),
+        ("image_focus_regions", "idx_image_focus_regions_primary"),
         ("image_labels", "idx_image_labels_label"),
         (
             "image_publish_profiles",

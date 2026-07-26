@@ -1,4 +1,5 @@
 pub(super) mod image_exif_tags;
+pub(super) mod image_focus_regions;
 pub(super) mod image_labels;
 pub(super) mod image_profile_bw_filters;
 pub(super) mod image_profile_renders;
