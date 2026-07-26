@@ -614,7 +614,7 @@ fn prepare_profile_input(
     progress_step(progress, 1, "heic prepare");
     let output = if let Some(cache_root) = job.profile_input_cache_root {
         let cache_dir = cache_root
-            .join(".mini-film-profile-inputs")
+            .join(crate::app::cache::PROFILE_INPUT_CACHE_DIR)
             .join(HEIC_PROFILE_INPUT_CACHE_VERSION);
         fs::create_dir_all(&cache_dir)
             .with_context(|| format!("creating {}", cache_dir.display()))?;

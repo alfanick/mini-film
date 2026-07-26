@@ -1,4 +1,5 @@
 use super::{entities::*, *};
+use crate::app::cache::{CACHE_STORAGE_NAMESPACE, cache_storage_path, is_cache_relative_path};
 use sea_orm::{
     ActiveModelTrait, ConnectionTrait, EntityTrait, IntoActiveModel, Set, TransactionTrait,
 };
@@ -9,19 +10,24 @@ const OUTPUT_ROOT_MARKERS: [&str; 2] = [".mini-film-review-previews", ".mini-fil
 pub(super) struct ReviewPathRoots {
     input_root: PathBuf,
     output_root: PathBuf,
+    cache_root: PathBuf,
 }
 
 impl ReviewPathRoots {
-    pub(super) fn new(input_root: &Path, output_root: &Path) -> Result<Self> {
+    pub(super) fn new(input_root: &Path, output_root: &Path, cache_root: &Path) -> Result<Self> {
         if input_root.as_os_str().is_empty() {
             bail!("review input root cannot be empty");
         }
         if output_root.as_os_str().is_empty() {
             bail!("review output root cannot be empty");
         }
+        if cache_root.as_os_str().is_empty() {
+            bail!("review cache root cannot be empty");
+        }
         Ok(Self {
             input_root: input_root.to_path_buf(),
             output_root: output_root.to_path_buf(),
+            cache_root: cache_root.to_path_buf(),
         })
     }
 
@@ -33,11 +39,27 @@ impl ReviewPathRoots {
         &self.output_root
     }
 
+    pub(super) fn cache_root(&self) -> &Path {
+        &self.cache_root
+    }
+
     pub(super) fn source_to_storage(&self, path: &Path, field: &str) -> Result<String> {
         path_to_storage(path, &self.input_root, field)
     }
 
     pub(super) fn output_to_storage(&self, path: &Path, field: &str) -> Result<String> {
+        if path.is_absolute() && path.starts_with(&self.cache_root) {
+            let relative = path
+                .strip_prefix(&self.cache_root)
+                .with_context(|| format!("resolving {field} cache path {}", path.display()))?;
+            if !is_cache_relative_path(relative) {
+                bail!(
+                    "{field} cache path {} has no mini-film cache namespace",
+                    path.display()
+                );
+            }
+            return relative_path_text(&Path::new(CACHE_STORAGE_NAMESPACE).join(relative), field);
+        }
         path_to_storage(path, &self.output_root, field)
     }
 
@@ -46,6 +68,14 @@ impl ReviewPathRoots {
     }
 
     pub(super) fn output_from_storage(&self, path: &str, field: &str) -> Result<PathBuf> {
+        let relative = Path::new(path);
+        if let Some(cache_path) = cache_storage_path(relative) {
+            validate_relative_path(cache_path, field)?;
+            if !is_cache_relative_path(cache_path) {
+                bail!("{field} has an invalid mini-film cache path: {path}");
+            }
+            return Ok(self.cache_root.join(cache_path));
+        }
         path_from_storage(path, &self.output_root, field)
     }
 
@@ -116,9 +146,15 @@ where
     if settings.input_root.trim().is_empty() || settings.output_root.trim().is_empty() {
         bail!("review path roots are missing; cannot roll back relative path storage");
     }
+    let cache_root = if settings.cache_root.trim().is_empty() {
+        Path::new(&settings.output_root)
+    } else {
+        Path::new(&settings.cache_root)
+    };
     let roots = ReviewPathRoots::new(
         Path::new(&settings.input_root),
         Path::new(&settings.output_root),
+        cache_root,
     )?;
 
     for row in images::Entity::find().all(connection).await? {
@@ -136,7 +172,7 @@ where
         active.preview_path = Set(row
             .preview_path
             .as_deref()
-            .map(|path| absolute_storage_path(path, roots.output_root(), "images.preview_path"))
+            .map(|path| absolute_output_storage_path(&roots, path, "images.preview_path"))
             .transpose()?);
         active.update(connection).await?;
     }
@@ -149,11 +185,7 @@ where
             .output_path
             .as_deref()
             .map(|path| {
-                absolute_storage_path(
-                    path,
-                    roots.output_root(),
-                    "image_profile_renders.output_path",
-                )
+                absolute_output_storage_path(&roots, path, "image_profile_renders.output_path")
             })
             .transpose()?);
         active.update(connection).await?;
@@ -175,7 +207,7 @@ where
             .preview_path
             .as_deref()
             .map(|path| {
-                absolute_storage_path(path, roots.output_root(), "panorama_previews.preview_path")
+                absolute_output_storage_path(&roots, path, "panorama_previews.preview_path")
             })
             .transpose()?);
         active.update(connection).await?;
@@ -385,6 +417,31 @@ fn absolute_storage_path(path: &str, root: &Path, field: &str) -> Result<String>
     Ok(root.join(path).to_string_lossy().into_owned())
 }
 
+fn absolute_output_storage_path(
+    roots: &ReviewPathRoots,
+    path: &str,
+    field: &str,
+) -> Result<String> {
+    let path = Path::new(path);
+    if path.is_absolute() {
+        return Ok(path.to_string_lossy().into_owned());
+    }
+    validate_relative_path(path, field)?;
+    if let Some(cache_path) = cache_storage_path(path) {
+        validate_relative_path(cache_path, field)?;
+        return Ok(roots
+            .cache_root()
+            .join(cache_path)
+            .to_string_lossy()
+            .into_owned());
+    }
+    Ok(roots
+        .output_root()
+        .join(path)
+        .to_string_lossy()
+        .into_owned())
+}
+
 fn relative_path_text(path: &Path, field: &str) -> Result<String> {
     validate_relative_path(path, field)?;
     Ok(path.to_string_lossy().into_owned())
@@ -536,7 +593,12 @@ mod tests {
 
     #[test]
     fn path_mapping_round_trips_under_each_root() {
-        let roots = ReviewPathRoots::new(Path::new("/input"), Path::new("/output")).unwrap();
+        let roots = ReviewPathRoots::new(
+            Path::new("/input"),
+            Path::new("/output"),
+            Path::new("/tmp/mini-film.test"),
+        )
+        .unwrap();
 
         assert_eq!(
             roots
@@ -562,11 +624,34 @@ mod tests {
                 .unwrap(),
             Path::new("/output/day/frame.jpg")
         );
+        assert_eq!(
+            roots
+                .output_to_storage(
+                    Path::new("/tmp/mini-film.test/.mini-film-review-previews/frame.jpg"),
+                    "cache",
+                )
+                .unwrap(),
+            ".mini-film-cache/.mini-film-review-previews/frame.jpg"
+        );
+        assert_eq!(
+            roots
+                .output_from_storage(
+                    ".mini-film-cache/.mini-film-review-previews/frame.jpg",
+                    "cache",
+                )
+                .unwrap(),
+            Path::new("/tmp/mini-film.test/.mini-film-review-previews/frame.jpg")
+        );
     }
 
     #[test]
     fn path_mapping_rejects_escape_and_wrong_root() {
-        let roots = ReviewPathRoots::new(Path::new("/input"), Path::new("/output")).unwrap();
+        let roots = ReviewPathRoots::new(
+            Path::new("/input"),
+            Path::new("/output"),
+            Path::new("/tmp/mini-film.test"),
+        )
+        .unwrap();
 
         assert!(
             roots

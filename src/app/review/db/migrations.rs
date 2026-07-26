@@ -9,12 +9,14 @@ pub(super) const FIRST_SEAORM_SCHEMA_VERSION: i64 = 12;
 const PANORAMA_SCHEMA_VERSION: i64 = 13;
 const REVIEW_SAMPLER_SCHEMA_VERSION: i64 = 14;
 const FOCUS_REGIONS_SCHEMA_VERSION: i64 = 15;
-pub(super) const LATEST_SCHEMA_VERSION: i64 = 16;
+const RELATIVE_PATHS_SCHEMA_VERSION: i64 = 16;
+pub(super) const LATEST_SCHEMA_VERSION: i64 = 17;
 pub(super) const V18_BASELINE_MIGRATION: &str = "m20260718_000001_v18_baseline";
 pub(super) const PANORAMA_PROJECTS_MIGRATION: &str = "m20260719_000002_panorama_projects";
 pub(super) const REVIEW_SAMPLER_MIGRATION: &str = "m20260721_000003_review_sampler";
 pub(super) const FOCUS_REGIONS_MIGRATION: &str = "m20260726_000004_focus_regions";
 pub(super) const RELATIVE_PATHS_MIGRATION: &str = "m20260726_000005_relative_paths";
+pub(super) const CACHE_ROOT_MIGRATION: &str = "m20260726_000006_cache_root";
 pub(super) const PRE_RELEASE_SEAORM_LEDGER: [&str; 2] = [
     "m20260718_000001_create_review_schema",
     "m20260718_000002_adopt_seaorm",
@@ -45,6 +47,7 @@ impl MigratorTrait for Migrator {
             Box::new(ReviewSampler),
             Box::new(FocusRegions),
             Box::new(RelativePaths),
+            Box::new(CacheRoot),
         ]
     }
 }
@@ -155,6 +158,14 @@ struct RelativePaths;
 impl MigrationName for RelativePaths {
     fn name(&self) -> &str {
         RELATIVE_PATHS_MIGRATION
+    }
+}
+
+struct CacheRoot;
+
+impl MigrationName for CacheRoot {
+    fn name(&self) -> &str {
+        CACHE_ROOT_MIGRATION
     }
 }
 
@@ -391,7 +402,8 @@ impl MigrationTrait for RelativePaths {
                     .await?;
             }
         }
-        sqlite_compat::set_user_version(manager.get_connection(), LATEST_SCHEMA_VERSION).await
+        sqlite_compat::set_user_version(manager.get_connection(), RELATIVE_PATHS_SCHEMA_VERSION)
+            .await
     }
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
@@ -417,6 +429,38 @@ impl MigrationTrait for RelativePaths {
             }
         }
         sqlite_compat::set_user_version(manager.get_connection(), FOCUS_REGIONS_SCHEMA_VERSION)
+            .await
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for CacheRoot {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        let column = review_settings::Column::CacheRoot;
+        if !manager
+            .has_column(review_settings::Entity.table_name(), &column.to_string())
+            .await?
+        {
+            manager
+                .alter_table(
+                    Table::alter()
+                        .table(review_settings::Entity)
+                        .add_column(ColumnDef::new(column).text().not_null().default(""))
+                        .to_owned(),
+                )
+                .await?;
+        }
+        sqlite_compat::set_user_version(manager.get_connection(), LATEST_SCHEMA_VERSION).await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        // RelativePaths::down still reads settings through the current entity,
+        // so retain this optional forward-compatible column.
+        sqlite_compat::set_user_version(manager.get_connection(), RELATIVE_PATHS_SCHEMA_VERSION)
             .await
     }
 }

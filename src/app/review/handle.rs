@@ -2,6 +2,9 @@ use super::{
     db::*, gallery_download::*, history::*, model::*, prelude::*, preview::*, publish::*,
     sampler::*, scheduler::*, server::*, store::*,
 };
+use crate::app::cache::{
+    PANORAMA_CACHE_DIR, PROFILE_DETAILS_CACHE_DIR, RETOUCH_CACHE_DIR, REVIEW_PREVIEWS_CACHE_DIR,
+};
 use crate::app::panorama::{
     PanoramaPreview, PanoramaProgress, PanoramaProgressSink, render_final, render_preview_row,
 };
@@ -38,6 +41,7 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
         &config.input_root,
         &config.output_root,
     ))?;
+    let cache_root = database.cache_root().to_path_buf();
     let mut store = stored
         .clone()
         .unwrap_or_else(|| ReviewStore::new(Vec::new()));
@@ -130,6 +134,7 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
         database_runtime,
         input_root: config.input_root,
         output_root: config.output_root,
+        cache_root,
         hald_dir: config.hald_dir,
         profiles_root: config.profiles_root,
         hald_level: config.hald_level,
@@ -254,12 +259,16 @@ impl ReviewHandle {
         &self.output_root
     }
 
+    pub(crate) fn cache_root(&self) -> &Path {
+        &self.cache_root
+    }
+
     pub(super) fn preview_root(&self) -> PathBuf {
-        self.output_root.join(".mini-film-review-previews")
+        self.cache_root.join(REVIEW_PREVIEWS_CACHE_DIR)
     }
 
     pub(super) fn panorama_cache_root(&self) -> PathBuf {
-        self.output_root.join(".mini-film-panoramas")
+        self.cache_root.join(PANORAMA_CACHE_DIR)
     }
 
     pub(super) fn panorama_projects_snapshot(&self) -> Arc<Vec<ReviewPanoramaProject>> {
@@ -1024,7 +1033,13 @@ impl ReviewHandle {
         let result = self.update_preview(input, |preview| {
             pending_retouch_key = apply_base_preview_done(preview, output, duration);
             if let Some(render_key) = pending_retouch_key.as_deref()
-                && apply_cached_preview_output(preview, output, render_key)
+                && apply_cached_preview_output(
+                    preview,
+                    output,
+                    render_key,
+                    &self.output_root,
+                    &self.cache_root,
+                )
             {
                 pending_retouch_key = None;
             }
@@ -1352,7 +1367,8 @@ impl ReviewHandle {
                 && render.processing_key.as_deref()
                     == Some(review_render_processing_key_for_input(raw, profile_index))
                 && output.is_file()
-                && retouch_base_output(output) == expected_output
+                && retouch_base_output(output, &self.output_root, &self.cache_root)
+                    == expected_output
                 && matches!(render.status, ReviewRenderStatus::Done)
                 && render.render_key.is_none()
         })
@@ -1380,7 +1396,14 @@ impl ReviewHandle {
         let result = self.update_render(raw, profile_index, |render| {
             pending_retouch_key = apply_base_render_done(render, output, duration);
             if let Some(render_key) = pending_retouch_key.as_deref()
-                && apply_cached_profile_output(render, output, render_key, false)
+                && apply_cached_profile_output(
+                    render,
+                    output,
+                    render_key,
+                    false,
+                    &self.output_root,
+                    &self.cache_root,
+                )
             {
                 pending_retouch_key = None;
             }
@@ -1890,6 +1913,8 @@ impl ReviewHandle {
                     &job.output,
                     &job.render_key,
                     use_base_output,
+                    &self.output_root,
+                    &self.cache_root,
                 );
                 if !cached {
                     render.status = ReviewRenderStatus::Processing;
@@ -1906,7 +1931,13 @@ impl ReviewHandle {
             let _ = self.maybe_schedule_codex_for_raw(&job.raw);
             return;
         }
-        let final_output = profile_retouch_output(&job.output, &job.render_key, use_base_output);
+        let final_output = profile_retouch_output(
+            &job.output,
+            &job.render_key,
+            use_base_output,
+            &self.output_root,
+            &self.cache_root,
+        );
         let temp_output = retouch_temp_output(&final_output, &job.render_key);
         let result = self.render_retouch_output(
             &job.raw,
@@ -1991,7 +2022,12 @@ impl ReviewHandle {
                 render.status = ReviewRenderStatus::Processing;
                 render.error = None;
             });
-        let final_output = retouch_cache_output(&job.output, &job.render_key);
+        let final_output = retouch_cache_output(
+            &job.output,
+            &job.render_key,
+            &self.output_root,
+            &self.cache_root,
+        );
         let temp_output = retouch_temp_output(&final_output, &job.render_key);
         let result = self.render_sooc_retouch_output(&sidecar, &retouch, &temp_output);
         match result {
@@ -2067,7 +2103,12 @@ impl ReviewHandle {
             preview.status = ReviewRenderStatus::Processing;
             preview.error = None;
         });
-        let final_output = retouch_cache_output(&job.output, &job.render_key);
+        let final_output = retouch_cache_output(
+            &job.output,
+            &job.render_key,
+            &self.output_root,
+            &self.cache_root,
+        );
         let temp_output = retouch_temp_output(&final_output, &job.render_key);
         let result = self.render_compressed_retouch_output(&job.raw, &retouch, &temp_output);
         match result {
@@ -2229,7 +2270,7 @@ impl ReviewHandle {
                 retouch: Some(retouch),
                 retouch_white_balance: white_balance,
                 bw_filter,
-                profile_input_cache_root: Some(&self.output_root),
+                profile_input_cache_root: Some(&self.cache_root),
             },
             &resolved,
             seed,
@@ -2437,14 +2478,17 @@ impl ReviewHandle {
                     }
                     if retouch_changed {
                         if direct_compressed {
-                            let base_output =
-                                image.preview.path.as_deref().map(retouch_base_output);
+                            let base_output = image.preview.path.as_deref().map(|output| {
+                                retouch_base_output(output, &self.output_root, &self.cache_root)
+                            });
                             if let Some(render_key) = retouch_render_key(&image.retouch) {
                                 let cached = base_output.as_deref().is_some_and(|output| {
                                     apply_cached_preview_output(
                                         &mut image.preview,
                                         output,
                                         &render_key,
+                                        &self.output_root,
+                                        &self.cache_root,
                                     )
                                 });
                                 if !cached {
@@ -2529,6 +2573,8 @@ impl ReviewHandle {
                                     render_key,
                                     profile_retouch_uses_base_output(&image.retouch, bw_filter),
                                     &mut retouch_jobs,
+                                    &self.output_root,
+                                    &self.cache_root,
                                 );
                             }
                         }
@@ -2580,6 +2626,8 @@ impl ReviewHandle {
                                 render_key,
                                 profile_retouch_uses_base_output(&image.retouch, bw_filter),
                                 &mut retouch_jobs,
+                                &self.output_root,
+                                &self.cache_root,
                             );
                         }
                     }
@@ -2679,7 +2727,9 @@ impl ReviewHandle {
                         let base_output_ready = render
                             .output_path
                             .as_ref()
-                            .map(|output| retouch_base_output(output))
+                            .map(|output| {
+                                retouch_base_output(output, &self.output_root, &self.cache_root)
+                            })
                             .is_some_and(|output| output.is_file());
                         json!({
                             "profile_index": render.profile_index,
@@ -2911,7 +2961,7 @@ impl ReviewHandle {
             .output_path
             .as_ref()
             .ok_or_else(|| anyhow!("profile {profile_index} has no output path"))?;
-        let base = retouch_base_output(output);
+        let base = retouch_base_output(output, &self.output_root, &self.cache_root);
         if !base.is_file() {
             bail!(
                 "profile {profile_index} base media is missing: {}",
@@ -2979,7 +3029,10 @@ impl ReviewHandle {
         let temp_dir = Builder::new().prefix("mini-film-review-pp3-").tempdir()?;
         let apply_args = ApplyArgs {
             raw: input.clone(),
-            output: self.output_root.join(".profile-details.jpg"),
+            output: self
+                .cache_root
+                .join(PROFILE_DETAILS_CACHE_DIR)
+                .join("profile-details.jpg"),
             profile: optional_profile_selector(&profile.selector),
             hald_dir: self.hald_dir.clone(),
             profiles_root: self.profiles_root.clone(),
@@ -3400,7 +3453,11 @@ impl ReviewHandle {
             bail!("review publish job {job_id} did not create a gallery");
         }
         let album = validate_relative_publish_album(&job.album)?;
-        Ok(GalleryArchiveSpec::new(&self.output_root, &album))
+        Ok(GalleryArchiveSpec::new(
+            &self.output_root,
+            &self.cache_root,
+            &album,
+        ))
     }
 
     pub(super) fn update_publish_jobs<R, F>(&self, mut update: F) -> Result<R>
@@ -3731,7 +3788,6 @@ pub(super) fn handle_gallery_defaults(
 }
 
 pub(super) fn retouch_temp_output(output: &Path, render_key: &str) -> PathBuf {
-    let output = retouch_base_output(output);
     let extension = output
         .extension()
         .and_then(|extension| extension.to_str())
@@ -3739,25 +3795,34 @@ pub(super) fn retouch_temp_output(output: &Path, render_key: &str) -> PathBuf {
     let stem = output
         .file_stem()
         .and_then(|stem| stem.to_str())
-        .unwrap_or("review");
+        .unwrap_or("review")
+        .trim_start_matches('.');
+    let stem = stem
+        .rfind(RETOUCH_CACHE_MARKER)
+        .map_or(stem, |index| &stem[..index]);
     output.with_file_name(format!(".{stem}.retouch-{render_key}.{extension}"))
 }
 
 const RETOUCH_CACHE_MARKER: &str = ".retouch-cache-";
 
-pub(super) fn retouch_base_output(output: &Path) -> PathBuf {
+pub(super) fn retouch_base_output(output: &Path, output_root: &Path, cache_root: &Path) -> PathBuf {
+    let retouch_root = cache_root.join(RETOUCH_CACHE_DIR);
+    let output = output.strip_prefix(&retouch_root).map_or_else(
+        |_| output.to_path_buf(),
+        |relative| output_root.join(relative),
+    );
     let Some(stem) = output.file_stem().and_then(|stem| stem.to_str()) else {
-        return output.to_path_buf();
+        return output;
     };
     let Some(cache_stem) = stem.strip_prefix('.') else {
-        return output.to_path_buf();
+        return output;
     };
     let Some(marker_index) = cache_stem.rfind(RETOUCH_CACHE_MARKER) else {
-        return output.to_path_buf();
+        return output;
     };
     let base_stem = &cache_stem[..marker_index];
     if base_stem.is_empty() {
-        return output.to_path_buf();
+        return output;
     }
     let mut file_name = base_stem.to_string();
     if let Some(extension) = output.extension().and_then(|extension| extension.to_str())
@@ -3769,8 +3834,23 @@ pub(super) fn retouch_base_output(output: &Path) -> PathBuf {
     output.with_file_name(file_name)
 }
 
-pub(super) fn retouch_cache_output(output: &Path, render_key: &str) -> PathBuf {
-    let output = retouch_base_output(output);
+pub(super) fn retouch_cache_output(
+    output: &Path,
+    render_key: &str,
+    output_root: &Path,
+    cache_root: &Path,
+) -> PathBuf {
+    let output = retouch_base_output(output, output_root, cache_root);
+    let relative = output
+        .strip_prefix(output_root)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|_| {
+            output
+                .file_name()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("review.jpg"))
+        });
+    let output = cache_root.join(RETOUCH_CACHE_DIR).join(relative);
     let extension = output
         .extension()
         .and_then(|extension| extension.to_str())
@@ -3874,12 +3954,18 @@ fn profile_retouch_uses_base_output(retouch: &RetouchSettings, bw_filter: BwFilt
     retouch.clone().normalized() == RetouchSettings::default() && bw_filter == BwFilter::None
 }
 
-fn profile_retouch_output(output: &Path, render_key: &str, use_base_output: bool) -> PathBuf {
-    let base_output = retouch_base_output(output);
+fn profile_retouch_output(
+    output: &Path,
+    render_key: &str,
+    use_base_output: bool,
+    output_root: &Path,
+    cache_root: &Path,
+) -> PathBuf {
+    let base_output = retouch_base_output(output, output_root, cache_root);
     if use_base_output {
         base_output
     } else {
-        retouch_cache_output(&base_output, render_key)
+        retouch_cache_output(&base_output, render_key, output_root, cache_root)
     }
 }
 
@@ -3888,8 +3974,11 @@ fn apply_cached_profile_output(
     output: &Path,
     render_key: &str,
     use_base_output: bool,
+    output_root: &Path,
+    cache_root: &Path,
 ) -> bool {
-    let output = profile_retouch_output(output, render_key, use_base_output);
+    let output =
+        profile_retouch_output(output, render_key, use_base_output, output_root, cache_root);
     if !output.is_file() {
         return false;
     }
@@ -3906,8 +3995,10 @@ fn apply_cached_preview_output(
     preview: &mut ReviewPreview,
     output: &Path,
     render_key: &str,
+    output_root: &Path,
+    cache_root: &Path,
 ) -> bool {
-    let output = retouch_cache_output(output, render_key);
+    let output = retouch_cache_output(output, render_key, output_root, cache_root);
     if !output.is_file() {
         return false;
     }
@@ -3925,14 +4016,23 @@ pub(super) fn queue_profile_retouch_render(
     render_key: String,
     use_base_output: bool,
     retouch_jobs: &mut Vec<(PathBuf, Option<usize>, PathBuf, String)>,
+    output_root: &Path,
+    cache_root: &Path,
 ) {
     let output = image.profiles[render_index]
         .output_path
         .as_ref()
-        .map(|output| retouch_base_output(output));
+        .map(|output| retouch_base_output(output, output_root, cache_root));
     let render = &mut image.profiles[render_index];
     if let Some(output) = output.as_deref()
-        && apply_cached_profile_output(render, output, &render_key, use_base_output)
+        && apply_cached_profile_output(
+            render,
+            output,
+            &render_key,
+            use_base_output,
+            output_root,
+            cache_root,
+        )
     {
         render.updated_at = now_string();
         return;

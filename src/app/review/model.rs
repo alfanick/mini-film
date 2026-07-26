@@ -422,6 +422,7 @@ pub(crate) struct ReviewHandle {
     pub(super) database_runtime: Arc<tokio::runtime::Runtime>,
     pub(super) input_root: PathBuf,
     pub(super) output_root: PathBuf,
+    pub(super) cache_root: PathBuf,
     pub(super) hald_dir: PathBuf,
     pub(super) profiles_root: PathBuf,
     pub(super) hald_level: u32,

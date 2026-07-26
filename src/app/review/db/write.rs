@@ -900,6 +900,7 @@ fn settings_model(store: &ReviewStore, roots: &ReviewPathRoots) -> Result<review
         exif_schema_version: i64::from(store.exif_schema_version),
         input_root: roots.input_root().to_string_lossy().into_owned(),
         output_root: roots.output_root().to_string_lossy().into_owned(),
+        cache_root: roots.cache_root().to_string_lossy().into_owned(),
     })
 }
 

@@ -353,6 +353,30 @@ fn rebase_review_store(
     store
 }
 
+fn rebase_review_cache_paths(
+    mut store: ReviewStore,
+    output_root: &Path,
+    cache_root: &Path,
+) -> ReviewStore {
+    for image in &mut store.images {
+        image.preview.path = image.preview.path.as_deref().map(|path| {
+            path.strip_prefix(output_root)
+                .ok()
+                .filter(|relative| crate::app::cache::is_cache_relative_path(relative))
+                .map_or_else(|| path.to_path_buf(), |relative| cache_root.join(relative))
+        });
+        for render in &mut image.profiles {
+            render.output_path = render.output_path.as_deref().map(|path| {
+                path.strip_prefix(output_root)
+                    .ok()
+                    .filter(|relative| crate::app::cache::is_cache_relative_path(relative))
+                    .map_or_else(|| path.to_path_buf(), |relative| cache_root.join(relative))
+            });
+        }
+    }
+    store
+}
+
 fn migrated_pre_sampler_store(mut store: ReviewStore) -> ReviewStore {
     store = persisted_store(store);
     for profile in &mut store.profiles {
@@ -424,6 +448,7 @@ fn test_handle(input: PathBuf, output: PathBuf, profiles: Vec<ReviewProfile>) ->
         .unwrap()
     };
     let state_path = database.path().to_path_buf();
+    let cache_root = database.cache_root().to_path_buf();
     ReviewHandle {
         state: Arc::new(ArcSwap::from_pointee(store)),
         subscribers: Arc::new(subscribers),
@@ -433,6 +458,7 @@ fn test_handle(input: PathBuf, output: PathBuf, profiles: Vec<ReviewProfile>) ->
         database_runtime,
         input_root: input.clone(),
         output_root: output.clone(),
+        cache_root,
         hald_dir: output.join("hald"),
         profiles_root: input.clone(),
         hald_level: 16,
@@ -1409,9 +1435,9 @@ fn review_state_seaorm_round_trips_every_normalized_collection() {
         serde_json::to_value(persisted_store(store)).unwrap()
     );
     let facts = database_facts(&state_path).unwrap();
-    assert_eq!(facts.schema_version, 16);
+    assert_eq!(facts.schema_version, 17);
     assert!(facts.has_seaql_ledger);
-    assert_eq!(facts.seaql_migration_count, 5);
+    assert_eq!(facts.seaql_migration_count, 6);
     assert_eq!(
         facts.seaql_migrations,
         [
@@ -1420,6 +1446,7 @@ fn review_state_seaorm_round_trips_every_normalized_collection() {
             "m20260721_000003_review_sampler",
             "m20260726_000004_focus_regions",
             "m20260726_000005_relative_paths",
+            "m20260726_000006_cache_root",
         ]
     );
     assert!(!facts.has_legacy_ledger);
@@ -1442,6 +1469,12 @@ fn review_state_seaorm_round_trips_every_normalized_collection() {
     let paths = stored_path_facts(&state_path).unwrap();
     assert_eq!(paths.input_root, "/in");
     assert_eq!(paths.output_root, "/out");
+    assert!(
+        Path::new(&paths.cache_root)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("mini-film."))
+    );
     assert!(
         paths
             .source_paths
@@ -1475,10 +1508,10 @@ fn normalized_v11_database_is_backed_up_and_adopted_losslessly_once() {
     let backup_bytes = fs::read(&backup_path).unwrap();
 
     let after_facts = database_facts(&state_path).unwrap();
-    assert_eq!(after_facts.schema_version, 16);
+    assert_eq!(after_facts.schema_version, 17);
     assert!(!after_facts.has_legacy_ledger);
     assert!(after_facts.has_seaql_ledger);
-    assert_eq!(after_facts.seaql_migration_count, 5);
+    assert_eq!(after_facts.seaql_migration_count, 6);
     assert_eq!(
         after_facts.seaql_migrations,
         [
@@ -1487,6 +1520,7 @@ fn normalized_v11_database_is_backed_up_and_adopted_losslessly_once() {
             "m20260721_000003_review_sampler",
             "m20260726_000004_focus_regions",
             "m20260726_000005_relative_paths",
+            "m20260726_000006_cache_root",
         ]
     );
     assert!(!after_facts.has_json_storage_columns);
@@ -1525,7 +1559,7 @@ fn pre_release_two_entry_seaorm_ledger_is_collapsed_without_data_loss() {
         serde_json::to_value(persisted_store(store)).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.seaql_migration_count, 5);
+    assert_eq!(after.seaql_migration_count, 6);
     assert_eq!(
         after.seaql_migrations,
         [
@@ -1534,6 +1568,7 @@ fn pre_release_two_entry_seaorm_ledger_is_collapsed_without_data_loss() {
             "m20260721_000003_review_sampler",
             "m20260726_000004_focus_regions",
             "m20260726_000005_relative_paths",
+            "m20260726_000006_cache_root",
         ]
     );
 }
@@ -1551,8 +1586,8 @@ fn schema_v12_migrates_to_panorama_schema_without_review_data_loss() {
         serde_json::to_value(migrated_pre_sampler_store(store)).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 16);
-    assert_eq!(after.seaql_migration_count, 5);
+    assert_eq!(after.schema_version, 17);
+    assert_eq!(after.seaql_migration_count, 6);
     assert_eq!(after.counts["panorama_projects"], 0);
     assert_eq!(after.counts["panorama_project_images"], 0);
     assert_eq!(after.counts["panorama_previews"], 0);
@@ -1581,8 +1616,8 @@ fn schema_v13_migrates_sampler_state_without_review_data_loss() {
             && profile.identity.starts_with("legacy:")
     }));
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 16);
-    assert_eq!(after.seaql_migration_count, 5);
+    assert_eq!(after.schema_version, 17);
+    assert_eq!(after.seaql_migration_count, 6);
     assert_eq!(after.indexes.len(), 20);
 }
 
@@ -1605,8 +1640,8 @@ fn schema_v14_adds_focus_region_storage_without_review_data_loss() {
         serde_json::to_value(persisted_store(store)).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 16);
-    assert_eq!(after.seaql_migration_count, 5);
+    assert_eq!(after.schema_version, 17);
+    assert_eq!(after.seaql_migration_count, 6);
     assert_eq!(after.counts["image_focus_regions"], 0);
     assert_eq!(after.indexes.len(), 20);
 }
@@ -1629,16 +1664,20 @@ fn schema_v15_paths_migrate_and_rebase_after_input_and_output_move() {
     let loaded = load_store_with_roots(&new_state, &new_input, &new_output)
         .unwrap()
         .unwrap();
-    let expected = rebase_review_store(persisted_store(store), &new_input, &new_output);
+    let paths = stored_path_facts(&new_state).unwrap();
+    let expected = rebase_review_cache_paths(
+        rebase_review_store(persisted_store(store), &new_input, &new_output),
+        &new_output,
+        Path::new(&paths.cache_root),
+    );
     assert_eq!(
         serde_json::to_value(loaded).unwrap(),
         serde_json::to_value(expected).unwrap()
     );
 
     let facts = database_facts(&new_state).unwrap();
-    assert_eq!(facts.schema_version, 16);
-    assert_eq!(facts.seaql_migration_count, 5);
-    let paths = stored_path_facts(&new_state).unwrap();
+    assert_eq!(facts.schema_version, 17);
+    assert_eq!(facts.seaql_migration_count, 6);
     assert_eq!(paths.input_root, new_input.to_string_lossy());
     assert_eq!(paths.output_root, new_output.to_string_lossy());
     assert!(
@@ -1699,13 +1738,17 @@ fn relative_path_database_rebases_when_roots_move_again() {
     let loaded = load_store_with_roots(&state_path, &new_input, &new_output)
         .unwrap()
         .unwrap();
-    let expected = rebase_review_store(persisted_store(store), &new_input, &new_output);
+    let paths = stored_path_facts(&state_path).unwrap();
+    let expected = rebase_review_cache_paths(
+        rebase_review_store(persisted_store(store), &new_input, &new_output),
+        &new_output,
+        Path::new(&paths.cache_root),
+    );
     assert_eq!(
         serde_json::to_value(loaded).unwrap(),
         serde_json::to_value(expected).unwrap()
     );
 
-    let paths = stored_path_facts(&state_path).unwrap();
     assert_eq!(paths.input_root, new_input.to_string_lossy());
     assert_eq!(paths.output_root, new_output.to_string_lossy());
     assert!(
@@ -1831,6 +1874,7 @@ fn opening_old_output_catalog_moves_it_to_input_without_data_loss() {
     let (database, loaded) = runtime
         .block_on(ReviewDatabase::open_output(&input, &output))
         .unwrap();
+    let expected = rebase_review_cache_paths(expected, &output, database.cache_root());
 
     assert_eq!(database.path(), new_state);
     assert_eq!(
@@ -1898,7 +1942,11 @@ fn reopening_after_input_move_repairs_catalog_link_and_rebases_paths() {
     let (database, loaded) = runtime
         .block_on(ReviewDatabase::open_output(&new_input, &output))
         .unwrap();
-    let expected = rebase_review_store(persisted_store(base_store), &new_input, &output);
+    let expected = rebase_review_cache_paths(
+        rebase_review_store(persisted_store(base_store), &new_input, &output),
+        &output,
+        database.cache_root(),
+    );
     assert_eq!(
         serde_json::to_value(loaded.unwrap()).unwrap(),
         serde_json::to_value(expected).unwrap()
@@ -1911,6 +1959,181 @@ fn reopening_after_input_move_repairs_catalog_link_and_rebases_paths() {
     let paths = stored_path_facts(database.path()).unwrap();
     assert_eq!(paths.input_root, new_input.to_string_lossy());
     assert_eq!(paths.output_root, output.to_string_lossy());
+}
+
+#[test]
+fn legacy_output_caches_migrate_and_remain_disposable() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("input");
+    let output = temp.path().join("output");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let mut store = rebase_review_store(fully_populated_review_store(), &input, &output);
+    let legacy_preview = output
+        .join(".mini-film-review-previews")
+        .join("preview.jpg");
+    let legacy_retouch = output
+        .join("day")
+        .join("Detailed")
+        .join(".detailed.retouch-cache-key.jpg");
+    store.images[0].preview.path = Some(legacy_preview.clone());
+    store.images[0].profiles[0].output_path = Some(legacy_retouch.clone());
+
+    let runtime = test_async_runtime();
+    let (database, _) = runtime
+        .block_on(ReviewDatabase::open_output(&input, &output))
+        .unwrap();
+    runtime.block_on(database.replace_store(&store)).unwrap();
+    let cache_root = database.cache_root().to_path_buf();
+    let timestamp = "2026-07-26T12:34:56+02:00".to_string();
+    let mut panorama = ReviewPanoramaProject {
+        id: 0,
+        name: "Disposable preview".to_string(),
+        status: ReviewPanoramaStatus::Ready,
+        matching_mode: PanoramaMatchingMode::Automatic,
+        selected_projection: Some(PanoramaProjection::Cylindrical),
+        output_path: None,
+        result_image_id: None,
+        progress_stage: None,
+        progress_completed: 0,
+        progress_total: 0,
+        error: None,
+        created_at: timestamp.clone(),
+        updated_at: timestamp.clone(),
+        image_ids: vec![1],
+        previews: vec![ReviewPanoramaPreview {
+            matching_mode: PanoramaMatchingMode::Automatic,
+            projection: PanoramaProjection::Cylindrical,
+            status: ReviewPanoramaPreviewStatus::Done,
+            path: Some(output.join(".mini-film-panoramas").join("cylindrical.jpg")),
+            cache_key: Some("panorama-key".to_string()),
+            duration_ms: Some(10),
+            error: None,
+            updated_at: timestamp,
+        }],
+    };
+    runtime
+        .block_on(database.create_panorama_project(&mut panorama))
+        .unwrap();
+    drop(database);
+
+    for (path, bytes) in [
+        (&legacy_preview, b"preview".as_slice()),
+        (&legacy_retouch, b"retouch".as_slice()),
+        (
+            &output.join(".mini-film-panoramas").join("cylindrical.jpg"),
+            b"panorama".as_slice(),
+        ),
+        (
+            &output
+                .join(".mini-film-sampler")
+                .join("review-sampler-v1")
+                .join("source.tif"),
+            b"sampler".as_slice(),
+        ),
+        (
+            &output
+                .join("album")
+                .join(".mini-film-profile-inputs")
+                .join("source.tif"),
+            b"profile input".as_slice(),
+        ),
+        (
+            &output
+                .join(".mini-film-gallery-thumbnails")
+                .join("Detailed")
+                .join("thumb.jpg"),
+            b"thumbnail".as_slice(),
+        ),
+    ] {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, bytes).unwrap();
+    }
+    let gallery = output.join("layout").join("index.html");
+    fs::create_dir_all(gallery.parent().unwrap()).unwrap();
+    fs::write(
+        &gallery,
+        "../.mini-film-gallery-thumbnails/Detailed/thumb.jpg",
+    )
+    .unwrap();
+
+    let (database, loaded) = runtime
+        .block_on(ReviewDatabase::open_output(&input, &output))
+        .unwrap();
+    assert_eq!(database.cache_root(), cache_root);
+    let loaded = loaded.unwrap();
+    let migrated_preview = cache_root
+        .join(".mini-film-review-previews")
+        .join("preview.jpg");
+    let migrated_retouch = cache_root
+        .join(".mini-film-retouch")
+        .join("day")
+        .join("Detailed")
+        .join(".detailed.retouch-cache-key.jpg");
+    assert_eq!(
+        loaded.images[0].preview.path.as_deref(),
+        Some(migrated_preview.as_path())
+    );
+    assert_eq!(
+        loaded.images[0].profiles[0].output_path.as_deref(),
+        Some(migrated_retouch.as_path())
+    );
+    assert_eq!(fs::read(&migrated_preview).unwrap(), b"preview");
+    assert_eq!(fs::read(&migrated_retouch).unwrap(), b"retouch");
+    assert!(
+        cache_root
+            .join(".mini-film-sampler/review-sampler-v1/source.tif")
+            .is_file()
+    );
+    assert!(
+        cache_root
+            .join(".mini-film-legacy-output/album/.mini-film-profile-inputs/source.tif")
+            .is_file()
+    );
+    assert!(output.join("thumbnails/Detailed/thumb.jpg").is_file());
+    assert_eq!(
+        fs::read_to_string(&gallery).unwrap(),
+        "../thumbnails/Detailed/thumb.jpg"
+    );
+    assert!(
+        walkdir::WalkDir::new(&output)
+            .min_depth(1)
+            .into_iter()
+            .filter_map(std::result::Result::ok)
+            .all(|entry| !crate::app::cache::is_cache_directory_name(entry.file_name()))
+    );
+    let projects = runtime.block_on(database.load_panorama_projects()).unwrap();
+    assert_eq!(
+        projects[0].previews[0].path.as_deref(),
+        Some(
+            cache_root
+                .join(".mini-film-panoramas/cylindrical.jpg")
+                .as_path()
+        )
+    );
+    let stored_paths = stored_path_facts(database.path()).unwrap();
+    assert_eq!(stored_paths.cache_root, cache_root.to_string_lossy());
+    assert!(
+        stored_paths
+            .output_paths
+            .iter()
+            .filter(|path| path.contains(".mini-film-"))
+            .all(|path| path.starts_with(".mini-film-cache/"))
+    );
+    drop(database);
+
+    fs::remove_dir_all(&cache_root).unwrap();
+    let (database, reloaded) = runtime
+        .block_on(ReviewDatabase::open_output(&input, &output))
+        .unwrap();
+    assert_eq!(database.cache_root(), cache_root);
+    assert!(cache_root.is_dir());
+    assert_eq!(
+        serde_json::to_value(reloaded.unwrap()).unwrap(),
+        serde_json::to_value(loaded).unwrap()
+    );
+    assert!(!migrated_preview.exists());
+    assert!(!migrated_retouch.exists());
 }
 
 #[test]
@@ -2303,21 +2526,27 @@ fn base_render_done_triggers_pending_retouch_without_marking_done() {
 
 #[test]
 fn retouch_cache_output_is_stable_from_base_or_cached_path() {
+    let output_root = Path::new("/out");
+    let cache_root = Path::new("/tmp/mini-film.test");
     let base = PathBuf::from("/out/Classic/frame.jpg");
-    let cache = retouch_cache_output(&base, "abc123");
+    let cache = retouch_cache_output(&base, "abc123", output_root, cache_root);
 
     assert_eq!(
         cache,
-        PathBuf::from("/out/Classic/.frame.retouch-cache-abc123.jpg")
+        PathBuf::from(
+            "/tmp/mini-film.test/.mini-film-retouch/Classic/.frame.retouch-cache-abc123.jpg"
+        )
     );
-    assert_eq!(retouch_base_output(&cache), base);
+    assert_eq!(retouch_base_output(&cache, output_root, cache_root), base);
     assert_eq!(
-        retouch_cache_output(&cache, "def456"),
-        PathBuf::from("/out/Classic/.frame.retouch-cache-def456.jpg")
+        retouch_cache_output(&cache, "def456", output_root, cache_root),
+        PathBuf::from(
+            "/tmp/mini-film.test/.mini-film-retouch/Classic/.frame.retouch-cache-def456.jpg"
+        )
     );
     assert_eq!(
         retouch_temp_output(&cache, "def456"),
-        PathBuf::from("/out/Classic/.frame.retouch-def456.jpg")
+        PathBuf::from("/tmp/mini-film.test/.mini-film-retouch/Classic/.frame.retouch-def456.jpg")
     );
 }
 
@@ -2346,7 +2575,13 @@ fn base_render_done_uses_cached_retouch_output_without_scheduling() {
     }
     .normalized();
     let expected_key = saved_retouch.render_key();
-    let cached = retouch_cache_output(&rendered, &expected_key);
+    let cached = retouch_cache_output(
+        &rendered,
+        &expected_key,
+        handle.output_root(),
+        handle.cache_root(),
+    );
+    fs::create_dir_all(cached.parent().unwrap()).unwrap();
     fs::write(&cached, b"cached").unwrap();
     handle
         .update_store(|store| {
@@ -2399,7 +2634,13 @@ fn direct_compressed_retouch_uses_cache_without_replacing_source_link() {
         ..RetouchSettings::default()
     }
     .normalized();
-    let cached = retouch_cache_output(&base, &retouch.render_key());
+    let cached = retouch_cache_output(
+        &base,
+        &retouch.render_key(),
+        handle.output_root(),
+        handle.cache_root(),
+    );
+    fs::create_dir_all(cached.parent().unwrap()).unwrap();
     fs::write(&cached, b"cached crop").unwrap();
 
     handle
@@ -2458,7 +2699,13 @@ fn cached_retouch_output_is_current_for_its_base_profile() {
         ..RetouchSettings::default()
     }
     .normalized();
-    let cached = retouch_cache_output(&rendered, &saved_retouch.render_key());
+    let cached = retouch_cache_output(
+        &rendered,
+        &saved_retouch.render_key(),
+        handle.output_root(),
+        handle.cache_root(),
+    );
+    fs::create_dir_all(cached.parent().unwrap()).unwrap();
     fs::write(&cached, b"cached").unwrap();
     handle
         .update_store(|store| {
@@ -2560,7 +2807,13 @@ fn review_update_uses_cached_bw_filter_output_without_scheduling() {
         RetouchWhiteBalance::default(),
         BwFilter::Yellow,
     );
-    let cached = retouch_cache_output(&rendered, &render_key);
+    let cached = retouch_cache_output(
+        &rendered,
+        &render_key,
+        handle.output_root(),
+        handle.cache_root(),
+    );
+    fs::create_dir_all(cached.parent().unwrap()).unwrap();
     fs::write(&cached, b"yellow").unwrap();
 
     handle
@@ -3257,7 +3510,8 @@ fn compressed_review_media_routes_serve_distinct_cached_sizes_and_full_output() 
         })
         .unwrap();
 
-    let cache_root = output
+    let cache_root = handle
+        .cache_root()
         .join(".mini-film-review-previews")
         .join(COMPRESSED_REVIEW_CACHE_VERSION);
     assert!(thumbnail.starts_with(&cache_root));
@@ -3461,12 +3715,14 @@ fn crop_source_and_profile_base_routes_serve_uncropped_media() {
     fs::write(&raw, b"raw").unwrap();
     fs::write(&sidecar, b"sidecar").unwrap();
     let base = output.join("Classic").join("frame.jpg");
-    let cached = retouch_cache_output(&base, "crop");
     fs::create_dir_all(base.parent().unwrap()).unwrap();
     fs::write(&base, b"uncropped profile").unwrap();
-    fs::write(&cached, b"cropped profile").unwrap();
 
     let handle = test_handle(input.clone(), output, vec![profile(0, "Classic")]);
+    let cached = retouch_cache_output(&base, "crop", handle.output_root(), handle.cache_root());
+    fs::create_dir_all(cached.parent().unwrap()).unwrap();
+    fs::write(&cached, b"cropped profile").unwrap();
+
     handle
         .update_store(|store| {
             let image = store.ensure_image(&input, &raw)?;

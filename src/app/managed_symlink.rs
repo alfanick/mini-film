@@ -1,7 +1,6 @@
 use std::{fs, path::Path};
 
 use anyhow::{Context, Result, bail};
-use tempfile::Builder;
 
 pub(crate) fn ensure_file_symlink(
     source: &Path,
@@ -77,38 +76,17 @@ fn ensure_symlink(
         )
     })?;
     fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-    let placeholder = Builder::new()
-        .prefix(".mini-film-link-")
-        .tempfile_in(parent)
-        .with_context(|| format!("reserving managed symlink in {}", parent.display()))?;
-    let temporary_link = placeholder.path().to_path_buf();
-    placeholder
-        .close()
-        .with_context(|| format!("preparing managed symlink {}", temporary_link.display()))?;
-    create_symlink(&source, &temporary_link, kind).with_context(|| {
-        format!(
-            "creating managed symlink {} -> {}",
-            temporary_link.display(),
-            source.display()
-        )
-    })?;
-
-    #[cfg(windows)]
     if !matches!(existing, ExistingDestination::Missing) {
         fs::remove_file(destination)
             .with_context(|| format!("removing stale symlink {}", destination.display()))?;
     }
-
-    if let Err(error) = fs::rename(&temporary_link, destination) {
-        fs::remove_file(&temporary_link).ok();
-        return Err(error).with_context(|| {
-            format!(
-                "installing managed symlink {} -> {}",
-                destination.display(),
-                source.display()
-            )
-        });
-    }
+    create_symlink(&source, destination, kind).with_context(|| {
+        format!(
+            "creating managed symlink {} -> {}",
+            destination.display(),
+            source.display()
+        )
+    })?;
     if fs::canonicalize(destination).ok().as_deref() != Some(source.as_path()) {
         bail!(
             "managed symlink {} does not resolve to {}",
@@ -116,7 +94,6 @@ fn ensure_symlink(
             source.display()
         );
     }
-    let _ = existing;
     Ok(true)
 }
 

@@ -23,6 +23,7 @@ use mini_film::GrainEngine;
 use crate::app::apply::{
     ApplyArgs, ApplyJob, apply_resolved, resolve_apply_effects, resolve_grain_override,
 };
+use crate::app::cache::DAEMON_PROFILE_OUTPUTS_CACHE_DIR;
 use crate::app::dng::DngFallbackConfig;
 use crate::app::export::validate_export_options;
 use crate::app::info::profile_info_text_for_selector;
@@ -391,6 +392,10 @@ pub(crate) fn run_batch_daemon(mut args: BatchDaemonArgs) -> Result<()> {
     } else {
         None
     };
+    let cache_root = review.as_ref().map_or_else(
+        || temp_dir.path().to_path_buf(),
+        |review| review.cache_root().to_path_buf(),
+    );
     let args = Arc::new(args);
 
     let multi = MultiProgress::new();
@@ -654,6 +659,7 @@ pub(crate) fn run_batch_daemon(mut args: BatchDaemonArgs) -> Result<()> {
             let thread_args = Arc::clone(&args);
             let thread_estimates = Arc::clone(&estimates);
             let thread_review = review.clone();
+            let thread_cache_root = cache_root.clone();
 
             let handle = thread::spawn(move || {
                 let context = DaemonTaskContext {
@@ -661,6 +667,7 @@ pub(crate) fn run_batch_daemon(mut args: BatchDaemonArgs) -> Result<()> {
                     base_seed,
                     estimates: thread_estimates,
                     review: thread_review,
+                    cache_root: thread_cache_root,
                 };
                 let mut result = match task_kind {
                     DaemonTaskKind::RawProfile(profile_index) => {
@@ -1437,6 +1444,7 @@ struct DaemonTaskContext {
     base_seed: u64,
     estimates: Arc<StageEstimates>,
     review: Option<ReviewHandle>,
+    cache_root: PathBuf,
 }
 
 fn process_single_profile(
@@ -1516,7 +1524,7 @@ fn process_single_profile(
     let staged_output = if is_raw_input_file(raw) {
         None
     } else {
-        match daemon_profile_output_temp(&output) {
+        match daemon_profile_output_temp(&context.cache_root, &output) {
             Ok(staged_output) => Some(staged_output),
             Err(error) => {
                 return DaemonFileResult {
@@ -1577,7 +1585,7 @@ fn process_single_profile(
             retouch: None,
             retouch_white_balance: crate::app::retouch::RetouchWhiteBalance::default(),
             bw_filter: crate::app::retouch::BwFilter::None,
-            profile_input_cache_root: Some(&args.output),
+            profile_input_cache_root: Some(&context.cache_root),
         },
         &profile.resolved,
         seed,
@@ -1651,10 +1659,10 @@ fn daemon_input_lens_status(input: &Path, corrections: LensCorrections, applied:
     }
 }
 
-fn daemon_profile_output_temp(output: &Path) -> Result<TempPath> {
-    let parent = output
-        .parent()
-        .ok_or_else(|| anyhow!("daemon profile output has no parent: {}", output.display()))?;
+fn daemon_profile_output_temp(cache_root: &Path, output: &Path) -> Result<TempPath> {
+    let parent = cache_root.join(DAEMON_PROFILE_OUTPUTS_CACHE_DIR);
+    fs::create_dir_all(&parent)
+        .with_context(|| format!("creating daemon profile cache {}", parent.display()))?;
     let extension = output
         .extension()
         .and_then(|extension| extension.to_str())
@@ -1668,7 +1676,7 @@ fn daemon_profile_output_temp(output: &Path) -> Result<TempPath> {
     let staged = Builder::new()
         .prefix(".mini-film-profile-output-")
         .suffix(&suffix)
-        .tempfile_in(parent)
+        .tempfile_in(&parent)
         .with_context(|| format!("creating staged profile output in {}", parent.display()))?
         .into_temp_path();
     fs::remove_file(&staged)
@@ -1680,10 +1688,20 @@ fn publish_daemon_profile_output(input: &Path, staged: TempPath, output: &Path) 
     if compressed_profile_has_matching_raw(input) {
         return Ok(());
     }
-    staged
-        .persist(output)
-        .map_err(|error| error.error)
-        .with_context(|| format!("publishing daemon profile output {}", output.display()))
+    match fs::remove_file(output) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("replacing daemon profile output {}", output.display()));
+        }
+    }
+    fs::copy(&staged, output)
+        .with_context(|| format!("publishing daemon profile output {}", output.display()))?;
+    fs::File::open(output)
+        .with_context(|| format!("opening daemon profile output {}", output.display()))?
+        .sync_all()
+        .with_context(|| format!("syncing daemon profile output {}", output.display()))
 }
 
 fn compressed_profile_has_matching_raw(input: &Path) -> bool {
@@ -2248,7 +2266,7 @@ mod tests {
         fs::write(&sidecar, b"sidecar source").unwrap();
         fs::write(&output, b"raw render").unwrap();
 
-        let staged = daemon_profile_output_temp(&output).unwrap();
+        let staged = daemon_profile_output_temp(root.path(), &output).unwrap();
         fs::write(&staged, b"sidecar render").unwrap();
         publish_daemon_profile_output(&sidecar, staged, &output).unwrap();
         assert_eq!(fs::read(&output).unwrap(), b"raw render");

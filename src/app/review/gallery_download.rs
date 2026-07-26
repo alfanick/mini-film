@@ -1,12 +1,11 @@
 use super::{prelude::*, preview::short_path_sha1};
+use crate::app::cache::GALLERY_DOWNLOAD_CACHE_DIR;
 use std::{
     io::{self, BufReader},
     time::{SystemTime, UNIX_EPOCH},
 };
 use walkdir::WalkDir;
 use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
-
-const GALLERY_ARCHIVE_CACHE_DIR: &str = ".mini-film-gallery-downloads";
 
 #[derive(Clone, Debug)]
 pub(super) struct GalleryArchiveSpec {
@@ -17,7 +16,7 @@ pub(super) struct GalleryArchiveSpec {
 }
 
 impl GalleryArchiveSpec {
-    pub(super) fn new(output_root: &Path, album: &Path) -> Self {
+    pub(super) fn new(output_root: &Path, cache_root: &Path, album: &Path) -> Self {
         let gallery_root = output_root.join(album);
         let raw_name = album
             .file_name()
@@ -26,8 +25,8 @@ impl GalleryArchiveSpec {
         let archive_root_name = nonempty_sanitized_name(raw_name, "gallery");
         let download_base = ascii_download_name(&archive_root_name);
         let album_digest = short_path_sha1(album);
-        let cache_path = output_root
-            .join(GALLERY_ARCHIVE_CACHE_DIR)
+        let cache_path = cache_root
+            .join(GALLERY_DOWNLOAD_CACHE_DIR)
             .join(format!("{archive_root_name}-{album_digest}.zip"));
         Self {
             gallery_root,
@@ -153,7 +152,7 @@ fn excluded_gallery_directory(name: &std::ffi::OsStr) -> bool {
         name.to_str(),
         Some(".mini-film-profile-inputs")
             | Some(".mini-film-review-previews")
-            | Some(GALLERY_ARCHIVE_CACHE_DIR)
+            | Some(GALLERY_DOWNLOAD_CACHE_DIR)
     )
 }
 

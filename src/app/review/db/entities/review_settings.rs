@@ -16,6 +16,8 @@ pub struct Model {
     pub input_root: String,
     #[sea_orm(column_type = "Text")]
     pub output_root: String,
+    #[sea_orm(column_type = "Text")]
+    pub cache_root: String,
     #[sea_orm(
         belongs_to,
         from = "current_image_id",

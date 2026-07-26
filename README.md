@@ -258,7 +258,7 @@ does not apply a creative profile, grain, retouch, or sharpening.
 Final review panoramas are written collision-safely to
 `<input>/Panoramas/<name>.tif`, then added to review as ordinary TIFF input so
 film profiles and TIFF sharpening can be applied once. Reusable working files
-live under `<output>/.mini-film-panoramas/`; cache keys include source path,
+live under `<cache-root>/.mini-film-panoramas/`; cache keys include source path,
 size, modification time, preparation settings, mini-film pipeline version, and
 Hugin tool versions. The application remains one binary; Hugin, RawTherapee,
 ImageMagick/GraphicsMagick, and ExifTool remain external executables.
@@ -465,9 +465,8 @@ Batch gallery options are folder-friendly and reuse the existing batch output tr
 - `<output>/hero/index.html`
 - `<output>/phone/index.html`
 
-The template run reuses one shared thumbnail cache at
-`<output>/.mini-film-gallery-thumbnails/` so switching layouts does not reprocess
-or regenerate thumbnails.
+The template run reuses shared gallery assets under `<output>/thumbnails/` so
+switching layouts does not reprocess or regenerate thumbnails.
 
 ## Daemon
 
@@ -476,7 +475,7 @@ arrive in an input folder. If no `--profile` is provided, each RAW is developed
 once with RawTherapee defaults and JPEG/HEIC/TIFF inputs are converted directly.
 When profiles are provided, each standalone RAW, JPEG, HEIC, or TIFF gets one output
 per profile. Prepared HEIC TIFFs are reused from
-`<output>/.mini-film-profile-inputs/heic-v1/` across profile and retouch renders.
+`<cache-root>/.mini-film-profile-inputs/heic-v1/` across profile and retouch renders.
 If a matching RAW exists, its JPEG/HEIC sidecar is never profiled separately.
 
 ```sh
@@ -555,8 +554,8 @@ relative output path; a RAW sidecar or the camera rendition of a profiled
 compressed input is a managed symlink under the `sooc` profile directory.
 Links preserve the source media extension, with `.jpg` and `.jpeg` normalized
 to `.jpg`. Startup replaces old generated copies and repairs stale links after
-the input folder moves. Crop/rotation variants use hidden retouch-cache files,
-so the base original link remains intact.
+the input folder moves. Crop/rotation variants use files in the temporary review
+cache, so the base original link remains intact.
 
 For standalone JPEG/HEIC, ordered background thumbnail and preview pipelines
 start at discovery time and run concurrently with managed-link installation.
@@ -568,7 +567,7 @@ uses progressive 512-pixel quality-55 thumbnails; the main viewer uses
 progressive 2048-pixel quality-82 previews. In JPEG-only reviews it preloads the
 next three previews at viewport sizes up to 2048 pixels and the next three
 originals above that threshold. Both tiers are cached under
-`<output>/.mini-film-review-previews/compressed-v1/`. Direct compressed images
+`<cache-root>/.mini-film-review-previews/compressed-v1/`. Direct compressed images
 request the original input only when the loupe activates or the browser
 viewport is larger than 2048 pixels; profiled compressed images use the
 selected profile render for the main viewer and loupe. Holding the primary
@@ -619,12 +618,22 @@ when the input folder has moved.
 The active database does not keep an opaque JSON copy of the review store.
 SeaORM models own the schema and a migration ledger applies future database
 changes automatically. Media paths in SQLite are stored relative to their input
-or output root, while the settings row records the last absolute roots used to
-open the database. The roots supplied to `daemon` or `review-publish` are
+or output/cache root, while the settings row records the last absolute roots
+used to open the database. The roots supplied to `daemon` or `review-publish` are
 authoritative, so an input tree and output tree can be moved and reopened at
 their new locations without rewriting review data or cached-output
 relationships. Existing schema-v15 absolute paths are converted transactionally
 on first open; an unmappable path stops migration instead of being discarded.
+
+Review caches use a catalog-specific system temporary directory, normally
+`/tmp/mini-film.XXXXXX`; its absolute path is stored as `cache_root` in
+`review_settings`. On the first mini-film 21.2 open, legacy `.mini-film-*`
+cache directories and retouch files are moved out of output before workers
+start. Old shared gallery thumbnails become ordinary `<output>/thumbnails/`
+assets, and no `.mini-film-*` directories remain anywhere in output. Everything
+under `cache_root` is optional: deleting the directory loses no ratings, edits,
+profile choices, or panorama project state. The next open recreates the same
+root when possible, and each missing derivative is generated on demand.
 On its first open, mini-film 18 validates a normalized schema-v11
 database from the final 17.x release, creates the one-time
 `mini-film-review.sqlite.pre-seaorm-v11` backup without overwriting an existing
@@ -692,8 +701,8 @@ source and emulation saturation is effectively black-and-white show `None`, `Y`,
 `O`, `R`, and `G` filter controls beside the selected profile name. Those
 black-and-white filter choices are stored per picture/profile variant and are
 used by review and publish rerenders. Generated retouch and black-and-white
-filter variants are cached as hidden sibling outputs so returning to an already
-rendered variant swaps immediately.
+filter variants are cached under `<cache-root>/.mini-film-retouch/` so returning
+to an already rendered variant swaps immediately.
 Click the selected profile name to open the film simulation info overlay; it
 shows profile identity, camera Active D-Lighting metadata for the current RAW,
 and a compact summary of generated or direct PP3 adjustment sections. Its
@@ -725,7 +734,7 @@ setting is locked. Sampler-added profiles and both availability scopes are
 stored in SQLite, survive daemon restarts even when omitted from later CLI
 arguments, and use the ordinary full-resolution render path after selection.
 Reusable inputs and thumbnails live under
-`<output>/.mini-film-sampler/review-sampler-v1/`; review HTML, CSS, and JavaScript
+`<cache-root>/.mini-film-sampler/review-sampler-v1/`; review HTML, CSS, and JavaScript
 remain embedded in the single executable.
 
 Optional Codex analysis can run after each image has a review preview and its

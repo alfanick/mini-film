@@ -513,6 +513,8 @@ impl ReviewHandle {
                         image.retouch.clone().normalized() == RetouchSettings::default()
                             && bw_filter == BwFilter::None,
                         &mut jobs,
+                        &self.output_root,
+                        &self.cache_root,
                     );
                 }
                 Ok(jobs)
@@ -575,8 +577,8 @@ impl ReviewHandle {
     }
 
     fn sampler_cache_root(&self) -> PathBuf {
-        self.output_root
-            .join(".mini-film-sampler")
+        self.cache_root
+            .join(crate::app::cache::SAMPLER_CACHE_DIR)
             .join(REVIEW_SAMPLER_CACHE_VERSION)
     }
 

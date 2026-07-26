@@ -335,11 +335,7 @@ fn run_batch_gallery(
     successes: &[BatchFileRecord],
     args: &BatchArgs,
 ) -> Result<()> {
-    let shared_thumb_root = if gallery_template.is_all() {
-        output_root.join(".mini-film-gallery-thumbnails")
-    } else {
-        output_root.join("thumbnails")
-    };
+    let shared_thumb_root = output_root.join("thumbnails");
     let profile_cache = if profile_stem.trim().is_empty() {
         "default".to_string()
     } else {
@@ -425,11 +421,7 @@ pub(crate) fn render_gallery_for_folder(
     if outputs.is_empty() {
         return Ok(());
     }
-    let shared_thumb_root = if options.template.is_all() {
-        output_root.join(".mini-film-gallery-thumbnails")
-    } else {
-        output_root.join("thumbnails")
-    };
+    let shared_thumb_root = output_root.join("thumbnails");
     let profile_cache = if options.profile_stem.trim().is_empty() {
         "default".to_string()
     } else {
@@ -528,9 +520,7 @@ fn gallery_internal_path(output_root: &Path, path: &Path) -> bool {
     };
     relative.components().any(|component| {
         let name = component.as_os_str().to_string_lossy();
-        name == "thumbnails"
-            || name == ".mini-film-gallery-thumbnails"
-            || name == ".mini-film-profile-inputs"
+        name == "thumbnails" || name == ".mini-film-profile-inputs"
     }) || relative
         .file_name()
         .and_then(|name| name.to_str())
@@ -829,7 +819,7 @@ fn process_batch_file_inner(
                 retouch: None,
                 retouch_white_balance: crate::app::retouch::RetouchWhiteBalance::default(),
                 bw_filter: crate::app::retouch::BwFilter::None,
-                profile_input_cache_root: Some(&context.args.output),
+                profile_input_cache_root: Some(context.temp_root),
             },
             resolved,
             seed,

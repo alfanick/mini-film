@@ -1,3 +1,4 @@
+mod cache;
 mod catalog;
 mod entities;
 mod migrations;
@@ -44,7 +45,6 @@ impl ReviewDatabase {
         input_root: &Path,
         output_root: &Path,
     ) -> Result<(Self, Option<ReviewStore>)> {
-        let roots = ReviewPathRoots::new(input_root, output_root)?;
         let location = ReviewCatalogLocation::prepare(input_root, output_root)?;
         let path = location.catalog_path().to_path_buf();
         if !path.exists() {
@@ -57,7 +57,8 @@ impl ReviewDatabase {
                 }
             }
         }
-        let (connection, store) = prepare_database(&path, !path.exists(), &roots).await?;
+        let (connection, store, roots) =
+            prepare_database(&path, !path.exists(), input_root, output_root).await?;
         if let Err(error) = location.ensure_output_link() {
             connection.close().await.ok();
             return Err(error);
@@ -76,6 +77,10 @@ impl ReviewDatabase {
 
     pub(super) fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub(super) fn cache_root(&self) -> &Path {
+        self.roots.cache_root()
     }
 
     pub(super) async fn replace_store(&self, store: &ReviewStore) -> Result<()> {
@@ -147,13 +152,13 @@ pub(super) fn load_store_for_publish(
     output_root: &Path,
 ) -> Result<Option<ReviewStore>> {
     reject_json_state_path(state)?;
-    let roots = ReviewPathRoots::new(input_root, output_root)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("building review database runtime")?;
     runtime.block_on(async {
-        let (connection, store) = prepare_database(state, false, &roots).await?;
+        let (connection, store, _) =
+            prepare_database(state, false, input_root, output_root).await?;
         connection
             .close()
             .await
@@ -165,8 +170,9 @@ pub(super) fn load_store_for_publish(
 async fn prepare_database(
     path: &Path,
     create_if_missing: bool,
-    roots: &ReviewPathRoots,
-) -> Result<(DatabaseConnection, Option<ReviewStore>)> {
+    input_root: &Path,
+    output_root: &Path,
+) -> Result<(DatabaseConnection, Option<ReviewStore>, ReviewPathRoots)> {
     if create_if_missing {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
@@ -178,7 +184,8 @@ async fn prepare_database(
         verify_current_database(&connection)
             .await
             .context("validating new review database")?;
-        return Ok((connection, None));
+        let roots = prepare_runtime_paths(&connection, input_root, output_root).await?;
+        return Ok((connection, None, roots));
     }
     if !path.exists() {
         bail!("review database does not exist: {}", path.display());
@@ -202,11 +209,11 @@ async fn prepare_database(
                 .await
                 .context("adopting v11 review database with SeaORM")?;
             verify_current_database(&connection).await?;
-            paths::prepare_relative_path_storage(&connection, roots).await?;
-            let store = read::load_store(&connection, roots)
+            let roots = prepare_runtime_paths(&connection, input_root, output_root).await?;
+            let store = read::load_store(&connection, &roots)
                 .await
                 .context("reading adopted review database")?;
-            Ok((connection, store))
+            Ok((connection, store, roots))
         }
         version if (FIRST_SEAORM_SCHEMA_VERSION..=LATEST_SCHEMA_VERSION).contains(&version) => {
             verify_seaorm_database_before_migration(&connection).await?;
@@ -215,11 +222,11 @@ async fn prepare_database(
                 .await
                 .context("running review database migrations")?;
             verify_current_database(&connection).await?;
-            paths::prepare_relative_path_storage(&connection, roots).await?;
-            let store = read::load_store(&connection, roots)
+            let roots = prepare_runtime_paths(&connection, input_root, output_root).await?;
+            let store = read::load_store(&connection, &roots)
                 .await
                 .with_context(|| format!("reading review state from {}", path.display()))?;
-            Ok((connection, store))
+            Ok((connection, store, roots))
         }
         1..=10 => {
             connection.close().await.ok();
@@ -233,6 +240,25 @@ async fn prepare_database(
             );
         }
     }
+}
+
+async fn prepare_runtime_paths(
+    connection: &DatabaseConnection,
+    input_root: &Path,
+    output_root: &Path,
+) -> Result<ReviewPathRoots> {
+    let cache_root = cache::resolve_cache_root(connection).await?;
+    let roots = ReviewPathRoots::new(input_root, output_root, &cache_root)?;
+    paths::prepare_relative_path_storage(connection, &roots).await?;
+    let moved = cache::migrate_legacy_output_caches(connection, &roots).await?;
+    if moved > 0 {
+        eprintln!(
+            "review cache: migrated {moved} legacy cache entries from {} to {}",
+            output_root.display(),
+            cache_root.display()
+        );
+    }
+    Ok(roots)
 }
 
 async fn normalize_pre_release_seaql_ledger(connection: &DatabaseConnection) -> Result<()> {
@@ -533,13 +559,13 @@ pub(super) fn save_store_with_roots(
     input_root: &Path,
     output_root: &Path,
 ) -> Result<()> {
-    let roots = ReviewPathRoots::new(input_root, output_root)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("building review database runtime")?;
     runtime.block_on(async {
-        let (connection, _) = prepare_database(path, !path.exists(), &roots).await?;
+        let (connection, _, roots) =
+            prepare_database(path, !path.exists(), input_root, output_root).await?;
         write::replace_store(&connection, store, &roots).await?;
         connection.close().await?;
         Ok(())
@@ -565,6 +591,7 @@ pub(super) struct TestDatabaseFacts {
 pub(super) struct TestStoredPathFacts {
     pub(super) input_root: String,
     pub(super) output_root: String,
+    pub(super) cache_root: String,
     pub(super) source_paths: Vec<String>,
     pub(super) output_paths: Vec<String>,
 }
@@ -620,6 +647,7 @@ pub(super) fn stored_path_facts(path: &Path) -> Result<TestStoredPathFacts> {
         Ok(TestStoredPathFacts {
             input_root: settings.input_root,
             output_root: settings.output_root,
+            cache_root: settings.cache_root,
             source_paths,
             output_paths,
         })
@@ -954,7 +982,7 @@ pub(super) fn make_schema_v12_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(4)).await?;
+        Migrator::down(&connection, Some(5)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -970,7 +998,7 @@ pub(super) fn make_schema_v13_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(3)).await?;
+        Migrator::down(&connection, Some(4)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -986,7 +1014,7 @@ pub(super) fn make_schema_v14_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(2)).await?;
+        Migrator::down(&connection, Some(3)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1002,7 +1030,7 @@ pub(super) fn make_schema_v15_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(1)).await?;
+        Migrator::down(&connection, Some(2)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
