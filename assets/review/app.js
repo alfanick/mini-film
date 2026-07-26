@@ -2631,7 +2631,12 @@ function renderCurrent(image) {
   if (mainUrl) {
     els.viewer.classList.add("has-image");
     const nextSrc = versionedUrl(mainUrl, mainSource.updatedAt);
-    if (els.image.getAttribute("src") !== nextSrc) stopZoom();
+    const sourceChanged = els.image.getAttribute("src") !== nextSrc;
+    if (imageChanged || (sourceChanged && !state.zoomFullActive)) {
+      stopZoom();
+    } else if (sourceChanged) {
+      clearZoomSource();
+    }
     els.image.src = nextSrc;
     els.image.alt = image.file_name;
   } else {
@@ -6007,7 +6012,12 @@ els.notes.addEventListener("blur", () => saveReview());
 els.notes.addEventListener("input", scheduleAutosave);
 els.notes.addEventListener("keydown", confirmMetadataInput);
 els.image.addEventListener("load", () => {
-  if (state.zoomActive || state.zoomFullActive) stopZoom();
+  if (state.zoomActive) {
+    stopZoom();
+  } else if (state.zoomFullActive && state.zoomFullLastPoint) {
+    clearZoomSource();
+    updateFullImageZoom(state.zoomFullLastPoint.clientX, state.zoomFullLastPoint.clientY);
+  }
   scheduleHistogramRender();
   scheduleViewerSafeAreaUpdate();
   renderRetouchGrid(findImage(state.currentId));
