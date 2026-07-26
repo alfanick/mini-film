@@ -1,7 +1,7 @@
 use super::model::*;
 use super::prelude::*;
 
-const SOOC_RENDER_PIPELINE_KEY: &str = "sooc-sidecar-v2-tone-equalizer";
+const SOOC_RENDER_PIPELINE_KEY: &str = "sooc-managed-symlink-v3";
 const PROFILED_COMPRESSED_RENDER_PIPELINE_KEY: &str = "profiled-compressed-render-v3-no-sharpening";
 const PROFILED_TIFF_RENDER_PIPELINE_KEY: &str = "profiled-tiff-render-v1-sharpening";
 

@@ -1,3 +1,4 @@
+mod catalog;
 mod entities;
 mod migrations;
 mod panorama;
@@ -10,6 +11,7 @@ use super::{model::*, prelude::*};
 #[cfg(test)]
 use anyhow::ensure;
 use arc_swap::ArcSwapOption;
+use catalog::ReviewCatalogLocation;
 use migrations::{
     FIRST_SEAORM_SCHEMA_VERSION, LATEST_SCHEMA_VERSION, LEGACY_SCHEMA_VERSION, Migrator,
     PRE_RELEASE_SEAORM_LEDGER, V11_LEDGER, V18_BASELINE_MIGRATION,
@@ -43,13 +45,23 @@ impl ReviewDatabase {
         output_root: &Path,
     ) -> Result<(Self, Option<ReviewStore>)> {
         let roots = ReviewPathRoots::new(input_root, output_root)?;
-        let path = review_state_path(output_root);
-        if !path.exists() && output_root.join(LEGACY_JSON_STATE_FILE).exists() {
-            bail!(legacy_upgrade_error(
-                &output_root.join(LEGACY_JSON_STATE_FILE)
-            ));
+        let location = ReviewCatalogLocation::prepare(input_root, output_root)?;
+        let path = location.catalog_path().to_path_buf();
+        if !path.exists() {
+            for legacy in [
+                input_root.join(LEGACY_JSON_STATE_FILE),
+                output_root.join(LEGACY_JSON_STATE_FILE),
+            ] {
+                if legacy.exists() {
+                    bail!(legacy_upgrade_error(&legacy));
+                }
+            }
         }
         let (connection, store) = prepare_database(&path, !path.exists(), &roots).await?;
+        if let Err(error) = location.ensure_output_link() {
+            connection.close().await.ok();
+            return Err(error);
+        }
         Ok((
             Self {
                 connection,
@@ -97,19 +109,36 @@ impl ReviewDatabase {
     }
 }
 
-pub(super) fn review_state_path(output_root: &Path) -> PathBuf {
-    output_root.join(SQLITE_STATE_FILE)
-}
-
 pub(super) fn resolve_review_state_for_publish(
     state: &Path,
+    input_root: &Path,
     output_root: &Path,
 ) -> Result<PathBuf> {
     reject_json_state_path(state)?;
+    let location = ReviewCatalogLocation::prepare(input_root, output_root)?;
+    if !location.catalog_path().is_file() {
+        bail!(
+            "review database does not exist: {}",
+            location.catalog_path().display()
+        );
+    }
+    location.ensure_output_link()?;
     let state = fs::canonicalize(state)
         .with_context(|| format!("canonicalizing review state {}", state.display()))?;
-    ensure_path_within(&state, output_root)?;
-    Ok(state)
+    let catalog = fs::canonicalize(location.catalog_path()).with_context(|| {
+        format!(
+            "canonicalizing review catalog {}",
+            location.catalog_path().display()
+        )
+    })?;
+    if state != catalog {
+        bail!(
+            "review state {} is not the catalog for input root {}",
+            state.display(),
+            input_root.display()
+        );
+    }
+    Ok(catalog)
 }
 
 pub(super) fn load_store_for_publish(
@@ -437,18 +466,6 @@ fn legacy_sqlite_upgrade_error(path: &Path, version: i64) -> String {
         "review database {} uses legacy SQLite schema v{version}. Run the final mini-film 17.x release once to migrate it to normalized SQLite v11, then retry with mini-film 18",
         path.display()
     )
-}
-
-fn ensure_path_within(path: &Path, root: &Path) -> Result<()> {
-    if path.starts_with(root) {
-        Ok(())
-    } else {
-        bail!(
-            "review state {} is outside output root {}",
-            path.display(),
-            root.display()
-        )
-    }
 }
 
 fn required_v11_tables() -> impl Iterator<Item = &'static str> {

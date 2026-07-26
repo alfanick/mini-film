@@ -52,7 +52,8 @@ Available shortcuts:
 - **Mixed RAW and processed-file input**: batch, daemon, review, and publish can
   take RAW files plus existing JPEG/HEIC/TIFF files. Explicit profiles apply to
   all standalone inputs; without a profile, rendered inputs keep their existing
-  look and skip RawTherapee. JPEG/HEIC originals remain available for saving.
+  look and skip RawTherapee. In daemon output, untouched processed originals and
+  straight-out-of-camera sidecars are managed symlinks back to the input tree.
 - **Panorama workflow**: select ordered pictures in live review, compare four
   projection previews, and render a full-resolution 16-bit TIFF that immediately
   re-enters the normal review and profile workflow.
@@ -548,24 +549,33 @@ JPEG/HEIC inputs hide profile and retouch controls. With explicit profiles,
 standalone JPEG/HEIC inputs expose the same profile rail, retouch controls,
 black-and-white filters, and publish selection as RAW. Their camera rendition
 appears in the rail as `straight out of camera`, unchecked for publish by
-default. For
-standalone JPEG/HEIC, ordered background thumbnail and preview pipelines start
-at discovery time and run concurrently with full-output export. Each converter
-uses half of the available CPU threads; one thumbnail worker and two preview
-workers keep review throughput high without overwhelming metadata discovery.
-Jobs follow capture time and then file name, and each derivative becomes
-available to the browser as soon as its cache file lands. The sidebar uses
-progressive 512-pixel quality-55 thumbnails; the main viewer uses progressive
-2048-pixel quality-82 previews. In JPEG-only reviews it preloads the next three
-previews at viewport sizes up to 2048 pixels and the next three originals above
-that threshold. Both tiers are cached under
+default. Daemon never copies an untouched JPEG/HEIC/TIFF into its normal output
+tree. A direct compressed input is represented by a managed symlink at its
+relative output path; a RAW sidecar or the camera rendition of a profiled
+compressed input is a managed symlink under the `sooc` profile directory.
+Links preserve the source media extension, with `.jpg` and `.jpeg` normalized
+to `.jpg`. Startup replaces old generated copies and repairs stale links after
+the input folder moves. Crop/rotation variants use hidden retouch-cache files,
+so the base original link remains intact.
+
+For standalone JPEG/HEIC, ordered background thumbnail and preview pipelines
+start at discovery time and run concurrently with managed-link installation.
+Each converter uses half of the available CPU threads; one thumbnail worker and
+two preview workers keep review throughput high without overwhelming metadata
+discovery. Jobs follow capture time and then file name, and each derivative
+becomes available to the browser as soon as its cache file lands. The sidebar
+uses progressive 512-pixel quality-55 thumbnails; the main viewer uses
+progressive 2048-pixel quality-82 previews. In JPEG-only reviews it preloads the
+next three previews at viewport sizes up to 2048 pixels and the next three
+originals above that threshold. Both tiers are cached under
 `<output>/.mini-film-review-previews/compressed-v1/`. Direct compressed images
-request the original input only when the loupe activates or the browser viewport
-is larger than 2048 pixels; profiled compressed images use the selected profile
-render for the main viewer and loupe. Holding the primary mouse button or a touch
-shows the nearby loupe until release. On desktop, double-clicking the picture
-toggles a full-view zoom that follows the mouse cursor; double-click again or
-press Escape to leave it. In the desktop and tablet layouts, direct
+request the original input only when the loupe activates or the browser
+viewport is larger than 2048 pixels; profiled compressed images use the
+selected profile render for the main viewer and loupe. Holding the primary
+mouse button or a touch shows the nearby loupe until release. On desktop,
+double-clicking the picture toggles a full-view zoom that follows the mouse
+cursor; double-click again or press Escape to leave it. In the desktop and
+tablet layouts, direct
 JPEG/HEIC inputs hide the unavailable Retouch section. RAW inputs paired with a
 straight-out-of-camera JPEG/HEIC keep that section in place and disable it while
 the straight-out-of-camera profile is selected, so switching profiles does not
@@ -597,12 +607,20 @@ connected browser through the server-sent event stream. At the end of a pass,
 the shared filter moves to the next rating level.
 
 Review data, panorama projects, and the shared browser position are persisted in
-`<output>/mini-film-review.sqlite` as normalized relational rows; the active
-database does not keep an opaque JSON copy of the review store. SeaORM models
-own the schema and a migration ledger applies future database changes
-automatically. Media paths in SQLite are stored relative to their input or
-output root, while the settings row records the last absolute roots used to open
-the database. The roots supplied to `daemon` or `review-publish` are
+`<input>/mini-film-review.sqlite` as normalized relational rows. The output path
+`<output>/mini-film-review.sqlite` is a managed symlink to that catalog, and
+`<output>/originals` is a managed symlink to the complete input folder. On the
+first mini-film 21.1 open, an existing regular catalog and any SQLite
+WAL/journal companions are moved from output to input before SQLite opens; if
+different catalogs exist in both locations, mini-film stops without modifying
+either one. Subsequent daemon starts repair the catalog and `originals` links
+when the input folder has moved.
+
+The active database does not keep an opaque JSON copy of the review store.
+SeaORM models own the schema and a migration ledger applies future database
+changes automatically. Media paths in SQLite are stored relative to their input
+or output root, while the settings row records the last absolute roots used to
+open the database. The roots supplied to `daemon` or `review-publish` are
 authoritative, so an input tree and output tree can be moved and reopened at
 their new locations without rewriting review data or cached-output
 relationships. Existing schema-v15 absolute paths are converted transactionally
@@ -796,6 +814,9 @@ mini-film review-publish \
   --label green \
   --gallery modern
 ```
+
+`--state` may use either the canonical catalog in the input folder or its
+managed output symlink; both must resolve to the catalog for the supplied roots.
 
 Daemon can also ingest files from a Nikon camera configured for
 Connect-to-PC / Wireless Transmitter Utility style transfer. Start the camera's

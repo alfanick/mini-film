@@ -1023,6 +1023,11 @@ impl ReviewHandle {
         let mut pending_retouch_key = None;
         let result = self.update_preview(input, |preview| {
             pending_retouch_key = apply_base_preview_done(preview, output, duration);
+            if let Some(render_key) = pending_retouch_key.as_deref()
+                && apply_cached_preview_output(preview, output, render_key)
+            {
+                pending_retouch_key = None;
+            }
         });
         if result.is_ok()
             && let Some(render_key) = pending_retouch_key
@@ -1986,12 +1991,13 @@ impl ReviewHandle {
                 render.status = ReviewRenderStatus::Processing;
                 render.error = None;
             });
-        let temp_output = retouch_temp_output(&job.output, &job.render_key);
+        let final_output = retouch_cache_output(&job.output, &job.render_key);
+        let temp_output = retouch_temp_output(&final_output, &job.render_key);
         let result = self.render_sooc_retouch_output(&sidecar, &retouch, &temp_output);
         match result {
             Ok(()) => match self.sooc_retouch_task_snapshot(&job.raw, &job.render_key) {
                 Ok(Some(_)) => {
-                    if let Some(parent) = job.output.parent()
+                    if let Some(parent) = final_output.parent()
                         && let Err(error) = fs::create_dir_all(parent)
                     {
                         self.record_retouch_render_failed(
@@ -2002,7 +2008,18 @@ impl ReviewHandle {
                         );
                         return;
                     }
-                    if let Err(error) = fs::rename(&temp_output, &job.output) {
+                    if final_output.exists()
+                        && let Err(error) = fs::remove_file(&final_output)
+                    {
+                        self.record_retouch_render_failed(
+                            &job,
+                            &temp_output,
+                            started,
+                            error.to_string(),
+                        );
+                        return;
+                    }
+                    if let Err(error) = fs::rename(&temp_output, &final_output) {
                         self.record_retouch_render_failed(
                             &job,
                             &temp_output,
@@ -2018,10 +2035,10 @@ impl ReviewHandle {
                         |render| {
                             render.status = ReviewRenderStatus::Done;
                             render.render_key = None;
-                            render.output_path = Some(job.output.clone());
+                            render.output_path = Some(final_output.clone());
                             render.error = None;
                             render.duration_ms = Some(started.elapsed().as_millis() as u64);
-                            refresh_review_render_dimensions(render, &job.output);
+                            refresh_review_render_dimensions(render, &final_output);
                         },
                     );
                 }
@@ -2050,12 +2067,13 @@ impl ReviewHandle {
             preview.status = ReviewRenderStatus::Processing;
             preview.error = None;
         });
-        let temp_output = retouch_temp_output(&job.output, &job.render_key);
+        let final_output = retouch_cache_output(&job.output, &job.render_key);
+        let temp_output = retouch_temp_output(&final_output, &job.render_key);
         let result = self.render_compressed_retouch_output(&job.raw, &retouch, &temp_output);
         match result {
             Ok(()) => match self.compressed_retouch_task_snapshot(&job.raw, &job.render_key) {
                 Ok(Some(_)) => {
-                    if let Some(parent) = job.output.parent()
+                    if let Some(parent) = final_output.parent()
                         && let Err(error) = fs::create_dir_all(parent)
                     {
                         self.record_retouch_render_failed(
@@ -2066,7 +2084,18 @@ impl ReviewHandle {
                         );
                         return;
                     }
-                    if let Err(error) = fs::rename(&temp_output, &job.output) {
+                    if final_output.exists()
+                        && let Err(error) = fs::remove_file(&final_output)
+                    {
+                        self.record_retouch_render_failed(
+                            &job,
+                            &temp_output,
+                            started,
+                            error.to_string(),
+                        );
+                        return;
+                    }
+                    if let Err(error) = fs::rename(&temp_output, &final_output) {
                         self.record_retouch_render_failed(
                             &job,
                             &temp_output,
@@ -2078,7 +2107,7 @@ impl ReviewHandle {
                     let _ = self.update_preview_if_key(&job.raw, &job.render_key, |preview| {
                         preview.status = ReviewRenderStatus::Done;
                         preview.render_key = None;
-                        preview.path = Some(job.output.clone());
+                        preview.path = Some(final_output.clone());
                         preview.error = None;
                         preview.duration_ms = Some(started.elapsed().as_millis() as u64);
                     });
@@ -2408,20 +2437,44 @@ impl ReviewHandle {
                     }
                     if retouch_changed {
                         if direct_compressed {
-                            let render_key = image.retouch.render_key();
-                            image.preview.status = ReviewRenderStatus::Queued;
-                            image.preview.error = None;
-                            image.preview.duration_ms = None;
-                            image.preview.render_key = Some(render_key.clone());
-                            image.preview.updated_at = now_string();
-                            if let Some(output) = &image.preview.path {
-                                retouch_jobs.push((
-                                    image.raw_path.clone(),
-                                    None,
-                                    output.clone(),
-                                    render_key.clone(),
-                                ));
+                            let base_output =
+                                image.preview.path.as_deref().map(retouch_base_output);
+                            if let Some(render_key) = retouch_render_key(&image.retouch) {
+                                let cached = base_output.as_deref().is_some_and(|output| {
+                                    apply_cached_preview_output(
+                                        &mut image.preview,
+                                        output,
+                                        &render_key,
+                                    )
+                                });
+                                if !cached {
+                                    image.preview.status = ReviewRenderStatus::Queued;
+                                    image.preview.error = None;
+                                    image.preview.duration_ms = None;
+                                    image.preview.render_key = Some(render_key.clone());
+                                    if let Some(output) = base_output {
+                                        retouch_jobs.push((
+                                            image.raw_path.clone(),
+                                            None,
+                                            output,
+                                            render_key,
+                                        ));
+                                    }
+                                }
+                            } else {
+                                if let Some(output) = base_output {
+                                    image.preview.status = if output.is_file() {
+                                        ReviewRenderStatus::Done
+                                    } else {
+                                        ReviewRenderStatus::Queued
+                                    };
+                                    image.preview.path = Some(output);
+                                }
+                                image.preview.error = None;
+                                image.preview.duration_ms = Some(0);
+                                image.preview.render_key = None;
                             }
+                            image.preview.updated_at = now_string();
                         } else {
                             let publish_indexes = effective_publish_profile_indexes(image);
                             let visible_profile_index =
@@ -3846,6 +3899,23 @@ fn apply_cached_profile_output(
     render.error = None;
     render.duration_ms = Some(0);
     refresh_review_render_dimensions(render, &output);
+    true
+}
+
+fn apply_cached_preview_output(
+    preview: &mut ReviewPreview,
+    output: &Path,
+    render_key: &str,
+) -> bool {
+    let output = retouch_cache_output(output, render_key);
+    if !output.is_file() {
+        return false;
+    }
+    preview.status = ReviewRenderStatus::Done;
+    preview.render_key = None;
+    preview.path = Some(output);
+    preview.error = None;
+    preview.duration_ms = Some(0);
     true
 }
 

@@ -502,7 +502,10 @@ pub(super) async fn media_response(path: &str, handle: &ReviewHandle) -> Respons
     };
     if parts.len() == 1 {
         return match handle.full_media_path(image_id) {
-            Ok(path) => serve_review_file(path, "image/jpeg").await,
+            Ok(path) => {
+                let content_type = review_media_content_type(&path);
+                serve_review_file(path, content_type).await
+            }
             Err(error) => json_error(404, error).into_response(),
         };
     }
@@ -522,7 +525,10 @@ pub(super) async fn media_response(path: &str, handle: &ReviewHandle) -> Respons
         handle.media_path(image_id, profile_index)
     };
     match result {
-        Ok(path) => serve_review_file(path, "image/jpeg").await,
+        Ok(path) => {
+            let content_type = review_media_content_type(&path);
+            serve_review_file(path, content_type).await
+        }
         Err(error) => json_error(404, error).into_response(),
     }
 }
@@ -551,14 +557,14 @@ pub(super) async fn original_response(path: &str, handle: &ReviewHandle) -> Resp
     };
     match handle.original_media_path(image_id) {
         Ok(path) => {
-            let content_type = original_media_content_type(&path);
+            let content_type = review_media_content_type(&path);
             serve_review_file(path, content_type).await
         }
         Err(error) => json_error(404, error).into_response(),
     }
 }
 
-fn original_media_content_type(path: &Path) -> &'static str {
+fn review_media_content_type(path: &Path) -> &'static str {
     match path.extension().and_then(|extension| extension.to_str()) {
         Some(extension)
             if extension.eq_ignore_ascii_case("jpg") || extension.eq_ignore_ascii_case("jpeg") =>

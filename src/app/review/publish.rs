@@ -300,7 +300,7 @@ pub(super) fn publish_review_state(
     }
     let input_root = canonical_existing_dir(&args.input_root)?;
     let output_root = canonical_existing_dir(&args.output_root)?;
-    let state = resolve_review_state_for_publish(&args.state, &output_root)?;
+    let state = resolve_review_state_for_publish(&args.state, &input_root, &output_root)?;
     let store = load_store_for_publish(&state, &input_root, &output_root)?
         .ok_or_else(|| anyhow!("review state is empty"))?;
     let album = validate_relative_publish_album(&args.album)?;
@@ -423,7 +423,12 @@ pub(super) fn publish_store_inner(
                 report.skipped += 1;
                 continue;
             };
-            let source = safe_existing_output_source(source, output_root)?;
+            let source = safe_existing_managed_output_source(
+                source,
+                &image.raw_path,
+                input_root,
+                output_root,
+            )?;
             let raw_stem = Path::new(&image.relative_path)
                 .file_stem()
                 .and_then(|stem| stem.to_str())
@@ -472,7 +477,14 @@ pub(super) fn publish_store_inner(
                 report.skipped += 1;
                 continue;
             };
-            let source = safe_existing_output_source(source, output_root)?;
+            let source = if is_sooc_render(render) {
+                let original = image_sooc_source(image).ok_or_else(|| {
+                    anyhow!("review image has no SOOC source: {}", image.relative_path)
+                })?;
+                safe_existing_managed_output_source(source, original, input_root, output_root)?
+            } else {
+                safe_existing_output_source(source, output_root)?
+            };
             let file_name = review_publish_file_name(
                 raw_stem,
                 render,
@@ -696,6 +708,13 @@ pub(super) fn publish_review_output(item: ReviewPublishOutput<'_>) -> Result<()>
                 item.options,
             )?;
         }
+    } else if item.options.write_metadata && item.source.starts_with(item.input_root) {
+        fs::copy(item.source, item.destination).with_context(|| {
+            format!(
+                "copying original {} before writing publish metadata",
+                item.source.display()
+            )
+        })?;
     } else if fs::hard_link(item.source, item.destination).is_err() {
         symlink_file(item.source, item.destination).with_context(|| {
             format!(
@@ -893,6 +912,37 @@ pub(super) fn safe_existing_output_source(source: &Path, output_root: &Path) -> 
     ensure_path_within(&source, output_root)?;
     if !source.is_file() {
         bail!("review output is not a file: {}", source.display());
+    }
+    Ok(source)
+}
+
+pub(super) fn safe_existing_managed_output_source(
+    source: &Path,
+    original: &Path,
+    input_root: &Path,
+    output_root: &Path,
+) -> Result<PathBuf> {
+    let source = fs::canonicalize(source)
+        .with_context(|| format!("canonicalizing managed review output {}", source.display()))?;
+    if source.starts_with(output_root) {
+        if !source.is_file() {
+            bail!("managed review output is not a file: {}", source.display());
+        }
+        return Ok(source);
+    }
+
+    let original = fs::canonicalize(original)
+        .with_context(|| format!("canonicalizing original source {}", original.display()))?;
+    ensure_path_within(&original, input_root)?;
+    if source != original {
+        bail!(
+            "managed review output {} does not point to expected original {}",
+            source.display(),
+            original.display()
+        );
+    }
+    if !source.is_file() {
+        bail!("managed review output is not a file: {}", source.display());
     }
     Ok(source)
 }

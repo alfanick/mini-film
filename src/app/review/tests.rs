@@ -423,11 +423,12 @@ fn test_handle(input: PathBuf, output: PathBuf, profiles: Vec<ReviewProfile>) ->
         .join()
         .unwrap()
     };
+    let state_path = database.path().to_path_buf();
     ReviewHandle {
         state: Arc::new(ArcSwap::from_pointee(store)),
         subscribers: Arc::new(subscribers),
         state_cache: Arc::new(ArcSwapOption::empty()),
-        state_path: output.join(SQLITE_STATE_FILE),
+        state_path,
         database,
         database_runtime,
         input_root: input.clone(),
@@ -1813,6 +1814,106 @@ fn sampler_profiles_persist_with_current_and_all_availability() {
 }
 
 #[test]
+fn opening_old_output_catalog_moves_it_to_input_without_data_loss() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("input");
+    let output = temp.path().join("output");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let old_state = output.join(SQLITE_STATE_FILE);
+    let new_state = input.join(SQLITE_STATE_FILE);
+    let store = rebase_review_store(fully_populated_review_store(), &input, &output);
+    let expected = persisted_store(store.clone());
+    save_store_with_roots(&old_state, &store, &input, &output).unwrap();
+    let facts_before = database_facts(&old_state).unwrap();
+
+    let runtime = test_async_runtime();
+    let (database, loaded) = runtime
+        .block_on(ReviewDatabase::open_output(&input, &output))
+        .unwrap();
+
+    assert_eq!(database.path(), new_state);
+    assert_eq!(
+        serde_json::to_value(loaded.unwrap()).unwrap(),
+        serde_json::to_value(&expected).unwrap()
+    );
+    drop(database);
+    assert!(new_state.is_file());
+    assert!(
+        fs::symlink_metadata(&old_state)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(
+        fs::canonicalize(&old_state).unwrap(),
+        fs::canonicalize(&new_state).unwrap()
+    );
+    let canonical_state = fs::canonicalize(&new_state).unwrap();
+    assert_eq!(
+        resolve_review_state_for_publish(&old_state, &input, &output).unwrap(),
+        canonical_state
+    );
+    assert_eq!(
+        resolve_review_state_for_publish(&new_state, &input, &output).unwrap(),
+        canonical_state
+    );
+
+    let restored = load_store_with_roots(&new_state, &input, &output)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(restored).unwrap(),
+        serde_json::to_value(expected).unwrap()
+    );
+    let facts_after = database_facts(&new_state).unwrap();
+    assert_eq!(facts_after.schema_version, facts_before.schema_version);
+    assert_eq!(facts_after.seaql_migrations, facts_before.seaql_migrations);
+    assert_eq!(facts_after.counts, facts_before.counts);
+    assert_eq!(facts_after.indexes, facts_before.indexes);
+}
+
+#[test]
+fn reopening_after_input_move_repairs_catalog_link_and_rebases_paths() {
+    let temp = tempfile::tempdir().unwrap();
+    let old_input = temp.path().join("old-input");
+    let new_input = temp.path().join("new-input");
+    let output = temp.path().join("output");
+    fs::create_dir_all(&old_input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let base_store = fully_populated_review_store();
+    let store = rebase_review_store(base_store.clone(), &old_input, &output);
+
+    let runtime = test_async_runtime();
+    let (database, _) = runtime
+        .block_on(ReviewDatabase::open_output(&old_input, &output))
+        .unwrap();
+    runtime.block_on(database.replace_store(&store)).unwrap();
+    drop(database);
+
+    let output_state = output.join(SQLITE_STATE_FILE);
+    fs::rename(&old_input, &new_input).unwrap();
+    assert!(fs::canonicalize(&output_state).is_err());
+
+    let (database, loaded) = runtime
+        .block_on(ReviewDatabase::open_output(&new_input, &output))
+        .unwrap();
+    let expected = rebase_review_store(persisted_store(base_store), &new_input, &output);
+    assert_eq!(
+        serde_json::to_value(loaded.unwrap()).unwrap(),
+        serde_json::to_value(expected).unwrap()
+    );
+    assert_eq!(database.path(), new_input.join(SQLITE_STATE_FILE));
+    assert_eq!(
+        fs::canonicalize(&output_state).unwrap(),
+        fs::canonicalize(new_input.join(SQLITE_STATE_FILE)).unwrap()
+    );
+    let paths = stored_path_facts(database.path()).unwrap();
+    assert_eq!(paths.input_root, new_input.to_string_lossy());
+    assert_eq!(paths.output_root, output.to_string_lossy());
+}
+
+#[test]
 fn panorama_projects_round_trip_normalized_relationships() {
     let temp = tempfile::tempdir().unwrap();
     let input = temp.path().join("in");
@@ -1922,17 +2023,22 @@ fn sqlite_v1_through_v10_are_rejected_without_modification() {
 #[test]
 fn incremental_store_delta_preserves_complete_state() {
     let temp = tempfile::tempdir().unwrap();
-    let state_path = temp.path().join(SQLITE_STATE_FILE);
-    let before = fully_populated_review_store();
-    save_store(&state_path, &before).unwrap();
-    let facts_before = database_facts(&state_path).unwrap();
+    let input = temp.path().join("input");
+    let output = temp.path().join("output");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let old_state_path = output.join(SQLITE_STATE_FILE);
+    let state_path = input.join(SQLITE_STATE_FILE);
+    let before = rebase_review_store(fully_populated_review_store(), &input, &output);
+    save_store_with_roots(&old_state_path, &before, &input, &output).unwrap();
+    let facts_before = database_facts(&old_state_path).unwrap();
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
     let (database, loaded) = runtime
-        .block_on(ReviewDatabase::open_output(Path::new("/in"), temp.path()))
+        .block_on(ReviewDatabase::open_output(&input, &output))
         .unwrap();
     let loaded = loaded.unwrap();
     let mut after = loaded.clone();
@@ -1944,7 +2050,7 @@ fn incremental_store_delta_preserves_complete_state() {
         .unwrap();
     drop(database);
 
-    let restored = load_store_with_roots(&state_path, Path::new("/in"), temp.path())
+    let restored = load_store_with_roots(&state_path, &input, &output)
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -2264,6 +2370,68 @@ fn base_render_done_uses_cached_retouch_output_without_scheduling() {
     assert_eq!(render.status, ReviewRenderStatus::Done);
     assert_eq!(render.output_path.as_deref(), Some(cached.as_path()));
     assert_eq!(render.render_key, None);
+    assert!(handle.retouch_scheduler.pending.load_full().is_empty());
+}
+
+#[test]
+fn direct_compressed_retouch_uses_cache_without_replacing_source_link() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let original = input.join("frame.JPG");
+    let base = output.join("frame.jpg");
+    fs::write(&original, b"original").unwrap();
+    crate::app::managed_symlink::ensure_file_symlink(&original, &base, true).unwrap();
+    let handle = test_handle(input, output, Vec::new());
+    handle.record_compressed_queued(&original, &base).unwrap();
+    handle
+        .record_compressed_done(&original, &base, Duration::from_millis(1))
+        .unwrap();
+    let retouch = RetouchSettings {
+        crop: Some(crate::app::retouch::RetouchCrop {
+            x: 0.1,
+            y: 0.1,
+            width: 0.8,
+            height: 0.8,
+        }),
+        ..RetouchSettings::default()
+    }
+    .normalized();
+    let cached = retouch_cache_output(&base, &retouch.render_key());
+    fs::write(&cached, b"cached crop").unwrap();
+
+    handle
+        .apply_review_update(ReviewUpdateRequest {
+            image_id: 1,
+            rating: 0,
+            label: ReviewLabel::None,
+            labels: Vec::new(),
+            tags: Vec::new(),
+            notes: String::new(),
+            retouch: Some(retouch),
+            selected_profile_index: None,
+            publish_profile_indexes: None,
+            enabled_profile_indexes: None,
+            profile_bw_filters: None,
+            advance_after_update: false,
+        })
+        .unwrap();
+
+    let store = handle.store_snapshot();
+    assert_eq!(
+        store.images[0].preview.path.as_deref(),
+        Some(cached.as_path())
+    );
+    assert_eq!(store.images[0].preview.status, ReviewRenderStatus::Done);
+    assert_eq!(store.images[0].preview.render_key, None);
+    assert!(
+        fs::symlink_metadata(&base)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
     assert!(handle.retouch_scheduler.pending.load_full().is_empty());
 }
 
@@ -2920,6 +3088,48 @@ fn original_response_serves_typed_compressed_source_files_inline() {
 }
 
 #[test]
+fn sooc_media_response_uses_linked_source_content_type() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let heic = input.join("frame.HEIC");
+    let managed = output.join(SOOC_PROFILE_STEM).join("frame.heic");
+    fs::write(&heic, b"original heic bytes").unwrap();
+    crate::app::managed_symlink::ensure_file_symlink(&heic, &managed, true).unwrap();
+
+    let handle = test_handle(input, output, vec![profile(0, "Classic")]);
+    handle.record_profiled_compressed_discovered(&heic).unwrap();
+    handle
+        .record_profile_queued(&heic, SOOC_PROFILE_INDEX, &managed)
+        .unwrap();
+    handle
+        .record_profile_done(
+            &heic,
+            SOOC_PROFILE_INDEX,
+            &managed,
+            Duration::from_millis(1),
+        )
+        .unwrap();
+
+    let response = test_async_runtime().block_on(route_request(
+        axum::http::Method::GET,
+        &format!("/media/1/{SOOC_PROFILE_INDEX}"),
+        axum::body::Bytes::new(),
+        &handle,
+    ));
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .unwrap(),
+        "image/heic"
+    );
+}
+
+#[test]
 fn published_gallery_download_route_archives_portable_assets() {
     let temp = tempfile::tempdir().unwrap();
     let input = temp.path().join("in");
@@ -3317,6 +3527,79 @@ fn focus_overlay_toggles_the_svg_hidden_attribute() {
     assert!(script.contains(r#"els.focusOverlay.setAttribute("hidden", "")"#));
     assert!(script.contains(r#"els.focusOverlay.removeAttribute("hidden")"#));
     assert!(!script.contains("els.focusOverlay.hidden ="));
+}
+
+#[test]
+fn publish_accepts_managed_direct_compressed_link() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let original = input.join("frame.JPG");
+    let managed = output.join("frame.jpg");
+    fs::write(&original, b"original jpeg").unwrap();
+    crate::app::managed_symlink::ensure_file_symlink(&original, &managed, true).unwrap();
+
+    let mut store = ReviewStore::new(Vec::new());
+    let image = store.ensure_image(&input, &original).unwrap();
+    image.rating = 5;
+    image.preview.status = ReviewRenderStatus::Done;
+    image.preview.path = Some(managed.clone());
+    let options = test_publish_options("published");
+
+    let report = publish_store_inner(&store, &input, &output, &options, None).unwrap();
+
+    assert_eq!(report.linked, 1);
+    assert_eq!(
+        fs::read(output.join("published/frame.jpg")).unwrap(),
+        b"original jpeg"
+    );
+    assert!(
+        fs::symlink_metadata(&managed)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
+#[test]
+fn publish_accepts_managed_sooc_link() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(output.join(SOOC_PROFILE_STEM)).unwrap();
+    let raw = input.join("frame.NEF");
+    let sidecar = input.join("frame.JPG");
+    let managed = output.join(SOOC_PROFILE_STEM).join("frame.jpg");
+    fs::write(&raw, b"raw").unwrap();
+    fs::write(&sidecar, b"original jpeg").unwrap();
+    crate::app::managed_symlink::ensure_file_symlink(&sidecar, &managed, true).unwrap();
+
+    let mut store = ReviewStore::new(vec![profile(0, "Classic")]);
+    let image = store.ensure_image(&input, &raw).unwrap();
+    image.sooc_sidecar_path = Some(sidecar);
+    image.rating = 5;
+    image.publish_profile_indexes = Some(vec![SOOC_PROFILE_INDEX]);
+    let mut render = profile_render(SOOC_PROFILE_INDEX, SOOC_PROFILE_STEM);
+    render.output_path = Some(managed.clone());
+    image.profiles.push(render);
+    let options = test_publish_options("published");
+
+    let report = publish_store_inner(&store, &input, &output, &options, None).unwrap();
+
+    assert_eq!(report.linked, 1);
+    assert_eq!(
+        fs::read(output.join("published/frame-sooc.jpg")).unwrap(),
+        b"original jpeg"
+    );
+    assert!(
+        fs::symlink_metadata(&managed)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
 }
 
 #[test]

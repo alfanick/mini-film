@@ -21,12 +21,12 @@ use walkdir::WalkDir;
 use mini_film::GrainEngine;
 
 use crate::app::apply::{
-    ApplyArgs, ApplyJob, CompressedApplyJob, apply_compressed, apply_resolved,
-    resolve_apply_effects, resolve_grain_override,
+    ApplyArgs, ApplyJob, apply_resolved, resolve_apply_effects, resolve_grain_override,
 };
 use crate::app::dng::DngFallbackConfig;
 use crate::app::export::validate_export_options;
 use crate::app::info::profile_info_text_for_selector;
+use crate::app::managed_symlink::{ensure_directory_symlink, ensure_file_symlink};
 use crate::app::nikon_wtu::{NikonWtuConfig, NikonWtuReceiver, start_nikon_wtu_receiver};
 use crate::app::profile::{ResolvedProfile, neutral_profile, resolve_profile};
 use crate::app::progress::{
@@ -41,7 +41,8 @@ use crate::app::system_stats::{ResourceUsageSummary, sample_usage_block};
 use crate::app::util::{
     InputFileFilter, coalesce_due_input_sidecars, coalesce_input_sidecars, cpu_thread_count,
     half_cpu_thread_count, input_filter_name, is_jpeg_input_file, is_raw_input_file,
-    is_supported_input_file, matching_raw_for_sidecar, matching_sidecar_for_raw, time_of_day_seed,
+    is_rendered_input_file, is_supported_input_file, matching_raw_for_sidecar,
+    matching_sidecar_for_raw, time_of_day_seed,
 };
 use crate::cli::{
     BatchOutputFormat, CodexAnalysisFlags, ExportOptions, GalleryTemplate, LensCorrections,
@@ -293,6 +294,8 @@ pub(crate) fn run_batch_daemon(mut args: BatchDaemonArgs) -> Result<()> {
         .with_context(|| format!("canonicalizing {}", args.input.display()))?;
     args.output = fs::canonicalize(&args.output)
         .with_context(|| format!("canonicalizing {}", args.output.display()))?;
+    ensure_directory_symlink(&args.input, &args.output.join("originals"))
+        .context("creating output originals symlink")?;
     if args.codex.is_some() && args.review_address.is_none() {
         bail!(
             "--codex requires --review-address so generated ratings, tags, and notes can be stored in review state"
@@ -499,6 +502,15 @@ pub(crate) fn run_batch_daemon(mut args: BatchDaemonArgs) -> Result<()> {
     let mut pending: HashMap<PathBuf, PendingFile> = HashMap::new();
     let startup_inputs =
         collect_batch_inputs(&args.input, args.input_file_filter, &args.dng_fallback)?;
+    let repaired_links =
+        repair_compressed_output_links(&startup_inputs, &profiles, &args.input, &args.output)?;
+    if repaired_links > 0 {
+        batch.println(format!(
+            "[{}] startup: repaired {} original/SOOC links",
+            elapsed_human(start.elapsed()),
+            repaired_links
+        ));
+    }
     if let Some(review) = &review {
         let metadata_count = review.prefetch_startup_exif_metadata(&startup_inputs);
         if metadata_count > 0 {
@@ -1310,13 +1322,8 @@ fn enqueue_compressed_job(
     input: PathBuf,
     context: &ProfileScheduleContext<'_>,
 ) -> Result<usize> {
-    let expected_output = daemon_output_path(
-        context.input_root,
-        context.output_root,
-        context.output_format,
-        &input,
-        "",
-    )?;
+    let expected_output =
+        daemon_passthrough_output_path(context.input_root, context.output_root, &input)?;
     if let Some(review) = context.review {
         review.record_compressed_queued(&input, &expected_output)?;
     }
@@ -1340,13 +1347,8 @@ fn enqueue_sooc_job(
     sidecar: PathBuf,
     context: &ProfileScheduleContext<'_>,
 ) -> Result<usize> {
-    let expected_output = daemon_output_path(
-        context.input_root,
-        context.output_root,
-        context.output_format,
-        &raw,
-        SOOC_PROFILE_STEM,
-    )?;
+    let expected_output =
+        daemon_sooc_output_path(context.input_root, context.output_root, &raw, &sidecar)?;
     if should_skip_existing_profile_output(context, &raw, SOOC_PROFILE_INDEX, &expected_output) {
         return Ok(0);
     }
@@ -1387,6 +1389,47 @@ fn collect_batch_inputs(
         }
     }
     dng_fallback.coalesce_existing_replacements(coalesce_input_sidecars(inputs, filter))
+}
+
+fn repair_compressed_output_links(
+    inputs: &[PathBuf],
+    profiles: &[Arc<DaemonProfile>],
+    input_root: &Path,
+    output_root: &Path,
+) -> Result<usize> {
+    let profiles_are_explicit = daemon_profiles_are_explicit(profiles);
+    let mut repaired = 0;
+    let mut destinations = HashSet::new();
+    for input in inputs {
+        let source_and_output = if is_raw_input_file(input) {
+            if let Some(sidecar) = matching_sidecar_for_raw(input) {
+                let output = daemon_sooc_output_path(input_root, output_root, input, &sidecar)?;
+                Some((sidecar, output))
+            } else {
+                None
+            }
+        } else if is_rendered_input_file(input) {
+            if let Some(raw) = matching_raw_for_sidecar(input) {
+                let output = daemon_sooc_output_path(input_root, output_root, &raw, input)?;
+                Some((input.clone(), output))
+            } else if profiles_are_explicit {
+                let output = daemon_sooc_output_path(input_root, output_root, input, input)?;
+                Some((input.clone(), output))
+            } else {
+                let output = daemon_passthrough_output_path(input_root, output_root, input)?;
+                Some((input.clone(), output))
+            }
+        } else {
+            None
+        };
+        let Some((source, output)) = source_and_output else {
+            continue;
+        };
+        if destinations.insert(output.clone()) && ensure_file_symlink(&source, &output, true)? {
+            repaired += 1;
+        }
+    }
+    Ok(repaired)
 }
 
 struct DaemonTaskContext {
@@ -1654,8 +1697,7 @@ fn process_single_compressed(
     raw_name: &str,
 ) -> DaemonFileResult {
     let args = &context.args;
-    let output = match daemon_output_path(&args.input, &args.output, args.output_format, input, "")
-    {
+    let output = match daemon_passthrough_output_path(&args.input, &args.output, input) {
         Ok(output) => output,
         Err(error) => {
             return DaemonFileResult {
@@ -1690,25 +1732,7 @@ fn process_single_compressed(
     file.set_message(format!("{raw_name}: compressed queued"));
 
     let file_start = Instant::now();
-    let progress = ApplyProgress {
-        file,
-        started: file_start,
-        estimates: Some(Arc::clone(&context.estimates)),
-    };
-    if let Err(error) = apply_compressed(
-        CompressedApplyJob {
-            input,
-            output: &output,
-            convert: &args.convert,
-            export: &args.export,
-            exif_comment: Some(format!(
-                "mini-film {} usage=daemon compressed-input",
-                env!("CARGO_PKG_VERSION")
-            )),
-            retouch: None,
-        },
-        Some(&progress),
-    ) {
+    if let Err(error) = ensure_file_symlink(input, &output, true) {
         return DaemonFileResult {
             raw: input.to_path_buf(),
             output,
@@ -1747,13 +1771,7 @@ fn process_single_sooc(
     raw_name: &str,
 ) -> DaemonFileResult {
     let args = &context.args;
-    let output = match daemon_output_path(
-        &args.input,
-        &args.output,
-        args.output_format,
-        raw,
-        SOOC_PROFILE_STEM,
-    ) {
+    let output = match daemon_sooc_output_path(&args.input, &args.output, raw, sidecar) {
         Ok(output) => output,
         Err(error) => {
             return DaemonFileResult {
@@ -1797,50 +1815,11 @@ fn process_single_sooc(
         };
     }
 
-    let staged_output = if is_raw_input_file(raw) {
-        None
-    } else {
-        match daemon_profile_output_temp(&output) {
-            Ok(staged_output) => Some(staged_output),
-            Err(error) => {
-                return DaemonFileResult {
-                    raw: raw.to_path_buf(),
-                    output,
-                    duration: Duration::ZERO,
-                    profile_index: Some(SOOC_PROFILE_INDEX),
-                    error: Some(error.to_string()),
-                    lens_profile_status: "lens-profile: skipped (sooc sidecar)".to_string(),
-                    sharpening_status: sharpening_status(false),
-                    denoise_status: denoise_status(false),
-                };
-            }
-        }
-    };
-    let apply_output = staged_output.as_deref().unwrap_or(&output);
-
     file.set_position(0);
     file.set_message(format!("{raw_name} -> sooc: queued"));
 
     let file_start = Instant::now();
-    let progress = ApplyProgress {
-        file,
-        started: file_start,
-        estimates: Some(Arc::clone(&context.estimates)),
-    };
-    if let Err(error) = apply_compressed(
-        CompressedApplyJob {
-            input: sidecar,
-            output: apply_output,
-            convert: &args.convert,
-            export: &args.export,
-            exif_comment: Some(format!(
-                "mini-film {} usage=daemon sooc-sidecar",
-                env!("CARGO_PKG_VERSION")
-            )),
-            retouch: None,
-        },
-        Some(&progress),
-    ) {
+    if let Err(error) = ensure_file_symlink(sidecar, &output, true) {
         return DaemonFileResult {
             raw: raw.to_path_buf(),
             output,
@@ -1852,21 +1831,6 @@ fn process_single_sooc(
             denoise_status: denoise_status(false),
         };
     }
-    if let Some(staged_output) = staged_output
-        && let Err(error) = publish_daemon_profile_output(raw, staged_output, &output)
-    {
-        return DaemonFileResult {
-            raw: raw.to_path_buf(),
-            output,
-            duration: file_start.elapsed(),
-            profile_index: Some(SOOC_PROFILE_INDEX),
-            error: Some(error.to_string()),
-            lens_profile_status: "lens-profile: skipped (sooc sidecar)".to_string(),
-            sharpening_status: sharpening_status(false),
-            denoise_status: denoise_status(false),
-        };
-    }
-
     file.set_message(format!(
         "{} -> sooc: done in {}",
         raw_name,
@@ -1927,6 +1891,55 @@ pub(crate) fn daemon_output_path(
         "{}.{}",
         sanitize_filename::sanitize(raw_stem),
         output_format.extension()
+    )))
+}
+
+fn daemon_passthrough_output_path(
+    input_root: &Path,
+    output_root: &Path,
+    input: &Path,
+) -> Result<PathBuf> {
+    daemon_link_output_path(input_root, output_root, input, input, "")
+}
+
+fn daemon_sooc_output_path(
+    input_root: &Path,
+    output_root: &Path,
+    raw: &Path,
+    source: &Path,
+) -> Result<PathBuf> {
+    daemon_link_output_path(input_root, output_root, raw, source, SOOC_PROFILE_STEM)
+}
+
+fn daemon_link_output_path(
+    input_root: &Path,
+    output_root: &Path,
+    relative_source: &Path,
+    linked_source: &Path,
+    profile_stem: &str,
+) -> Result<PathBuf> {
+    let profile_stem = sanitize_filename::sanitize(profile_stem);
+    let output_dir = daemon_output_dir(input_root, output_root, relative_source, &profile_stem)?;
+    let raw_stem = relative_raw_stem(relative_source)?;
+    let extension = linked_source
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .filter(|extension| !extension.trim().is_empty())
+        .ok_or_else(|| {
+            anyhow!(
+                "compressed input has no extension: {}",
+                linked_source.display()
+            )
+        })?
+        .to_ascii_lowercase();
+    let extension = if matches!(extension.as_str(), "jpg" | "jpeg") {
+        "jpg"
+    } else {
+        extension.as_str()
+    };
+    Ok(output_dir.join(format!(
+        "{}.{extension}",
+        sanitize_filename::sanitize(raw_stem)
     )))
 }
 
@@ -2132,6 +2145,93 @@ mod tests {
             0
         );
         assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn standalone_compressed_output_is_a_managed_source_link() {
+        let root = tempfile::tempdir().unwrap();
+        let input_root = root.path().join("in");
+        let output_root = root.path().join("out");
+        fs::create_dir_all(&input_root).unwrap();
+        fs::create_dir_all(&output_root).unwrap();
+        let compressed = input_root.join("frame.HEIC");
+        let output = output_root.join("frame.heic");
+        fs::write(&compressed, b"heic source").unwrap();
+        fs::write(&output, b"old generated output").unwrap();
+        let implicit = vec![Arc::new(DaemonProfile {
+            selector: String::new(),
+            stem: String::new(),
+            resolved: neutral_profile(),
+            profile_report: String::new(),
+        })];
+
+        assert_eq!(
+            repair_compressed_output_links(
+                std::slice::from_ref(&compressed),
+                &implicit,
+                &input_root,
+                &output_root,
+            )
+            .unwrap(),
+            1
+        );
+        assert!(
+            fs::symlink_metadata(&output)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            fs::canonicalize(output).unwrap(),
+            fs::canonicalize(compressed).unwrap()
+        );
+    }
+
+    #[test]
+    fn raw_sidecars_and_profiled_compressed_sooc_are_source_links() {
+        let root = tempfile::tempdir().unwrap();
+        let input_root = root.path().join("in");
+        let output_root = root.path().join("out");
+        fs::create_dir_all(&input_root).unwrap();
+        fs::create_dir_all(&output_root).unwrap();
+        let raw = input_root.join("raw-frame.NEF");
+        let sidecar = input_root.join("raw-frame.JPG");
+        let standalone = input_root.join("standalone.TIFF");
+        fs::write(&raw, b"raw").unwrap();
+        fs::write(&sidecar, b"jpeg source").unwrap();
+        fs::write(&standalone, b"tiff source").unwrap();
+        let profiles = vec![Arc::new(DaemonProfile {
+            selector: "Classic".to_string(),
+            stem: "Classic".to_string(),
+            resolved: neutral_profile(),
+            profile_report: String::new(),
+        })];
+
+        assert_eq!(
+            repair_compressed_output_links(
+                &[raw, standalone.clone()],
+                &profiles,
+                &input_root,
+                &output_root,
+            )
+            .unwrap(),
+            2
+        );
+        for (output, source) in [
+            (output_root.join("sooc/raw-frame.jpg"), sidecar),
+            (output_root.join("sooc/standalone.tiff"), standalone),
+        ] {
+            assert!(
+                fs::symlink_metadata(&output)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+            assert_eq!(
+                fs::canonicalize(output).unwrap(),
+                fs::canonicalize(source).unwrap()
+            );
+        }
     }
 
     #[test]
