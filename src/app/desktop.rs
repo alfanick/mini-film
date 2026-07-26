@@ -393,6 +393,7 @@ mod enabled {
                 profiles_root,
                 hald_level: 16,
                 rawtherapee,
+                dng_fallback: crate::app::dng::DngFallbackConfig::default(),
                 convert,
                 no_grain: self.no_grain,
                 lens_corrections: if self.lens_corrections {

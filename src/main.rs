@@ -17,6 +17,7 @@ use crate::app::apply::{ApplyArgs, run_apply};
 use crate::app::batch::{BatchArgs, run_batch};
 use crate::app::batch_daemon::{BatchDaemonArgs, run_batch_daemon};
 use crate::app::desktop::run_desktop_app;
+use crate::app::dng::DngFallbackConfig;
 use crate::app::info::{InfoArgs, run_info};
 use crate::app::nikon::{NikonArgs, run_nikon};
 use crate::app::panorama::{PanoramaCommandArgs, PanoramaConfig, run_panorama};
@@ -28,7 +29,7 @@ use crate::app::sampler::{SamplerArgs, run_sampler};
 use crate::app::util::{
     InputFileFilter, configure_threads, default_hald_dir, half_cpu_thread_count,
 };
-use crate::cli::{Cli, CommandKind, ExportOptions};
+use crate::cli::{Cli, CommandKind, DngFallbackCliArgs, ExportOptions};
 
 /// Parse CLI arguments and dispatch to the selected mini-film workflow.
 ///
@@ -108,6 +109,7 @@ fn main() -> Result<()> {
             profiles_root,
             hald_level,
             rawtherapee,
+            dng_fallback,
             convert,
             keep_intermediate,
             no_grain,
@@ -134,6 +136,7 @@ fn main() -> Result<()> {
             profiles_root: resolve_profiles_root(profiles_root),
             hald_level,
             rawtherapee,
+            dng_fallback: resolve_dng_fallback(dng_fallback),
             convert,
             keep_intermediate,
             no_grain,
@@ -165,6 +168,7 @@ fn main() -> Result<()> {
             projection,
             hugin_bin_dir,
             rawtherapee,
+            dng_fallback,
             convert,
             jobs,
             color_noise_iso_threshold,
@@ -179,6 +183,7 @@ fn main() -> Result<()> {
             config: PanoramaConfig {
                 hugin_bin_dir,
                 rawtherapee,
+                dng_fallback: resolve_dng_fallback(dng_fallback),
                 convert,
                 jobs: jobs.unwrap_or_else(half_cpu_thread_count),
                 color_noise_iso_threshold,
@@ -195,6 +200,7 @@ fn main() -> Result<()> {
             profiles_root,
             hald_level,
             rawtherapee,
+            dng_fallback,
             convert,
             no_grain,
             color_noise_iso_threshold,
@@ -228,6 +234,7 @@ fn main() -> Result<()> {
             profiles_root: resolve_profiles_root(profiles_root),
             hald_level,
             rawtherapee,
+            dng_fallback: resolve_dng_fallback(dng_fallback),
             convert,
             no_grain,
             lens_corrections: lens_corrections.unwrap_or_default(),
@@ -261,6 +268,7 @@ fn main() -> Result<()> {
             profiles_root,
             hald_level,
             rawtherapee,
+            dng_fallback,
             convert,
             no_grain,
             color_noise_iso_threshold,
@@ -306,6 +314,7 @@ fn main() -> Result<()> {
             profiles_root: resolve_profiles_root(profiles_root),
             hald_level,
             rawtherapee,
+            dng_fallback: resolve_dng_fallback(dng_fallback),
             convert,
             no_grain,
             lens_corrections: lens_corrections.unwrap_or_default(),
@@ -351,6 +360,7 @@ fn main() -> Result<()> {
             hald_dir,
             hald_level,
             rawtherapee,
+            dng_fallback,
             convert,
             montage: _,
             no_grain,
@@ -374,6 +384,7 @@ fn main() -> Result<()> {
             hald_dir: hald_dir.unwrap_or_else(default_hald_dir),
             hald_level,
             rawtherapee,
+            dng_fallback: resolve_dng_fallback(dng_fallback),
             convert,
             no_grain,
             lens_corrections: lens_corrections.unwrap_or_default(),
@@ -403,6 +414,7 @@ fn main() -> Result<()> {
             profiles_root,
             hald_level,
             rawtherapee,
+            dng_fallback,
             convert,
             jobs,
             gallery,
@@ -439,6 +451,7 @@ fn main() -> Result<()> {
             profiles_root: resolve_profiles_root(profiles_root),
             hald_level,
             rawtherapee,
+            dng_fallback: resolve_dng_fallback(dng_fallback),
             convert,
             lcp_root: resolve_lcp_root(lcp_root),
             jobs: jobs.unwrap_or_else(half_cpu_thread_count),
@@ -620,6 +633,10 @@ fn resolve_lcp_root(explicit: Option<PathBuf>) -> Option<PathBuf> {
             .filter(|root| !root.is_empty())
             .map(PathBuf::from)
     })
+}
+
+fn resolve_dng_fallback(args: DngFallbackCliArgs) -> DngFallbackConfig {
+    DngFallbackConfig::new(args.adobe_dng_converter, args.wine, args.wine_prefix)
 }
 
 fn input_file_filter(input_jpg_only: bool, input_raw_only: bool) -> InputFileFilter {

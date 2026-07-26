@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use mini_film::GrainEngine;
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +14,21 @@ const DEFAULT_HALD_LEVEL: u32 = 16;
 pub(crate) struct Cli {
     #[command(subcommand)]
     pub(crate) command: CommandKind,
+}
+
+#[derive(Args, Clone, Debug, Default)]
+pub(crate) struct DngFallbackCliArgs {
+    /// Path to Adobe DNG Converter.exe used for unsupported RAW files.
+    #[arg(long)]
+    pub(crate) adobe_dng_converter: Option<PathBuf>,
+
+    /// Path or command name for Wine used to run Adobe DNG Converter.
+    #[arg(long)]
+    pub(crate) wine: Option<PathBuf>,
+
+    /// Wine prefix containing Adobe DNG Converter.
+    #[arg(long)]
+    pub(crate) wine_prefix: Option<PathBuf>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -146,6 +161,9 @@ pub(crate) enum CommandKind {
         #[arg(long, default_value = "rawtherapee-cli")]
         rawtherapee: PathBuf,
 
+        #[command(flatten)]
+        dng_fallback: DngFallbackCliArgs,
+
         /// Path to convert binary.
         #[arg(long, default_value = "convert")]
         convert: PathBuf,
@@ -258,6 +276,9 @@ pub(crate) enum CommandKind {
         #[arg(long, default_value = "rawtherapee-cli")]
         rawtherapee: PathBuf,
 
+        #[command(flatten)]
+        dng_fallback: DngFallbackCliArgs,
+
         /// Path to convert binary.
         #[arg(long, default_value = "convert")]
         convert: PathBuf,
@@ -316,6 +337,9 @@ pub(crate) enum CommandKind {
         /// Path to rawtherapee-cli binary.
         #[arg(long, default_value = "rawtherapee-cli")]
         rawtherapee: PathBuf,
+
+        #[command(flatten)]
+        dng_fallback: DngFallbackCliArgs,
 
         /// Path to convert binary.
         #[arg(long, default_value = "convert")]
@@ -449,6 +473,9 @@ pub(crate) enum CommandKind {
         #[arg(long, default_value = "rawtherapee-cli")]
         rawtherapee: PathBuf,
 
+        #[command(flatten)]
+        dng_fallback: DngFallbackCliArgs,
+
         /// Path to convert binary.
         #[arg(long, default_value = "convert")]
         convert: PathBuf,
@@ -554,6 +581,9 @@ pub(crate) enum CommandKind {
         /// Path to rawtherapee-cli binary.
         #[arg(long, default_value = "rawtherapee-cli")]
         rawtherapee: PathBuf,
+
+        #[command(flatten)]
+        dng_fallback: DngFallbackCliArgs,
 
         /// Path to convert binary.
         #[arg(long, default_value = "convert")]
@@ -768,6 +798,9 @@ pub(crate) enum CommandKind {
         /// Path to rawtherapee-cli binary.
         #[arg(long, default_value = "rawtherapee-cli")]
         rawtherapee: PathBuf,
+
+        #[command(flatten)]
+        dng_fallback: DngFallbackCliArgs,
 
         /// Path to convert binary.
         #[arg(long, default_value = "convert")]

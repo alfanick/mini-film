@@ -80,6 +80,13 @@ pub fn is_rendered_input_file(path: &Path) -> bool {
 }
 
 pub fn is_internal_staging_input_file(path: &Path) -> bool {
+    if path.components().any(|component| {
+        component.as_os_str().to_str().is_some_and(|name| {
+            name.starts_with(".mini-film-dng-") || name.ends_with(".mini-film-dng.lock")
+        })
+    }) {
+        return true;
+    }
     path.file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| name.starts_with(PANORAMA_RESULT_STAGING_PREFIX))
@@ -259,6 +266,18 @@ mod tests {
         assert!(!is_supported_input_file(path, InputFileFilter::All));
         assert!(!is_supported_input_file(path, InputFileFilter::JpgOnly));
         assert!(!is_supported_input_file(path, InputFileFilter::RawOnly));
+    }
+
+    #[test]
+    fn dng_conversion_work_files_are_never_inputs() {
+        for path in [
+            Path::new("/in/.mini-film-dng-AbCd/frame.dng"),
+            Path::new("/in/.frame.dng.mini-film-dng.lock"),
+        ] {
+            assert!(is_internal_staging_input_file(path));
+            assert!(!is_supported_input_file(path, InputFileFilter::All));
+        }
+        assert!(!is_internal_staging_input_file(Path::new("/in/frame.dng")));
     }
 
     #[test]

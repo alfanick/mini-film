@@ -17,6 +17,7 @@ use mini_film::{
 use sha1::{Digest, Sha1};
 use tempfile::Builder;
 
+use crate::app::dng::{DngFallbackConfig, PreparedRawSource, RawSourceReplacement};
 use crate::app::export::{
     add_convert_thread_limit, finalize_auto_oriented_output_with_retouch,
     finalize_output_with_retouch, output_ext, validate_export_options, validate_output_format,
@@ -52,6 +53,7 @@ pub(crate) struct ApplyArgs {
     pub(crate) profiles_root: PathBuf,
     pub(crate) hald_level: u32,
     pub(crate) rawtherapee: PathBuf,
+    pub(crate) dng_fallback: DngFallbackConfig,
     pub(crate) convert: PathBuf,
     pub(crate) keep_intermediate: Option<PathBuf>,
     pub(crate) no_grain: bool,
@@ -72,6 +74,8 @@ pub(crate) struct ApplyJob<'a> {
     pub(crate) raw: &'a Path,
     pub(crate) output: &'a Path,
     pub(crate) rawtherapee: &'a Path,
+    pub(crate) dng_fallback: &'a DngFallbackConfig,
+    pub(crate) prepared_raw: Option<PreparedRawSource>,
     pub(crate) convert: &'a Path,
     pub(crate) keep_intermediate: Option<&'a Path>,
     pub(crate) no_grain: bool,
@@ -86,6 +90,12 @@ pub(crate) struct ApplyJob<'a> {
     pub(crate) retouch_white_balance: RetouchWhiteBalance,
     pub(crate) bw_filter: BwFilter,
     pub(crate) profile_input_cache_root: Option<&'a Path>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ApplyOutcome {
+    pub(crate) source_path: PathBuf,
+    pub(crate) replacement: Option<RawSourceReplacement>,
 }
 
 pub(crate) struct RawTherapeeProfileOptions<'a> {
@@ -196,6 +206,8 @@ pub(crate) fn run_apply(args: ApplyArgs) -> Result<()> {
             raw: &args.raw,
             output: &args.output,
             rawtherapee: &args.rawtherapee,
+            dng_fallback: &args.dng_fallback,
+            prepared_raw: None,
             convert: &args.convert,
             keep_intermediate: args.keep_intermediate.as_deref(),
             no_grain: args.no_grain,
@@ -217,7 +229,7 @@ pub(crate) fn run_apply(args: ApplyArgs) -> Result<()> {
         Some(&progress),
     );
     match &result {
-        Ok(()) => file.finish_and_clear(),
+        Ok(_) => file.finish_and_clear(),
         Err(_) => file.abandon_with_message("failed"),
     }
     result?;
@@ -335,12 +347,18 @@ pub(crate) fn apply_resolved(
     grain_seed: u64,
     temp_dir: &Path,
     progress: Option<&ApplyProgress<'_>>,
-) -> Result<()> {
+) -> Result<ApplyOutcome> {
     validate_output_format(job.output)?;
 
+    let mut raw_source = if let Some(prepared) = job.prepared_raw.clone() {
+        prepared
+    } else {
+        job.dng_fallback.prepare_known(job.raw)?
+    };
+    let canonical_input = raw_source.active().to_path_buf();
     let prepared_input = prepare_profile_input(&job, temp_dir, progress)?;
-    let develop_input = prepared_input.as_deref().unwrap_or(job.raw);
-    let raw_input = is_raw_input_file(job.raw);
+    let develop_input = prepared_input.as_deref().unwrap_or(&canonical_input);
+    let raw_input = is_raw_input_file(&canonical_input);
 
     let grain_enabled = !job.no_grain && resolved.grain.is_enabled();
     let output_ext = output_ext(job.output)?;
@@ -360,7 +378,7 @@ pub(crate) fn apply_resolved(
 
     let rawtherapee_profiles = rawtherapee_profiles_for_input(
         RawTherapeeProfileOptions {
-            input: job.raw,
+            input: &canonical_input,
             retouch: job.retouch,
             retouch_white_balance: job.retouch_white_balance,
             bw_filter: job.bw_filter,
@@ -380,7 +398,7 @@ pub(crate) fn apply_resolved(
             "rawtherapee-tiff"
         },
         "rawtherapee",
-        estimate_rawtherapee_duration(job.raw, jpeg_intermediate),
+        estimate_rawtherapee_duration(&canonical_input, jpeg_intermediate),
     );
     let effective_lcp_root = if raw_input && job.lens_corrections.is_enabled() {
         job.lcp_root
@@ -389,25 +407,43 @@ pub(crate) fn apply_resolved(
     };
 
     if jpeg_intermediate {
-        run_raw_develop_jpeg(
+        let develop_source = if prepared_input.is_some() {
+            PreparedRawSource::unchanged(develop_input)
+        } else {
+            raw_source.clone()
+        };
+        let outcome = run_raw_develop_jpeg(
             job.rawtherapee,
             &rawtherapee_profiles,
-            develop_input,
+            develop_source,
             &intermediate,
             job.export.jpg_quality,
             job.export.jpeg_subsampling,
             effective_lcp_root,
             job.quiet,
+            job.dng_fallback,
         )?;
+        if prepared_input.is_none() {
+            raw_source = outcome.source;
+        }
     } else {
-        run_raw_develop(
+        let develop_source = if prepared_input.is_some() {
+            PreparedRawSource::unchanged(develop_input)
+        } else {
+            raw_source.clone()
+        };
+        let outcome = run_raw_develop(
             job.rawtherapee,
             &rawtherapee_profiles,
-            develop_input,
+            develop_source,
             &intermediate,
             effective_lcp_root,
             job.quiet,
+            job.dng_fallback,
         )?;
+        if prepared_input.is_none() {
+            raw_source = outcome.source;
+        }
     }
     raw_stage.finish();
 
@@ -418,7 +454,7 @@ pub(crate) fn apply_resolved(
             4,
             "grain-jpeg",
             "grain",
-            estimate_grain_duration(job.raw, true),
+            estimate_grain_duration(raw_source.active(), true),
         );
         let grained = temp_dir.join("grained-8.ppm");
         apply_grain_8bit_with_engine(
@@ -456,7 +492,7 @@ pub(crate) fn apply_resolved(
             4,
             "grain-tiff",
             "grain",
-            estimate_grain_duration(job.raw, false),
+            estimate_grain_duration(raw_source.active(), false),
         );
         let grained = temp_dir.join("grained.tif");
         apply_grain_with_engine(
@@ -518,7 +554,7 @@ pub(crate) fn apply_resolved(
             6,
             "exif-metadata",
             "exif",
-            estimate_exif_duration(job.raw),
+            estimate_exif_duration(raw_source.active()),
         );
         let actual_grain = if grain_enabled {
             resolved.grain
@@ -526,7 +562,7 @@ pub(crate) fn apply_resolved(
             GrainSettings::default()
         };
         sync_output_metadata_from_raw_with_color_profile(
-            job.raw,
+            raw_source.active(),
             job.output,
             OutputEditMetadata {
                 comment: job.exif_comment.as_deref(),
@@ -538,7 +574,7 @@ pub(crate) fn apply_resolved(
             },
             Some(&intermediate),
         )?;
-        sync_output_timestamps_from_exif(job.raw, job.output)?;
+        sync_output_timestamps_from_exif(raw_source.active(), job.output)?;
         exif_stage.finish();
     } else {
         let timestamp_stage = progress_stage_adaptive(
@@ -549,14 +585,19 @@ pub(crate) fn apply_resolved(
             "timestamps",
             estimate_timestamp_sync_duration(),
         );
-        sync_output_timestamps_from_exif(job.raw, job.output)?;
+        sync_output_timestamps_from_exif(raw_source.active(), job.output)?;
         timestamp_stage.finish();
     }
     if cleanup_intermediate {
         remove_temp_file(&intermediate)?;
     }
+    job.dng_fallback
+        .finish_successful_development(&raw_source)?;
     progress_step(progress, 6, "done");
-    Ok(())
+    Ok(ApplyOutcome {
+        source_path: raw_source.active().to_path_buf(),
+        replacement: raw_source.replacement(),
+    })
 }
 
 const HEIC_PROFILE_INPUT_CACHE_VERSION: &str = "heic-v1";
@@ -1275,6 +1316,8 @@ mod tests {
                 raw: &raw,
                 output: &out,
                 rawtherapee: &temp.path().join("rawtherapee"),
+                dng_fallback: &DngFallbackConfig::default(),
+                prepared_raw: None,
                 convert: &temp.path().join("convert"),
                 keep_intermediate: None,
                 no_grain: true,
@@ -1342,6 +1385,8 @@ mod tests {
                 raw: &raw,
                 output: &out,
                 rawtherapee: &temp.path().join("rawtherapee"),
+                dng_fallback: &DngFallbackConfig::default(),
+                prepared_raw: None,
                 convert: &temp.path().join("convert"),
                 keep_intermediate: None,
                 no_grain: false,
@@ -1401,6 +1446,8 @@ mod tests {
                 raw: &raw,
                 output: &out,
                 rawtherapee: &temp.path().join("rawtherapee"),
+                dng_fallback: &DngFallbackConfig::default(),
+                prepared_raw: None,
                 convert: &temp.path().join("convert"),
                 keep_intermediate: None,
                 no_grain: false,
@@ -1459,6 +1506,7 @@ mod tests {
             profiles_root: temp.path().to_path_buf(),
             hald_level: 16,
             rawtherapee,
+            dng_fallback: DngFallbackConfig::default(),
             convert,
             keep_intermediate: None,
             no_grain: true,
@@ -1518,6 +1566,8 @@ mod tests {
                     raw: &input,
                     output: &output,
                     rawtherapee: &rawtherapee,
+                    dng_fallback: &DngFallbackConfig::default(),
+                    prepared_raw: None,
                     convert: &convert,
                     keep_intermediate: None,
                     no_grain: true,

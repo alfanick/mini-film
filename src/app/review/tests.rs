@@ -409,6 +409,7 @@ fn test_handle(input: PathBuf, output: PathBuf, profiles: Vec<ReviewProfile>) ->
         profiles_root: input.clone(),
         hald_level: 16,
         rawtherapee: PathBuf::from("rawtherapee-cli"),
+        dng_fallback: crate::app::dng::DngFallbackConfig::default(),
         output_format: BatchOutputFormat::Jpg,
         lcp_root: None,
         gallery: None,
@@ -443,6 +444,7 @@ fn test_handle(input: PathBuf, output: PathBuf, profiles: Vec<ReviewProfile>) ->
         panorama_config: crate::app::panorama::PanoramaConfig {
             hugin_bin_dir: None,
             rawtherapee: PathBuf::from("rawtherapee-cli"),
+            dng_fallback: crate::app::dng::DngFallbackConfig::default(),
             convert: PathBuf::from("convert"),
             jobs: 1,
             color_noise_iso_threshold: 1600,
@@ -457,6 +459,7 @@ fn test_handle(input: PathBuf, output: PathBuf, profiles: Vec<ReviewProfile>) ->
         panorama_operation: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         sampler_registry: Arc::new(ReviewSamplerRegistry::default()),
         trusted_input_sender: None,
+        converted_input_sender: None,
     }
 }
 
@@ -478,6 +481,7 @@ fn test_publish_options(album: &str) -> ReviewPublishOptions {
         profiles_root: PathBuf::from("profiles"),
         hald_level: 16,
         rawtherapee: PathBuf::from("rawtherapee-cli"),
+        dng_fallback: crate::app::dng::DngFallbackConfig::default(),
         convert: PathBuf::from("convert"),
         jobs: 2,
         lcp_root: None,
@@ -673,6 +677,115 @@ fn review_state_defaults_to_first_profile_and_records_outputs() {
     assert_eq!(base["shadows"], json!(22.0));
     assert_eq!(base["whites"], json!(9.0));
     assert_eq!(base["blacks"], json!(-7.0));
+}
+
+#[test]
+fn dng_rebind_keeps_review_identity_and_user_data_in_sqlite() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let nef = input.join("one.NEF");
+    let dng = input.join("one.dng");
+    fs::write(&nef, b"unsupported nef").unwrap();
+    fs::write(&dng, b"validated elsewhere before rebinding").unwrap();
+
+    let mut before = fully_populated_review_store();
+    before.images.truncate(1);
+    before.next_id = 2;
+    before.ui.current_image_id = Some(1);
+    before.images[0].raw_path = nef.clone();
+    before.images[0].relative_path = "one.NEF".to_string();
+    before.images[0].file_name = "one.NEF".to_string();
+    let original = before.images[0].clone();
+
+    let mut after = before.clone();
+    assert!(after.rebind_raw_source(&input, &nef, &dng).unwrap());
+    assert!(!after.rebind_raw_source(&input, &nef, &dng).unwrap());
+    let rebound = &after.images[0];
+    assert_eq!(rebound.id, original.id);
+    assert_eq!(rebound.raw_path, dng);
+    assert_eq!(rebound.relative_path, "one.dng");
+    assert_eq!(rebound.file_name, "one.dng");
+    assert_eq!(rebound.rating, original.rating);
+    assert_eq!(rebound.label, original.label);
+    assert_eq!(rebound.labels, original.labels);
+    assert_eq!(rebound.tags, original.tags);
+    assert_eq!(rebound.notes, original.notes);
+    assert_eq!(rebound.rating_source, original.rating_source);
+    assert_eq!(rebound.tags_source, original.tags_source);
+    assert_eq!(rebound.notes_source, original.notes_source);
+    assert_eq!(rebound.retouch, original.retouch);
+    assert_eq!(
+        rebound.publish_profile_indexes,
+        original.publish_profile_indexes
+    );
+    assert_eq!(rebound.profile_bw_filters, original.profile_bw_filters);
+    assert_eq!(
+        rebound.selected_profile_index,
+        original.selected_profile_index
+    );
+    assert_eq!(rebound.sooc_sidecar_path, original.sooc_sidecar_path);
+    assert_eq!(
+        rebound.exif.focus_regions.len(),
+        original.exif.focus_regions.len()
+    );
+    for (rebound, original) in rebound
+        .exif
+        .focus_regions
+        .iter()
+        .zip(&original.exif.focus_regions)
+    {
+        assert!((rebound.x - original.x).abs() < 0.000_001);
+        assert!((rebound.y - original.y).abs() < 0.000_001);
+        assert!((rebound.width - original.width).abs() < 0.000_001);
+        assert!((rebound.height - original.height).abs() < 0.000_001);
+        assert_eq!(rebound.primary, original.primary);
+    }
+    assert_eq!(rebound.codex.flags, original.codex.flags);
+    assert_eq!(rebound.codex.model, original.codex.model);
+    assert_eq!(rebound.profiles.len(), original.profiles.len());
+    assert_eq!(
+        rebound.profiles[0].profile_index,
+        original.profiles[0].profile_index
+    );
+    assert_eq!(rebound.profiles[0].enabled, original.profiles[0].enabled);
+
+    let runtime = test_async_runtime();
+    let database = runtime
+        .block_on(ReviewDatabase::open_output(&output))
+        .unwrap()
+        .0;
+    runtime.block_on(database.replace_store(&before)).unwrap();
+    runtime
+        .block_on(database.apply_delta(&before, &after))
+        .unwrap();
+    drop(database);
+
+    let restored = load_store(&output.join(SQLITE_STATE_FILE))
+        .unwrap()
+        .unwrap();
+    assert_eq!(restored.images.len(), 1);
+    let restored = &restored.images[0];
+    assert_eq!(restored.id, original.id);
+    assert_eq!(restored.raw_path, dng);
+    assert_eq!(restored.rating, original.rating);
+    assert_eq!(restored.labels, original.labels);
+    assert_eq!(restored.tags, original.tags);
+    assert_eq!(restored.notes, original.notes);
+    assert_eq!(restored.retouch, original.retouch);
+    assert_eq!(
+        restored.publish_profile_indexes,
+        original.publish_profile_indexes
+    );
+    assert_eq!(restored.profile_bw_filters, original.profile_bw_filters);
+    assert_eq!(restored.profiles.len(), original.profiles.len());
+    assert_eq!(
+        restored.profiles[0].profile_index,
+        original.profiles[0].profile_index
+    );
+    assert_eq!(restored.profiles[0].enabled, original.profiles[0].enabled);
 }
 
 #[test]

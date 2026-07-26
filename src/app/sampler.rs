@@ -24,6 +24,7 @@ use sha1::{Digest, Sha1};
 use tempfile::Builder;
 use walkdir::WalkDir;
 
+use crate::app::dng::DngFallbackConfig;
 use crate::app::export::{add_convert_thread_limit, finalize_output, output_ext};
 use crate::app::pp3::{
     RAW_RENDER_PIPELINE_KEY, write_rawtherapee_auto_matched_curve_profile,
@@ -53,6 +54,7 @@ pub(crate) struct SamplerArgs {
     pub(crate) hald_dir: PathBuf,
     pub(crate) hald_level: u32,
     pub(crate) rawtherapee: PathBuf,
+    pub(crate) dng_fallback: DngFallbackConfig,
     pub(crate) convert: PathBuf,
     pub(crate) lcp_root: Option<PathBuf>,
     pub(crate) no_grain: bool,
@@ -132,6 +134,7 @@ struct ProfileRenderContext<'a> {
 
 struct StructuredSheetContext<'a> {
     rawtherapee: &'a Path,
+    dng_fallback: &'a DngFallbackConfig,
     convert: &'a Path,
     output: &'a Path,
     raw: &'a Path,
@@ -166,7 +169,10 @@ struct SamplerSidecarContext<'a> {
 /// a trie and asks ImageMagick/GraphicsMagick `convert` to render an SVG sheet
 /// where indentation shows each shared-name level.
 pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
+    let mut args = args;
     validate_sampler_args(&args)?;
+    let prepared_source = args.dng_fallback.prepare_known(&args.raw)?;
+    args.raw = prepared_source.active().to_path_buf();
     let jobs = resolve_sampler_jobs(args.jobs)?;
 
     let emulation_root = emulation_root(&args.profiles_root);
@@ -305,6 +311,7 @@ pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
     );
     let sheet_context = StructuredSheetContext {
         rawtherapee: &args.rawtherapee,
+        dng_fallback: &args.dng_fallback,
         convert: &args.convert,
         output: &args.output,
         raw: &args.raw,
@@ -321,6 +328,8 @@ pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
         progressive_jpeg: args.progressive_jpeg,
     };
     run_structured_sheet(&sheet_context)?;
+    args.dng_fallback
+        .finish_successful_development(&prepared_source)?;
     sheet_stage.finish();
     sheet_progress.finish_and_clear();
     sampler.finish_with_message(format!(
@@ -538,10 +547,12 @@ fn render_profile_thumbnail(
         &profile_temp,
     )
     .with_context(|| format!("resolving profile {}", profile.display()))?;
+    let prepared_source = context.args.dng_fallback.prepare_known(&context.args.raw)?;
+    let active_source = prepared_source.active().to_path_buf();
     let developed = profile_temp.join("rawtherapee.jpg");
     let mut rawtherapee_profiles = rawtherapee_profiles_with_hald(&resolved, &profile_temp)?;
     append_color_noise_if_qualified(
-        &context.args.raw,
+        &active_source,
         context.args.color_noise_iso_threshold,
         &mut rawtherapee_profiles,
         &profile_temp,
@@ -569,15 +580,16 @@ fn render_profile_thumbnail(
         "rawtherapee",
         estimate_sampler_raw_duration(context.args.thumbnail_long_edge),
     );
-    run_raw_develop_jpeg(
+    let raw_outcome = run_raw_develop_jpeg(
         &context.args.rawtherapee,
         &rawtherapee_profiles,
-        &context.args.raw,
+        prepared_source,
         &developed,
         context.args.jpg_quality,
         context.args.jpeg_subsampling,
         context.args.lcp_root.as_deref(),
         true,
+        &context.args.dng_fallback,
     )?;
     raw_stage.finish();
 
@@ -635,7 +647,7 @@ fn render_profile_thumbnail(
             "timestamps",
             estimate_sampler_metadata_duration(),
         );
-        sync_output_timestamps_from_exif(&context.args.raw, &thumb)?;
+        sync_output_timestamps_from_exif(raw_outcome.source.active(), &thumb)?;
         metadata_stage.finish();
     } else {
         let metadata_stage = progress_stage_adaptive(
@@ -647,7 +659,7 @@ fn render_profile_thumbnail(
             estimate_sampler_exif_duration(),
         );
         sync_output_metadata_from_raw_with_color_profile(
-            &context.args.raw,
+            raw_outcome.source.active(),
             &thumb,
             OutputEditMetadata {
                 comment: Some(&format!(
@@ -656,14 +668,14 @@ fn render_profile_thumbnail(
                     resolved.resolved_stem
                 )),
                 profile: &resolved.metadata,
-                profile_sharpening_applied: is_raw_input_file(&context.args.raw),
+                profile_sharpening_applied: is_raw_input_file(raw_outcome.source.active()),
                 grain: metadata_grain,
                 grain_seed: metadata_grain_seed,
                 grain_engine: grain_enabled.then_some(context.args.grain_engine),
             },
             Some(&color_profile_source),
         )?;
-        sync_output_timestamps_from_exif(&context.args.raw, &thumb)?;
+        sync_output_timestamps_from_exif(raw_outcome.source.active(), &thumb)?;
         metadata_stage.finish();
     }
     remove_temp_file(&source)?;
@@ -677,6 +689,10 @@ fn render_profile_thumbnail(
     } else {
         thumb
     };
+    context
+        .args
+        .dng_fallback
+        .finish_successful_development(&raw_outcome.source)?;
     sampler_step(context.progress, 6, "done");
     sample_thumb_from_image(image, profile, context.emulation_root)
 }
@@ -850,6 +866,7 @@ fn run_html_sheet(context: &StructuredSheetContext<'_>) -> Result<()> {
         let baseline_relative = PathBuf::from("thumbnails").join("original.jpg");
         write_html_baseline_thumbnail(
             context.rawtherapee,
+            context.dng_fallback,
             context.convert,
             context.raw,
             &baseline_source,
@@ -1014,6 +1031,7 @@ fn write_cached_progressive_html_thumbnail(
 
 fn write_html_baseline_thumbnail(
     rawtherapee: &Path,
+    dng_fallback: &DngFallbackConfig,
     convert: &Path,
     raw: &Path,
     destination: &Path,
@@ -1031,15 +1049,17 @@ fn write_html_baseline_thumbnail(
     let profiles = [write_rawtherapee_auto_matched_curve_profile(
         &temp_dir.path().join("auto-matched-curve.pp3"),
     )?];
-    run_raw_develop_jpeg(
+    let prepared_source = dng_fallback.prepare_known(raw)?;
+    let outcome = run_raw_develop_jpeg(
         rawtherapee,
         &profiles,
-        raw,
+        prepared_source,
         &raw_source,
         jpg_quality,
         jpeg_subsampling,
         None,
         true,
+        dng_fallback,
     )?;
     write_cached_progressive_html_thumbnail(
         convert,
@@ -1048,6 +1068,7 @@ fn write_html_baseline_thumbnail(
         jpg_quality,
         jpeg_subsampling,
     )?;
+    dng_fallback.finish_successful_development(&outcome.source)?;
     Ok(destination.to_path_buf())
 }
 
@@ -2049,6 +2070,7 @@ mod tests {
             hald_dir,
             hald_level: 16,
             rawtherapee: PathBuf::from("rawtherapee-cli"),
+            dng_fallback: DngFallbackConfig::default(),
             convert: PathBuf::from("convert"),
             lcp_root: None,
             no_grain: false,

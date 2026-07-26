@@ -251,6 +251,103 @@ impl ReviewStore {
         Ok(&mut self.images[index])
     }
 
+    pub(super) fn rebind_raw_source(
+        &mut self,
+        input_root: &Path,
+        old_path: &Path,
+        new_path: &Path,
+    ) -> Result<bool> {
+        if old_path == new_path {
+            return Ok(false);
+        }
+        if !new_path.is_file() {
+            bail!("replacement RAW is missing: {}", new_path.display());
+        }
+        if old_path.parent() != new_path.parent() || old_path.file_stem() != new_path.file_stem() {
+            bail!(
+                "replacement RAW must keep the original directory and file stem: {} -> {}",
+                old_path.display(),
+                new_path.display()
+            );
+        }
+
+        let old_index = self
+            .images
+            .iter()
+            .position(|image| image.raw_path == old_path);
+        let new_index = self
+            .images
+            .iter()
+            .position(|image| image.raw_path == new_path);
+        let Some(old_index) = old_index else {
+            if new_index.is_some() {
+                return Ok(false);
+            }
+            bail!(
+                "review image for replaced RAW does not exist: {}",
+                old_path.display()
+            );
+        };
+        if new_index.is_some_and(|index| index != old_index) {
+            bail!(
+                "cannot replace {} with {} because both paths already belong to review images",
+                old_path.display(),
+                new_path.display()
+            );
+        }
+
+        let image = &mut self.images[old_index];
+        image.raw_path = new_path.to_path_buf();
+        image.relative_path = new_path
+            .strip_prefix(input_root)
+            .unwrap_or(new_path)
+            .to_string_lossy()
+            .to_string();
+        image.file_name = new_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        refresh_image_exif_data(image, true);
+        normalize_review_metadata_sources(image);
+
+        if matches!(
+            image.preview.status,
+            ReviewRenderStatus::Queued
+                | ReviewRenderStatus::Processing
+                | ReviewRenderStatus::Failed
+        ) {
+            image.preview = ReviewPreview::default();
+        }
+        if matches!(
+            image.codex.status,
+            ReviewCodexStatus::Queued | ReviewCodexStatus::Processing
+        ) {
+            image.codex.status = ReviewCodexStatus::Missing;
+            image.codex.analysis_key = None;
+            image.codex.error = None;
+            image.codex.updated_at = now_string();
+        }
+        for render in &mut image.profiles {
+            render.processing_key = Some(
+                review_render_processing_key_for_input(new_path, render.profile_index).to_string(),
+            );
+            if render.status == ReviewRenderStatus::Failed {
+                render.status = ReviewRenderStatus::Missing;
+                render.output_path = None;
+                render.error = None;
+                render.duration_ms = None;
+                render.render_key = None;
+                render.width = None;
+                render.height = None;
+                render.updated_at = now_string();
+            }
+        }
+        image.updated_at = now_string();
+        self.normalize_ui();
+        Ok(true)
+    }
+
     fn remove_internal_staging_images(&mut self) {
         self.images
             .retain(|image| !is_internal_staging_input_file(&image.raw_path));
@@ -718,10 +815,14 @@ fn merge_refreshed_focus_data(
     refreshed: &GalleryExifData,
     force: bool,
 ) {
-    if force
-        || existing.focus_regions.is_empty()
-        || existing.focus_frame_width.is_none()
-        || existing.focus_frame_height.is_none()
+    let refreshed_has_focus_data = !refreshed.focus_regions.is_empty()
+        && refreshed.focus_frame_width.is_some()
+        && refreshed.focus_frame_height.is_some();
+    if refreshed_has_focus_data
+        && (force
+            || existing.focus_regions.is_empty()
+            || existing.focus_frame_width.is_none()
+            || existing.focus_frame_height.is_none())
     {
         existing.focus_frame_width = refreshed.focus_frame_width;
         existing.focus_frame_height = refreshed.focus_frame_height;

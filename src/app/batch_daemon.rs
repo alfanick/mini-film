@@ -24,6 +24,7 @@ use crate::app::apply::{
     ApplyArgs, ApplyJob, CompressedApplyJob, apply_compressed, apply_resolved,
     resolve_apply_effects, resolve_grain_override,
 };
+use crate::app::dng::DngFallbackConfig;
 use crate::app::export::validate_export_options;
 use crate::app::info::profile_info_text_for_selector;
 use crate::app::nikon_wtu::{NikonWtuConfig, NikonWtuReceiver, start_nikon_wtu_receiver};
@@ -59,6 +60,7 @@ pub(crate) struct BatchDaemonArgs {
     pub(crate) profiles_root: PathBuf,
     pub(crate) hald_level: u32,
     pub(crate) rawtherapee: PathBuf,
+    pub(crate) dng_fallback: DngFallbackConfig,
     pub(crate) convert: PathBuf,
     pub(crate) no_grain: bool,
     pub(crate) lcp_root: Option<PathBuf>,
@@ -349,6 +351,7 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
             profiles_root: args.profiles_root.clone(),
             hald_level: args.hald_level,
             rawtherapee: args.rawtherapee.clone(),
+            dng_fallback: args.dng_fallback.clone(),
             output_format: args.output_format,
             profiles: review_profiles,
             gallery: args.gallery.map(|template| ReviewGalleryConfig {
@@ -374,6 +377,7 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
             codex_timeout: Duration::from_secs(args.codex_timeout),
             invocation: args.invocation.clone(),
             hugin_bin_dir: args.hugin_bin_dir.clone(),
+            converted_input_sender: Some(trusted_input_tx.clone()),
             trusted_input_sender: (!matches!(args.input_file_filter, InputFileFilter::All))
                 .then_some(trusted_input_tx),
         })?)
@@ -489,7 +493,8 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
     let worker_bars = Arc::new(Mutex::new(worker_bars));
 
     let mut pending: HashMap<PathBuf, PendingFile> = HashMap::new();
-    let startup_inputs = collect_batch_inputs(&args.input, args.input_file_filter)?;
+    let startup_inputs =
+        collect_batch_inputs(&args.input, args.input_file_filter, &args.dng_fallback)?;
     for input in &startup_inputs {
         queue_input_file(
             &mut pending,
@@ -630,7 +635,7 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
                     estimates: thread_estimates,
                     review: thread_review,
                 };
-                let result = match task_kind {
+                let mut result = match task_kind {
                     DaemonTaskKind::RawProfile(profile_index) => {
                         let profile = profile.expect("profile exists for RAW task");
                         if let Some(review) = &context.review {
@@ -661,6 +666,16 @@ pub(crate) fn run_batch_daemon(args: BatchDaemonArgs) -> Result<()> {
                     }
                 };
                 if let Some(review) = &context.review {
+                    if result.raw != worker_raw
+                        && let Err(error) = review.rebind_raw_source(&worker_raw, &result.raw)
+                    {
+                        result.error = Some(format!(
+                            "render succeeded but review database could not replace {} with {}: {error:#}",
+                            worker_raw.display(),
+                            result.raw.display()
+                        ));
+                        result.raw.clone_from(&worker_raw);
+                    }
                     match result.profile_index {
                         Some(profile_index) => {
                             if let Some(error) = &result.error {
@@ -1085,6 +1100,7 @@ fn resolve_daemon_profiles(args: &BatchDaemonArgs, temp_dir: &Path) -> Result<Ve
                 profiles_root: args.profiles_root.clone(),
                 hald_level: args.hald_level,
                 rawtherapee: args.rawtherapee.clone(),
+                dng_fallback: args.dng_fallback.clone(),
                 convert: args.convert.clone(),
                 keep_intermediate: None,
                 no_grain: args.no_grain,
@@ -1344,14 +1360,18 @@ fn should_skip_existing_profile_output(
         .is_none_or(|review| review.profile_render_current(raw, profile_index, expected_output))
 }
 
-fn collect_batch_inputs(input: &Path, filter: InputFileFilter) -> Result<Vec<PathBuf>> {
+fn collect_batch_inputs(
+    input: &Path,
+    filter: InputFileFilter,
+    dng_fallback: &DngFallbackConfig,
+) -> Result<Vec<PathBuf>> {
     let mut inputs = Vec::new();
     for entry in WalkDir::new(input).into_iter().filter_map(Result::ok) {
         if entry.path().is_file() && is_supported_input_file(entry.path(), filter) {
             inputs.push(entry.path().to_path_buf());
         }
     }
-    Ok(coalesce_input_sidecars(inputs, filter))
+    dng_fallback.coalesce_existing_replacements(coalesce_input_sidecars(inputs, filter))
 }
 
 struct DaemonTaskContext {
@@ -1471,11 +1491,13 @@ fn process_single_profile(
         estimates: Some(Arc::clone(&context.estimates)),
     };
     let seed = stable_profile_seed(context.base_seed, raw, profile_index);
-    if let Err(error) = apply_resolved(
+    let apply_outcome = match apply_resolved(
         ApplyJob {
             raw,
             output: apply_output,
             rawtherapee: &args.rawtherapee,
+            dng_fallback: &args.dng_fallback,
+            prepared_raw: None,
             convert: &args.convert,
             keep_intermediate: None,
             no_grain: args.no_grain,
@@ -1504,22 +1526,30 @@ fn process_single_profile(
         temp_dir.path(),
         Some(&progress),
     ) {
-        return DaemonFileResult {
-            raw: raw.to_path_buf(),
-            output,
-            duration: file_start.elapsed(),
-            profile_index: Some(profile_index as usize),
-            error: Some(error.to_string()),
-            lens_profile_status: daemon_input_lens_status(raw, args.lens_corrections, false),
-            sharpening_status: sharpening_status(false),
-            denoise_status: denoise_status(false),
-        };
-    }
+        Ok(outcome) => outcome,
+        Err(error) => {
+            return DaemonFileResult {
+                raw: raw.to_path_buf(),
+                output,
+                duration: file_start.elapsed(),
+                profile_index: Some(profile_index as usize),
+                error: Some(error.to_string()),
+                lens_profile_status: daemon_input_lens_status(raw, args.lens_corrections, false),
+                sharpening_status: sharpening_status(false),
+                denoise_status: denoise_status(false),
+            };
+        }
+    };
+    let canonical_raw = apply_outcome
+        .replacement
+        .map_or(apply_outcome.source_path, |replacement| {
+            replacement.new_path
+        });
     if let Some(staged_output) = staged_output
-        && let Err(error) = publish_daemon_profile_output(raw, staged_output, &output)
+        && let Err(error) = publish_daemon_profile_output(&canonical_raw, staged_output, &output)
     {
         return DaemonFileResult {
-            raw: raw.to_path_buf(),
+            raw: canonical_raw,
             output,
             duration: file_start.elapsed(),
             profile_index: Some(profile_index as usize),
@@ -1530,8 +1560,11 @@ fn process_single_profile(
         };
     }
 
-    let (sharpening_applied, denoise_applied) =
-        resolve_apply_effects(raw, &profile.resolved, args.color_noise_iso_threshold);
+    let (sharpening_applied, denoise_applied) = resolve_apply_effects(
+        &canonical_raw,
+        &profile.resolved,
+        args.color_noise_iso_threshold,
+    );
 
     file.set_message(format!(
         "{} -> {}: done in {}",
@@ -1541,7 +1574,7 @@ fn process_single_profile(
     ));
 
     DaemonFileResult {
-        raw: raw.to_path_buf(),
+        raw: canonical_raw,
         output,
         duration: file_start.elapsed(),
         profile_index: Some(profile_index as usize),
@@ -1919,7 +1952,10 @@ fn queue_input_file(
     debounce: Duration,
     filter: InputFileFilter,
 ) {
-    if !path.is_file() || !is_supported_input_file(&path, filter) {
+    if DngFallbackConfig::generated_this_process(&path)
+        || !path.is_file()
+        || !is_supported_input_file(&path, filter)
+    {
         return;
     }
     if let Ok(metadata) = fs::metadata(&path) {
@@ -2121,6 +2157,7 @@ mod tests {
             profiles_root: root.path().to_path_buf(),
             hald_level: 16,
             rawtherapee: PathBuf::from("rawtherapee"),
+            dng_fallback: crate::app::dng::DngFallbackConfig::default(),
             convert: PathBuf::from("convert"),
             no_grain: false,
             grain: None,
@@ -2264,6 +2301,7 @@ mod tests {
             profiles_root: root.path().to_path_buf(),
             hald_level: 16,
             rawtherapee: PathBuf::from("rawtherapee"),
+            dng_fallback: crate::app::dng::DngFallbackConfig::default(),
             convert: PathBuf::from("convert"),
             no_grain: false,
             grain: None,

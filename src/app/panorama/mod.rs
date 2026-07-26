@@ -17,7 +17,10 @@ use sha1::{Digest, Sha1};
 use tempfile::Builder;
 
 use crate::{
-    app::util::{InputFileFilter, is_supported_input_file},
+    app::{
+        dng::DngFallbackConfig,
+        util::{InputFileFilter, is_supported_input_file},
+    },
     cli::{LensCorrections, PanoramaMatchingMode, PanoramaProjection},
 };
 
@@ -30,6 +33,7 @@ const PANORAMA_CACHE_VERSION: &str = "panorama-v2-hugin-mosaic-neutral-srgb";
 pub(crate) struct PanoramaConfig {
     pub(crate) hugin_bin_dir: Option<PathBuf>,
     pub(crate) rawtherapee: PathBuf,
+    pub(crate) dng_fallback: DngFallbackConfig,
     pub(crate) convert: PathBuf,
     pub(crate) jobs: usize,
     pub(crate) color_noise_iso_threshold: u32,

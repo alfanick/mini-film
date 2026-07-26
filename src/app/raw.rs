@@ -1,14 +1,22 @@
 use std::{
-    fs, io,
+    fs,
+    io::{self, Write as _},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Command, ExitStatus, Output},
     thread,
     time::Duration,
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow};
 
+use crate::app::dng::{DngFallbackConfig, PreparedRawSource};
+use crate::app::util::is_raw_input_file;
 use crate::cli::JpegSubsampling;
+
+#[derive(Clone, Debug)]
+pub(crate) struct RawDevelopOutcome {
+    pub(crate) source: PreparedRawSource,
+}
 
 /// Develop one RAW file with RawTherapee.
 ///
@@ -19,19 +27,21 @@ use crate::cli::JpegSubsampling;
 pub(crate) fn run_raw_develop(
     rawtherapee: &Path,
     profiles: &[PathBuf],
-    raw: &Path,
+    source: PreparedRawSource,
     output_tiff: &Path,
     lcp_root: Option<&Path>,
     quiet: bool,
-) -> Result<()> {
+    dng_fallback: &DngFallbackConfig,
+) -> Result<RawDevelopOutcome> {
     run_rawtherapee(
         rawtherapee,
         profiles,
-        raw,
+        source,
         output_tiff,
         RawOutput::Tiff16,
         lcp_root,
         quiet,
+        dng_fallback,
     )
 }
 
@@ -39,17 +49,18 @@ pub(crate) fn run_raw_develop(
 pub(crate) fn run_raw_develop_jpeg(
     rawtherapee: &Path,
     profiles: &[PathBuf],
-    raw: &Path,
+    source: PreparedRawSource,
     output_jpeg: &Path,
     quality: u8,
     subsampling: JpegSubsampling,
     lcp_root: Option<&Path>,
     quiet: bool,
-) -> Result<()> {
+    dng_fallback: &DngFallbackConfig,
+) -> Result<RawDevelopOutcome> {
     run_rawtherapee(
         rawtherapee,
         profiles,
-        raw,
+        source,
         output_jpeg,
         RawOutput::Jpeg8 {
             quality,
@@ -57,6 +68,7 @@ pub(crate) fn run_raw_develop_jpeg(
         },
         lcp_root,
         quiet,
+        dng_fallback,
     )
 }
 
@@ -76,15 +88,17 @@ enum RawOutput {
 /// overwrite, selects either 16-bit TIFF or 8-bit JPEG output, optionally
 /// silences logs for batch, then checks both process status and actual
 /// output-file existence.
+#[allow(clippy::too_many_arguments)]
 fn run_rawtherapee(
     rawtherapee: &Path,
     profiles: &[PathBuf],
-    raw: &Path,
+    mut source: PreparedRawSource,
     output: &Path,
     output_format: RawOutput,
     lcp_root: Option<&Path>,
     quiet: bool,
-) -> Result<()> {
+    dng_fallback: &DngFallbackConfig,
+) -> Result<RawDevelopOutcome> {
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
@@ -95,27 +109,53 @@ fn run_rawtherapee(
         None
     };
 
-    let status = rawtherapee_status_with_retry(
+    let first = rawtherapee_output_with_retry(
         rawtherapee,
         profiles,
-        raw,
+        source.active(),
         output,
         output_format,
         lcp_home.as_ref().map(|home| home.path()),
         quiet,
-    )?;
-
-    if !status.success() {
-        bail!("rawtherapee failed with status {status}");
+    );
+    if let Err(error) = first {
+        if !error.is_input_decode_failure()
+            || source.was_replaced()
+            || !is_raw_input_file(source.requested())
+        {
+            return Err(error.into_anyhow(rawtherapee));
+        }
+        source = dng_fallback
+            .prepare_after_decode_failure(&source)
+            .with_context(|| {
+                format!(
+                    "preparing Adobe DNG fallback after RawTherapee could not decode {}",
+                    source.requested().display()
+                )
+            })?;
+        let _ = fs::remove_file(output);
+        rawtherapee_output_with_retry(
+            rawtherapee,
+            profiles,
+            source.active(),
+            output,
+            output_format,
+            lcp_home.as_ref().map(|home| home.path()),
+            quiet,
+        )
+        .map_err(|error| error.into_anyhow(rawtherapee))
+        .with_context(|| {
+            format!(
+                "RawTherapee could not develop Adobe DNG fallback {}",
+                source.active().display()
+            )
+        })?;
     }
-    if !output.exists() {
-        bail!("rawtherapee finished without creating {}", output.display());
-    }
 
-    Ok(())
+    Ok(RawDevelopOutcome { source })
 }
 
-fn rawtherapee_status_with_retry(
+fn rawtherapee_output_with_retry(
     rawtherapee: &Path,
     profiles: &[PathBuf],
     raw: &Path,
@@ -123,7 +163,7 @@ fn rawtherapee_status_with_retry(
     output_format: RawOutput,
     lcp_config_home: Option<&Path>,
     quiet: bool,
-) -> Result<std::process::ExitStatus> {
+) -> std::result::Result<Output, RawTherapeeAttemptError> {
     const MAX_ATTEMPTS: usize = 6;
     for attempt in 1..=MAX_ATTEMPTS {
         let mut command = rawtherapee_command(
@@ -135,13 +175,29 @@ fn rawtherapee_status_with_retry(
             lcp_config_home,
             quiet,
         );
-        match command.status() {
-            Ok(status) => return Ok(status),
+        match command.output() {
+            Ok(output_result) => {
+                if !quiet {
+                    let _ = io::stdout().write_all(&output_result.stdout);
+                    let _ = io::stderr().write_all(&output_result.stderr);
+                }
+                if !output_result.status.success() {
+                    return Err(RawTherapeeAttemptError::Failed {
+                        status: output_result.status,
+                        stdout: output_result.stdout,
+                        stderr: output_result.stderr,
+                    });
+                }
+                if !output.exists() {
+                    return Err(RawTherapeeAttemptError::MissingOutput(output.to_path_buf()));
+                }
+                return Ok(output_result);
+            }
             Err(error) if is_executable_busy(&error) && attempt < MAX_ATTEMPTS => {
                 thread::sleep(Duration::from_millis(25 * attempt as u64));
             }
             Err(error) => {
-                return Err(error).with_context(|| format!("running {}", rawtherapee.display()));
+                return Err(RawTherapeeAttemptError::Launch(error));
             }
         }
     }
@@ -155,7 +211,7 @@ fn rawtherapee_command(
     output: &Path,
     output_format: RawOutput,
     lcp_config_home: Option<&Path>,
-    quiet: bool,
+    _quiet: bool,
 ) -> Command {
     let mut command = Command::new(rawtherapee);
     command.arg("-q").arg("-Y");
@@ -177,9 +233,6 @@ fn rawtherapee_command(
         }
     }
     command.arg("-c").arg(raw);
-    if quiet {
-        command.stdout(Stdio::null()).stderr(Stdio::null());
-    }
     if let Some(lcp_home) = lcp_config_home {
         let xdg_config_home = lcp_home.join(".config");
         command
@@ -187,6 +240,51 @@ fn rawtherapee_command(
             .env("XDG_CONFIG_HOME", xdg_config_home);
     }
     command
+}
+
+#[derive(Debug)]
+enum RawTherapeeAttemptError {
+    Launch(io::Error),
+    Failed {
+        status: ExitStatus,
+        stdout: Vec<u8>,
+        stderr: Vec<u8>,
+    },
+    MissingOutput(PathBuf),
+}
+
+impl RawTherapeeAttemptError {
+    fn is_input_decode_failure(&self) -> bool {
+        let Self::Failed { status, stderr, .. } = self else {
+            return false;
+        };
+        let stderr = String::from_utf8_lossy(stderr).to_ascii_lowercase();
+        stderr.contains("error loading file")
+            || stderr.contains("cannot load file")
+            || stderr.contains("failed to load file")
+            || stderr.contains("unsupported raw")
+            || (status.code() == Some(254) && stderr.contains("load"))
+    }
+
+    fn into_anyhow(self, rawtherapee: &Path) -> anyhow::Error {
+        match self {
+            Self::Launch(error) => {
+                anyhow!(error).context(format!("running {}", rawtherapee.display()))
+            }
+            Self::Failed {
+                status,
+                stdout,
+                stderr,
+            } => anyhow!(
+                "rawtherapee failed with status {status}\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&stdout),
+                String::from_utf8_lossy(&stderr)
+            ),
+            Self::MissingOutput(output) => {
+                anyhow!("rawtherapee finished without creating {}", output.display())
+            }
+        }
+    }
 }
 
 fn configure_rawtherapee_lcp_root(lcp_root: &Path) -> Result<tempfile::TempDir> {
@@ -265,6 +363,15 @@ mod tests {
         Ok(path.with_file_name("command.log"))
     }
 
+    fn write_executable(path: &Path, text: &str) {
+        let mut file = fs::File::create(path).unwrap();
+        file.write_all(text.as_bytes()).unwrap();
+        file.sync_all().unwrap();
+        let mut permissions = file.metadata().unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).unwrap();
+    }
+
     #[test]
     fn run_raw_develop_tiff_invokes_expected_rawtherapee_args() {
         let temp = tempfile::tempdir().unwrap();
@@ -275,10 +382,11 @@ mod tests {
         run_raw_develop(
             &temp.path().join("rawtherapee"),
             &[],
-            &raw,
+            PreparedRawSource::unchanged(&raw),
             &out,
             None,
             true,
+            &DngFallbackConfig::default(),
         )
         .unwrap();
 
@@ -304,12 +412,13 @@ mod tests {
                 PathBuf::from("profile-a.pp3"),
                 PathBuf::from("profile-b.pp3"),
             ],
-            &raw,
+            PreparedRawSource::unchanged(&raw),
             &out,
             86,
             JpegSubsampling::S422,
             None,
             false,
+            &DngFallbackConfig::default(),
         )
         .unwrap();
 
@@ -335,10 +444,11 @@ mod tests {
         let result = run_raw_develop(
             &temp.path().join("rawtherapee"),
             &[],
-            &raw,
+            PreparedRawSource::unchanged(&raw),
             &temp.path().join("out.tif"),
             None,
             true,
+            &DngFallbackConfig::default(),
         );
         assert!(result.is_err());
     }
@@ -353,11 +463,81 @@ mod tests {
         let result = run_raw_develop(
             &temp.path().join("rawtherapee"),
             &[],
-            &raw,
+            PreparedRawSource::unchanged(&raw),
             &temp.path().join("out.tif"),
             None,
             true,
+            &DngFallbackConfig::default(),
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn rawtherapee_decode_failure_retries_with_adobe_dng() {
+        let temp = tempfile::tempdir().unwrap();
+        let raw = temp.path().join("frame.raf");
+        fs::write(&raw, b"unsupported raw").unwrap();
+        let out = temp.path().join("out.tif");
+        let rawtherapee = temp.path().join("rawtherapee");
+        write_executable(
+            &rawtherapee,
+            &format!(
+                r#"#!/bin/sh
+case "$*" in
+  *.dng*)
+    printf '%s\n' 'developed dng' > '{}'
+    exit 0
+    ;;
+  *)
+    printf '%s\n' 'Error loading file' >&2
+    exit 254
+    ;;
+esac
+"#,
+                out.display()
+            ),
+        );
+        let exiftool = temp.path().join("exiftool");
+        write_executable(
+            &exiftool,
+            r#"#!/bin/sh
+printf '%s\n' '[{"FileType":"DNG","DNGVersion":"1.7.1.0","Compression":7,"BitsPerSample":16,"NewRawImageDigest":"0123456789abcdef0123456789abcdef","OriginalRawFileName":"frame.raf","ImageWidth":100,"ImageHeight":80}]'
+"#,
+        );
+        let wine = temp.path().join("wine");
+        write_executable(
+            &wine,
+            r#"#!/bin/sh
+set -eu
+destination=$(printf '%s' "$5" | sed 's#^Z:##; s#\\#/#g')
+mkdir -p "$destination"
+printf '%s\n' 'converted dng' > "$destination/frame.dng"
+"#,
+        );
+        let converter = temp.path().join("Adobe DNG Converter.exe");
+        fs::write(&converter, b"converter").unwrap();
+        let prefix = temp.path().join("wine-prefix");
+        fs::create_dir_all(&prefix).unwrap();
+        let fallback = DngFallbackConfig::new(Some(converter), Some(wine), Some(prefix))
+            .with_exiftool(exiftool);
+
+        let outcome = run_raw_develop(
+            &rawtherapee,
+            &[],
+            PreparedRawSource::unchanged(&raw),
+            &out,
+            None,
+            true,
+            &fallback,
+        )
+        .unwrap();
+        assert_eq!(outcome.source.active(), temp.path().join("frame.dng"));
+        assert!(out.is_file());
+        assert!(raw.is_file());
+        fallback
+            .finish_successful_development(&outcome.source)
+            .unwrap();
+        assert!(!raw.exists());
+        assert!(outcome.source.active().is_file());
     }
 }

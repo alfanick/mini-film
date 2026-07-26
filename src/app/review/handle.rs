@@ -39,6 +39,19 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
     let mut store = stored
         .clone()
         .unwrap_or_else(|| ReviewStore::new(Vec::new()));
+    let stored_raw_paths = store
+        .images
+        .iter()
+        .map(|image| image.raw_path.clone())
+        .collect::<Vec<_>>();
+    for old_path in stored_raw_paths {
+        if old_path.is_file() {
+            continue;
+        }
+        if let Some(successor) = config.dng_fallback.existing_successor(&old_path)? {
+            store.rebind_raw_source(&config.input_root, &old_path, successor.active())?;
+        }
+    }
     let needs_exif_schema_refresh = store.needs_exif_schema_refresh();
     store.sync_profiles(config.profiles);
     if needs_exif_schema_refresh {
@@ -57,6 +70,7 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
     let panorama_config = crate::app::panorama::PanoramaConfig {
         hugin_bin_dir: config.hugin_bin_dir.clone(),
         rawtherapee: config.rawtherapee.clone(),
+        dng_fallback: config.dng_fallback.clone(),
         convert: config.convert.clone(),
         jobs: config.jobs,
         color_noise_iso_threshold: config.color_noise_iso_threshold,
@@ -111,6 +125,7 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
         profiles_root: config.profiles_root,
         hald_level: config.hald_level,
         rawtherapee: config.rawtherapee,
+        dng_fallback: config.dng_fallback,
         lcp_root: config.lcp_root,
         output_format: config.output_format,
         gallery: config.gallery,
@@ -138,6 +153,7 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
         panorama_operation: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         sampler_registry: Arc::new(ReviewSamplerRegistry::default()),
         trusted_input_sender: config.trusted_input_sender,
+        converted_input_sender: config.converted_input_sender,
     };
     handle.refresh_state_cache()?;
     handle.append_history(history_server_started(
@@ -172,6 +188,29 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
 impl ReviewHandle {
     pub(crate) fn state_path(&self) -> &Path {
         &self.state_path
+    }
+
+    pub(crate) fn rebind_raw_source(&self, old_path: &Path, new_path: &Path) -> Result<bool> {
+        let changed = self
+            .update_store(|store| store.rebind_raw_source(&self.input_root, old_path, new_path))?;
+        if changed {
+            self.broadcast_state()?;
+        }
+        Ok(changed)
+    }
+
+    pub(super) fn rebind_and_queue_converted_source(
+        &self,
+        old_path: &Path,
+        new_path: &Path,
+    ) -> Result<bool> {
+        let changed = self.rebind_raw_source(old_path, new_path)?;
+        if changed && let Some(sender) = &self.converted_input_sender {
+            sender
+                .send(new_path.to_path_buf())
+                .context("queueing converted DNG in daemon")?;
+        }
+        Ok(changed)
     }
 
     pub(super) fn append_history(&self, entry: HistoryEntry) -> Result<()> {
@@ -553,7 +592,7 @@ impl ReviewHandle {
         let projection = project
             .selected_projection
             .expect("validated panorama projection");
-        let result = render_final(
+        let render_result = render_final(
             &self.panorama_config,
             &sources,
             &self
@@ -564,7 +603,16 @@ impl ReviewHandle {
             &output,
             false,
             Some(progress),
-        )
+        );
+        let reconcile_result = self.reconcile_replaced_raw_sources(&sources);
+        let result = match (render_result, reconcile_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) => Err(error),
+            (Ok(()), Err(error)) => Err(error),
+            (Err(render_error), Err(reconcile_error)) => Err(render_error.context(format!(
+                "also failed to update converted panorama sources: {reconcile_error:#}"
+            ))),
+        }
         .and_then(|()| self.record_profiled_compressed_discovered(&output))
         .and_then(|()| {
             if let Some(sender) = &self.trusted_input_sender {
@@ -592,6 +640,18 @@ impl ReviewHandle {
         if let Err(error) = completion {
             eprintln!("panorama render completion update failed: {error:#}");
         }
+    }
+
+    fn reconcile_replaced_raw_sources(&self, sources: &[PathBuf]) -> Result<()> {
+        for source in sources {
+            if source.is_file() {
+                continue;
+            }
+            if let Some(successor) = self.dng_fallback.existing_successor(source)? {
+                self.rebind_and_queue_converted_source(source, successor.active())?;
+            }
+        }
+        Ok(())
     }
 
     fn update_panorama_progress(&self, project_id: u64, progress: PanoramaProgress) -> Result<()> {
@@ -2055,6 +2115,7 @@ impl ReviewHandle {
             profiles_root: self.profiles_root.clone(),
             hald_level: self.hald_level,
             rawtherapee: self.rawtherapee.clone(),
+            dng_fallback: self.dng_fallback.clone(),
             convert: self.convert.clone(),
             lcp_root: self.lcp_root.clone(),
             keep_intermediate: None,
@@ -2080,11 +2141,13 @@ impl ReviewHandle {
             .grain_seed
             .map(|seed| review_publish_seed(seed, &raw, profile.index))
             .unwrap_or_else(|| review_publish_seed(0, &raw, profile.index));
-        apply_resolved(
+        let outcome = apply_resolved(
             ApplyJob {
                 raw: &raw,
                 output,
                 rawtherapee: &self.rawtherapee,
+                dng_fallback: &self.dng_fallback,
+                prepared_raw: None,
                 convert: &self.convert,
                 keep_intermediate: None,
                 no_grain: self.no_grain,
@@ -2114,7 +2177,11 @@ impl ReviewHandle {
             seed,
             temp_dir.path(),
             None,
-        )
+        )?;
+        if outcome.source_path != raw {
+            self.rebind_and_queue_converted_source(&raw, &outcome.source_path)?;
+        }
+        Ok(())
     }
 
     pub(super) fn render_compressed_retouch_output(
@@ -2836,6 +2903,7 @@ impl ReviewHandle {
             profiles_root: self.profiles_root.clone(),
             hald_level: self.hald_level,
             rawtherapee: self.rawtherapee.clone(),
+            dng_fallback: self.dng_fallback.clone(),
             convert: self.convert.clone(),
             lcp_root: self.lcp_root.clone(),
             keep_intermediate: None,
@@ -3110,6 +3178,7 @@ impl ReviewHandle {
             profiles_root: self.profiles_root.clone(),
             hald_level: self.hald_level,
             rawtherapee: self.rawtherapee.clone(),
+            dng_fallback: self.dng_fallback.clone(),
             lcp_root: self.lcp_root.clone(),
             convert: self.convert.clone(),
             jobs: self.jobs,

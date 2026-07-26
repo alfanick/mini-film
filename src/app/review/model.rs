@@ -1,6 +1,7 @@
 use super::prelude::*;
 use super::scheduler::{ReviewMediaScheduler, ReviewRetouchScheduler};
 use super::store::now_string;
+use crate::app::dng::DngFallbackConfig;
 use crate::app::profile::{Pp3AdjustmentSection, ResolvedProfileMetadata};
 
 use mini_film::{
@@ -22,6 +23,7 @@ pub(crate) struct ReviewConfig {
     pub(crate) profiles_root: PathBuf,
     pub(crate) hald_level: u32,
     pub(crate) rawtherapee: PathBuf,
+    pub(crate) dng_fallback: DngFallbackConfig,
     pub(crate) output_format: BatchOutputFormat,
     pub(crate) profiles: Vec<ReviewProfile>,
     pub(crate) gallery: Option<ReviewGalleryConfig>,
@@ -44,6 +46,7 @@ pub(crate) struct ReviewConfig {
     pub(crate) invocation: Option<String>,
     pub(crate) hugin_bin_dir: Option<PathBuf>,
     pub(crate) trusted_input_sender: Option<std::sync::mpsc::Sender<PathBuf>>,
+    pub(crate) converted_input_sender: Option<std::sync::mpsc::Sender<PathBuf>>,
 }
 
 #[derive(Clone, Debug)]
@@ -423,6 +426,7 @@ pub(crate) struct ReviewHandle {
     pub(super) profiles_root: PathBuf,
     pub(super) hald_level: u32,
     pub(super) rawtherapee: PathBuf,
+    pub(super) dng_fallback: DngFallbackConfig,
     pub(super) output_format: BatchOutputFormat,
     pub(super) gallery: Option<ReviewGalleryConfig>,
     pub(super) convert: PathBuf,
@@ -450,6 +454,7 @@ pub(crate) struct ReviewHandle {
     pub(super) panorama_operation: Arc<std::sync::atomic::AtomicBool>,
     pub(super) sampler_registry: Arc<super::sampler::ReviewSamplerRegistry>,
     pub(super) trusted_input_sender: Option<std::sync::mpsc::Sender<PathBuf>>,
+    pub(super) converted_input_sender: Option<std::sync::mpsc::Sender<PathBuf>>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -967,6 +972,7 @@ pub(crate) struct ReviewPublishCommandArgs {
     pub(crate) profiles_root: PathBuf,
     pub(crate) hald_level: u32,
     pub(crate) rawtherapee: PathBuf,
+    pub(crate) dng_fallback: DngFallbackConfig,
     pub(crate) lcp_root: Option<PathBuf>,
     pub(crate) convert: PathBuf,
     pub(crate) jobs: usize,
@@ -1048,6 +1054,7 @@ pub(super) struct ReviewPublishOptions {
     pub(super) profiles_root: PathBuf,
     pub(super) hald_level: u32,
     pub(super) rawtherapee: PathBuf,
+    pub(super) dng_fallback: DngFallbackConfig,
     pub(super) convert: PathBuf,
     pub(super) jobs: usize,
     pub(super) export: ExportOptions,

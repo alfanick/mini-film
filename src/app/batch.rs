@@ -26,6 +26,7 @@ use crate::app::batch_assets::{
     gallery_html_item_template, gallery_html_page_template, gallery_html_script,
     gallery_html_styles,
 };
+use crate::app::dng::DngFallbackConfig;
 use crate::app::export::{finalize_output, validate_export_options};
 use crate::app::info::profile_info_text_for_selector;
 use crate::app::profile::resolve_profile;
@@ -51,6 +52,7 @@ pub(crate) struct BatchArgs {
     pub(crate) profiles_root: PathBuf,
     pub(crate) hald_level: u32,
     pub(crate) rawtherapee: PathBuf,
+    pub(crate) dng_fallback: DngFallbackConfig,
     pub(crate) convert: PathBuf,
     pub(crate) no_grain: bool,
     pub(crate) lcp_root: Option<PathBuf>,
@@ -150,7 +152,12 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
         .as_deref()
         .map(str::trim)
         .filter(|profile| !profile.is_empty());
-    let mut inputs = collect_batch_inputs(&args.input, args.input_file_filter)?;
+    let mut inputs = args
+        .dng_fallback
+        .coalesce_existing_replacements(collect_batch_inputs(
+            &args.input,
+            args.input_file_filter,
+        )?)?;
     if profile_selector.is_some() {
         inputs.retain(|input| batch_profile_input_is_eligible(input));
     }
@@ -182,6 +189,7 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
             profiles_root: args.profiles_root.clone(),
             hald_level: args.hald_level,
             rawtherapee: args.rawtherapee.clone(),
+            dng_fallback: args.dng_fallback.clone(),
             convert: args.convert.clone(),
             keep_intermediate: None,
             no_grain: args.no_grain,
@@ -736,8 +744,8 @@ fn process_batch_file(context: &ProcessBatchFileContext<'_>, raw: &Path) -> Batc
         "lens-profile: skipped (compressed input)".to_string()
     };
     match process_batch_file_inner(context, raw) {
-        Ok((output, duration)) => BatchFileRecord {
-            raw: raw.to_path_buf(),
+        Ok((output, duration, source_path)) => BatchFileRecord {
+            raw: source_path,
             output,
             duration,
             lens_profile_status: lens_status,
@@ -760,7 +768,7 @@ fn process_batch_file(context: &ProcessBatchFileContext<'_>, raw: &Path) -> Batc
 fn process_batch_file_inner(
     context: &ProcessBatchFileContext<'_>,
     raw: &Path,
-) -> Result<(PathBuf, Duration)> {
+) -> Result<(PathBuf, Duration, PathBuf)> {
     let output = batch_output_path(
         &context.args.input,
         &context.args.output,
@@ -789,7 +797,7 @@ fn process_batch_file_inner(
     let file_temp = context.temp_root.join(format!("file-{}", context.index));
     fs::create_dir_all(&file_temp).with_context(|| format!("creating {}", file_temp.display()))?;
     let seed = per_file_seed(context.base_seed, context.index as u64, raw);
-    let result = if batch_input_uses_profile_pipeline(context.args, raw) {
+    let result: Result<PathBuf> = if batch_input_uses_profile_pipeline(context.args, raw) {
         let resolved = context
             .resolved
             .ok_or_else(|| anyhow::anyhow!("profiled input queued without a resolved profile"))?;
@@ -798,6 +806,8 @@ fn process_batch_file_inner(
                 raw,
                 output: &output,
                 rawtherapee: &context.args.rawtherapee,
+                dng_fallback: &context.args.dng_fallback,
+                prepared_raw: None,
                 convert: &context.args.convert,
                 keep_intermediate: None,
                 no_grain: context.args.no_grain,
@@ -826,6 +836,7 @@ fn process_batch_file_inner(
             &file_temp,
             Some(&progress),
         )
+        .map(|outcome| outcome.source_path)
     } else {
         apply_compressed(
             CompressedApplyJob {
@@ -841,18 +852,19 @@ fn process_batch_file_inner(
             },
             Some(&progress),
         )
+        .map(|()| raw.to_path_buf())
     };
     maybe_sample_resource_usage(&context.resource_usage);
 
     context.batch.inc(1);
     match result {
-        Ok(()) => {
+        Ok(source_path) => {
             context.file.set_message(format!(
                 "{}: done in {}",
                 display_name,
                 format_duration(file_start.elapsed())
             ));
-            Ok((output, file_start.elapsed()))
+            Ok((output, file_start.elapsed(), source_path))
         }
         Err(err) => {
             context.file.set_message(format!(

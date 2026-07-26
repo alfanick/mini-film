@@ -180,6 +180,7 @@ where
         .arg(args.export.jpg_quality.to_string())
         .arg("--jpeg-subsampling")
         .arg(args.export.jpeg_subsampling.to_string());
+    args.dng_fallback.append_cli_args(&mut command);
     if let Some(lcp_root) = args.lcp_root.as_ref() {
         command.arg("--lcp-root").arg(lcp_root);
     }
@@ -323,6 +324,7 @@ pub(super) fn publish_review_state(
         profiles_root: args.profiles_root.clone(),
         hald_level: args.hald_level,
         rawtherapee: args.rawtherapee.clone(),
+        dng_fallback: args.dng_fallback.clone(),
         lcp_root: args.lcp_root.clone(),
         convert: args.convert.clone(),
         jobs: args.jobs,
@@ -732,6 +734,7 @@ pub(super) fn rerender_review_output(
         profiles_root: options.profiles_root.clone(),
         hald_level: options.hald_level,
         rawtherapee: options.rawtherapee.clone(),
+        dng_fallback: options.dng_fallback.clone(),
         convert: options.convert.clone(),
         keep_intermediate: None,
         no_grain: options.no_grain,

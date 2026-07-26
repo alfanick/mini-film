@@ -119,11 +119,15 @@ pub(crate) fn prepare_full_source(
     } else {
         None
     };
-    let develop_input = converted_heic.as_deref().unwrap_or(source);
+    let prepared_source = match converted_heic.as_deref() {
+        Some(develop_input) => crate::app::dng::PreparedRawSource::unchanged(develop_input),
+        None => config.dng_fallback.prepare_known(source)?,
+    };
+    let develop_input = prepared_source.active();
     let neutral = neutral_profile();
     let mut profiles = rawtherapee_profiles_for_input(
         RawTherapeeProfileOptions {
-            input: source,
+            input: develop_input,
             retouch: None,
             retouch_white_balance: RetouchWhiteBalance::default(),
             bw_filter: BwFilter::None,
@@ -148,20 +152,24 @@ pub(crate) fn prepare_full_source(
         .with_context(|| format!("creating panorama source in {}", parent.display()))?
         .into_temp_path();
     fs::remove_file(&temp).with_context(|| format!("preparing {}", temp.display()))?;
-    run_raw_develop(
+    let outcome = run_raw_develop(
         &config.rawtherapee,
         &profiles,
-        develop_input,
+        prepared_source,
         &temp,
         is_raw_input_file(source)
             .then_some(config.lcp_root.as_deref())
             .flatten(),
         true,
+        &config.dng_fallback,
     )?;
-    copy_alignment_metadata(source, &temp)?;
+    copy_alignment_metadata(outcome.source.active(), &temp)?;
     temp.persist(output)
         .map_err(|error| error.error)
         .with_context(|| format!("publishing panorama source {}", output.display()))?;
+    config
+        .dng_fallback
+        .finish_successful_development(&outcome.source)?;
     let _ = fs::remove_dir_all(source_work);
     Ok(())
 }

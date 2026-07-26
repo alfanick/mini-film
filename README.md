@@ -197,6 +197,26 @@ Required external dependencies at startup for image-generation commands:
 - `exiftool`
 - `codex` only when daemon review analysis is enabled with `--codex`
 
+Nikon Z9 High Efficiency/High Efficiency* NEFs, and other RAW files that
+RawTherapee reports it cannot decode, can use Adobe DNG Converter through Wine.
+This fallback is optional until one of those files is encountered. mini-film
+looks for Adobe DNG Converter in `~/.wine-dng-mini-film`, `~/.wine`, and other
+`~/.wine*` prefixes, and looks for `wine-stable` or `wine` in `PATH`. Override
+discovery with `--adobe-dng-converter`, `--wine`, and `--wine-prefix`, or with
+`MINI_FILM_ADOBE_DNG_CONVERTER`, `MINI_FILM_WINE`, and
+`MINI_FILM_WINE_PREFIX`.
+
+The fallback writes a same-stem `.dng` beside the source through a hidden
+staging directory, verifies its lossless compression, raw-image digest, DNG
+identity, dimensions, and `OriginalRawFileName`, preserves source filesystem
+timestamps and permissions, and confirms the normal mini-film render before
+permanently removing the replaced RAW. Existing validated DNGs are reused after
+an interrupted run. In daemon review mode the existing SQLite image row is
+rebound to the DNG in place, so its image ID, ratings, labels, tags, notes,
+retouch settings, profile selection, and related rows remain intact. A restart
+also repairs a stored RAW path when its validated replacement DNG already
+exists.
+
 Panorama mode additionally requires the Hugin CLI suite: `pto_gen`, `cpfind`,
 `cpclean`, `pto_var`, `autooptimiser`, `pano_modify`, `hugin_executor`, `nona`, and
 `enblend`. The Panorama entry in review Tools stays hidden when that complete

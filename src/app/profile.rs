@@ -1165,6 +1165,7 @@ mod tests {
             profiles_root,
             hald_level: 16,
             rawtherapee: PathBuf::from("rawtherapee-cli"),
+            dng_fallback: crate::app::dng::DngFallbackConfig::default(),
             convert: PathBuf::from("convert"),
             keep_intermediate: None,
             no_grain: false,

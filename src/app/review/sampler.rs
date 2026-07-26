@@ -7,6 +7,7 @@ use super::{
     store::*,
 };
 use crate::app::{
+    dng::PreparedRawSource,
     export::add_convert_thread_limit_with_count,
     pp3::write_rawtherapee_disable_sharpening_profile,
     profile::{neutral_profile, profile_from_xmp_quiet},
@@ -605,12 +606,14 @@ impl ReviewHandle {
         let work = Builder::new()
             .prefix("mini-film-review-sampler-source-")
             .tempdir_in(&source_dir)?;
-        let developed = if is_raw_input_file(source) {
+        let (developed, converted_source) = if is_raw_input_file(source) {
+            let prepared_source = self.dng_fallback.prepare_known(source)?;
+            let active_source = prepared_source.active();
             let developed = work.path().join("neutral.tif");
             let neutral = neutral_profile();
             let mut profiles = rawtherapee_profiles_for_input(
                 RawTherapeeProfileOptions {
-                    input: source,
+                    input: active_source,
                     retouch: None,
                     retouch_white_balance: RetouchWhiteBalance::default(),
                     bw_filter: BwFilter::None,
@@ -627,17 +630,18 @@ impl ReviewHandle {
                 &work.path().join("neutral-resize.pp3"),
                 REVIEW_SAMPLER_LONG_EDGE,
             )?);
-            run_raw_develop(
+            let outcome = run_raw_develop(
                 &self.rawtherapee,
                 &profiles,
-                source,
+                prepared_source,
                 &developed,
                 self.lcp_root.as_deref(),
                 true,
+                &self.dng_fallback,
             )?;
-            developed
+            (developed, Some(outcome.source))
         } else {
-            source.to_path_buf()
+            (source.to_path_buf(), None)
         };
 
         let temp = Builder::new()
@@ -650,6 +654,13 @@ impl ReviewHandle {
         temp.persist(&output)
             .map_err(|error| error.error)
             .with_context(|| format!("publishing sampler source {}", output.display()))?;
+        if let Some(converted_source) = converted_source {
+            self.dng_fallback
+                .finish_successful_development(&converted_source)?;
+            if converted_source.active() != source {
+                self.rebind_and_queue_converted_source(source, converted_source.active())?;
+            }
+        }
         let (width, height) = image::image_dimensions(&output)
             .with_context(|| format!("reading {}", output.display()))?;
         ensure_sampler_source_preview(&self.convert, &output, &preview, half_cpu_thread_count())?;
@@ -728,6 +739,8 @@ impl ReviewHandle {
                     raw: &prepared.path,
                     output: &temp,
                     rawtherapee: &self.rawtherapee,
+                    dng_fallback: &self.dng_fallback,
+                    prepared_raw: Some(PreparedRawSource::unchanged(&prepared.path)),
                     convert: &self.convert,
                     keep_intermediate: None,
                     no_grain: self.no_grain,
