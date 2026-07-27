@@ -2,8 +2,9 @@ use super::model::*;
 use super::prelude::*;
 
 const SOOC_RENDER_PIPELINE_KEY: &str = "sooc-managed-symlink-v3";
-const PROFILED_COMPRESSED_RENDER_PIPELINE_KEY: &str = "profiled-compressed-render-v3-no-sharpening";
-const PROFILED_TIFF_RENDER_PIPELINE_KEY: &str = "profiled-tiff-render-v1-sharpening";
+const PROFILED_COMPRESSED_RENDER_PIPELINE_KEY: &str =
+    "profiled-compressed-render-v4-local-contrast";
+const PROFILED_TIFF_RENDER_PIPELINE_KEY: &str = "profiled-tiff-render-v2-local-contrast";
 
 impl ReviewStore {
     const EXIF_SCHEMA_VERSION: u32 = 11;

@@ -34,6 +34,22 @@ pub fn write_rawtherapee_profile(
     Ok(Some(path.to_path_buf()))
 }
 
+pub fn write_rawtherapee_contrast_clarity_profile(
+    path: &Path,
+    contrast: Option<f32>,
+    clarity: Option<f32>,
+) -> Result<Option<PathBuf>> {
+    let text = rawtherapee_contrast_clarity_profile_text(contrast, clarity);
+    if text.is_empty() {
+        return Ok(None);
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+    fs::write(path, text).with_context(|| format!("writing {}", path.display()))?;
+    Ok(Some(path.to_path_buf()))
+}
+
 pub fn write_rawtherapee_resize_profile(path: &Path, long_edge: u32) -> Result<PathBuf> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
@@ -63,6 +79,11 @@ pub fn rawtherapee_profile_text(
 
     write_exposure_section(&mut out, adjustments);
     out.push_str(&rawtherapee_tone_equalizer_profile_text(adjustments));
+    if adjustments.clarity != 0.0 {
+        out.push_str(&rawtherapee_local_contrast_profile_text(
+            adjustments.clarity,
+        ));
+    }
     write_luminance_section(&mut out, adjustments);
     write_color_curve_section(&mut out, adjustments);
     write_vibrance_section(&mut out, adjustments);
@@ -81,6 +102,36 @@ pub fn rawtherapee_hald_clut_profile_text(hald: &Path) -> String {
     let _ = writeln!(out, "Enabled=true");
     let _ = writeln!(out, "ClutFilename={}", hald.display());
     let _ = writeln!(out, "Strength=100");
+    let _ = writeln!(out);
+    out
+}
+
+pub fn rawtherapee_contrast_clarity_profile_text(
+    contrast: Option<f32>,
+    clarity: Option<f32>,
+) -> String {
+    let mut out = String::new();
+    if let Some(contrast) = contrast {
+        let _ = writeln!(out, "[Exposure]");
+        let _ = writeln!(out, "Auto=false");
+        let _ = writeln!(out, "Contrast={}", fmt_slider(contrast));
+        let _ = writeln!(out);
+    }
+    if let Some(clarity) = clarity {
+        out.push_str(&rawtherapee_local_contrast_profile_text(clarity));
+    }
+    out
+}
+
+pub fn rawtherapee_local_contrast_profile_text(clarity: f32) -> String {
+    let amount = clarity.clamp(-100.0, 100.0) / 100.0;
+    let mut out = String::new();
+    let _ = writeln!(out, "[Local Contrast]");
+    let _ = writeln!(out, "Enabled={}", clarity != 0.0);
+    let _ = writeln!(out, "Radius=80");
+    let _ = writeln!(out, "Amount={}", fmt_f32(amount));
+    let _ = writeln!(out, "Darkness=1");
+    let _ = writeln!(out, "Lightness=1");
     let _ = writeln!(out);
     out
 }
@@ -145,12 +196,12 @@ pub fn rawtherapee_tone_equalizer_profile_text(adjustments: &ProfileAdjustments)
 
 fn write_luminance_section(out: &mut String, adjustments: &ProfileAdjustments) {
     let curve = parametric_curve(adjustments);
-    let enabled = adjustments.clarity != 0.0 || curve != "0;";
+    let enabled = curve != "0;";
 
     let _ = writeln!(out, "[Luminance Curve]");
     let _ = writeln!(out, "Enabled={enabled}");
     let _ = writeln!(out, "Brightness=0");
-    let _ = writeln!(out, "Contrast={}", fmt_slider(adjustments.clarity));
+    let _ = writeln!(out, "Contrast=0");
     let _ = writeln!(out, "Chromaticity=0");
     let _ = writeln!(out, "AvoidColorShift=false");
     let _ = writeln!(out, "RedAndSkinTonesProtection=0");
@@ -471,6 +522,36 @@ mod tests {
         assert!(profile.contains("[Vibrance]\nEnabled=true\n"));
         assert!(profile.contains("[Sharpening]\nEnabled=true\n"));
         assert!(profile.contains("Amount=40\n"));
+    }
+
+    #[test]
+    fn clarity_uses_local_contrast_without_changing_luminance_contrast() {
+        let adjustments = ProfileAdjustments {
+            clarity: 25.0,
+            ..ProfileAdjustments::default()
+        };
+
+        let profile = rawtherapee_profile_text(&adjustments, SharpeningSettings::default());
+
+        assert!(profile.contains(
+            "[Local Contrast]\nEnabled=true\nRadius=80\nAmount=0.25\nDarkness=1\nLightness=1\n"
+        ));
+        assert!(profile.contains("[Luminance Curve]\nEnabled=false\nBrightness=0\nContrast=0\n"));
+        assert!(
+            profile.contains("[Exposure]\nAuto=false\nClip=0.02\nCompensation=0\nContrast=0\n")
+        );
+    }
+
+    #[test]
+    fn local_contrast_preserves_signed_clarity_and_can_disable_an_earlier_layer() {
+        assert_eq!(
+            rawtherapee_local_contrast_profile_text(-35.0),
+            "[Local Contrast]\nEnabled=true\nRadius=80\nAmount=-0.35\nDarkness=1\nLightness=1\n\n"
+        );
+        assert_eq!(
+            rawtherapee_contrast_clarity_profile_text(Some(0.0), Some(0.0)),
+            "[Exposure]\nAuto=false\nContrast=0\n\n[Local Contrast]\nEnabled=false\nRadius=80\nAmount=0\nDarkness=1\nLightness=1\n\n"
+        );
     }
 
     #[test]

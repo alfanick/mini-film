@@ -678,17 +678,19 @@ crop ratio instead of toggling the red label.
 The review UI stores rating, label, tags, notes, active preview profile, and
 per-picture profile availability used by review and publish. RAW and explicitly profiled
 JPEG/HEIC inputs support per-picture
-retouch controls for exposure, highlights, shadows, whites, blacks, as-shot
-color temperature, clarity, rotation, and crop. The temperature control is
+retouch controls for exposure, contrast, highlights, shadows, whites, blacks,
+as-shot color temperature, clarity, rotation, and crop. Contrast adjusts
+RawTherapee's global Exposure contrast, while Clarity adjusts signed Local
+Contrast. The temperature control is
 centered on the camera's Kelvin value, and hovering `Temperature` shows the
 camera white-balance mode when available. `Tint` is centered on the camera's
 green/magenta white-balance fine-tune value. Moving either white-balance control
 generates an effective custom RawTherapee white balance from those as-shot
-values. Exposure, highlights, shadows, whites, and blacks display the combined
-source-profile and emulation values for the selected profile plus any manual
-per-picture adjustment. Manual edits remain stored as deltas, so changing the
-selected profile updates those five slider baselines without applying profile
-values twice. Crop/rotate is opened from the sidebar Tools section on desktop and
+values. Exposure, contrast, highlights, shadows, whites, blacks, and clarity
+display the combined source-profile and emulation values for the selected
+profile plus any manual per-picture adjustment. Manual edits remain stored as
+deltas, so changing the selected profile updates those slider baselines without
+applying profile values twice. Crop/rotate is opened from the sidebar Tools section on desktop and
 tablet; Clear, Cancel, and OK join the rotation and aspect-ratio bar only while
 crop mode is open. Direct JPEG/HEIC inputs without a profile do not expose
 retouch controls. The browser applies a fast draft preview while edits are being
@@ -1021,7 +1023,8 @@ RawTherapee handles:
 - RAW development and Hald CLUT application through Film Simulation
 - camera JPEG tone response, including visible Nikon Active D-Lighting effects,
   through RawTherapee histogram matching
-- `Exposure2012` and `Contrast2012`; `Blacks2012`, `Shadows2012`,
+- `Exposure2012`; `Contrast2012` maps to RawTherapee Exposure contrast;
+  `Blacks2012`, `Shadows2012`,
   `Highlights2012`, and `Whites2012` map directly to RawTherapee Tone Equalizer
   bands 0, 1, 3, and 4, with its midtones band 2 left neutral
 - `Saturation`, `Vibrance`
@@ -1029,7 +1032,8 @@ RawTherapee handles:
 - `ParametricShadows/Darks/Lights/Highlights` and split points
 - HSL `HueAdjustment*`, `SaturationAdjustment*`, `LuminanceAdjustment*`
 - calibration-style `RedHue/RedSaturation`, `GreenHue/GreenSaturation`, `BlueHue/BlueSaturation`
-- `Clarity2012` as a RawTherapee luminance-contrast approximation
+- `Clarity2012` as signed RawTherapee Local Contrast with radius 80 and
+  neutral darkness/lightness levels
 - profile sharpening fields in generated `.pp3` files:
   `Sharpness`, `SharpenRadius`, `SharpenDetail`, `SharpenEdgeMasking`
 

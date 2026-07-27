@@ -67,6 +67,7 @@ fn fully_populated_review_store() -> ReviewStore {
     detailed_profile.selector = "profiles/detailed.xmp".to_string();
     detailed_profile.retouch_base = BasicRetouchAdjustments {
         exposure: 0.25,
+        contrast: 11.4,
         highlights: -10.0,
         shadows: 11.0,
         whites: 12.0,
@@ -234,6 +235,7 @@ fn fully_populated_review_store() -> ReviewStore {
             retouch: RetouchSettings {
                 adjustments: BasicRetouchAdjustments {
                     exposure: 0.75,
+                    contrast: 25.0,
                     highlights: -20.0,
                     shadows: 21.0,
                     whites: 22.0,
@@ -327,6 +329,13 @@ fn persisted_store(mut store: ReviewStore) -> ReviewStore {
     store
 }
 
+fn migrated_pre_contrast_store(mut store: ReviewStore) -> ReviewStore {
+    for image in &mut store.images {
+        image.retouch.adjustments.clarity = 0.0;
+    }
+    store
+}
+
 fn rebase_review_store(
     mut store: ReviewStore,
     input_root: &Path,
@@ -378,7 +387,7 @@ fn rebase_review_cache_paths(
 }
 
 fn migrated_pre_sampler_store(mut store: ReviewStore) -> ReviewStore {
-    store = persisted_store(store);
+    store = migrated_pre_contrast_store(persisted_store(store));
     for profile in &mut store.profiles {
         profile.identity = format!("legacy:{}:{}", profile.index, profile.selector.trim());
         profile.sampler_added = false;
@@ -1151,7 +1160,7 @@ fn rendered_profile_processing_keys_track_input_sharpening_policy() {
     for input in [Path::new("frame.jpg"), Path::new("frame.HEIC")] {
         assert_eq!(
             review_render_processing_key_for_input(input, 0),
-            "profiled-compressed-render-v3-no-sharpening"
+            "profiled-compressed-render-v4-local-contrast"
         );
     }
     assert_eq!(
@@ -1160,7 +1169,7 @@ fn rendered_profile_processing_keys_track_input_sharpening_policy() {
     );
     assert_eq!(
         review_render_processing_key_for_input(Path::new("frame.TIFF"), 0),
-        "profiled-tiff-render-v1-sharpening"
+        "profiled-tiff-render-v2-local-contrast"
     );
 }
 
@@ -1435,9 +1444,9 @@ fn review_state_seaorm_round_trips_every_normalized_collection() {
         serde_json::to_value(persisted_store(store)).unwrap()
     );
     let facts = database_facts(&state_path).unwrap();
-    assert_eq!(facts.schema_version, 18);
+    assert_eq!(facts.schema_version, 19);
     assert!(facts.has_seaql_ledger);
-    assert_eq!(facts.seaql_migration_count, 7);
+    assert_eq!(facts.seaql_migration_count, 8);
     assert_eq!(
         facts.seaql_migrations,
         [
@@ -1448,6 +1457,7 @@ fn review_state_seaorm_round_trips_every_normalized_collection() {
             "m20260726_000005_relative_paths",
             "m20260726_000006_cache_root",
             "m20260727_000007_auto_import",
+            "m20260727_000008_retouch_contrast",
         ]
     );
     assert!(!facts.has_legacy_ledger);
@@ -1508,16 +1518,16 @@ fn normalized_v11_database_is_backed_up_and_adopted_losslessly_once() {
     let loaded = load_store(&state_path).unwrap().unwrap();
     assert_eq!(
         serde_json::to_value(&loaded).unwrap(),
-        serde_json::to_value(persisted_store(store.clone())).unwrap()
+        serde_json::to_value(migrated_pre_contrast_store(persisted_store(store.clone()))).unwrap()
     );
     assert!(backup_path.is_file());
     let backup_bytes = fs::read(&backup_path).unwrap();
 
     let after_facts = database_facts(&state_path).unwrap();
-    assert_eq!(after_facts.schema_version, 18);
+    assert_eq!(after_facts.schema_version, 19);
     assert!(!after_facts.has_legacy_ledger);
     assert!(after_facts.has_seaql_ledger);
-    assert_eq!(after_facts.seaql_migration_count, 7);
+    assert_eq!(after_facts.seaql_migration_count, 8);
     assert_eq!(
         after_facts.seaql_migrations,
         [
@@ -1528,6 +1538,7 @@ fn normalized_v11_database_is_backed_up_and_adopted_losslessly_once() {
             "m20260726_000005_relative_paths",
             "m20260726_000006_cache_root",
             "m20260727_000007_auto_import",
+            "m20260727_000008_retouch_contrast",
         ]
     );
     assert!(!after_facts.has_json_storage_columns);
@@ -1535,7 +1546,7 @@ fn normalized_v11_database_is_backed_up_and_adopted_losslessly_once() {
     let loaded_again = load_store(&state_path).unwrap().unwrap();
     assert_eq!(
         serde_json::to_value(&loaded_again).unwrap(),
-        serde_json::to_value(persisted_store(store)).unwrap()
+        serde_json::to_value(migrated_pre_contrast_store(persisted_store(store))).unwrap()
     );
     assert_eq!(fs::read(&backup_path).unwrap(), backup_bytes);
     let backup_facts = database_facts(&backup_path).unwrap();
@@ -1563,10 +1574,10 @@ fn pre_release_two_entry_seaorm_ledger_is_collapsed_without_data_loss() {
     let loaded = load_store(&state_path).unwrap().unwrap();
     assert_eq!(
         serde_json::to_value(&loaded).unwrap(),
-        serde_json::to_value(persisted_store(store)).unwrap()
+        serde_json::to_value(migrated_pre_contrast_store(persisted_store(store))).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.seaql_migration_count, 7);
+    assert_eq!(after.seaql_migration_count, 8);
     assert_eq!(
         after.seaql_migrations,
         [
@@ -1577,6 +1588,7 @@ fn pre_release_two_entry_seaorm_ledger_is_collapsed_without_data_loss() {
             "m20260726_000005_relative_paths",
             "m20260726_000006_cache_root",
             "m20260727_000007_auto_import",
+            "m20260727_000008_retouch_contrast",
         ]
     );
 }
@@ -1594,8 +1606,8 @@ fn schema_v12_migrates_to_panorama_schema_without_review_data_loss() {
         serde_json::to_value(migrated_pre_sampler_store(store)).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 18);
-    assert_eq!(after.seaql_migration_count, 7);
+    assert_eq!(after.schema_version, 19);
+    assert_eq!(after.seaql_migration_count, 8);
     assert_eq!(after.counts["panorama_projects"], 0);
     assert_eq!(after.counts["panorama_project_images"], 0);
     assert_eq!(after.counts["panorama_previews"], 0);
@@ -1624,8 +1636,8 @@ fn schema_v13_migrates_sampler_state_without_review_data_loss() {
             && profile.identity.starts_with("legacy:")
     }));
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 18);
-    assert_eq!(after.seaql_migration_count, 7);
+    assert_eq!(after.schema_version, 19);
+    assert_eq!(after.seaql_migration_count, 8);
     assert_eq!(after.indexes.len(), 28);
 }
 
@@ -1645,11 +1657,11 @@ fn schema_v14_adds_focus_region_storage_without_review_data_loss() {
 
     assert_eq!(
         serde_json::to_value(&loaded).unwrap(),
-        serde_json::to_value(persisted_store(store)).unwrap()
+        serde_json::to_value(migrated_pre_contrast_store(persisted_store(store))).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 18);
-    assert_eq!(after.seaql_migration_count, 7);
+    assert_eq!(after.schema_version, 19);
+    assert_eq!(after.seaql_migration_count, 8);
     assert_eq!(after.counts["image_focus_regions"], 0);
     assert_eq!(after.indexes.len(), 28);
 }
@@ -1674,7 +1686,11 @@ fn schema_v15_paths_migrate_and_rebase_after_input_and_output_move() {
         .unwrap();
     let paths = stored_path_facts(&new_state).unwrap();
     let expected = rebase_review_cache_paths(
-        rebase_review_store(persisted_store(store), &new_input, &new_output),
+        rebase_review_store(
+            migrated_pre_contrast_store(persisted_store(store)),
+            &new_input,
+            &new_output,
+        ),
         &new_output,
         Path::new(&paths.cache_root),
     );
@@ -1684,8 +1700,8 @@ fn schema_v15_paths_migrate_and_rebase_after_input_and_output_move() {
     );
 
     let facts = database_facts(&new_state).unwrap();
-    assert_eq!(facts.schema_version, 18);
-    assert_eq!(facts.seaql_migration_count, 7);
+    assert_eq!(facts.schema_version, 19);
+    assert_eq!(facts.seaql_migration_count, 8);
     assert_eq!(paths.input_root, new_input.to_string_lossy());
     assert_eq!(paths.output_root, new_output.to_string_lossy());
     assert!(
@@ -1718,7 +1734,11 @@ fn schema_v15_render_paths_infer_moved_output_without_preview_cache() {
     let loaded = load_store_with_roots(&new_state, &new_input, &new_output)
         .unwrap()
         .unwrap();
-    let expected = rebase_review_store(persisted_store(store), &new_input, &new_output);
+    let expected = rebase_review_store(
+        migrated_pre_contrast_store(persisted_store(store)),
+        &new_input,
+        &new_output,
+    );
     assert_eq!(
         serde_json::to_value(loaded).unwrap(),
         serde_json::to_value(expected).unwrap()
@@ -1747,17 +1767,50 @@ fn schema_v17_adds_normalized_auto_import_tables_without_review_data_loss() {
     let loaded = load_store(&state_path).unwrap().unwrap();
     assert_eq!(
         serde_json::to_value(&loaded).unwrap(),
-        serde_json::to_value(persisted_store(store)).unwrap()
+        serde_json::to_value(migrated_pre_contrast_store(persisted_store(store))).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 18);
-    assert_eq!(after.seaql_migration_count, 7);
+    assert_eq!(after.schema_version, 19);
+    assert_eq!(after.seaql_migration_count, 8);
     assert_eq!(after.counts["auto_import_devices"], 0);
     assert_eq!(after.counts["auto_import_storages"], 0);
     assert_eq!(after.counts["auto_import_groups"], 0);
     assert_eq!(after.counts["auto_import_assets"], 0);
     assert_eq!(after.counts["auto_import_sources"], 0);
     assert_eq!(after.indexes.len(), 28);
+}
+
+#[test]
+fn schema_v18_splits_contrast_from_clarity_without_losing_old_edits() {
+    let temp = tempfile::tempdir().unwrap();
+    let state_path = temp.path().join(SQLITE_STATE_FILE);
+    let store = fully_populated_review_store();
+    make_schema_v18_database(&state_path, &store).unwrap();
+
+    let loaded = load_store(&state_path).unwrap().unwrap();
+    let expected = migrated_pre_contrast_store(persisted_store(store));
+    assert_eq!(
+        serde_json::to_value(&loaded).unwrap(),
+        serde_json::to_value(expected).unwrap()
+    );
+    let edited = loaded
+        .images
+        .iter()
+        .find(|image| image.retouch.adjustments.contrast != 0.0)
+        .unwrap();
+    assert_eq!(edited.retouch.adjustments.contrast, 25.0);
+    assert_eq!(edited.retouch.adjustments.clarity, 0.0);
+    let detailed = loaded
+        .profiles
+        .iter()
+        .find(|profile| profile.index == 7)
+        .unwrap();
+    assert_eq!(detailed.retouch_base.contrast, 11.4);
+    assert_eq!(detailed.retouch_base.clarity, 15.0);
+
+    let after = database_facts(&state_path).unwrap();
+    assert_eq!(after.schema_version, 19);
+    assert_eq!(after.seaql_migration_count, 8);
 }
 
 #[test]

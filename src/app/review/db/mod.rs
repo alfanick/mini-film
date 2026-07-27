@@ -16,7 +16,7 @@ use arc_swap::ArcSwapOption;
 use catalog::ReviewCatalogLocation;
 use migrations::{
     FIRST_SEAORM_SCHEMA_VERSION, LATEST_SCHEMA_VERSION, LEGACY_SCHEMA_VERSION, Migrator,
-    PRE_RELEASE_SEAORM_LEDGER, V11_LEDGER, V18_BASELINE_MIGRATION,
+    PRE_RELEASE_SEAORM_LEDGER, V11_LEDGER, V18_BASELINE_MIGRATION, ensure_retouch_contrast_columns,
 };
 use paths::ReviewPathRoots;
 use sea_orm::{
@@ -24,7 +24,7 @@ use sea_orm::{
     sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions},
 };
 #[cfg(test)]
-use sea_orm::{IntoActiveModel, PaginatorTrait, Schema};
+use sea_orm::{IntoActiveModel, PaginatorTrait, QuerySelect, Schema};
 use sea_orm_migration::{MigratorTrait, SchemaManager};
 use tokio::sync::Mutex;
 
@@ -211,6 +211,9 @@ async fn prepare_database(
             create_v11_backup(path)?;
 
             connection = connect_database(path, false).await?;
+            ensure_retouch_contrast_columns(&SchemaManager::new(&connection))
+                .await
+                .context("preparing contrast columns for legacy migrations")?;
             Migrator::up(&connection, None)
                 .await
                 .context("adopting v11 review database with SeaORM")?;
@@ -223,6 +226,11 @@ async fn prepare_database(
         }
         version if (FIRST_SEAORM_SCHEMA_VERSION..=LATEST_SCHEMA_VERSION).contains(&version) => {
             verify_seaorm_database_before_migration(&connection).await?;
+            if version < LATEST_SCHEMA_VERSION {
+                ensure_retouch_contrast_columns(&SchemaManager::new(&connection))
+                    .await
+                    .context("preparing contrast columns for review migrations")?;
+            }
             normalize_pre_release_seaql_ledger(&connection).await?;
             Migrator::up(&connection, None)
                 .await
@@ -707,12 +715,18 @@ pub(super) fn database_facts(path: &Path) -> Result<TestDatabaseFacts> {
         counts.insert(
             "profiles",
             entities::profiles::Entity::find()
+                .select_only()
+                .column(entities::profiles::Column::ProfileIndex)
                 .count(&connection)
                 .await?,
         );
         counts.insert(
             "images",
-            entities::images::Entity::find().count(&connection).await?,
+            entities::images::Entity::find()
+                .select_only()
+                .column(entities::images::Column::ImageId)
+                .count(&connection)
+                .await?,
         );
         counts.insert(
             "tags",
@@ -1059,7 +1073,7 @@ pub(super) fn make_schema_v12_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(6)).await?;
+        Migrator::down(&connection, Some(7)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1075,7 +1089,7 @@ pub(super) fn make_schema_v13_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(5)).await?;
+        Migrator::down(&connection, Some(6)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1091,7 +1105,7 @@ pub(super) fn make_schema_v14_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(4)).await?;
+        Migrator::down(&connection, Some(5)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1107,7 +1121,7 @@ pub(super) fn make_schema_v15_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(3)).await?;
+        Migrator::down(&connection, Some(4)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1116,6 +1130,22 @@ pub(super) fn make_schema_v15_database(path: &Path, store: &ReviewStore) -> Resu
 
 #[cfg(test)]
 pub(super) fn make_schema_v17_database(path: &Path, store: &ReviewStore) -> Result<()> {
+    save_store(path, store)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("building review database runtime")?;
+    runtime.block_on(async {
+        let connection = connect_database(path, false).await?;
+        Migrator::down(&connection, Some(2)).await?;
+        sqlite_compat::verify_integrity(&connection).await?;
+        connection.close().await?;
+        Ok(())
+    })
+}
+
+#[cfg(test)]
+pub(super) fn make_schema_v18_database(path: &Path, store: &ReviewStore) -> Result<()> {
     save_store(path, store)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

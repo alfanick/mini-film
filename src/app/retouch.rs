@@ -7,7 +7,10 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 
-use mini_film::{ProfileAdjustments, rawtherapee_tone_equalizer_profile_text};
+use mini_film::{
+    ProfileAdjustments, rawtherapee_local_contrast_profile_text,
+    rawtherapee_tone_equalizer_profile_text,
+};
 
 const DEFAULT_WHITE_BALANCE_TEMPERATURE: f32 = 6504.0;
 const MIN_WHITE_BALANCE_TEMPERATURE: f32 = 1500.0;
@@ -57,6 +60,8 @@ pub(crate) struct BasicRetouchAdjustments {
     #[serde(default)]
     pub(crate) exposure: f32,
     #[serde(default)]
+    pub(crate) contrast: f32,
+    #[serde(default)]
     pub(crate) highlights: f32,
     #[serde(default)]
     pub(crate) shadows: f32,
@@ -76,6 +81,7 @@ impl BasicRetouchAdjustments {
     pub(crate) fn from_profile_adjustments(adjustments: &ProfileAdjustments) -> Self {
         Self {
             exposure: adjustments.exposure,
+            contrast: adjustments.contrast,
             highlights: adjustments.highlights,
             shadows: adjustments.shadows,
             whites: adjustments.whites,
@@ -89,6 +95,7 @@ impl BasicRetouchAdjustments {
     pub(crate) fn add(self, other: Self) -> Self {
         Self {
             exposure: self.exposure + other.exposure,
+            contrast: self.contrast + other.contrast,
             highlights: self.highlights + other.highlights,
             shadows: self.shadows + other.shadows,
             whites: self.whites + other.whites,
@@ -101,6 +108,7 @@ impl BasicRetouchAdjustments {
 
     pub(crate) fn is_default(self) -> bool {
         self.exposure == 0.0
+            && self.contrast == 0.0
             && self.highlights == 0.0
             && self.shadows == 0.0
             && self.whites == 0.0
@@ -177,8 +185,9 @@ impl RetouchSettings {
     ) -> String {
         let normalized = self.clone().normalized();
         let mut hasher = Sha1::new();
-        hasher.update("retouch-v3-tone-equalizer");
+        hasher.update("retouch-v4-local-contrast");
         hasher.update(format!("{:.4}", normalized.adjustments.exposure));
+        hasher.update(format!("{:.3}", normalized.adjustments.contrast));
         hasher.update(format!("{:.3}", normalized.adjustments.highlights));
         hasher.update(format!("{:.3}", normalized.adjustments.shadows));
         hasher.update(format!("{:.3}", normalized.adjustments.whites));
@@ -227,8 +236,9 @@ impl RetouchSettings {
             })
             .unwrap_or_default();
         format!(
-            "retouch exposure={:.2} highlights={:.1} shadows={:.1} whites={:.1} blacks={:.1} temperature={:.0} offset={:.1} clarity={:.1} rotation={:.1}{}",
+            "retouch exposure={:.2} contrast={:.1} highlights={:.1} shadows={:.1} whites={:.1} blacks={:.1} temperature={:.0} offset={:.1} clarity={:.1} rotation={:.1}{}",
             normalized.adjustments.exposure,
+            normalized.adjustments.contrast,
             normalized.adjustments.highlights,
             normalized.adjustments.shadows,
             normalized.adjustments.whites,
@@ -277,6 +287,9 @@ pub(crate) fn write_rawtherapee_retouch_profile(
     let _ = writeln!(out, "[Exposure]");
     let _ = writeln!(out, "Auto=false");
     let _ = writeln!(out, "Compensation={}", fmt_f32(effective.exposure));
+    if retouch.adjustments.contrast != 0.0 {
+        let _ = writeln!(out, "Contrast={}", fmt_slider(effective.contrast));
+    }
     let _ = writeln!(out);
     out.push_str(&rawtherapee_tone_equalizer_profile_text(
         &ProfileAdjustments {
@@ -287,10 +300,9 @@ pub(crate) fn write_rawtherapee_retouch_profile(
             ..ProfileAdjustments::default()
         },
     ));
-    let _ = writeln!(out, "[Luminance Curve]");
-    let _ = writeln!(out, "Enabled=true");
-    let _ = writeln!(out, "Contrast={}", fmt_slider(effective.clarity));
-    let _ = writeln!(out);
+    if retouch.adjustments.clarity != 0.0 {
+        out.push_str(&rawtherapee_local_contrast_profile_text(effective.clarity));
+    }
     if effective.temperature != 0.0 || effective.offset != 0.0 {
         let temperature = (white_balance
             .temperature
@@ -434,6 +446,12 @@ mod tests {
         assert_ne!(left.render_key(), right.render_key());
         left.adjustments.exposure = 0.25;
         assert_eq!(left.render_key(), right.render_key());
+        right.adjustments.contrast = 10.0;
+        assert_ne!(left.render_key(), right.render_key());
+        left.adjustments.contrast = 10.0;
+        assert_eq!(left.render_key(), right.render_key());
+        right.adjustments.clarity = 10.0;
+        assert_ne!(left.render_key(), right.render_key());
     }
 
     #[test]
@@ -466,6 +484,7 @@ mod tests {
         let retouch = RetouchSettings {
             adjustments: BasicRetouchAdjustments {
                 exposure: 0.5,
+                contrast: 8.0,
                 highlights: -20.0,
                 shadows: 30.0,
                 whites: 10.0,
@@ -493,6 +512,7 @@ mod tests {
         let text = std::fs::read_to_string(output).unwrap();
         assert!(text.contains("[Exposure]"));
         assert!(text.contains("Compensation=0.5"));
+        assert!(text.contains("Contrast=8"));
         assert!(text.contains(
             "[ToneEqualizer]\nEnabled=true\nBand0=-5\nBand1=30\nBand2=0\nBand3=-20\nBand4=10\n"
         ));
@@ -504,7 +524,10 @@ mod tests {
         assert!(text.contains("Green=1.06"));
         assert!(text.contains("TemperatureBias=0"));
         assert!(!text.contains("Setting=Camera"));
-        assert!(text.contains("Contrast=12"));
+        assert!(text.contains(
+            "[Local Contrast]\nEnabled=true\nRadius=80\nAmount=0.12\nDarkness=1\nLightness=1\n"
+        ));
+        assert!(!text.contains("[Luminance Curve]"));
     }
 
     #[test]
@@ -539,6 +562,7 @@ mod tests {
                 blacks: 21.4,
                 highlights: -20.6,
                 shadows: 30.5,
+                contrast: 15.6,
                 clarity: 15.6,
                 ..BasicRetouchAdjustments::default()
             },
@@ -561,6 +585,7 @@ mod tests {
         assert!(text.contains("Band3=-21\n"));
         assert!(text.contains("Band4=33\n"));
         assert!(text.contains("Contrast=16\n"));
+        assert!(text.contains("Amount=0.156\n"));
     }
 
     #[test]
@@ -573,6 +598,7 @@ mod tests {
             whites: 3.4,
             blacks: 1.4,
             temperature: 99.4,
+            contrast: 1.4,
             clarity: 1.4,
             ..BasicRetouchAdjustments::default()
         };
@@ -583,6 +609,7 @@ mod tests {
                 whites: 29.6,
                 blacks: 20.0,
                 temperature: 351.2,
+                contrast: 14.2,
                 clarity: 14.2,
                 ..BasicRetouchAdjustments::default()
             },
@@ -627,7 +654,36 @@ mod tests {
         assert!(text.contains("Band3=-21\n"));
         assert!(text.contains("Band4=33\n"));
         assert!(text.contains("Contrast=16\n"));
+        assert!(text.contains("Amount=0.156\n"));
         assert!(text.contains("Temperature=5311\n"));
         assert!(text.contains("TemperatureBias=0\n"));
+    }
+
+    #[test]
+    fn retouch_profile_can_cancel_profile_contrast_and_clarity() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("retouch.pp3");
+        let base = BasicRetouchAdjustments {
+            contrast: 20.0,
+            clarity: 25.0,
+            ..BasicRetouchAdjustments::default()
+        };
+        let retouch = RetouchSettings {
+            adjustments: BasicRetouchAdjustments {
+                contrast: -20.0,
+                clarity: -25.0,
+                ..BasicRetouchAdjustments::default()
+            },
+            ..RetouchSettings::default()
+        };
+
+        write_rawtherapee_retouch_profile(&output, base, &retouch, RetouchWhiteBalance::default())
+            .unwrap();
+
+        let text = std::fs::read_to_string(output).unwrap();
+        assert!(text.contains("[Exposure]\nAuto=false\nCompensation=0\nContrast=0\n"));
+        assert!(text.contains(
+            "[Local Contrast]\nEnabled=false\nRadius=80\nAmount=0\nDarkness=1\nLightness=1\n"
+        ));
     }
 }

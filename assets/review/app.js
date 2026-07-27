@@ -1007,8 +1007,8 @@ function ControlsShell() {
         value: "0",
         output: "0K",
       }),
-      h("div", { class: "retouch-spacer", "aria-hidden": "true" }),
-      h(RetouchSlider, { id: "retouch-clarity", label: "Contrast", min: "-100", max: "100", step: "1", value: "0" }),
+      h(RetouchSlider, { id: "retouch-clarity", label: "Clarity", min: "-100", max: "100", step: "1", value: "0" }),
+      h(RetouchSlider, { id: "retouch-contrast", label: "Contrast", min: "-100", max: "100", step: "1", value: "0" }),
       h(RetouchSlider, { id: "retouch-shadows", label: "Shadows", min: "-100", max: "100", step: "1", value: "0" }),
       h(RetouchSlider, { id: "retouch-blacks", label: "Blacks", min: "-100", max: "100", step: "1", value: "0" }),
       h(RetouchSlider, { id: "retouch-offset", label: "Tint", min: "-100", max: "100", step: "1", value: "0" }),
@@ -1959,6 +1959,8 @@ const els = {
   retouchReset: document.getElementById("retouch-reset"),
   retouchExposure: document.getElementById("retouch-exposure"),
   retouchExposureValue: document.getElementById("retouch-exposure-value"),
+  retouchContrast: document.getElementById("retouch-contrast"),
+  retouchContrastValue: document.getElementById("retouch-contrast-value"),
   retouchHighlights: document.getElementById("retouch-highlights"),
   retouchHighlightsValue: document.getElementById("retouch-highlights-value"),
   retouchShadows: document.getElementById("retouch-shadows"),
@@ -2832,6 +2834,7 @@ function setRetouchControlsEnabled(enabled) {
     els.retouchPaste,
     els.retouchReset,
     els.retouchExposure,
+    els.retouchContrast,
     els.retouchHighlights,
     els.retouchShadows,
     els.retouchWhites,
@@ -4317,6 +4320,7 @@ function defaultRetouch() {
   return {
     adjustments: {
       exposure: 0,
+      contrast: 0,
       highlights: 0,
       shadows: 0,
       whites: 0,
@@ -4347,6 +4351,7 @@ function normalizedRetouch(retouch) {
   return {
     adjustments: {
       exposure: clamp(Number(normalized.adjustments?.exposure) || 0, -4, 4),
+      contrast: clamp(Number(normalized.adjustments?.contrast) || 0, -100, 100),
       highlights: clamp(Number(normalized.adjustments?.highlights) || 0, -100, 100),
       shadows: clamp(Number(normalized.adjustments?.shadows) || 0, -100, 100),
       whites: clamp(Number(normalized.adjustments?.whites) || 0, -100, 100),
@@ -4391,10 +4396,12 @@ function retouchTonalInputValues(image, retouch) {
   const base = profileRetouchBase(image);
   return {
     exposure: clamp(base.exposure + adjustments.exposure, -4, 4),
+    contrast: clamp(base.contrast + adjustments.contrast, -100, 100),
     highlights: clamp(base.highlights + adjustments.highlights, -100, 100),
     shadows: clamp(base.shadows + adjustments.shadows, -100, 100),
     whites: clamp(base.whites + adjustments.whites, -100, 100),
     blacks: clamp(base.blacks + adjustments.blacks, -100, 100),
+    clarity: clamp(base.clarity + adjustments.clarity, -100, 100),
   };
 }
 
@@ -4438,13 +4445,14 @@ function retouchFromInputs(image = findImage(state.currentId)) {
   return retouchForImage(image, {
     adjustments: {
       exposure: Number(els.retouchExposure.value || 0) - base.exposure,
+      contrast: Number(els.retouchContrast.value || 0) - base.contrast,
       highlights: Number(els.retouchHighlights.value || 0) - base.highlights,
       shadows: Number(els.retouchShadows.value || 0) - base.shadows,
       whites: Number(els.retouchWhites.value || 0) - base.whites,
       blacks: Number(els.retouchBlacks.value || 0) - base.blacks,
       temperature: retouchTemperatureDeltaFromInput(image),
       offset: retouchOffsetDeltaFromInput(image),
-      clarity: Number(els.retouchClarity.value || 0),
+      clarity: Number(els.retouchClarity.value || 0) - base.clarity,
     },
     crop: existing.crop,
     rotation_degrees: existing.rotation_degrees,
@@ -4475,11 +4483,14 @@ function setRetouchInputs(retouch, image = findImage(state.currentId)) {
   const asShotTemperature = asShotWhiteBalanceTemperature(image);
   const asShotOffset = asShotWhiteBalanceOffset(image);
   els.retouchExposure.defaultValue = String(base.exposure);
+  els.retouchContrast.defaultValue = String(base.contrast);
   els.retouchHighlights.defaultValue = String(base.highlights);
   els.retouchShadows.defaultValue = String(base.shadows);
   els.retouchWhites.defaultValue = String(base.whites);
   els.retouchBlacks.defaultValue = String(base.blacks);
+  els.retouchClarity.defaultValue = String(base.clarity);
   els.retouchExposure.value = String(tonalValues.exposure);
+  els.retouchContrast.value = String(tonalValues.contrast);
   els.retouchHighlights.value = String(tonalValues.highlights);
   els.retouchShadows.value = String(tonalValues.shadows);
   els.retouchWhites.value = String(tonalValues.whites);
@@ -4507,7 +4518,7 @@ function setRetouchInputs(retouch, image = findImage(state.currentId)) {
     els.retouchOffset.defaultValue = String(asShotOffset);
   }
   els.retouchOffset.value = String(retouchOffsetInputValue(image, normalized.adjustments.offset));
-  els.retouchClarity.value = String(normalized.adjustments.clarity);
+  els.retouchClarity.value = String(tonalValues.clarity);
   updateRetouchReadouts(normalized, image);
 }
 
@@ -4515,6 +4526,7 @@ function updateRetouchReadouts(retouch = retouchFromInputs(), image = findImage(
   const normalized = normalizedRetouch(retouch);
   const tonalValues = retouchTonalInputValues(image, normalized);
   els.retouchExposureValue.value = signed(tonalValues.exposure, 2);
+  els.retouchContrastValue.value = signed(tonalValues.contrast, 0);
   els.retouchHighlightsValue.value = signed(tonalValues.highlights, 0);
   els.retouchShadowsValue.value = signed(tonalValues.shadows, 0);
   els.retouchWhitesValue.value = signed(tonalValues.whites, 0);
@@ -4523,7 +4535,7 @@ function updateRetouchReadouts(retouch = retouchFromInputs(), image = findImage(
   els.retouchTemperatureValue.value = `${asShotWhiteBalanceTemperature(image) === null ? signed(temperature, 0) : temperature}K`;
   const offset = Math.round(retouchOffsetInputValue(image, normalized.adjustments.offset));
   els.retouchOffsetValue.value = signed(offset, 0);
-  els.retouchClarityValue.value = signed(normalized.adjustments.clarity, 0);
+  els.retouchClarityValue.value = signed(tonalValues.clarity, 0);
 }
 
 function signed(value, digits) {
@@ -4612,12 +4624,13 @@ function applyDraftRetouch(image, selected) {
   const temperature = retouch.adjustments.temperature;
   const offset = retouch.adjustments.offset;
   const clarity = retouch.adjustments.clarity;
+  const globalContrast = retouch.adjustments.contrast;
   const brightness = clamp(
     1 + exposure * 0.13 + whites * 0.002 - blacks * 0.0015 + shadows * 0.0015 - highlights * 0.0008,
     0.45,
     1.85,
   );
-  const contrast = clamp(1 + clarity * 0.004 + (highlights - shadows) * 0.0008, 0.55, 1.65);
+  const contrast = clamp(1 + globalContrast * 0.004 + clarity * 0.002 + (highlights - shadows) * 0.0008, 0.55, 1.65);
   const saturation = clamp(
     1 + clarity * 0.0015 + Math.abs(temperature) * 0.000015 + Math.abs(offset) * 0.0006,
     0.7,
@@ -4637,6 +4650,7 @@ function retouchIsDefault(retouch) {
   const normalized = normalizedRetouch(retouch);
   return (
     normalized.adjustments.exposure === 0 &&
+    normalized.adjustments.contrast === 0 &&
     normalized.adjustments.highlights === 0 &&
     normalized.adjustments.shadows === 0 &&
     normalized.adjustments.whites === 0 &&
@@ -6047,6 +6061,7 @@ els.viewer.addEventListener("touchstart", preventNativeViewerAction, { passive: 
 els.viewer.addEventListener("touchmove", preventNativeViewerAction, { passive: false });
 [
   els.retouchExposure,
+  els.retouchContrast,
   els.retouchHighlights,
   els.retouchShadows,
   els.retouchWhites,

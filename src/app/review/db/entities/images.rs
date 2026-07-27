@@ -78,6 +78,8 @@ pub struct Model {
     #[sea_orm(column_type = "Double")]
     pub retouch_exposure: f64,
     #[sea_orm(column_type = "Double")]
+    pub retouch_contrast: f64,
+    #[sea_orm(column_type = "Double")]
     pub retouch_highlights: f64,
     #[sea_orm(column_type = "Double")]
     pub retouch_shadows: f64,

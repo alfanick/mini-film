@@ -11,7 +11,8 @@ const REVIEW_SAMPLER_SCHEMA_VERSION: i64 = 14;
 const FOCUS_REGIONS_SCHEMA_VERSION: i64 = 15;
 const RELATIVE_PATHS_SCHEMA_VERSION: i64 = 16;
 const CACHE_ROOT_SCHEMA_VERSION: i64 = 17;
-pub(super) const LATEST_SCHEMA_VERSION: i64 = 18;
+const AUTO_IMPORT_SCHEMA_VERSION: i64 = 18;
+pub(super) const LATEST_SCHEMA_VERSION: i64 = 19;
 pub(super) const V18_BASELINE_MIGRATION: &str = "m20260718_000001_v18_baseline";
 pub(super) const PANORAMA_PROJECTS_MIGRATION: &str = "m20260719_000002_panorama_projects";
 pub(super) const REVIEW_SAMPLER_MIGRATION: &str = "m20260721_000003_review_sampler";
@@ -19,6 +20,7 @@ pub(super) const FOCUS_REGIONS_MIGRATION: &str = "m20260726_000004_focus_regions
 pub(super) const RELATIVE_PATHS_MIGRATION: &str = "m20260726_000005_relative_paths";
 pub(super) const CACHE_ROOT_MIGRATION: &str = "m20260726_000006_cache_root";
 pub(super) const AUTO_IMPORT_MIGRATION: &str = "m20260727_000007_auto_import";
+pub(super) const RETOUCH_CONTRAST_MIGRATION: &str = "m20260727_000008_retouch_contrast";
 pub(super) const PRE_RELEASE_SEAORM_LEDGER: [&str; 2] = [
     "m20260718_000001_create_review_schema",
     "m20260718_000002_adopt_seaorm",
@@ -51,6 +53,7 @@ impl MigratorTrait for Migrator {
             Box::new(RelativePaths),
             Box::new(CacheRoot),
             Box::new(AutoImport),
+            Box::new(RetouchContrast),
         ]
     }
 }
@@ -177,6 +180,14 @@ struct AutoImport;
 impl MigrationName for AutoImport {
     fn name(&self) -> &str {
         AUTO_IMPORT_MIGRATION
+    }
+}
+
+struct RetouchContrast;
+
+impl MigrationName for RetouchContrast {
+    fn name(&self) -> &str {
+        RETOUCH_CONTRAST_MIGRATION
     }
 }
 
@@ -490,7 +501,7 @@ impl MigrationTrait for AutoImport {
         create_entity_table(manager, &schema, auto_import_assets::Entity).await?;
         create_entity_table(manager, &schema, auto_import_sources::Entity).await?;
         create_auto_import_indexes(manager).await?;
-        sqlite_compat::set_user_version(manager.get_connection(), LATEST_SCHEMA_VERSION).await
+        sqlite_compat::set_user_version(manager.get_connection(), AUTO_IMPORT_SCHEMA_VERSION).await
     }
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
@@ -512,6 +523,104 @@ impl MigrationTrait for AutoImport {
         }
         sqlite_compat::set_user_version(manager.get_connection(), CACHE_ROOT_SCHEMA_VERSION).await
     }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for RetouchContrast {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        ensure_retouch_contrast_columns(manager).await?;
+        backfill_retouch_contrast(manager).await?;
+        sqlite_compat::set_user_version(manager.get_connection(), LATEST_SCHEMA_VERSION).await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        let connection = manager.get_connection();
+        for row in images::Entity::find().all(connection).await? {
+            let mut active = row.clone().into_active_model();
+            active.retouch_clarity = Set(row.retouch_contrast);
+            active.retouch_contrast = Set(0.0);
+            active.update(connection).await?;
+        }
+        for row in profiles::Entity::find().all(connection).await? {
+            let mut active = row.into_active_model();
+            active.retouch_contrast = Set(0.0);
+            active.update(connection).await?;
+        }
+        // Older binaries ignore forward-compatible SQLite columns. Keeping
+        // them lets earlier migrations continue using current SeaORM entities.
+        sqlite_compat::set_user_version(manager.get_connection(), AUTO_IMPORT_SCHEMA_VERSION).await
+    }
+}
+
+pub(super) async fn ensure_retouch_contrast_columns(
+    manager: &SchemaManager<'_>,
+) -> Result<(), DbErr> {
+    if !manager
+        .has_column(images::Entity.table_name(), "retouch_contrast")
+        .await?
+    {
+        manager
+            .alter_table(
+                Table::alter()
+                    .table(images::Entity)
+                    .add_column(
+                        ColumnDef::new(images::Column::RetouchContrast)
+                            .double()
+                            .not_null()
+                            .default(0.0),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+    }
+    if !manager
+        .has_column(profiles::Entity.table_name(), "retouch_contrast")
+        .await?
+    {
+        manager
+            .alter_table(
+                Table::alter()
+                    .table(profiles::Entity)
+                    .add_column(
+                        ColumnDef::new(profiles::Column::RetouchContrast)
+                            .double()
+                            .not_null()
+                            .default(0.0),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+    }
+    Ok(())
+}
+
+async fn backfill_retouch_contrast(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
+    let connection = manager.get_connection();
+    for row in images::Entity::find().all(connection).await? {
+        let mut active = row.clone().into_active_model();
+        active.retouch_contrast = Set(row.retouch_clarity);
+        active.retouch_clarity = Set(0.0);
+        active.update(connection).await?;
+    }
+
+    let mut profile_contrast = std::collections::HashMap::<i64, f64>::new();
+    for row in profile_adjustments::Entity::find().all(connection).await? {
+        *profile_contrast.entry(row.profile_index).or_default() += row.contrast;
+    }
+    for row in profiles::Entity::find().all(connection).await? {
+        let contrast = profile_contrast
+            .get(&row.profile_index)
+            .copied()
+            .unwrap_or_default();
+        let mut active = row.into_active_model();
+        active.retouch_contrast = Set(contrast);
+        active.update(connection).await?;
+    }
+    Ok(())
 }
 
 async fn backfill_sampler_profile_state(

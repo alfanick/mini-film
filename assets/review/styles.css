@@ -1360,10 +1360,6 @@ button:disabled {
   min-height: 24px;
 }
 
-.retouch-spacer {
-  min-height: 24px;
-}
-
 .retouch-header {
   justify-content: space-between;
   color: #4f4f49;
@@ -3251,10 +3247,6 @@ kbd {
     max-height: min(34dvh, 240px);
     overflow: auto;
     padding-top: 6px;
-  }
-
-  .retouch-spacer {
-    display: none;
   }
 
   .retouch-header {

@@ -10,7 +10,8 @@ use anyhow::{Context, Result, bail};
 use mini_film::{
     ConvertedProfile, GrainSettings, HaldOptions, ProfileAdjustments, SharpeningSettings,
     XmpFilmRecipe, convert_xmp_to_hald, extract_film_recipe, profile_info_line,
-    rawtherapee_hald_clut_profile_text, write_rawtherapee_profile,
+    rawtherapee_hald_clut_profile_text, write_rawtherapee_contrast_clarity_profile,
+    write_rawtherapee_profile,
 };
 use walkdir::WalkDir;
 
@@ -205,6 +206,9 @@ fn pp3_key_value_is_generated_default(section: &str, key: &str, lower_value: &st
             | ("Luminance Curve", "AvoidColorShift", "false")
             | ("Luminance Curve", "RedAndSkinTonesProtection", "0")
             | ("Luminance Curve", "LCredsk", "true")
+            | ("Local Contrast", "Radius", "80")
+            | ("Local Contrast", "Darkness", "1")
+            | ("Local Contrast", "Lightness", "1")
             | ("RGB Curves", "LumaMode", "false")
             | ("Vibrance", "ProtectSkins", "false")
             | ("Vibrance", "AvoidColorShift", "true")
@@ -325,6 +329,17 @@ pub(crate) fn rawtherapee_profiles_with_hald(
         profiles.push(lut_profile);
     }
     Ok(profiles)
+}
+
+pub(crate) fn combined_contrast_clarity(
+    source: &ProfileAdjustments,
+    emulation: &ProfileAdjustments,
+) -> (Option<f32>, Option<f32>) {
+    let contrast = (source.contrast != 0.0 || emulation.contrast != 0.0)
+        .then_some(source.contrast + emulation.contrast);
+    let clarity = (source.clarity != 0.0 || emulation.clarity != 0.0)
+        .then_some(source.clarity + emulation.clarity);
+    (contrast, clarity)
 }
 
 pub(crate) fn neutral_profile() -> ResolvedProfile {
@@ -667,6 +682,19 @@ fn profile_from_xmp_inner(
         recipe.sharpening,
     )? {
         pp3_adjustments.extend(pp3_adjustments_from_path("Emulation PP3", &path));
+        rawtherapee_profiles.push(path);
+    }
+    let (contrast, clarity) =
+        combined_contrast_clarity(&converted.adjustments, &recipe.adjustments);
+    if let Some(path) = write_rawtherapee_contrast_clarity_profile(
+        &temp_dir.join("contrast-clarity.pp3"),
+        contrast,
+        clarity,
+    )? {
+        pp3_adjustments.extend(pp3_adjustments_from_path(
+            "Effective contrast and clarity PP3",
+            &path,
+        ));
         rawtherapee_profiles.push(path);
     }
     Ok(ResolvedProfile {
@@ -1197,6 +1225,32 @@ mod tests {
         assert_eq!(
             normalize_name(" Kodak_Portra-400.profile "),
             "kodak portra 400 profile"
+        );
+    }
+
+    #[test]
+    fn combined_contrast_clarity_sums_source_and_emulation_layers() {
+        let source = ProfileAdjustments {
+            contrast: 20.0,
+            clarity: -5.0,
+            ..ProfileAdjustments::default()
+        };
+        let emulation = ProfileAdjustments {
+            contrast: -7.0,
+            clarity: 15.0,
+            ..ProfileAdjustments::default()
+        };
+
+        assert_eq!(
+            combined_contrast_clarity(&source, &emulation),
+            (Some(13.0), Some(10.0))
+        );
+        assert_eq!(
+            combined_contrast_clarity(
+                &ProfileAdjustments::default(),
+                &ProfileAdjustments::default()
+            ),
+            (None, None)
         );
     }
 

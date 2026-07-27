@@ -5,7 +5,10 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use mini_film::{rawtherapee_hald_clut_profile_text, rawtherapee_profile_text};
+use mini_film::{
+    rawtherapee_contrast_clarity_profile_text, rawtherapee_hald_clut_profile_text,
+    rawtherapee_profile_text,
+};
 
 const BASE_COLOR_NOISE_LUMA: u16 = 14;
 const BASE_COLOR_NOISE_LDETAIL: u16 = 34;
@@ -16,9 +19,9 @@ const HIGH_COLOR_NOISE_CHROMA: u16 = 18;
 const VERY_HIGH_COLOR_NOISE_LUMA: u16 = 44;
 const VERY_HIGH_COLOR_NOISE_LDETAIL: u16 = 64;
 const VERY_HIGH_COLOR_NOISE_CHROMA: u16 = 28;
-pub(crate) const RAW_RENDER_PIPELINE_KEY: &str = "raw-render-v5-tone-equalizer";
+pub(crate) const RAW_RENDER_PIPELINE_KEY: &str = "raw-render-v6-local-contrast";
 
-use crate::app::profile::{ProfileInfo, inspect_profile};
+use crate::app::profile::{ProfileInfo, combined_contrast_clarity, inspect_profile};
 use crate::cli::LensCorrections;
 
 pub(crate) struct NoiseRemovalSettings {
@@ -136,6 +139,11 @@ fn pp3_text(info: &ProfileInfo) -> Result<String> {
         } => {
             push_adjustment_profile(&mut out, &converted.adjustments, converted.sharpening);
             push_adjustment_profile(&mut out, &recipe.adjustments, recipe.sharpening);
+            let (contrast, clarity) =
+                combined_contrast_clarity(&converted.adjustments, &recipe.adjustments);
+            out.push_str(&rawtherapee_contrast_clarity_profile_text(
+                contrast, clarity,
+            ));
             out.push_str(&rawtherapee_hald_clut_profile_text(hald_path));
         }
     }

@@ -96,6 +96,7 @@ where
             configured_from_cli: false,
             retouch_base: BasicRetouchAdjustments {
                 exposure: real(row.retouch_exposure),
+                contrast: real(row.retouch_contrast),
                 highlights: real(row.retouch_highlights),
                 shadows: real(row.retouch_shadows),
                 whites: real(row.retouch_whites),
@@ -553,6 +554,7 @@ where
             retouch: RetouchSettings {
                 adjustments: BasicRetouchAdjustments {
                     exposure: real(row.retouch_exposure),
+                    contrast: real(row.retouch_contrast),
                     highlights: real(row.retouch_highlights),
                     shadows: real(row.retouch_shadows),
                     whites: real(row.retouch_whites),

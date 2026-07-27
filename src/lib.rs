@@ -28,8 +28,10 @@ pub use nikon::{
     fit_nikon_picture_control_from_hald, write_ncp, write_report,
 };
 pub use pp3::{
-    rawtherapee_hald_clut_profile_text, rawtherapee_profile_text, rawtherapee_resize_profile_text,
-    rawtherapee_tone_equalizer_profile_text, write_rawtherapee_profile,
+    rawtherapee_contrast_clarity_profile_text, rawtherapee_hald_clut_profile_text,
+    rawtherapee_local_contrast_profile_text, rawtherapee_profile_text,
+    rawtherapee_resize_profile_text, rawtherapee_tone_equalizer_profile_text,
+    write_rawtherapee_contrast_clarity_profile, write_rawtherapee_profile,
     write_rawtherapee_resize_profile,
 };
 pub use rgb_table::{decode_rgb_table, parse_rgb_table, sample_rgb_table};

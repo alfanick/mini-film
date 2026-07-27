@@ -503,6 +503,7 @@ mod tests {
       crs:GrainFrequency="30"
       crs:Exposure2012="0.5"
       crs:Contrast2012="20"
+      crs:Clarity2012="-15"
       crs:HueAdjustmentBlue="-12"
       crs:Sharpness="40"
       crs:SharpenRadius="1.2">
@@ -539,6 +540,7 @@ mod tests {
         assert_eq!(recipe.grain.size, 40);
         assert_eq!(recipe.adjustments.exposure, 0.5);
         assert_eq!(recipe.adjustments.contrast, 20.0);
+        assert_eq!(recipe.adjustments.clarity, -15.0);
         assert_eq!(recipe.adjustments.hsl.hue[5], -12.0);
         assert_eq!(
             recipe.adjustments.tone_curve.composite,
