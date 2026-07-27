@@ -3155,6 +3155,7 @@ function ProfileList({ image, onSelect, onToggleEnabled, onSolo }) {
   const canSolo = profiles.length > 1;
   return profiles.map((profile) => {
     const displayName = profileDisplayName(profile);
+    const downloadTitle = profileDownloadTitle(profile, displayName);
     const cardUrl = profile.url || image.preview_url;
     const available = isSoocProfile(profile) || profile.enabled !== false;
     const display = profileDisplayState(image, profile);
@@ -3248,8 +3249,8 @@ function ProfileList({ image, onSelect, onToggleEnabled, onSolo }) {
               class: "profile-download",
               href: versionedUrl(profile.url, profile.updated_at),
               download: profileDownloadName(image, profile),
-              title: `Download rendered ${displayName}`,
-              "aria-label": `Download rendered ${displayName}`,
+              title: downloadTitle,
+              "aria-label": downloadTitle,
               onClick: (event) => event.stopPropagation(),
             },
             "DL",
@@ -3264,6 +3265,13 @@ function profileDownloadName(image, profile) {
   const baseName = rawName.replace(/\.[^.]*$/, "");
   const profileName = profile.profile_stem || profile.selector || "profile";
   return `${safeDownloadPart(baseName)}--${safeDownloadPart(profileName)}.jpg`;
+}
+
+function profileDownloadTitle(profile, displayName) {
+  const rawBytes = profile.file_size_bytes;
+  const bytes = rawBytes === null || rawBytes === undefined || rawBytes === "" ? Number.NaN : Number(rawBytes);
+  const size = Number.isFinite(bytes) && bytes >= 0 ? `${(bytes / 1_000_000).toFixed(1)} MB` : "";
+  return size ? `Download rendered ${displayName} (${size})` : `Download rendered ${displayName}`;
 }
 
 function safeDownloadPart(value) {

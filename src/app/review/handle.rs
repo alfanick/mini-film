@@ -2691,6 +2691,7 @@ impl ReviewHandle {
         let store = self.store_snapshot();
         let mut images = store.images.clone();
         sort_review_images(&mut images);
+        let active_image_id = store.ui.current_image_id;
         let codex_summary = review_codex_summary(&images);
         let images = images
             .iter()
@@ -2736,6 +2737,17 @@ impl ReviewHandle {
                                 retouch_base_output(output, &self.output_root, &self.cache_root)
                             })
                             .is_some_and(|output| output.is_file());
+                        let file_size_bytes = if active_image_id == Some(image.id)
+                            && render.status == ReviewRenderStatus::Done
+                        {
+                            render
+                                .output_path
+                                .as_ref()
+                                .and_then(|path| path.metadata().ok())
+                                .map(|metadata| metadata.len())
+                        } else {
+                            None
+                        };
                         json!({
                             "profile_index": render.profile_index,
                             "profile_stem": render.profile_stem,
@@ -2754,6 +2766,7 @@ impl ReviewHandle {
                             },
                             "error": render.error,
                             "duration_ms": render.duration_ms,
+                            "file_size_bytes": file_size_bytes,
                             "width": render.width,
                             "height": render.height,
                             "retouch_pending": render.render_key.is_some(),

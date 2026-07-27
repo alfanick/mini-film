@@ -3697,8 +3697,16 @@ fn profiled_compressed_review_state_exposes_profiles_and_original_source() {
     assert_eq!(image["profiles"].as_array().unwrap().len(), 2);
     assert_eq!(image["profiles"][0]["profile_index"], 0);
     assert_eq!(image["profiles"][0]["base_url"], "media/1/0/base");
+    assert_eq!(
+        image["profiles"][0]["file_size_bytes"],
+        fs::metadata(&rendered).unwrap().len()
+    );
     assert_eq!(image["profiles"][1]["profile_index"], SOOC_PROFILE_INDEX);
     assert_eq!(image["profiles"][1]["profile_stem"], SOOC_PROFILE_STEM);
+    assert_eq!(
+        image["profiles"][1]["file_size_bytes"],
+        fs::metadata(&sooc).unwrap().len()
+    );
     assert_eq!(
         image["profiles"][1]["display_name"],
         SOOC_PROFILE_DISPLAY_NAME

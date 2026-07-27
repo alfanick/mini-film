@@ -695,8 +695,10 @@ tablet; Clear, Cancel, and OK join the rotation and aspect-ratio bar only while
 crop mode is open. Direct JPEG/HEIC inputs without a profile do not expose
 retouch controls. The browser applies a fast draft preview while edits are being
 made, then queues a high-quality mini-film render and swaps in
-the finished output when it is ready. Crop and rotation are persisted with the
-review state and are used by publish rerenders. Reopening crop mode shows an
+the finished output when it is ready. Each ready profile card includes a `DL`
+link; hovering it shows the rendered JPEG size in MB before downloading. Crop
+and rotation are persisted with the review state and are used by publish
+rerenders. Reopening crop mode shows an
 uncropped camera preview or original SOOC image, with the finished crop aligned
 over it, so an existing crop can be expanded or repositioned without losing the
 discarded area. Crop ratios can be locked to the auto-oriented original frame,
