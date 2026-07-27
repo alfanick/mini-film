@@ -35,6 +35,8 @@ const state = {
   retouchInputImageId: null,
   retouchClipboard: null,
   localRetouchDirty: false,
+  retouchActiveSliderId: null,
+  retouchActiveSliderOriginalValue: null,
   mobileDrawer: null,
   pendingProfileSelections: new Map(),
   profileInfoProfileIndex: null,
@@ -4555,6 +4557,92 @@ function isRetouchControlActive() {
   return Boolean(document.activeElement?.closest(".retouch"));
 }
 
+function clearActiveRetouchSlider() {
+  const active = state.retouchActiveSliderId ? document.getElementById(state.retouchActiveSliderId) : null;
+  active?.closest("label")?.classList.remove("retouch-slider-active");
+  state.retouchActiveSliderId = null;
+  state.retouchActiveSliderOriginalValue = null;
+}
+
+function setActiveRetouchSlider(input) {
+  clearActiveRetouchSlider();
+  if (!input) return;
+  state.retouchActiveSliderId = input?.id || null;
+  state.retouchActiveSliderOriginalValue = input.value;
+  input?.closest("label")?.classList.add("retouch-slider-active");
+}
+
+function activeRetouchSlider() {
+  return state.retouchActiveSliderId ? document.getElementById(state.retouchActiveSliderId) : null;
+}
+
+function parseSliderRange(input) {
+  const min = Number(input.min);
+  const max = Number(input.max);
+  const step = Number(input.step);
+  return {
+    min,
+    max,
+    step: Number.isFinite(step) && step > 0 ? step : 1,
+    valid: Number.isFinite(min) && Number.isFinite(max) && max > min,
+  };
+}
+
+function nudgeRetouchSlider(input, direction, shiftMode) {
+  if (!input) return;
+  const { min, max, step, valid } = parseSliderRange(input);
+  if (!valid) return;
+  const current = Number(input.value);
+  if (!Number.isFinite(current)) return;
+  const range = max - min;
+  const percent = shiftMode ? 0.01 : 0.1;
+  const next = clamp(current + range * percent * direction, min, max);
+  const snapped = clamp(Math.round((next - min) / step) * step + min, min, max);
+  input.value = String(Number(snapped.toFixed(6)));
+  const retouch = retouchFromInputs();
+  updateRetouchReadouts(retouch);
+  applyLocalRetouch(retouch);
+  scheduleRetouchSave();
+}
+
+function revertActiveRetouchSlider() {
+  const input = activeRetouchSlider();
+  if (!input) return;
+  if (state.retouchActiveSliderOriginalValue === null) {
+    clearActiveRetouchSlider();
+    input.blur();
+    return;
+  }
+  if (input.value !== state.retouchActiveSliderOriginalValue) {
+    input.value = state.retouchActiveSliderOriginalValue;
+    clearRetouchSaveTimer();
+    const retouch = retouchFromInputs();
+    updateRetouchReadouts(retouch);
+    applyLocalRetouch(retouch, { save: false });
+  }
+  clearActiveRetouchSlider();
+  input.blur();
+}
+
+function commitActiveRetouchSlider() {
+  const input = activeRetouchSlider();
+  if (!input) return;
+  clearRetouchSaveTimer();
+  clearActiveRetouchSlider();
+  input.blur();
+  saveReview({ retouch: retouchFromInputs() }).catch((error) => console.error(error));
+}
+
+function maybeClearRetouchSliderActivation(event) {
+  const input = activeRetouchSlider();
+  if (!input) return;
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  if (target.closest(".retouch label")) return;
+  clearActiveRetouchSlider();
+  input.blur();
+}
+
 function applyLocalRetouch(retouch, options = {}) {
   const image = findImage(state.currentId);
   if (!image) return;
@@ -6083,8 +6171,16 @@ els.viewer.addEventListener("touchmove", preventNativeViewerAction, { passive: f
     updateRetouchReadouts(retouch);
     applyLocalRetouch(retouch);
   });
+  input.addEventListener("focus", () => setActiveRetouchSlider(input));
+  input.addEventListener("click", () => setActiveRetouchSlider(input));
+  input.addEventListener("blur", () => {
+    if (state.retouchActiveSliderId === input.id) {
+      clearActiveRetouchSlider();
+    }
+  });
   input.addEventListener("change", () => scheduleRetouchSave());
 });
+document.addEventListener("pointerdown", maybeClearRetouchSliderActivation);
 els.retouchReset.addEventListener("click", () => applyLocalRetouch(defaultRetouch()));
 els.retouchCopy.addEventListener("click", copyCurrentRetouch);
 els.retouchPaste.addEventListener("click", pasteCurrentRetouch);
@@ -6264,6 +6360,12 @@ els.shortcutsOverlay.addEventListener("click", (event) => {
 });
 
 window.addEventListener("keydown", (event) => {
+  const activeRetouchSliderElement = activeRetouchSlider();
+  if (activeRetouchSliderElement && event.key === "Escape") {
+    event.preventDefault();
+    revertActiveRetouchSlider();
+    return;
+  }
   if (state.profileInfoProfileIndex !== null && event.key === "Escape") {
     event.preventDefault();
     closeProfileInfo();
@@ -6359,6 +6461,23 @@ window.addEventListener("keydown", (event) => {
     if (isRetouchControlsDisabledForImage(image)) return;
     event.preventDefault();
     pasteCurrentRetouch();
+    return;
+  }
+  if (
+    activeRetouchSliderElement &&
+    !event.ctrlKey &&
+    !event.altKey &&
+    !event.metaKey &&
+    ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)
+  ) {
+    event.preventDefault();
+    const direction = ["ArrowLeft", "ArrowDown"].includes(event.key) ? -1 : 1;
+    nudgeRetouchSlider(activeRetouchSliderElement, direction, event.shiftKey);
+    return;
+  }
+  if (activeRetouchSliderElement && event.key === "Enter") {
+    event.preventDefault();
+    commitActiveRetouchSlider();
     return;
   }
   if (event.target.closest(".retouch") || event.target.closest(".crop-tools")) return;

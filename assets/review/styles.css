@@ -1403,6 +1403,15 @@ button:disabled {
   accent-color: #222;
 }
 
+.retouch label.retouch-slider-active > span {
+  color: #198754;
+  font-weight: 700;
+}
+
+.retouch label.retouch-slider-active input[type="range"] {
+  accent-color: #198754;
+}
+
 .retouch output {
   color: #242421;
   text-align: right;
