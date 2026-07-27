@@ -988,6 +988,7 @@ function ControlsShell() {
           h("button", { id: "retouch-reset", type: "button" }, "Reset"),
         ),
       ),
+      h(RetouchSlider, { id: "retouch-clarity", label: "Clarity", min: "-100", max: "100", step: "1", value: "0" }),
       h(RetouchSlider, { id: "retouch-exposure", label: "Exposure", min: "-4", max: "4", step: "0.05", value: "0" }),
       h(RetouchSlider, {
         id: "retouch-highlights",
@@ -1007,7 +1008,6 @@ function ControlsShell() {
         value: "0",
         output: "0K",
       }),
-      h(RetouchSlider, { id: "retouch-clarity", label: "Clarity", min: "-100", max: "100", step: "1", value: "0" }),
       h(RetouchSlider, { id: "retouch-contrast", label: "Contrast", min: "-100", max: "100", step: "1", value: "0" }),
       h(RetouchSlider, { id: "retouch-shadows", label: "Shadows", min: "-100", max: "100", step: "1", value: "0" }),
       h(RetouchSlider, { id: "retouch-blacks", label: "Blacks", min: "-100", max: "100", step: "1", value: "0" }),
