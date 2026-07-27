@@ -69,6 +69,10 @@ Available shortcuts:
 - **Nikon WTU ingest**: pair with Nikon Connect-to-PC / Wireless Transmitter
   Utility mode over built-in camera Wi-Fi and feed transferred RAW and JPEG files
   directly into the daemon inbox.
+- **Mounted-camera auto-import**: on Linux, `daemon --auto-import` continuously
+  discovers mounted GVfs PTP/GPhoto2 and MTP cameras, imports every card into the
+  flat inbox with durable duplicate tracking, and feeds arrivals into the normal
+  review pipeline.
 - **Batch, sampler, and gallery output**: process whole folders, render profile
   sampler sheets, and generate modern static HTML galleries.
 - **RAW pipeline extras**: RawTherapee auto-matched camera tone curves,
@@ -624,6 +628,9 @@ authoritative, so an input tree and output tree can be moved and reopened at
 their new locations without rewriting review data or cached-output
 relationships. Existing schema-v15 absolute paths are converted transactionally
 on first open; an unmappable path stops migration instead of being discarded.
+Mounted-camera auto-import provenance uses the same catalog, with separate
+relational rows for physical devices, cards/storages, capture groups, imported
+assets, and remote source sightings.
 
 Review caches use a catalog-specific system temporary directory, normally
 `/tmp/mini-film.XXXXXX`; its absolute path is stored as `cache_root` in
@@ -826,6 +833,49 @@ mini-film review-publish \
 
 `--state` may use either the canonical catalog in the input folder or its
 managed output symlink; both must resolve to the catalog for the supplied roots.
+
+On Linux, daemon can import from cameras already mounted by GVfs:
+
+```sh
+mini-film daemon \
+  /home/alfanick/Pictures/Lightroom/inbox \
+  /home/alfanick/Pictures/mini-film-output \
+  --review-address 127.0.0.1:8090 \
+  --auto-import
+```
+
+`--auto-import` watches session D-Bus mount events and also reconciles the GVfs
+mount directory periodically, so cameras connected before or during the daemon
+run are discovered. PTP/GPhoto2 mounts and MTP mounts are supported, including
+multiple cameras and multiple cards per camera. mini-film does not mount,
+unmount, delete, or modify anything on a camera. The desktop session must mount
+the device under `$XDG_RUNTIME_DIR/gvfs`; non-Linux builds reject this option
+with a clear error.
+
+Camera RAW and JPEG files are copied directly into the flat daemon input folder.
+One transfer worker runs per physical camera, serializing that camera's cards;
+different cameras import concurrently. The command line shows a dynamically
+added byte-progress bar per camera. Transfers use a hidden same-filesystem
+staging file, verify source size and modification time before and after copying,
+sync the result, preserve its modification time, and publish without replacing
+an existing destination.
+
+Duplicate detection never hashes image contents. Within one physical camera,
+the same case-insensitive filename and exact modification time is enough to
+identify the same asset even when it appears on multiple cards. RAW/JPEG files
+for the same capture share one destination stem. Across cameras, or when a
+filename is reused with a different modification time, mini-film skips only a
+strong EXIF match: `ImageUniqueID`, or capture time/subseconds/offset plus camera
+serial. If EXIF differs or cannot establish identity, both files are preserved
+with `-1`, `-2`, and later numeric suffixes. Existing inbox files with the same
+filename and modification time are adopted on first use, which makes enabling
+auto-import safe for an established inbox.
+
+If Adobe DNG fallback later replaces an imported unsupported Nikon NEF, the
+catalog retains the original camera filename and records the validated DNG as
+its active successor. A later camera scan therefore does not reimport the
+removed NEF. Interrupted transfers leave no final partial image and are retried
+on a later reconciliation.
 
 Daemon can also ingest files from a Nikon camera configured for
 Connect-to-PC / Wireless Transmitter Utility style transfer. Start the camera's

@@ -89,7 +89,10 @@ pub fn is_internal_staging_input_file(path: &Path) -> bool {
     }
     path.file_name()
         .and_then(|name| name.to_str())
-        .is_some_and(|name| name.starts_with(PANORAMA_RESULT_STAGING_PREFIX))
+        .is_some_and(|name| {
+            name.starts_with(PANORAMA_RESULT_STAGING_PREFIX)
+                || name.starts_with(".mini-film-auto-import-")
+        })
 }
 
 pub fn is_supported_input_file(path: &Path, filter: InputFileFilter) -> bool {

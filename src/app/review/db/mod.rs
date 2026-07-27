@@ -1,3 +1,4 @@
+mod auto_import;
 mod cache;
 mod catalog;
 mod entities;
@@ -26,6 +27,11 @@ use sea_orm::{
 use sea_orm::{IntoActiveModel, PaginatorTrait, Schema};
 use sea_orm_migration::{MigratorTrait, SchemaManager};
 use tokio::sync::Mutex;
+
+pub(crate) use auto_import::{
+    AutoImportAsset, AutoImportCatalog, AutoImportDevice, AutoImportGroup, AutoImportIdentity,
+    AutoImportMediaKind, AutoImportRecord, AutoImportSourceRecord, AutoImportStorage,
+};
 
 pub(super) const SQLITE_STATE_FILE: &str = "mini-film-review.sqlite";
 const LEGACY_JSON_STATE_FILE: &str = "mini-film-review.json";
@@ -390,6 +396,15 @@ async fn verify_seaorm_database(connection: &DatabaseConnection) -> Result<()> {
             bail!("SeaORM review database is missing required table {table}");
         }
     }
+    for table in required_auto_import_tables() {
+        if !manager
+            .has_table(table)
+            .await
+            .with_context(|| format!("checking review table {table}"))?
+        {
+            bail!("SeaORM review database is missing required table {table}");
+        }
+    }
     sqlite_compat::verify_integrity(connection)
         .await
         .context("validating SeaORM review database")
@@ -531,6 +546,17 @@ fn required_panorama_tables() -> impl Iterator<Item = &'static str> {
 
 fn required_focus_tables() -> impl Iterator<Item = &'static str> {
     ["image_focus_regions"].into_iter()
+}
+
+fn required_auto_import_tables() -> impl Iterator<Item = &'static str> {
+    [
+        "auto_import_devices",
+        "auto_import_storages",
+        "auto_import_groups",
+        "auto_import_assets",
+        "auto_import_sources",
+    ]
+    .into_iter()
 }
 
 #[cfg(test)]
@@ -763,6 +789,57 @@ pub(super) fn database_facts(path: &Path) -> Result<TestDatabaseFacts> {
                 0
             },
         );
+        let auto_import_tables_present = manager.has_table("auto_import_devices").await?;
+        counts.insert(
+            "auto_import_devices",
+            if auto_import_tables_present {
+                entities::auto_import_devices::Entity::find()
+                    .count(&connection)
+                    .await?
+            } else {
+                0
+            },
+        );
+        counts.insert(
+            "auto_import_storages",
+            if auto_import_tables_present {
+                entities::auto_import_storages::Entity::find()
+                    .count(&connection)
+                    .await?
+            } else {
+                0
+            },
+        );
+        counts.insert(
+            "auto_import_groups",
+            if auto_import_tables_present {
+                entities::auto_import_groups::Entity::find()
+                    .count(&connection)
+                    .await?
+            } else {
+                0
+            },
+        );
+        counts.insert(
+            "auto_import_assets",
+            if auto_import_tables_present {
+                entities::auto_import_assets::Entity::find()
+                    .count(&connection)
+                    .await?
+            } else {
+                0
+            },
+        );
+        counts.insert(
+            "auto_import_sources",
+            if auto_import_tables_present {
+                entities::auto_import_sources::Entity::find()
+                    .count(&connection)
+                    .await?
+            } else {
+                0
+            },
+        );
         let mut indexes = HashSet::new();
         for (table, index) in expected_indexes() {
             if manager.has_index(table, index).await? {
@@ -982,7 +1059,7 @@ pub(super) fn make_schema_v12_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(5)).await?;
+        Migrator::down(&connection, Some(6)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -998,7 +1075,7 @@ pub(super) fn make_schema_v13_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(4)).await?;
+        Migrator::down(&connection, Some(5)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1014,7 +1091,7 @@ pub(super) fn make_schema_v14_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(3)).await?;
+        Migrator::down(&connection, Some(4)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1030,7 +1107,23 @@ pub(super) fn make_schema_v15_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(2)).await?;
+        Migrator::down(&connection, Some(3)).await?;
+        sqlite_compat::verify_integrity(&connection).await?;
+        connection.close().await?;
+        Ok(())
+    })
+}
+
+#[cfg(test)]
+pub(super) fn make_schema_v17_database(path: &Path, store: &ReviewStore) -> Result<()> {
+    save_store(path, store)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("building review database runtime")?;
+    runtime.block_on(async {
+        let connection = connect_database(path, false).await?;
+        Migrator::down(&connection, Some(1)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1052,7 +1145,7 @@ pub(super) fn make_legacy_version_database(path: &Path, version: i64) -> Result<
 }
 
 #[cfg(test)]
-fn expected_indexes() -> [(&'static str, &'static str); 20] {
+fn expected_indexes() -> [(&'static str, &'static str); 28] {
     [
         ("profiles", "idx_profiles_position"),
         ("images", "idx_images_position"),
@@ -1086,5 +1179,16 @@ fn expected_indexes() -> [(&'static str, &'static str); 20] {
             "idx_panorama_project_images_image",
         ),
         ("panorama_previews", "idx_panorama_previews_status"),
+        (
+            "auto_import_storages",
+            "idx_auto_import_storages_device_key",
+        ),
+        ("auto_import_groups", "idx_auto_import_groups_source"),
+        ("auto_import_groups", "idx_auto_import_groups_destination"),
+        ("auto_import_assets", "idx_auto_import_assets_group_kind"),
+        ("auto_import_assets", "idx_auto_import_assets_source"),
+        ("auto_import_assets", "idx_auto_import_assets_destination"),
+        ("auto_import_sources", "idx_auto_import_sources_location"),
+        ("auto_import_sources", "idx_auto_import_sources_asset"),
     ]
 }

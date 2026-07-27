@@ -10,13 +10,15 @@ const PANORAMA_SCHEMA_VERSION: i64 = 13;
 const REVIEW_SAMPLER_SCHEMA_VERSION: i64 = 14;
 const FOCUS_REGIONS_SCHEMA_VERSION: i64 = 15;
 const RELATIVE_PATHS_SCHEMA_VERSION: i64 = 16;
-pub(super) const LATEST_SCHEMA_VERSION: i64 = 17;
+const CACHE_ROOT_SCHEMA_VERSION: i64 = 17;
+pub(super) const LATEST_SCHEMA_VERSION: i64 = 18;
 pub(super) const V18_BASELINE_MIGRATION: &str = "m20260718_000001_v18_baseline";
 pub(super) const PANORAMA_PROJECTS_MIGRATION: &str = "m20260719_000002_panorama_projects";
 pub(super) const REVIEW_SAMPLER_MIGRATION: &str = "m20260721_000003_review_sampler";
 pub(super) const FOCUS_REGIONS_MIGRATION: &str = "m20260726_000004_focus_regions";
 pub(super) const RELATIVE_PATHS_MIGRATION: &str = "m20260726_000005_relative_paths";
 pub(super) const CACHE_ROOT_MIGRATION: &str = "m20260726_000006_cache_root";
+pub(super) const AUTO_IMPORT_MIGRATION: &str = "m20260727_000007_auto_import";
 pub(super) const PRE_RELEASE_SEAORM_LEDGER: [&str; 2] = [
     "m20260718_000001_create_review_schema",
     "m20260718_000002_adopt_seaorm",
@@ -48,6 +50,7 @@ impl MigratorTrait for Migrator {
             Box::new(FocusRegions),
             Box::new(RelativePaths),
             Box::new(CacheRoot),
+            Box::new(AutoImport),
         ]
     }
 }
@@ -166,6 +169,14 @@ struct CacheRoot;
 impl MigrationName for CacheRoot {
     fn name(&self) -> &str {
         CACHE_ROOT_MIGRATION
+    }
+}
+
+struct AutoImport;
+
+impl MigrationName for AutoImport {
+    fn name(&self) -> &str {
+        AUTO_IMPORT_MIGRATION
     }
 }
 
@@ -454,7 +465,7 @@ impl MigrationTrait for CacheRoot {
                 )
                 .await?;
         }
-        sqlite_compat::set_user_version(manager.get_connection(), LATEST_SCHEMA_VERSION).await
+        sqlite_compat::set_user_version(manager.get_connection(), CACHE_ROOT_SCHEMA_VERSION).await
     }
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
@@ -462,6 +473,44 @@ impl MigrationTrait for CacheRoot {
         // so retain this optional forward-compatible column.
         sqlite_compat::set_user_version(manager.get_connection(), RELATIVE_PATHS_SCHEMA_VERSION)
             .await
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for AutoImport {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        let schema = Schema::new(DbBackend::Sqlite);
+        create_entity_table(manager, &schema, auto_import_devices::Entity).await?;
+        create_entity_table(manager, &schema, auto_import_storages::Entity).await?;
+        create_entity_table(manager, &schema, auto_import_groups::Entity).await?;
+        create_entity_table(manager, &schema, auto_import_assets::Entity).await?;
+        create_entity_table(manager, &schema, auto_import_sources::Entity).await?;
+        create_auto_import_indexes(manager).await?;
+        sqlite_compat::set_user_version(manager.get_connection(), LATEST_SCHEMA_VERSION).await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        for table in [
+            auto_import_sources::Entity.table_name(),
+            auto_import_assets::Entity.table_name(),
+            auto_import_groups::Entity.table_name(),
+            auto_import_storages::Entity.table_name(),
+            auto_import_devices::Entity.table_name(),
+        ] {
+            manager
+                .drop_table(
+                    Table::drop()
+                        .table(Alias::new(table))
+                        .if_exists()
+                        .to_owned(),
+                )
+                .await?;
+        }
+        sqlite_compat::set_user_version(manager.get_connection(), CACHE_ROOT_SCHEMA_VERSION).await
     }
 }
 
@@ -672,6 +721,10 @@ where
                     "cancelled",
                 ]));
         }
+        "auto_import_assets" => {
+            statement
+                .check(Expr::col(auto_import_assets::Column::MediaKind).is_in(["raw", "jpeg"]));
+        }
         _ => {}
     }
     manager.create_table(statement).await
@@ -792,6 +845,76 @@ async fn create_panorama_indexes(manager: &SchemaManager<'_>) -> Result<(), DbEr
             .name("idx_panorama_previews_status")
             .table(panorama_previews::Entity)
             .col(panorama_previews::Column::Status)
+            .if_not_exists()
+            .to_owned(),
+    ];
+    for index in indexes {
+        manager.create_index(index).await?;
+    }
+    Ok(())
+}
+
+async fn create_auto_import_indexes(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
+    let indexes = [
+        Index::create()
+            .name("idx_auto_import_storages_device_key")
+            .table(auto_import_storages::Entity)
+            .col(auto_import_storages::Column::DeviceId)
+            .col(auto_import_storages::Column::StorageKey)
+            .unique()
+            .if_not_exists()
+            .to_owned(),
+        Index::create()
+            .name("idx_auto_import_groups_source")
+            .table(auto_import_groups::Entity)
+            .col(auto_import_groups::Column::DeviceId)
+            .col(auto_import_groups::Column::SourceStemKey)
+            .col(auto_import_groups::Column::SourceModifiedNs)
+            .unique()
+            .if_not_exists()
+            .to_owned(),
+        Index::create()
+            .name("idx_auto_import_groups_destination")
+            .table(auto_import_groups::Entity)
+            .col(auto_import_groups::Column::DestinationStemKey)
+            .unique()
+            .if_not_exists()
+            .to_owned(),
+        Index::create()
+            .name("idx_auto_import_assets_group_kind")
+            .table(auto_import_assets::Entity)
+            .col(auto_import_assets::Column::GroupId)
+            .col(auto_import_assets::Column::MediaKind)
+            .unique()
+            .if_not_exists()
+            .to_owned(),
+        Index::create()
+            .name("idx_auto_import_assets_source")
+            .table(auto_import_assets::Entity)
+            .col(auto_import_assets::Column::SourceFilenameKey)
+            .col(auto_import_assets::Column::SourceModifiedNs)
+            .if_not_exists()
+            .to_owned(),
+        Index::create()
+            .name("idx_auto_import_assets_destination")
+            .table(auto_import_assets::Entity)
+            .col(auto_import_assets::Column::DestinationFilenameKey)
+            .unique()
+            .if_not_exists()
+            .to_owned(),
+        Index::create()
+            .name("idx_auto_import_sources_location")
+            .table(auto_import_sources::Entity)
+            .col(auto_import_sources::Column::StorageId)
+            .col(auto_import_sources::Column::RelativePathKey)
+            .col(auto_import_sources::Column::SourceModifiedNs)
+            .unique()
+            .if_not_exists()
+            .to_owned(),
+        Index::create()
+            .name("idx_auto_import_sources_asset")
+            .table(auto_import_sources::Entity)
+            .col(auto_import_sources::Column::AssetId)
             .if_not_exists()
             .to_owned(),
     ];

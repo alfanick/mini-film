@@ -200,6 +200,11 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
 }
 
 impl ReviewHandle {
+    pub(crate) fn auto_import_catalog(&self) -> AutoImportCatalog {
+        self.database
+            .auto_import_catalog(Arc::clone(&self.database_runtime))
+    }
+
     pub(crate) fn state_path(&self) -> &Path {
         &self.state_path
     }

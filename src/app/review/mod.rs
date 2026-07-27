@@ -14,6 +14,10 @@ mod store;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use db::{
+    AutoImportAsset, AutoImportCatalog, AutoImportDevice, AutoImportGroup, AutoImportIdentity,
+    AutoImportMediaKind, AutoImportRecord, AutoImportSourceRecord, AutoImportStorage,
+};
 pub(crate) use handle::start_review_server;
 pub(crate) use model::{
     ReviewConfig, ReviewGalleryConfig, ReviewHandle, ReviewProfile, ReviewProfileMetadata,

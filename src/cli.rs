@@ -646,6 +646,14 @@ pub(crate) enum CommandKind {
         #[arg(long, default_value_t = 0)]
         debounce_seconds: u64,
 
+        /// Import new RAW and JPEG files from mounted Linux GVfs PTP/MTP cameras.
+        ///
+        /// Cameras and all of their mounted cards are discovered continuously.
+        /// Files are copied into the flat daemon input folder without modifying
+        /// the camera. This option is supported on Linux only.
+        #[arg(long)]
+        auto_import: bool,
+
         /// Also ingest RAW and JPEG files from a paired Nikon Connect-to-PC / Wireless Transmitter Utility camera at this host/IP.
         #[arg(long)]
         nikon_wtu: Option<String>,
@@ -1494,6 +1502,21 @@ mod tests {
                 output_format: crate::cli::BatchOutputFormat::Tiff,
                 ..
             } if profile == vec!["portra 400 grainy", "portra 400"]
+        ));
+
+        let cli = Cli::parse_from([
+            "mini-film",
+            "daemon",
+            "input-dir",
+            "output-dir",
+            "--auto-import",
+        ]);
+        assert!(matches!(
+            cli.command,
+            CommandKind::BatchDaemon {
+                auto_import: true,
+                ..
+            }
         ));
 
         let cli = Cli::parse_from([

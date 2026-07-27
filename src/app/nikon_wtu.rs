@@ -857,13 +857,23 @@ fn download_transfer_object(
     }
     let tmp = output.with_file_name(format!("{safe_filename}.mini-film-part"));
     let result = download_transfer_object_to_file(session, object, &info, &tmp).and_then(|bytes| {
-        fs::rename(&tmp, &output)
-            .with_context(|| format!("moving {} to {}", tmp.display(), output.display()))?;
-        Ok(bytes)
+        match fs::hard_link(&tmp, &output) {
+            Ok(()) => {
+                fs::remove_file(&tmp).with_context(|| format!("removing {}", tmp.display()))?;
+                Ok(Some(bytes))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                fs::remove_file(&tmp).with_context(|| format!("removing {}", tmp.display()))?;
+                Ok(None)
+            }
+            Err(error) => Err(error)
+                .with_context(|| format!("publishing {} to {}", tmp.display(), output.display())),
+        }
     });
 
     match result {
-        Ok(bytes) => Ok(TransferDownload::Downloaded { filename, bytes }),
+        Ok(Some(bytes)) => Ok(TransferDownload::Downloaded { filename, bytes }),
+        Ok(None) => Ok(TransferDownload::SkippedExisting(filename)),
         Err(error) => {
             let _ = fs::remove_file(&tmp);
             Err(error)

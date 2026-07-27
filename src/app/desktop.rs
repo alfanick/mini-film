@@ -408,6 +408,7 @@ mod enabled {
                 color_noise_iso_threshold: self.color_noise_iso_threshold.unwrap_or(1600),
                 jobs: self.jobs,
                 debounce_seconds: 0,
+                auto_import: false,
                 nikon_wtu: optional_string(&self.nikon_wtu),
                 nikon_wtu_port: 15740,
                 nikon_wtu_name: None,

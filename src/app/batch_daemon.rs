@@ -23,6 +23,7 @@ use mini_film::GrainEngine;
 use crate::app::apply::{
     ApplyArgs, ApplyJob, apply_resolved, resolve_apply_effects, resolve_grain_override,
 };
+use crate::app::auto_import::{AutoImportConfig, AutoImportReceiver, start_auto_import};
 use crate::app::cache::DAEMON_PROFILE_OUTPUTS_CACHE_DIR;
 use crate::app::dng::DngFallbackConfig;
 use crate::app::export::validate_export_options;
@@ -74,6 +75,7 @@ pub(crate) struct BatchDaemonArgs {
     pub(crate) color_noise_iso_threshold: u32,
     pub(crate) jobs: Option<usize>,
     pub(crate) debounce_seconds: u64,
+    pub(crate) auto_import: bool,
     pub(crate) nikon_wtu: Option<String>,
     pub(crate) nikon_wtu_port: u16,
     pub(crate) nikon_wtu_name: Option<String>,
@@ -286,6 +288,9 @@ struct ProfileScheduleContext<'a> {
 pub(crate) fn run_batch_daemon(mut args: BatchDaemonArgs) -> Result<()> {
     validate_export_options(&args.export)?;
     let jobs = resolve_batch_daemon_jobs(args.jobs)?;
+    if args.auto_import && !cfg!(target_os = "linux") {
+        bail!("--auto-import is supported only on Linux with mounted GVfs PTP/MTP cameras");
+    }
     if !args.input.is_dir() {
         bail!("daemon input is not a directory: {}", args.input.display());
     }
@@ -396,6 +401,14 @@ pub(crate) fn run_batch_daemon(mut args: BatchDaemonArgs) -> Result<()> {
         || temp_dir.path().to_path_buf(),
         |review| review.cache_root().to_path_buf(),
     );
+    let auto_import_catalog = if args.auto_import {
+        Some(review.as_ref().map_or_else(
+            || crate::app::review::AutoImportCatalog::open(&args.input, &args.output),
+            |review| Ok(review.auto_import_catalog()),
+        )?)
+    } else {
+        None
+    };
     let args = Arc::new(args);
 
     let multi = MultiProgress::new();
@@ -455,6 +468,22 @@ pub(crate) fn run_batch_daemon(mut args: BatchDaemonArgs) -> Result<()> {
             config.output_dir.display()
         ));
         Some(start_nikon_wtu_receiver(config)?)
+    } else {
+        None
+    };
+    let auto_import_receiver = if let Some(catalog) = auto_import_catalog {
+        batch.println(format!(
+            "[{}] auto-import: enabled for mounted Linux GVfs PTP/MTP cameras",
+            elapsed_human(start.elapsed())
+        ));
+        Some(start_auto_import(AutoImportConfig {
+            input_root: args.input.clone(),
+            catalog,
+            dng_fallback: args.dng_fallback.clone(),
+            exiftool: PathBuf::from("exiftool"),
+            progress: multi.clone(),
+            progress_anchor: batch.clone(),
+        })?)
     } else {
         None
     };
@@ -591,6 +620,7 @@ pub(crate) fn run_batch_daemon(mut args: BatchDaemonArgs) -> Result<()> {
         if let Some(review) = &review {
             review.ensure_database_healthy()?;
         }
+        drain_auto_import_logs(auto_import_receiver.as_ref(), &batch, start);
         drain_nikon_wtu_logs(nikon_wtu_receiver.as_ref(), &batch, start);
         drain_watch_events(&watch_rx, &mut pending, debounce, args.input_file_filter);
         while let Ok(input) = trusted_input_rx.try_recv() {
@@ -810,6 +840,7 @@ pub(crate) fn run_batch_daemon(mut args: BatchDaemonArgs) -> Result<()> {
         }
 
         state.resource_usage_if_needed(Instant::now());
+        drain_auto_import_logs(auto_import_receiver.as_ref(), &batch, start);
         drain_nikon_wtu_logs(nikon_wtu_receiver.as_ref(), &batch, start);
         if queue.is_empty() && in_flight.is_empty() {
             batch.reset_eta();
@@ -830,6 +861,19 @@ pub(crate) fn run_batch_daemon(mut args: BatchDaemonArgs) -> Result<()> {
 }
 
 fn drain_nikon_wtu_logs(receiver: Option<&NikonWtuReceiver>, batch: &ProgressBar, start: Instant) {
+    let Some(receiver) = receiver else {
+        return;
+    };
+    for log in receiver.drain_logs() {
+        batch.println(format!("[{}] {log}", elapsed_human(start.elapsed())));
+    }
+}
+
+fn drain_auto_import_logs(
+    receiver: Option<&AutoImportReceiver>,
+    batch: &ProgressBar,
+    start: Instant,
+) {
     let Some(receiver) = receiver else {
         return;
     };
@@ -872,6 +916,16 @@ fn write_daemon_info_txt(
     writeln!(out, "Output directory: {}", args.output.display()).ok();
     writeln!(out, "Profiles: {}", profiles.len()).ok();
     writeln!(out, "Output format: {:?}", args.output_format).ok();
+    writeln!(
+        out,
+        "Auto-import mounted PTP/MTP cameras: {}",
+        if args.auto_import {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    )
+    .ok();
     if let Some(address) = &args.review_address {
         writeln!(out, "Review server: http://{address}").ok();
         writeln!(
@@ -2302,6 +2356,7 @@ mod tests {
             lens_corrections: LensCorrections::default(),
             jobs: Some(2),
             debounce_seconds: 0,
+            auto_import: false,
             nikon_wtu: None,
             nikon_wtu_port: 15740,
             nikon_wtu_name: None,
@@ -2446,6 +2501,7 @@ mod tests {
             lens_corrections: LensCorrections::default(),
             jobs: Some(2),
             debounce_seconds: 0,
+            auto_import: false,
             nikon_wtu: None,
             nikon_wtu_port: 15740,
             nikon_wtu_name: None,

@@ -1,4 +1,5 @@
 pub(crate) mod apply;
+pub(crate) mod auto_import;
 pub(crate) mod batch;
 pub(crate) mod batch_assets;
 pub(crate) mod batch_daemon;
