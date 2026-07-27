@@ -53,6 +53,7 @@ mod enabled {
         hald_dir: String,
         review_port: u16,
         allow_others: bool,
+        auto_import: bool,
         jobs: usize,
         long_edge: Option<u32>,
         jpg_quality: u8,
@@ -85,6 +86,7 @@ mod enabled {
         profiles: Vec<String>,
         review_port: Option<u16>,
         allow_others: bool,
+        auto_import: bool,
         jobs: Option<usize>,
         long_edge: Option<u32>,
         jpg_quality: Option<u8>,
@@ -161,6 +163,7 @@ mod enabled {
                 hald_dir: default_hald_dir().to_string_lossy().to_string(),
                 review_port: 8090,
                 allow_others: true,
+                auto_import: false,
                 jobs: half_cpu_thread_count(),
                 long_edge: None,
                 jpg_quality: 95,
@@ -191,6 +194,7 @@ mod enabled {
             self.profiles = saved.profiles;
             self.review_port = saved.review_port.unwrap_or(self.review_port);
             self.allow_others = saved.allow_others;
+            self.auto_import = saved.auto_import;
             self.jobs = saved.jobs.unwrap_or(self.jobs);
             self.long_edge = saved.long_edge;
             self.jpg_quality = saved.jpg_quality.unwrap_or(self.jpg_quality);
@@ -408,7 +412,7 @@ mod enabled {
                 color_noise_iso_threshold: self.color_noise_iso_threshold.unwrap_or(1600),
                 jobs: self.jobs,
                 debounce_seconds: 0,
-                auto_import: false,
+                auto_import: self.auto_import,
                 nikon_wtu: optional_string(&self.nikon_wtu),
                 nikon_wtu_port: 15740,
                 nikon_wtu_name: None,

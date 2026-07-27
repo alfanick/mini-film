@@ -14,12 +14,13 @@ mini-film
 ```
 
 With no command, mini-film opens the native app wizard for the usual
-daemon/review settings, profile selection, Nikon WTU ingest, lens corrections,
-output folders, and publishing defaults. The app remembers the last successful
-setup, starts the same daemon pipeline used by the CLI, waits for the embedded
-review server, and then opens the review UI in a webview. Terminal output is
-still kept when launched from a shell, so long-running processing stays
-inspectable. `mini-film app` remains available as the explicit command form.
+daemon/review settings, profile selection, mounted-camera auto-import, Nikon WTU
+ingest, lens corrections, output folders, and publishing defaults. The app
+remembers the last successful setup, starts the same daemon pipeline used by the
+CLI, waits for the embedded review server, and then opens the review UI in a
+webview. Terminal output is still kept when launched from a shell, so
+long-running processing stays inspectable. `mini-film app` remains available as
+the explicit command form.
 
 For scripted use, every part of the workflow is still available as CLI commands:
 `apply`, `batch`, `daemon`, `panorama`, `sampler`, `pp3`, `info`, `nikon`, and
@@ -152,7 +153,9 @@ mini-film
 The app wizard defaults to `~/Pictures/Scratch/Inbox` for input,
 `~/Pictures/mini-film` for output, and `MINI_FILM_PROFILES_ROOT` or the selected
 profiles root for profile lookup. It remembers the last successful setup in
-`~/.cache/mini-film/app-settings.json`.
+`~/.cache/mini-film/app-settings.json`. On Linux, enable **Auto-import mounted
+cameras** to use the same continuous GVfs PTP/MTP discovery as daemon
+`--auto-import`.
 
 Use Nikon WTU ingest with the same daemon:
 

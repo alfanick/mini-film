@@ -7,6 +7,7 @@ const fields = {
   profiles: document.getElementById("profiles"),
   reviewPort: document.getElementById("reviewPort"),
   allowOthers: document.getElementById("allowOthers"),
+  autoImport: document.getElementById("autoImport"),
   jobs: document.getElementById("jobs"),
   longEdge: document.getElementById("longEdge"),
   jpgQuality: document.getElementById("jpgQuality"),
@@ -72,6 +73,7 @@ function requestFromForm() {
       .filter(Boolean),
     reviewPort: numericValue(fields.reviewPort),
     allowOthers: fields.allowOthers.checked,
+    autoImport: fields.autoImport.checked,
     jobs: numericValue(fields.jobs),
     longEdge: numericValue(fields.longEdge),
     jpgQuality: numericValue(fields.jpgQuality),
@@ -123,6 +125,7 @@ async function loadDefaults() {
   setIfEmpty(fields.colorNoiseIsoThreshold, String(defaults.colorNoiseIsoThreshold));
   setIfEmpty(fields.grainPreset, defaults.grainPreset);
   fields.allowOthers.checked = Boolean(defaults.allowOthers);
+  fields.autoImport.checked = Boolean(defaults.autoImport);
   fields.progressiveJpeg.checked = Boolean(defaults.progressiveJpeg);
   fields.noGrain.checked = Boolean(defaults.noGrain);
   fields.lensCorrections.checked = Boolean(defaults.lensCorrections);
