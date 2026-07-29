@@ -222,7 +222,7 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
             args.hald_level,
         )?
     } else if has_raw_inputs {
-        "No profile configured; RawTherapee defaults are used.".to_string()
+        "No profile configured; matching Adobe Standard DCPs are used when available, otherwise RawTherapee defaults are used.".to_string()
     } else {
         "Compressed inputs are converted directly; RAW profiles are not used.".to_string()
     };

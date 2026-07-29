@@ -653,6 +653,7 @@ fn profile_render_row(
         height: render.height.map(i64::from),
         updated_at: render.updated_at.clone(),
         processing_key: render.processing_key.clone(),
+        dcp_profile_filename: render.dcp_profile_filename.clone(),
     })
 }
 

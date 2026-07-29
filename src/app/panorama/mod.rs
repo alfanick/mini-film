@@ -27,7 +27,7 @@ use crate::{
 use tools::HuginToolchain;
 pub(crate) use tools::PanoramaCapability;
 
-const PANORAMA_CACHE_VERSION: &str = "panorama-v2-hugin-mosaic-neutral-srgb";
+const PANORAMA_CACHE_VERSION: &str = "panorama-v3-adobe-dcp";
 
 #[derive(Clone, Debug)]
 pub(crate) struct PanoramaConfig {
@@ -321,6 +321,10 @@ fn project_cache_root(
         hasher.update(lcp_root.to_string_lossy().as_bytes());
     }
     for source in sources {
+        hasher.update(crate::app::dcp::dcp_cache_identity(
+            source,
+            &config.dng_fallback,
+        ));
         let canonical = fs::canonicalize(source).unwrap_or_else(|_| source.clone());
         hasher.update(canonical.to_string_lossy().as_bytes());
         let metadata = fs::metadata(source)

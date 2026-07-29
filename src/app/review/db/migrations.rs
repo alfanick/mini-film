@@ -12,7 +12,8 @@ const FOCUS_REGIONS_SCHEMA_VERSION: i64 = 15;
 const RELATIVE_PATHS_SCHEMA_VERSION: i64 = 16;
 const CACHE_ROOT_SCHEMA_VERSION: i64 = 17;
 const AUTO_IMPORT_SCHEMA_VERSION: i64 = 18;
-pub(super) const LATEST_SCHEMA_VERSION: i64 = 19;
+const RETOUCH_CONTRAST_SCHEMA_VERSION: i64 = 19;
+pub(super) const LATEST_SCHEMA_VERSION: i64 = 20;
 pub(super) const V18_BASELINE_MIGRATION: &str = "m20260718_000001_v18_baseline";
 pub(super) const PANORAMA_PROJECTS_MIGRATION: &str = "m20260719_000002_panorama_projects";
 pub(super) const REVIEW_SAMPLER_MIGRATION: &str = "m20260721_000003_review_sampler";
@@ -21,6 +22,7 @@ pub(super) const RELATIVE_PATHS_MIGRATION: &str = "m20260726_000005_relative_pat
 pub(super) const CACHE_ROOT_MIGRATION: &str = "m20260726_000006_cache_root";
 pub(super) const AUTO_IMPORT_MIGRATION: &str = "m20260727_000007_auto_import";
 pub(super) const RETOUCH_CONTRAST_MIGRATION: &str = "m20260727_000008_retouch_contrast";
+pub(super) const DCP_PROVENANCE_MIGRATION: &str = "m20260729_000009_dcp_provenance";
 pub(super) const PRE_RELEASE_SEAORM_LEDGER: [&str; 2] = [
     "m20260718_000001_create_review_schema",
     "m20260718_000002_adopt_seaorm",
@@ -54,6 +56,7 @@ impl MigratorTrait for Migrator {
             Box::new(CacheRoot),
             Box::new(AutoImport),
             Box::new(RetouchContrast),
+            Box::new(DcpProvenance),
         ]
     }
 }
@@ -188,6 +191,14 @@ struct RetouchContrast;
 impl MigrationName for RetouchContrast {
     fn name(&self) -> &str {
         RETOUCH_CONTRAST_MIGRATION
+    }
+}
+
+struct DcpProvenance;
+
+impl MigrationName for DcpProvenance {
+    fn name(&self) -> &str {
+        DCP_PROVENANCE_MIGRATION
     }
 }
 
@@ -534,7 +545,8 @@ impl MigrationTrait for RetouchContrast {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         ensure_retouch_contrast_columns(manager).await?;
         backfill_retouch_contrast(manager).await?;
-        sqlite_compat::set_user_version(manager.get_connection(), LATEST_SCHEMA_VERSION).await
+        sqlite_compat::set_user_version(manager.get_connection(), RETOUCH_CONTRAST_SCHEMA_VERSION)
+            .await
     }
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
@@ -553,6 +565,43 @@ impl MigrationTrait for RetouchContrast {
         // Older binaries ignore forward-compatible SQLite columns. Keeping
         // them lets earlier migrations continue using current SeaORM entities.
         sqlite_compat::set_user_version(manager.get_connection(), AUTO_IMPORT_SCHEMA_VERSION).await
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for DcpProvenance {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        if !manager
+            .has_column(
+                image_profile_renders::Entity.table_name(),
+                "dcp_profile_filename",
+            )
+            .await?
+        {
+            manager
+                .alter_table(
+                    Table::alter()
+                        .table(image_profile_renders::Entity)
+                        .add_column(
+                            ColumnDef::new(image_profile_renders::Column::DcpProfileFilename)
+                                .text()
+                                .null(),
+                        )
+                        .to_owned(),
+                )
+                .await?;
+        }
+        sqlite_compat::set_user_version(manager.get_connection(), LATEST_SCHEMA_VERSION).await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        // Older binaries ignore the nullable forward-compatible column.
+        sqlite_compat::set_user_version(manager.get_connection(), RETOUCH_CONTRAST_SCHEMA_VERSION)
+            .await
     }
 }
 

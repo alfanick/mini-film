@@ -6,6 +6,7 @@ use tempfile::Builder;
 use super::PanoramaConfig;
 use crate::app::{
     apply::{RawTherapeeProfileOptions, rawtherapee_profiles_for_input},
+    dcp::resolve_dcp_profile,
     export::add_convert_thread_limit_with_count,
     pp3::write_rawtherapee_disable_sharpening_profile,
     profile::neutral_profile,
@@ -124,6 +125,9 @@ pub(crate) fn prepare_full_source(
         None => config.dng_fallback.prepare_known(source)?,
     };
     let develop_input = prepared_source.active();
+    let dcp_profile = is_raw_input_file(develop_input)
+        .then(|| resolve_dcp_profile(develop_input, &config.dng_fallback))
+        .flatten();
     let neutral = neutral_profile();
     let mut profiles = rawtherapee_profiles_for_input(
         RawTherapeeProfileOptions {
@@ -133,6 +137,7 @@ pub(crate) fn prepare_full_source(
             bw_filter: BwFilter::None,
             color_noise_iso_threshold: config.color_noise_iso_threshold,
             lens_corrections: config.lens_corrections,
+            dcp_profile: dcp_profile.as_ref(),
         },
         &neutral,
         &source_work,

@@ -873,7 +873,7 @@ pub(super) fn sync_image_profile_renders(
                 .get(&profile.index)
                 .filter(|render| {
                     render.profile_stem == profile.stem
-                        && render.processing_key.as_deref() == Some(processing_key)
+                        && render.processing_key.as_deref() == Some(processing_key.as_str())
                         && (!profiles_changed || unchanged_profile_indexes.contains(&profile.index))
                 })
                 .cloned()
@@ -887,7 +887,7 @@ pub(super) fn sync_image_profile_renders(
                         profile.stem.clone(),
                         None,
                         profile.enabled_by_default,
-                        processing_key,
+                        &processing_key,
                     )
                 })
         })
@@ -900,7 +900,7 @@ pub(super) fn sync_image_profile_renders(
             existing
                 .get(&SOOC_PROFILE_INDEX)
                 .filter(|render| render.profile_stem == SOOC_PROFILE_STEM)
-                .filter(|render| render.processing_key.as_deref() == Some(processing_key))
+                .filter(|render| render.processing_key.as_deref() == Some(processing_key.as_str()))
                 .cloned()
                 .map(|mut render| {
                     render.processing_key = Some(processing_key.to_string());
@@ -912,7 +912,7 @@ pub(super) fn sync_image_profile_renders(
                         SOOC_PROFILE_STEM.to_string(),
                         Some(SOOC_PROFILE_DISPLAY_NAME.to_string()),
                         true,
-                        processing_key,
+                        &processing_key,
                     )
                 }),
         );
@@ -950,15 +950,12 @@ pub(super) fn sync_image_profile_renders(
         normalize_profile_bw_filters(&image.profile_bw_filters, &image.profiles);
 }
 
-pub(super) fn review_render_processing_key(profile_index: usize) -> &'static str {
+pub(super) fn review_render_processing_key(profile_index: usize) -> String {
     review_render_processing_key_for_input(Path::new("image.raw"), profile_index)
 }
 
-pub(super) fn review_render_processing_key_for_input(
-    input: &Path,
-    profile_index: usize,
-) -> &'static str {
-    if profile_index == SOOC_PROFILE_INDEX {
+pub(super) fn review_render_processing_key_for_input(input: &Path, profile_index: usize) -> String {
+    let base = if profile_index == SOOC_PROFILE_INDEX {
         SOOC_RENDER_PIPELINE_KEY
     } else if is_tiff_input_file(input) {
         PROFILED_TIFF_RENDER_PIPELINE_KEY
@@ -966,6 +963,14 @@ pub(super) fn review_render_processing_key_for_input(
         PROFILED_COMPRESSED_RENDER_PIPELINE_KEY
     } else {
         RAW_RENDER_PIPELINE_KEY
+    };
+    if profile_index != SOOC_PROFILE_INDEX && is_raw_input_file(input) {
+        format!(
+            "{base}:{}",
+            dcp_cache_identity(input, &crate::app::dng::DngFallbackConfig::default())
+        )
+    } else {
+        base.to_string()
     }
 }
 
@@ -987,6 +992,7 @@ fn missing_profile_render(
         duration_ms: None,
         render_key: None,
         processing_key: Some(processing_key.to_string()),
+        dcp_profile_filename: None,
         width: None,
         height: None,
         updated_at: now_string(),

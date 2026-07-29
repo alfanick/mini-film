@@ -32,6 +32,7 @@ pub(super) use crate::{
     },
     app::batch::{FolderGalleryOptions, render_gallery_for_folder},
     app::codex::{CodexAnalysisOptions, CodexAnalysisResult, run_codex_image_analysis},
+    app::dcp::{dcp_cache_identity, resolve_dcp_profile},
     app::export::validate_export_options,
     app::pp3::RAW_RENDER_PIPELINE_KEY,
     app::profile::resolve_profile,

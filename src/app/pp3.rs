@@ -19,7 +19,7 @@ const HIGH_COLOR_NOISE_CHROMA: u16 = 18;
 const VERY_HIGH_COLOR_NOISE_LUMA: u16 = 44;
 const VERY_HIGH_COLOR_NOISE_LDETAIL: u16 = 64;
 const VERY_HIGH_COLOR_NOISE_CHROMA: u16 = 28;
-pub(crate) const RAW_RENDER_PIPELINE_KEY: &str = "raw-render-v6-local-contrast";
+pub(crate) const RAW_RENDER_PIPELINE_KEY: &str = "raw-render-v7-adobe-dcp";
 
 use crate::app::profile::{ProfileInfo, combined_contrast_clarity, inspect_profile};
 use crate::cli::LensCorrections;
@@ -44,6 +44,14 @@ pub(crate) fn write_rawtherapee_auto_matched_curve_profile(path: &Path) -> Resul
         .context("auto-matched curve profile has no parent")?;
     fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     fs::write(path, rawtherapee_auto_matched_curve_profile_text())
+        .with_context(|| format!("writing {}", path.display()))?;
+    Ok(path.to_path_buf())
+}
+
+pub(crate) fn write_rawtherapee_dcp_profile(path: &Path, dcp_profile: &Path) -> Result<PathBuf> {
+    let parent = path.parent().context("DCP profile has no parent")?;
+    fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    fs::write(path, rawtherapee_dcp_profile_text(dcp_profile))
         .with_context(|| format!("writing {}", path.display()))?;
     Ok(path.to_path_buf())
 }
@@ -82,6 +90,19 @@ fn rawtherapee_auto_matched_curve_profile_text() -> String {
     let _ = writeln!(out, "Auto=false");
     let _ = writeln!(out, "HistogramMatching=true");
     let _ = writeln!(out, "CurveFromHistogramMatching=false");
+    let _ = writeln!(out);
+    out
+}
+
+fn rawtherapee_dcp_profile_text(dcp_profile: &Path) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "[Color Management]");
+    let _ = writeln!(out, "InputProfile=file:{}", dcp_profile.display());
+    let _ = writeln!(out, "ToneCurve=true");
+    let _ = writeln!(out, "ApplyLookTable=true");
+    let _ = writeln!(out, "ApplyBaselineExposureOffset=true");
+    let _ = writeln!(out, "ApplyHueSatMap=true");
+    let _ = writeln!(out, "DCPIlluminant=0");
     let _ = writeln!(out);
     out
 }
@@ -287,6 +308,23 @@ mod tests {
             text,
             "[Exposure]\nAuto=false\nHistogramMatching=true\nCurveFromHistogramMatching=false\n\n"
         );
+    }
+
+    #[test]
+    fn dcp_profile_uses_canonical_rawtherapee_path_and_adobe_tone() {
+        let text = rawtherapee_dcp_profile_text(Path::new(
+            "/wine/ProgramData/Adobe/CameraRaw/CameraProfiles/Adobe Standard/Nikon Z 7 2 Adobe Standard.dcp",
+        ));
+
+        assert!(text.contains(
+            "InputProfile=file:/wine/ProgramData/Adobe/CameraRaw/CameraProfiles/Adobe Standard/Nikon Z 7 2 Adobe Standard.dcp\n"
+        ));
+        assert!(text.contains("ToneCurve=true\n"));
+        assert!(text.contains("ApplyLookTable=true\n"));
+        assert!(text.contains("ApplyBaselineExposureOffset=true\n"));
+        assert!(text.contains("ApplyHueSatMap=true\n"));
+        assert!(text.contains("DCPIlluminant=0\n"));
+        assert!(!text.contains("HistogramMatching"));
     }
 
     #[test]

@@ -2673,6 +2673,10 @@ function currentCodexStateText(image) {
 
 function renderProfileStateSummary(image, selected, selectedState, previewNote, codexState, hideProfiles) {
   const selectedName = !hideProfiles && selected ? profileDisplayName(selected) : "";
+  const dcpFilename =
+    selected?.status === "done" && typeof selected.dcp_profile_filename === "string"
+      ? selected.dcp_profile_filename.trim()
+      : "";
   if (isDirectCompressedImage(image) || !selectedName) {
     els.profileState.textContent = `${selectedState?.text || ""}${codexState ? ` | ${codexState}` : ""}`.trim();
     return;
@@ -2691,6 +2695,16 @@ function renderProfileStateSummary(image, selected, selectedState, previewNote, 
         },
         selectedName,
       ),
+      dcpFilename
+        ? h(
+            "span",
+            {
+              title: dcpFilename,
+              "aria-label": `DCP used: ${dcpFilename}`,
+            },
+            "DCP used",
+          )
+        : null,
       selected.bw_filter_eligible ? h(BwFilterControls, { image, profile: selected }) : null,
       `: ${suffix}`,
     ),

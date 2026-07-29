@@ -162,6 +162,7 @@ struct DaemonFileResult {
     output: PathBuf,
     duration: Duration,
     profile_index: Option<usize>,
+    dcp_profile_filename: Option<String>,
     error: Option<String>,
     lens_profile_status: String,
     sharpening_status: String,
@@ -198,6 +199,7 @@ impl Clone for DaemonFileResult {
             output: self.output.clone(),
             duration: self.duration,
             profile_index: self.profile_index,
+            dcp_profile_filename: self.dcp_profile_filename.clone(),
             error: self.error.clone(),
             lens_profile_status: self.lens_profile_status.clone(),
             sharpening_status: self.sharpening_status.clone(),
@@ -756,11 +758,12 @@ pub(crate) fn run_batch_daemon(mut args: BatchDaemonArgs) -> Result<()> {
                                     error,
                                 );
                             } else {
-                                let _ = review.record_profile_done(
+                                let _ = review.record_profile_done_with_dcp(
                                     &result.raw,
                                     profile_index,
                                     &result.output,
                                     result.duration,
+                                    result.dcp_profile_filename.as_deref(),
                                 );
                             }
                         }
@@ -817,6 +820,7 @@ pub(crate) fn run_batch_daemon(mut args: BatchDaemonArgs) -> Result<()> {
                         DaemonTaskKind::SoocSidecar { .. } => Some(SOOC_PROFILE_INDEX),
                         DaemonTaskKind::StandaloneCompressed => None,
                     },
+                    dcp_profile_filename: None,
                     error: Some("worker thread panicked".to_string()),
                     lens_profile_status: lens_profile_status(LensCorrections::default(), false),
                     sharpening_status: sharpening_status(false),
@@ -1232,8 +1236,7 @@ fn resolve_daemon_profiles(args: &BatchDaemonArgs, temp_dir: &Path) -> Result<Ve
                     selector: String::new(),
                     stem: String::new(),
                     resolved: neutral_profile(),
-                    profile_report: "No profile configured; RawTherapee defaults are used."
-                        .to_string(),
+                    profile_report: "No profile configured; matching Adobe Standard DCPs are used when available, otherwise RawTherapee defaults are used.".to_string(),
                 }]
             } else {
                 profiles
@@ -1525,6 +1528,7 @@ fn process_single_profile(
                 output: PathBuf::new(),
                 duration: Duration::ZERO,
                 profile_index: Some(profile_index as usize),
+                dcp_profile_filename: None,
                 error: Some(error.to_string()),
                 lens_profile_status: daemon_input_lens_status(raw, args.lens_corrections, false),
                 sharpening_status: sharpening_status(false),
@@ -1538,6 +1542,7 @@ fn process_single_profile(
             output,
             duration: Duration::ZERO,
             profile_index: Some(profile_index as usize),
+            dcp_profile_filename: None,
             error: None,
             lens_profile_status: daemon_input_lens_status(raw, args.lens_corrections, false),
             sharpening_status: sharpening_status(false),
@@ -1553,6 +1558,7 @@ fn process_single_profile(
             output,
             duration: Duration::ZERO,
             profile_index: Some(profile_index as usize),
+            dcp_profile_filename: None,
             error: Some(error.to_string()),
             lens_profile_status: daemon_input_lens_status(raw, args.lens_corrections, false),
             sharpening_status: sharpening_status(false),
@@ -1568,6 +1574,7 @@ fn process_single_profile(
                 output,
                 duration: Duration::ZERO,
                 profile_index: Some(profile_index as usize),
+                dcp_profile_filename: None,
                 error: Some(error.to_string()),
                 lens_profile_status: daemon_input_lens_status(raw, args.lens_corrections, false),
                 sharpening_status: sharpening_status(false),
@@ -1586,6 +1593,7 @@ fn process_single_profile(
                     output,
                     duration: Duration::ZERO,
                     profile_index: Some(profile_index as usize),
+                    dcp_profile_filename: None,
                     error: Some(error.to_string()),
                     lens_profile_status: daemon_input_lens_status(
                         raw,
@@ -1653,6 +1661,7 @@ fn process_single_profile(
                 output,
                 duration: file_start.elapsed(),
                 profile_index: Some(profile_index as usize),
+                dcp_profile_filename: None,
                 error: Some(error.to_string()),
                 lens_profile_status: daemon_input_lens_status(raw, args.lens_corrections, false),
                 sharpening_status: sharpening_status(false),
@@ -1660,6 +1669,7 @@ fn process_single_profile(
             };
         }
     };
+    let dcp_profile_filename = apply_outcome.dcp_profile_filename;
     let canonical_raw = apply_outcome
         .replacement
         .map_or(apply_outcome.source_path, |replacement| {
@@ -1673,6 +1683,7 @@ fn process_single_profile(
             output,
             duration: file_start.elapsed(),
             profile_index: Some(profile_index as usize),
+            dcp_profile_filename: None,
             error: Some(error.to_string()),
             lens_profile_status: daemon_input_lens_status(raw, args.lens_corrections, false),
             sharpening_status: sharpening_status(false),
@@ -1698,6 +1709,7 @@ fn process_single_profile(
         output,
         duration: file_start.elapsed(),
         profile_index: Some(profile_index as usize),
+        dcp_profile_filename,
         error: None,
         lens_profile_status: daemon_input_lens_status(raw, args.lens_corrections, true),
         sharpening_status: sharpening_status(sharpening_applied),
@@ -1777,6 +1789,7 @@ fn process_single_compressed(
                 output: PathBuf::new(),
                 duration: Duration::ZERO,
                 profile_index: None,
+                dcp_profile_filename: None,
                 error: Some(error.to_string()),
                 lens_profile_status: "lens-profile: skipped (compressed input)".to_string(),
                 sharpening_status: sharpening_status(false),
@@ -1793,6 +1806,7 @@ fn process_single_compressed(
             output,
             duration: Duration::ZERO,
             profile_index: None,
+            dcp_profile_filename: None,
             error: Some(error.to_string()),
             lens_profile_status: "lens-profile: skipped (compressed input)".to_string(),
             sharpening_status: sharpening_status(false),
@@ -1810,6 +1824,7 @@ fn process_single_compressed(
             output,
             duration: file_start.elapsed(),
             profile_index: None,
+            dcp_profile_filename: None,
             error: Some(error.to_string()),
             lens_profile_status: "lens-profile: skipped (compressed input)".to_string(),
             sharpening_status: sharpening_status(false),
@@ -1828,6 +1843,7 @@ fn process_single_compressed(
         output,
         duration: file_start.elapsed(),
         profile_index: None,
+        dcp_profile_filename: None,
         error: None,
         lens_profile_status: "lens-profile: skipped (compressed input)".to_string(),
         sharpening_status: sharpening_status(false),
@@ -1851,6 +1867,7 @@ fn process_single_sooc(
                 output: PathBuf::new(),
                 duration: Duration::ZERO,
                 profile_index: Some(SOOC_PROFILE_INDEX),
+                dcp_profile_filename: None,
                 error: Some(error.to_string()),
                 lens_profile_status: "lens-profile: skipped (sooc sidecar)".to_string(),
                 sharpening_status: sharpening_status(false),
@@ -1865,6 +1882,7 @@ fn process_single_sooc(
             output,
             duration: Duration::ZERO,
             profile_index: Some(SOOC_PROFILE_INDEX),
+            dcp_profile_filename: None,
             error: None,
             lens_profile_status: "lens-profile: skipped (sooc sidecar)".to_string(),
             sharpening_status: sharpening_status(false),
@@ -1880,6 +1898,7 @@ fn process_single_sooc(
             output,
             duration: Duration::ZERO,
             profile_index: Some(SOOC_PROFILE_INDEX),
+            dcp_profile_filename: None,
             error: Some(error.to_string()),
             lens_profile_status: "lens-profile: skipped (sooc sidecar)".to_string(),
             sharpening_status: sharpening_status(false),
@@ -1897,6 +1916,7 @@ fn process_single_sooc(
             output,
             duration: file_start.elapsed(),
             profile_index: Some(SOOC_PROFILE_INDEX),
+            dcp_profile_filename: None,
             error: Some(error.to_string()),
             lens_profile_status: "lens-profile: skipped (sooc sidecar)".to_string(),
             sharpening_status: sharpening_status(false),
@@ -1914,6 +1934,7 @@ fn process_single_sooc(
         output,
         duration: file_start.elapsed(),
         profile_index: Some(SOOC_PROFILE_INDEX),
+        dcp_profile_filename: None,
         error: None,
         lens_profile_status: "lens-profile: skipped (sooc sidecar)".to_string(),
         sharpening_status: sharpening_status(false),
@@ -2438,6 +2459,7 @@ mod tests {
                 output,
                 duration: Duration::from_millis(100),
                 profile_index: Some(0),
+                dcp_profile_filename: None,
                 error: None,
                 lens_profile_status: lens_profile_status(LensCorrections::default(), false),
                 sharpening_status: sharpening_status(false),
@@ -2570,6 +2592,7 @@ mod tests {
                 output: PathBuf::from("/out/day/Portra 400 grainy/DSC_0001.jpg"),
                 duration: Duration::from_millis(120),
                 profile_index: Some(0),
+                dcp_profile_filename: None,
                 error: None,
                 lens_profile_status: lens_profile_status(LensCorrections::default(), true),
                 sharpening_status: sharpening_status(false),

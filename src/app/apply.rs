@@ -17,6 +17,7 @@ use mini_film::{
 use sha1::{Digest, Sha1};
 use tempfile::Builder;
 
+use crate::app::dcp::{DcpProfile, resolve_dcp_profile};
 use crate::app::dng::{DngFallbackConfig, PreparedRawSource, RawSourceReplacement};
 use crate::app::export::{
     add_convert_thread_limit, finalize_auto_oriented_output_with_retouch,
@@ -24,7 +25,8 @@ use crate::app::export::{
 };
 use crate::app::pp3::{
     write_rawtherapee_auto_matched_curve_profile, write_rawtherapee_color_noise_profile,
-    write_rawtherapee_disable_sharpening_profile, write_rawtherapee_lens_corrections_profile,
+    write_rawtherapee_dcp_profile, write_rawtherapee_disable_sharpening_profile,
+    write_rawtherapee_lens_corrections_profile,
 };
 use crate::app::profile::{ResolvedProfile, normalize_name, resolve_profile};
 use crate::app::progress::{
@@ -96,6 +98,7 @@ pub(crate) struct ApplyJob<'a> {
 pub(crate) struct ApplyOutcome {
     pub(crate) source_path: PathBuf,
     pub(crate) replacement: Option<RawSourceReplacement>,
+    pub(crate) dcp_profile_filename: Option<String>,
 }
 
 pub(crate) struct RawTherapeeProfileOptions<'a> {
@@ -105,6 +108,7 @@ pub(crate) struct RawTherapeeProfileOptions<'a> {
     pub(crate) bw_filter: BwFilter,
     pub(crate) color_noise_iso_threshold: u32,
     pub(crate) lens_corrections: LensCorrections,
+    pub(crate) dcp_profile: Option<&'a DcpProfile>,
 }
 
 pub(crate) struct CompressedApplyJob<'a> {
@@ -232,10 +236,18 @@ pub(crate) fn run_apply(args: ApplyArgs) -> Result<()> {
         Ok(_) => file.finish_and_clear(),
         Err(_) => file.abandon_with_message("failed"),
     }
-    result?;
+    let outcome = result?;
 
     if args.profile.is_none() {
-        eprintln!("wrote {} using RawTherapee defaults", args.output.display());
+        if let Some(dcp_profile_filename) = outcome.dcp_profile_filename {
+            eprintln!(
+                "wrote {} using Adobe DCP {}",
+                args.output.display(),
+                dcp_profile_filename
+            );
+        } else {
+            eprintln!("wrote {} using RawTherapee defaults", args.output.display());
+        }
     } else if let Some(hald_path) = &resolved.hald_path {
         eprintln!(
             "wrote {} using {}",
@@ -359,6 +371,9 @@ pub(crate) fn apply_resolved(
     let prepared_input = prepare_profile_input(&job, temp_dir, progress)?;
     let develop_input = prepared_input.as_deref().unwrap_or(&canonical_input);
     let raw_input = is_raw_input_file(&canonical_input);
+    let dcp_profile = raw_input
+        .then(|| resolve_dcp_profile(&canonical_input, job.dng_fallback))
+        .flatten();
 
     let grain_enabled = !job.no_grain && resolved.grain.is_enabled();
     let output_ext = output_ext(job.output)?;
@@ -384,6 +399,7 @@ pub(crate) fn apply_resolved(
             bw_filter: job.bw_filter,
             color_noise_iso_threshold: job.color_noise_iso_threshold,
             lens_corrections: job.lens_corrections,
+            dcp_profile: dcp_profile.as_ref(),
         },
         resolved,
         temp_dir,
@@ -597,6 +613,7 @@ pub(crate) fn apply_resolved(
     Ok(ApplyOutcome {
         source_path: raw_source.active().to_path_buf(),
         replacement: raw_source.replacement(),
+        dcp_profile_filename: dcp_profile.map(|profile| profile.filename),
     })
 }
 
@@ -821,7 +838,18 @@ pub(crate) fn rawtherapee_profiles_for_input(
     )?;
     let profiles =
         with_optional_lens_corrections_profile(&profiles, temp_dir, options.lens_corrections)?;
-    with_auto_matched_curve_profile(&profiles, temp_dir)
+    if is_raw_input_file(options.input)
+        && let Some(dcp_profile) = options.dcp_profile
+    {
+        let mut profiles = profiles;
+        profiles.push(write_rawtherapee_dcp_profile(
+            &temp_dir.join("adobe-dcp.pp3"),
+            &dcp_profile.path,
+        )?);
+        Ok(profiles)
+    } else {
+        with_auto_matched_curve_profile(&profiles, temp_dir)
+    }
 }
 
 pub(crate) fn rawtherapee_profile_chain_text(profiles: &[PathBuf]) -> Result<String> {
@@ -1116,6 +1144,7 @@ mod tests {
                     bw_filter: BwFilter::None,
                     color_noise_iso_threshold: 0,
                     lens_corrections: LensCorrections::default(),
+                    dcp_profile: None,
                 },
                 &resolved,
                 temp.path(),
@@ -1140,6 +1169,7 @@ mod tests {
                 bw_filter: BwFilter::None,
                 color_noise_iso_threshold: 0,
                 lens_corrections: LensCorrections::default(),
+                dcp_profile: None,
             },
             &resolved,
             temp.path(),
@@ -1157,12 +1187,71 @@ mod tests {
                 bw_filter: BwFilter::None,
                 color_noise_iso_threshold: 0,
                 lens_corrections: LensCorrections::default(),
+                dcp_profile: None,
             },
             &resolved,
             temp.path(),
         )
         .unwrap();
         assert_eq!(tiff_profiles, [source]);
+    }
+
+    #[test]
+    fn matched_dcp_replaces_histogram_curve_for_raw_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let dcp_path = temp.path().join("Nikon Z 7 2 Adobe Standard.dcp");
+        fs::write(&dcp_path, b"dcp").unwrap();
+        let dcp_profile = DcpProfile {
+            path: dcp_path.clone(),
+            filename: "Nikon Z 7 2 Adobe Standard.dcp".to_string(),
+            fingerprint: "test".to_string(),
+        };
+        let resolved = resolved_profile(GrainSettings::default(), None);
+
+        let raw_profiles = rawtherapee_profiles_for_input(
+            RawTherapeeProfileOptions {
+                input: Path::new("frame.NEF"),
+                retouch: None,
+                retouch_white_balance: RetouchWhiteBalance::default(),
+                bw_filter: BwFilter::None,
+                color_noise_iso_threshold: 0,
+                lens_corrections: LensCorrections::default(),
+                dcp_profile: Some(&dcp_profile),
+            },
+            &resolved,
+            temp.path(),
+        )
+        .unwrap();
+        assert!(raw_profiles.iter().any(|profile| {
+            profile.file_name().and_then(|name| name.to_str()) == Some("adobe-dcp.pp3")
+        }));
+        assert!(raw_profiles.iter().all(|profile| {
+            profile.file_name().and_then(|name| name.to_str()) != Some("auto-matched-curve.pp3")
+        }));
+        let dcp_text = fs::read_to_string(raw_profiles.last().unwrap()).unwrap();
+        assert!(dcp_text.contains(&format!("InputProfile=file:{}", dcp_path.display())));
+        assert!(dcp_text.contains("ToneCurve=true\n"));
+        assert!(!dcp_text.contains("HistogramMatching"));
+
+        for input in ["frame.jpg", "frame.tiff", "frame.heic"] {
+            let profiles = rawtherapee_profiles_for_input(
+                RawTherapeeProfileOptions {
+                    input: Path::new(input),
+                    retouch: None,
+                    retouch_white_balance: RetouchWhiteBalance::default(),
+                    bw_filter: BwFilter::None,
+                    color_noise_iso_threshold: 0,
+                    lens_corrections: LensCorrections::default(),
+                    dcp_profile: Some(&dcp_profile),
+                },
+                &resolved,
+                temp.path(),
+            )
+            .unwrap();
+            assert!(profiles.iter().all(|profile| {
+                profile.file_name().and_then(|name| name.to_str()) != Some("adobe-dcp.pp3")
+            }));
+        }
     }
 
     #[test]

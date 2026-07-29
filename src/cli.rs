@@ -140,7 +140,7 @@ pub(crate) enum CommandKind {
         output: PathBuf,
 
         /// Optional profile selector: Hald PNG path/name, emulation XMP path/name, or RawTherapee PP3 path.
-        /// If omitted, RawTherapee develops RAW inputs with its defaults while JPEG/HEIC/TIFF inputs are converted directly.
+        /// If omitted, RAW inputs use a matching Adobe Standard DCP when available and otherwise use RawTherapee defaults; JPEG/HEIC/TIFF inputs are converted directly.
         /// With a profile, JPEG/TIFF are processed directly by RawTherapee and HEIC is prepared as a 16-bit TIFF first.
         #[arg(short, long)]
         profile: Option<String>,
@@ -562,7 +562,7 @@ pub(crate) enum CommandKind {
         output: PathBuf,
 
         /// Profile selectors to apply to each incoming RAW or standalone JPEG/HEIC/TIFF. Repeat for each profile.
-        /// If omitted, each RAW is developed once with RawTherapee defaults and compressed inputs are converted directly.
+        /// If omitted, each RAW uses a matching Adobe Standard DCP when available and otherwise uses RawTherapee defaults; compressed inputs are converted directly.
         #[arg(short = 'p', long = "profile")]
         profile: Vec<String>,
 

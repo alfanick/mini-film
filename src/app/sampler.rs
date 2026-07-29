@@ -24,11 +24,13 @@ use sha1::{Digest, Sha1};
 use tempfile::Builder;
 use walkdir::WalkDir;
 
+use crate::app::dcp::{DcpProfile, resolve_dcp_profile};
 use crate::app::dng::DngFallbackConfig;
 use crate::app::export::{add_convert_thread_limit, finalize_output, output_ext};
 use crate::app::pp3::{
     RAW_RENDER_PIPELINE_KEY, write_rawtherapee_auto_matched_curve_profile,
-    write_rawtherapee_color_noise_profile, write_rawtherapee_lens_corrections_profile,
+    write_rawtherapee_color_noise_profile, write_rawtherapee_dcp_profile,
+    write_rawtherapee_lens_corrections_profile,
 };
 use crate::app::profile::{profile_from_xmp_quiet, rawtherapee_profiles_with_hald};
 use crate::app::progress::{
@@ -119,6 +121,7 @@ struct SamplerProgress {
 struct ThumbnailCache {
     dir: PathBuf,
     raw_sha1: String,
+    dcp_identity: String,
 }
 
 struct ProfileRenderContext<'a> {
@@ -129,6 +132,7 @@ struct ProfileRenderContext<'a> {
     base_seed: u64,
     export: &'a ExportOptions,
     cache: Option<&'a ThumbnailCache>,
+    dcp_profile: Option<&'a DcpProfile>,
     progress: &'a SamplerProgress,
 }
 
@@ -149,6 +153,7 @@ struct StructuredSheetContext<'a> {
     jpg_quality: u8,
     jpeg_subsampling: JpegSubsampling,
     progressive_jpeg: bool,
+    dcp_profile: Option<&'a DcpProfile>,
 }
 
 struct SamplerSidecarContext<'a> {
@@ -158,6 +163,7 @@ struct SamplerSidecarContext<'a> {
     hald_dir: &'a Path,
     color_noise_iso_threshold: u32,
     lens_corrections: LensCorrections,
+    dcp_profile: Option<&'a DcpProfile>,
 }
 
 /// Render a structured contact sheet showing every resolvable XMP profile.
@@ -173,6 +179,9 @@ pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
     validate_sampler_args(&args)?;
     let prepared_source = args.dng_fallback.prepare_known(&args.raw)?;
     args.raw = prepared_source.active().to_path_buf();
+    let dcp_profile = is_raw_input_file(&args.raw)
+        .then(|| resolve_dcp_profile(&args.raw, &args.dng_fallback))
+        .flatten();
     let jobs = resolve_sampler_jobs(args.jobs)?;
 
     let emulation_root = emulation_root(&args.profiles_root);
@@ -186,7 +195,10 @@ pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
     let cache = if args.no_cache {
         None
     } else {
-        Some(Arc::new(ThumbnailCache::new(&args.raw)?))
+        Some(Arc::new(ThumbnailCache::new(
+            &args.raw,
+            dcp_profile.as_ref(),
+        )?))
     };
     let export = ExportOptions {
         jpg_quality: args.jpg_quality,
@@ -250,6 +262,7 @@ pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
                         base_seed,
                         export: &export,
                         cache: cache.as_deref(),
+                        dcp_profile: dcp_profile.as_ref(),
                         progress: &progress,
                     };
                     let result = render_profile_thumbnail(&render_context, profile);
@@ -326,6 +339,7 @@ pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
         jpg_quality: args.jpg_quality,
         jpeg_subsampling: args.jpeg_subsampling,
         progressive_jpeg: args.progressive_jpeg,
+        dcp_profile: dcp_profile.as_ref(),
     };
     run_structured_sheet(&sheet_context)?;
     args.dng_fallback
@@ -362,11 +376,18 @@ fn validate_sampler_args(args: &SamplerArgs) -> Result<()> {
 }
 
 impl ThumbnailCache {
-    fn new(raw: &Path) -> Result<Self> {
+    fn new(raw: &Path, dcp_profile: Option<&DcpProfile>) -> Result<Self> {
         let raw_sha1 = sha1_file(raw).with_context(|| format!("hashing RAW {}", raw.display()))?;
         let dir = env::temp_dir().join("mini-film-sampler-cache");
         fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-        Ok(Self { dir, raw_sha1 })
+        let dcp_identity = dcp_profile
+            .map(DcpProfile::cache_identity)
+            .unwrap_or_else(|| "dcp-none".to_string());
+        Ok(Self {
+            dir,
+            raw_sha1,
+            dcp_identity,
+        })
     }
 
     fn path_for(&self, profile: &Path, args: &SamplerArgs) -> Result<PathBuf> {
@@ -397,10 +418,11 @@ impl ThumbnailCache {
             )
         };
         Ok(self.dir.join(format!(
-            "{}-{}-{}-l{}-{}px-lc{}-q{}-{}-{}-sg2-strip{}-prog{}.jpg",
+            "{}-{}-{}-{}-l{}-{}px-lc{}-q{}-{}-{}-sg2-strip{}-prog{}.jpg",
             self.raw_sha1,
             xmp_sha1,
             RAW_RENDER_PIPELINE_KEY,
+            self.dcp_identity,
             args.hald_level,
             args.thumbnail_long_edge,
             lens_corrections,
@@ -562,7 +584,11 @@ fn render_profile_thumbnail(
         &mut rawtherapee_profiles,
         &profile_temp,
     )?;
-    append_auto_matched_curve(&mut rawtherapee_profiles, &profile_temp)?;
+    append_dcp_or_auto_matched_curve(
+        &mut rawtherapee_profiles,
+        &profile_temp,
+        context.dcp_profile,
+    )?;
     rawtherapee_profiles.push(write_rawtherapee_resize_profile(
         &profile_temp.join("resize.pp3"),
         context.args.thumbnail_long_edge,
@@ -748,6 +774,22 @@ fn append_auto_matched_curve(
     Ok(())
 }
 
+fn append_dcp_or_auto_matched_curve(
+    rawtherapee_profiles: &mut Vec<PathBuf>,
+    temp_dir: &Path,
+    dcp_profile: Option<&DcpProfile>,
+) -> Result<()> {
+    if let Some(dcp_profile) = dcp_profile {
+        rawtherapee_profiles.push(write_rawtherapee_dcp_profile(
+            &temp_dir.join("adobe-dcp.pp3"),
+            &dcp_profile.path,
+        )?);
+        Ok(())
+    } else {
+        append_auto_matched_curve(rawtherapee_profiles, temp_dir)
+    }
+}
+
 fn append_color_noise_to_profiles(
     rawtherapee_profiles: Vec<PathBuf>,
     temp_dir: &Path,
@@ -766,15 +808,6 @@ fn append_lens_corrections_to_profiles(
 ) -> Result<Vec<PathBuf>> {
     let mut profiles = rawtherapee_profiles;
     append_lens_corrections_if_requested(lens_corrections, &mut profiles, temp_dir)?;
-    Ok(profiles)
-}
-
-fn append_auto_matched_curve_to_profiles(
-    rawtherapee_profiles: Vec<PathBuf>,
-    temp_dir: &Path,
-) -> Result<Vec<PathBuf>> {
-    let mut profiles = rawtherapee_profiles;
-    append_auto_matched_curve(&mut profiles, temp_dir)?;
     Ok(profiles)
 }
 
@@ -864,15 +897,7 @@ fn run_html_sheet(context: &StructuredSheetContext<'_>) -> Result<()> {
     let baseline_original = {
         let baseline_source = thumbnail_dir.join("original.jpg");
         let baseline_relative = PathBuf::from("thumbnails").join("original.jpg");
-        write_html_baseline_thumbnail(
-            context.rawtherapee,
-            context.dng_fallback,
-            context.convert,
-            context.raw,
-            &baseline_source,
-            context.jpg_quality,
-            context.jpeg_subsampling,
-        )?;
+        write_html_baseline_thumbnail(context, &baseline_source)?;
         baseline_relative
     };
 
@@ -921,6 +946,7 @@ fn run_html_sheet(context: &StructuredSheetContext<'_>) -> Result<()> {
                     hald_dir: context.hald_dir,
                     color_noise_iso_threshold: context.color_noise_iso_threshold,
                     lens_corrections: context.lens_corrections,
+                    dcp_profile: context.dcp_profile,
                 };
                 let hald = write_html_sampler_sidecars(profile, &sidecar_context, pp3_output)
                     .with_context(|| {
@@ -973,8 +999,12 @@ fn write_html_sampler_sidecars(
         temp_dir.path(),
         context.lens_corrections,
     )?;
-    let rawtherapee_profiles =
-        append_auto_matched_curve_to_profiles(rawtherapee_profiles, temp_dir.path())?;
+    let mut rawtherapee_profiles = rawtherapee_profiles;
+    append_dcp_or_auto_matched_curve(
+        &mut rawtherapee_profiles,
+        temp_dir.path(),
+        context.dcp_profile,
+    )?;
     let mut text = String::new();
     for profile in rawtherapee_profiles {
         text.push_str(
@@ -1030,45 +1060,37 @@ fn write_cached_progressive_html_thumbnail(
 }
 
 fn write_html_baseline_thumbnail(
-    rawtherapee: &Path,
-    dng_fallback: &DngFallbackConfig,
-    convert: &Path,
-    raw: &Path,
+    context: &StructuredSheetContext<'_>,
     destination: &Path,
-    jpg_quality: u8,
-    jpeg_subsampling: JpegSubsampling,
 ) -> Result<PathBuf> {
-    if destination.is_file() {
-        return Ok(destination.to_path_buf());
-    }
-
     let temp_dir = Builder::new()
         .prefix("mini-film-sampler-baseline-")
         .tempdir()?;
     let raw_source = temp_dir.path().join("raw-baseline.jpg");
-    let profiles = [write_rawtherapee_auto_matched_curve_profile(
-        &temp_dir.path().join("auto-matched-curve.pp3"),
-    )?];
-    let prepared_source = dng_fallback.prepare_known(raw)?;
+    let mut profiles = Vec::new();
+    append_dcp_or_auto_matched_curve(&mut profiles, temp_dir.path(), context.dcp_profile)?;
+    let prepared_source = context.dng_fallback.prepare_known(context.raw)?;
     let outcome = run_raw_develop_jpeg(
-        rawtherapee,
+        context.rawtherapee,
         &profiles,
         prepared_source,
         &raw_source,
-        jpg_quality,
-        jpeg_subsampling,
+        context.jpg_quality,
+        context.jpeg_subsampling,
         None,
         true,
-        dng_fallback,
+        context.dng_fallback,
     )?;
     write_cached_progressive_html_thumbnail(
-        convert,
+        context.convert,
         &raw_source,
         destination,
-        jpg_quality,
-        jpeg_subsampling,
+        context.jpg_quality,
+        context.jpeg_subsampling,
     )?;
-    dng_fallback.finish_successful_development(&outcome.source)?;
+    context
+        .dng_fallback
+        .finish_successful_development(&outcome.source)?;
     Ok(destination.to_path_buf())
 }
 
@@ -2465,7 +2487,7 @@ mod tests {
             dir.path().to_path_buf(),
             dir.path().join("hald"),
         );
-        let cache = ThumbnailCache::new(&raw).unwrap();
+        let cache = ThumbnailCache::new(&raw, None).unwrap();
         let cached = cache.path_for(&xmp, &args).unwrap();
         let name = cached.file_name().unwrap().to_string_lossy();
 

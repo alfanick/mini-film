@@ -76,10 +76,11 @@ Available shortcuts:
   review pipeline.
 - **Batch, sampler, and gallery output**: process whole folders, render profile
   sampler sheets, and generate modern static HTML galleries.
-- **RAW pipeline extras**: RawTherapee auto-matched camera tone curves,
-  deterministic film grain, optional high-ISO color denoise, optional
-  RawTherapee lens corrections, metadata copyback with `exiftool`, 8-bit JPEG
-  output, and 16-bit Zip-compressed TIFF output.
+- **RAW pipeline extras**: automatic Adobe Standard DCP matching with
+  RawTherapee histogram-matched tone fallback, deterministic film grain,
+  optional high-ISO color denoise, optional RawTherapee lens corrections,
+  metadata copyback with `exiftool`, 8-bit JPEG output, and 16-bit
+  Zip-compressed TIFF output.
 
 ## Profile Library
 
@@ -213,6 +214,23 @@ looks for Adobe DNG Converter in `~/.wine-dng-mini-film`, `~/.wine`, and other
 discovery with `--adobe-dng-converter`, `--wine`, and `--wine-prefix`, or with
 `MINI_FILM_ADOBE_DNG_CONVERTER`, `MINI_FILM_WINE`, and
 `MINI_FILM_WINE_PREFIX`.
+
+When that Wine prefix contains
+`drive_c/ProgramData/Adobe/CameraRaw/CameraProfiles/Adobe Standard`, mini-film
+automatically indexes those DCPs for RAW development. It matches source EXIF
+against each DCP's internal `UniqueCameraModel`, normalizing case and separators
+so Nikon EXIF `NIKON Z 7_2` matches Adobe's `Nikon Z 7 2`. Only profiles whose
+internal name is `Adobe Standard` or `Adobe Standard vN` are eligible; the
+highest version wins, while `Camera Default` and creative `Camera/` styles are
+ignored. Missing, unreadable, unmatched, or ambiguous catalogs are a quiet
+fallback.
+
+A matched RAW uses the Adobe DCP as RawTherapee's input profile, including its
+tone, look table, baseline exposure, and hue/saturation map with interpolated
+illumination. In that case mini-film does not add histogram matching. Without a
+match, the existing RawTherapee histogram-matched curve remains active. This is
+automatic with no DCP flag. DCP profiles are never applied to JPEG, HEIC, or
+TIFF inputs.
 
 The fallback writes a same-stem `.dng` beside the source through a hidden
 staging directory, verifies its lossless compression, raw-image digest, DNG
@@ -717,13 +735,16 @@ black-and-white filter choices are stored per picture/profile variant and are
 used by review and publish rerenders. Generated retouch and black-and-white
 filter variants are cached under `<cache-root>/.mini-film-retouch/` so returning
 to an already rendered variant swaps immediately.
+When a completed RAW render used an Adobe DCP, `DCP used` appears beside the
+selected profile name; hover it to see the exact DCP filename recorded for that
+render.
 Click the selected profile name to open the film simulation info overlay; it
 shows profile identity, camera Active D-Lighting metadata for the current RAW,
 and a compact summary of generated or direct PP3 adjustment sections. Its
 collapsible `Complete PP3` section shows and downloads every PP3 layer applied
 to that picture/profile in RawTherapee command-line order, including generated
-retouch, black-and-white filter, ISO denoise, lens correction, and auto-matched
-curve adjustments when active.
+retouch, black-and-white filter, ISO denoise, lens correction, and either the
+matched Adobe DCP or auto-matched curve adjustment when active.
 
 The Sampler tool is shown when the configured profile library contains XMPs
 under `emulations/`. It prepares one reusable, auto-oriented 512-pixel 16-bit
@@ -748,8 +769,8 @@ setting is locked. Sampler-added profiles and both availability scopes are
 stored in SQLite, survive daemon restarts even when omitted from later CLI
 arguments, and use the ordinary full-resolution render path after selection.
 Reusable inputs and thumbnails live under
-`<cache-root>/.mini-film-sampler/review-sampler-v1/`; review HTML, CSS, and JavaScript
-remain embedded in the single executable.
+`<cache-root>/.mini-film-sampler/review-sampler-v2-adobe-dcp/`; review HTML,
+CSS, and JavaScript remain embedded in the single executable.
 
 Optional Codex analysis can run after each image has a review preview and its
 configured renders have finished. RAW inputs use the embedded camera preview;

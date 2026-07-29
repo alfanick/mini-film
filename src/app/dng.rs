@@ -20,6 +20,8 @@ const ADOBE_DNG_CONVERTER_RELATIVE_PATHS: &[&str] = &[
     "drive_c/Program Files/Adobe/Adobe DNG Converter/Adobe DNG Converter.exe",
     "drive_c/Program Files (x86)/Adobe/Adobe DNG Converter/Adobe DNG Converter.exe",
 ];
+const ADOBE_STANDARD_DCP_RELATIVE_PATH: &str =
+    "drive_c/ProgramData/Adobe/CameraRaw/CameraProfiles/Adobe Standard";
 const DNG_LOCK_STALE_AFTER: Duration = Duration::from_secs(30 * 60);
 static GENERATED_DNGS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
 
@@ -106,6 +108,37 @@ impl DngFallbackConfig {
             wine_prefix,
             exiftool: PathBuf::from("exiftool"),
         }
+    }
+
+    pub(crate) fn adobe_standard_dcp_root(&self) -> Option<PathBuf> {
+        let explicit_prefix = self
+            .wine_prefix
+            .clone()
+            .or_else(|| nonempty_env_path("MINI_FILM_WINE_PREFIX"))
+            .or_else(|| nonempty_env_path("WINEPREFIX"));
+        if let Some(root) = explicit_prefix
+            .as_deref()
+            .and_then(adobe_standard_dcp_root_in_prefix)
+        {
+            return Some(root);
+        }
+
+        let explicit_converter = self
+            .converter
+            .clone()
+            .or_else(|| nonempty_env_path("MINI_FILM_ADOBE_DNG_CONVERTER"));
+        if let Some(root) = explicit_converter
+            .as_deref()
+            .and_then(wine_prefix_for_converter)
+            .as_deref()
+            .and_then(adobe_standard_dcp_root_in_prefix)
+        {
+            return Some(root);
+        }
+
+        default_wine_prefixes()
+            .into_iter()
+            .find_map(|prefix| adobe_standard_dcp_root_in_prefix(&prefix))
     }
 
     #[cfg(test)]
@@ -700,6 +733,13 @@ fn discover_converter(explicit_prefix: Option<&Path>) -> Option<PathBuf> {
     if let Some(converter) = explicit_prefix.and_then(converter_in_prefix) {
         return Some(converter);
     }
+    let prefixes = default_wine_prefixes();
+    prefixes
+        .into_iter()
+        .find_map(|prefix| converter_in_prefix(&prefix))
+}
+
+fn default_wine_prefixes() -> Vec<PathBuf> {
     let mut prefixes = Vec::new();
     if let Some(home) = nonempty_env_path("HOME") {
         prefixes.push(home.join(".wine-dng-mini-film"));
@@ -718,11 +758,13 @@ fn discover_converter(explicit_prefix: Option<&Path>) -> Option<PathBuf> {
             prefixes.extend(discovered);
         }
     }
-    prefixes.sort();
-    prefixes.dedup();
-    prefixes
-        .into_iter()
-        .find_map(|prefix| converter_in_prefix(&prefix))
+    let mut deduplicated = Vec::with_capacity(prefixes.len());
+    for prefix in prefixes {
+        if !deduplicated.contains(&prefix) {
+            deduplicated.push(prefix);
+        }
+    }
+    deduplicated
 }
 
 fn converter_in_prefix(prefix: &Path) -> Option<PathBuf> {
@@ -730,6 +772,11 @@ fn converter_in_prefix(prefix: &Path) -> Option<PathBuf> {
         .iter()
         .map(|relative| prefix.join(relative))
         .find(|candidate| candidate.is_file())
+}
+
+fn adobe_standard_dcp_root_in_prefix(prefix: &Path) -> Option<PathBuf> {
+    let root = prefix.join(ADOBE_STANDARD_DCP_RELATIVE_PATH);
+    root.is_dir().then_some(root)
 }
 
 fn wine_prefix_for_converter(converter: &Path) -> Option<PathBuf> {

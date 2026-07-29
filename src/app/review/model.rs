@@ -803,6 +803,8 @@ pub(super) struct ReviewProfileRender {
     #[serde(default)]
     pub(super) processing_key: Option<String>,
     #[serde(default)]
+    pub(super) dcp_profile_filename: Option<String>,
+    #[serde(default)]
     pub(super) width: Option<u32>,
     #[serde(default)]
     pub(super) height: Option<u32>,

@@ -799,6 +799,7 @@ where
             duration_ms: optional_i64(row.duration_ms, "profile render duration", i64_to_u64)?,
             render_key: row.render_key,
             processing_key: row.processing_key,
+            dcp_profile_filename: row.dcp_profile_filename,
             width: optional_i64(row.width, "profile render width", i64_to_u32)?,
             height: optional_i64(row.height, "profile render height", i64_to_u32)?,
             updated_at: row.updated_at,

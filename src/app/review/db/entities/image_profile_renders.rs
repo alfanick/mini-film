@@ -31,6 +31,8 @@ pub struct Model {
     pub updated_at: String,
     #[sea_orm(column_type = "Text", nullable)]
     pub processing_key: Option<String>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub dcp_profile_filename: Option<String>,
     #[sea_orm(
         belongs_to,
         from = "image_id",

@@ -5,6 +5,7 @@ pub(crate) mod batch_assets;
 pub(crate) mod batch_daemon;
 pub(crate) mod cache;
 pub(crate) mod codex;
+pub(crate) mod dcp;
 pub(crate) mod desktop;
 pub(crate) mod dng;
 pub(crate) mod export;

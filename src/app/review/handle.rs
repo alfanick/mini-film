@@ -1338,6 +1338,7 @@ impl ReviewHandle {
             render.render_key = render_key;
             render.processing_key =
                 Some(review_render_processing_key_for_input(raw, profile_index).to_string());
+            render.dcp_profile_filename = None;
             render.width = None;
             render.height = None;
             render.updated_at = now_string();
@@ -1369,7 +1370,7 @@ impl ReviewHandle {
                 return false;
             };
             render.profile_index == profile_index
-                && render.processing_key.as_deref()
+                && render.processing_key
                     == Some(review_render_processing_key_for_input(raw, profile_index))
                 && output.is_file()
                 && retouch_base_output(output, &self.output_root, &self.cache_root)
@@ -1390,6 +1391,7 @@ impl ReviewHandle {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn record_profile_done(
         &self,
         raw: &Path,
@@ -1397,8 +1399,20 @@ impl ReviewHandle {
         output: &Path,
         duration: Duration,
     ) -> Result<()> {
+        self.record_profile_done_with_dcp(raw, profile_index, output, duration, None)
+    }
+
+    pub(crate) fn record_profile_done_with_dcp(
+        &self,
+        raw: &Path,
+        profile_index: usize,
+        output: &Path,
+        duration: Duration,
+        dcp_profile_filename: Option<&str>,
+    ) -> Result<()> {
         let mut pending_retouch_key = None;
         let result = self.update_render(raw, profile_index, |render| {
+            render.dcp_profile_filename = dcp_profile_filename.map(str::to_string);
             pending_retouch_key = apply_base_render_done(render, output, duration);
             if let Some(render_key) = pending_retouch_key.as_deref()
                 && apply_cached_profile_output(
@@ -1452,6 +1466,7 @@ impl ReviewHandle {
             }
             render.error = Some(error.to_string());
             render.duration_ms = Some(duration.as_millis() as u64);
+            render.dcp_profile_filename = None;
         });
         if result.is_ok() {
             self.maybe_schedule_codex_for_raw(raw)?;
@@ -2770,6 +2785,7 @@ impl ReviewHandle {
                             "width": render.width,
                             "height": render.height,
                             "retouch_pending": render.render_key.is_some(),
+                            "dcp_profile_filename": render.dcp_profile_filename,
                             "bw_filter_eligible": bw_filter_eligible,
                             "bw_filter": bw_filter,
                             "updated_at": render.updated_at,
@@ -3073,6 +3089,9 @@ impl ReviewHandle {
             bw_filter: effective_bw_filter_for_profile(image, profile),
         };
         let resolved = resolve_profile(&apply_args, temp_dir.path())?;
+        let dcp_profile = is_raw_input_file(&input)
+            .then(|| resolve_dcp_profile(&input, &self.dng_fallback))
+            .flatten();
         let profiles = rawtherapee_profiles_for_input(
             RawTherapeeProfileOptions {
                 input: &input,
@@ -3081,6 +3100,7 @@ impl ReviewHandle {
                 bw_filter: effective_bw_filter_for_profile(image, profile),
                 color_noise_iso_threshold: self.color_noise_iso_threshold,
                 lens_corrections: self.lens_corrections,
+                dcp_profile: dcp_profile.as_ref(),
             },
             &resolved,
             temp_dir.path(),

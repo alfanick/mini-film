@@ -26,7 +26,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const REVIEW_SAMPLER_CACHE_VERSION: &str = "review-sampler-v1";
+const REVIEW_SAMPLER_CACHE_VERSION: &str = "review-sampler-v2-adobe-dcp";
 const REVIEW_SAMPLER_LONG_EDGE: u32 = 512;
 const REVIEW_SAMPLER_JPEG_QUALITY: u8 = 85;
 
@@ -611,6 +611,7 @@ impl ReviewHandle {
         let (developed, converted_source) = if is_raw_input_file(source) {
             let prepared_source = self.dng_fallback.prepare_known(source)?;
             let active_source = prepared_source.active();
+            let dcp_profile = resolve_dcp_profile(active_source, &self.dng_fallback);
             let developed = work.path().join("neutral.tif");
             let neutral = neutral_profile();
             let mut profiles = rawtherapee_profiles_for_input(
@@ -621,6 +622,7 @@ impl ReviewHandle {
                     bw_filter: BwFilter::None,
                     color_noise_iso_threshold: self.color_noise_iso_threshold,
                     lens_corrections: self.lens_corrections,
+                    dcp_profile: dcp_profile.as_ref(),
                 },
                 &neutral,
                 work.path(),
@@ -980,6 +982,7 @@ fn sampler_source_digest(handle: &ReviewHandle, source: &Path) -> Result<String>
     hasher.update(REVIEW_SAMPLER_LONG_EDGE.to_le_bytes());
     hasher.update(handle.color_noise_iso_threshold.to_le_bytes());
     hasher.update(format!("{:?}", handle.lens_corrections));
+    hasher.update(dcp_cache_identity(source, &handle.dng_fallback));
     hash_file_into(&mut hasher, source)?;
     Ok(hex_digest(hasher.finalize()))
 }

@@ -143,6 +143,7 @@ fn fully_populated_review_store() -> ReviewStore {
         duration_ms: Some(987),
         render_key: Some("render-key".to_string()),
         processing_key: Some("processing-key".to_string()),
+        dcp_profile_filename: Some("Nikon Z 7 2 Adobe Standard.dcp".to_string()),
         width: Some(4096),
         height: Some(2731),
         updated_at: timestamp.clone(),
@@ -573,6 +574,7 @@ fn profile_render(index: usize, stem: &str) -> ReviewProfileRender {
         duration_ms: Some(1),
         render_key: None,
         processing_key: Some(review_render_processing_key(index).to_string()),
+        dcp_profile_filename: None,
         width: None,
         height: None,
         updated_at: now_string(),
@@ -726,12 +728,19 @@ fn review_state_defaults_to_first_profile_and_records_outputs() {
 
     handle.record_discovered_raw(&raw).unwrap();
     handle
-        .record_profile_done(&raw, 0, &rendered, Duration::from_millis(42))
+        .record_profile_done_with_dcp(
+            &raw,
+            0,
+            &rendered,
+            Duration::from_millis(42),
+            Some("Nikon Z 7 2 Adobe Standard.dcp"),
+        )
         .unwrap();
     let text = handle.api_state_json().unwrap();
     assert!(text.contains("\"selected_profile_index\":0"));
     assert!(text.contains("\"publish_profile_indexes\":[0,1]"));
     assert!(text.contains("\"status\":\"done\""));
+    assert!(text.contains("\"dcp_profile_filename\":\"Nikon Z 7 2 Adobe Standard.dcp\""));
     assert!(text.contains("media/1/0"));
     let state = handle.api_state_value().unwrap();
     let base = &state["profiles"][0]["retouch_base"];
@@ -1149,10 +1158,7 @@ fn sync_profiles_invalidates_renders_from_old_processing_pipeline() {
     let render = &store.images[0].profiles[0];
     assert_eq!(render.status, ReviewRenderStatus::Missing);
     assert_eq!(render.output_path, None);
-    assert_eq!(
-        render.processing_key.as_deref(),
-        Some(review_render_processing_key(0))
-    );
+    assert_eq!(render.processing_key, Some(review_render_processing_key(0)));
 }
 
 #[test]
@@ -1165,7 +1171,7 @@ fn rendered_profile_processing_keys_track_input_sharpening_policy() {
     }
     assert_eq!(
         review_render_processing_key_for_input(Path::new("frame.NEF"), 0),
-        RAW_RENDER_PIPELINE_KEY
+        format!("{RAW_RENDER_PIPELINE_KEY}:dcp-none")
     );
     assert_eq!(
         review_render_processing_key_for_input(Path::new("frame.TIFF"), 0),
@@ -1335,7 +1341,7 @@ fn sqlite_restart_adds_profiles_to_compressed_images_without_losing_review_metad
     );
     assert_eq!(effective_publish_profile_indexes(image), vec![0, 1]);
     assert!(image.profiles.iter().all(|render| {
-        render.processing_key.as_deref()
+        render.processing_key
             == Some(review_render_processing_key_for_input(
                 &jpg,
                 render.profile_index,
@@ -1444,9 +1450,9 @@ fn review_state_seaorm_round_trips_every_normalized_collection() {
         serde_json::to_value(persisted_store(store)).unwrap()
     );
     let facts = database_facts(&state_path).unwrap();
-    assert_eq!(facts.schema_version, 19);
+    assert_eq!(facts.schema_version, 20);
     assert!(facts.has_seaql_ledger);
-    assert_eq!(facts.seaql_migration_count, 8);
+    assert_eq!(facts.seaql_migration_count, 9);
     assert_eq!(
         facts.seaql_migrations,
         [
@@ -1458,6 +1464,7 @@ fn review_state_seaorm_round_trips_every_normalized_collection() {
             "m20260726_000006_cache_root",
             "m20260727_000007_auto_import",
             "m20260727_000008_retouch_contrast",
+            "m20260729_000009_dcp_provenance",
         ]
     );
     assert!(!facts.has_legacy_ledger);
@@ -1524,10 +1531,10 @@ fn normalized_v11_database_is_backed_up_and_adopted_losslessly_once() {
     let backup_bytes = fs::read(&backup_path).unwrap();
 
     let after_facts = database_facts(&state_path).unwrap();
-    assert_eq!(after_facts.schema_version, 19);
+    assert_eq!(after_facts.schema_version, 20);
     assert!(!after_facts.has_legacy_ledger);
     assert!(after_facts.has_seaql_ledger);
-    assert_eq!(after_facts.seaql_migration_count, 8);
+    assert_eq!(after_facts.seaql_migration_count, 9);
     assert_eq!(
         after_facts.seaql_migrations,
         [
@@ -1539,6 +1546,7 @@ fn normalized_v11_database_is_backed_up_and_adopted_losslessly_once() {
             "m20260726_000006_cache_root",
             "m20260727_000007_auto_import",
             "m20260727_000008_retouch_contrast",
+            "m20260729_000009_dcp_provenance",
         ]
     );
     assert!(!after_facts.has_json_storage_columns);
@@ -1577,7 +1585,7 @@ fn pre_release_two_entry_seaorm_ledger_is_collapsed_without_data_loss() {
         serde_json::to_value(migrated_pre_contrast_store(persisted_store(store))).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.seaql_migration_count, 8);
+    assert_eq!(after.seaql_migration_count, 9);
     assert_eq!(
         after.seaql_migrations,
         [
@@ -1589,6 +1597,7 @@ fn pre_release_two_entry_seaorm_ledger_is_collapsed_without_data_loss() {
             "m20260726_000006_cache_root",
             "m20260727_000007_auto_import",
             "m20260727_000008_retouch_contrast",
+            "m20260729_000009_dcp_provenance",
         ]
     );
 }
@@ -1606,8 +1615,8 @@ fn schema_v12_migrates_to_panorama_schema_without_review_data_loss() {
         serde_json::to_value(migrated_pre_sampler_store(store)).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 19);
-    assert_eq!(after.seaql_migration_count, 8);
+    assert_eq!(after.schema_version, 20);
+    assert_eq!(after.seaql_migration_count, 9);
     assert_eq!(after.counts["panorama_projects"], 0);
     assert_eq!(after.counts["panorama_project_images"], 0);
     assert_eq!(after.counts["panorama_previews"], 0);
@@ -1636,8 +1645,8 @@ fn schema_v13_migrates_sampler_state_without_review_data_loss() {
             && profile.identity.starts_with("legacy:")
     }));
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 19);
-    assert_eq!(after.seaql_migration_count, 8);
+    assert_eq!(after.schema_version, 20);
+    assert_eq!(after.seaql_migration_count, 9);
     assert_eq!(after.indexes.len(), 28);
 }
 
@@ -1660,8 +1669,8 @@ fn schema_v14_adds_focus_region_storage_without_review_data_loss() {
         serde_json::to_value(migrated_pre_contrast_store(persisted_store(store))).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 19);
-    assert_eq!(after.seaql_migration_count, 8);
+    assert_eq!(after.schema_version, 20);
+    assert_eq!(after.seaql_migration_count, 9);
     assert_eq!(after.counts["image_focus_regions"], 0);
     assert_eq!(after.indexes.len(), 28);
 }
@@ -1700,8 +1709,8 @@ fn schema_v15_paths_migrate_and_rebase_after_input_and_output_move() {
     );
 
     let facts = database_facts(&new_state).unwrap();
-    assert_eq!(facts.schema_version, 19);
-    assert_eq!(facts.seaql_migration_count, 8);
+    assert_eq!(facts.schema_version, 20);
+    assert_eq!(facts.seaql_migration_count, 9);
     assert_eq!(paths.input_root, new_input.to_string_lossy());
     assert_eq!(paths.output_root, new_output.to_string_lossy());
     assert!(
@@ -1770,8 +1779,8 @@ fn schema_v17_adds_normalized_auto_import_tables_without_review_data_loss() {
         serde_json::to_value(migrated_pre_contrast_store(persisted_store(store))).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 19);
-    assert_eq!(after.seaql_migration_count, 8);
+    assert_eq!(after.schema_version, 20);
+    assert_eq!(after.seaql_migration_count, 9);
     assert_eq!(after.counts["auto_import_devices"], 0);
     assert_eq!(after.counts["auto_import_storages"], 0);
     assert_eq!(after.counts["auto_import_groups"], 0);
@@ -1809,8 +1818,8 @@ fn schema_v18_splits_contrast_from_clarity_without_losing_old_edits() {
     assert_eq!(detailed.retouch_base.clarity, 15.0);
 
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 19);
-    assert_eq!(after.seaql_migration_count, 8);
+    assert_eq!(after.schema_version, 20);
+    assert_eq!(after.seaql_migration_count, 9);
 }
 
 #[test]
@@ -2593,6 +2602,7 @@ fn base_render_done_triggers_pending_retouch_without_marking_done() {
         duration_ms: None,
         render_key: Some("retouch-key".to_string()),
         processing_key: Some(review_render_processing_key(0).to_string()),
+        dcp_profile_filename: None,
         width: None,
         height: None,
         updated_at: now_string(),
@@ -3996,6 +4006,7 @@ fn publish_flat_album_filters_rating_label_and_tag() {
             duration_ms: Some(1),
             render_key: None,
             processing_key: Some(review_render_processing_key(0).to_string()),
+            dcp_profile_filename: None,
             width: None,
             height: None,
             updated_at: now_string(),
@@ -4057,6 +4068,7 @@ fn publish_flat_album_suffixes_non_default_profiles() {
                 duration_ms: Some(1),
                 render_key: None,
                 processing_key: Some(review_render_processing_key(0).to_string()),
+                dcp_profile_filename: None,
                 width: None,
                 height: None,
                 updated_at: now_string(),
@@ -4072,6 +4084,7 @@ fn publish_flat_album_suffixes_non_default_profiles() {
                 duration_ms: Some(1),
                 render_key: None,
                 processing_key: Some(review_render_processing_key(1).to_string()),
+                dcp_profile_filename: None,
                 width: None,
                 height: None,
                 updated_at: now_string(),
@@ -4132,6 +4145,7 @@ fn publish_store_reports_realtime_progress() {
                 duration_ms: Some(1),
                 render_key: None,
                 processing_key: Some(review_render_processing_key(0).to_string()),
+                dcp_profile_filename: None,
                 width: None,
                 height: None,
                 updated_at: now_string(),
@@ -4147,6 +4161,7 @@ fn publish_store_reports_realtime_progress() {
                 duration_ms: Some(1),
                 render_key: None,
                 processing_key: Some(review_render_processing_key(1).to_string()),
+                dcp_profile_filename: None,
                 width: None,
                 height: None,
                 updated_at: now_string(),
