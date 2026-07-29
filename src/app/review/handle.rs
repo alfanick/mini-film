@@ -1924,6 +1924,8 @@ impl ReviewHandle {
             return;
         };
         let use_base_output = profile_retouch_uses_base_output(&retouch, bw_filter);
+        let dcp_profile_filename =
+            resolve_dcp_profile(&job.raw, &self.dng_fallback).map(|profile| profile.filename);
         let started = Instant::now();
         let mut cached = false;
         let Ok(updated) =
@@ -1939,6 +1941,8 @@ impl ReviewHandle {
                 if !cached {
                     render.status = ReviewRenderStatus::Processing;
                     render.error = None;
+                } else {
+                    render.dcp_profile_filename = dcp_profile_filename.clone();
                 }
             })
         else {
@@ -2006,12 +2010,12 @@ impl ReviewHandle {
                         profile_index,
                         &job.render_key,
                         |render| {
-                            render.status = ReviewRenderStatus::Done;
-                            render.render_key = None;
-                            render.output_path = Some(final_output.clone());
-                            render.error = None;
-                            render.duration_ms = Some(started.elapsed().as_millis() as u64);
-                            refresh_review_render_dimensions(render, &final_output);
+                            apply_profile_retouch_done(
+                                render,
+                                &final_output,
+                                started.elapsed(),
+                                dcp_profile_filename.as_deref(),
+                            );
                         },
                     );
                 }
@@ -2785,7 +2789,7 @@ impl ReviewHandle {
                             "width": render.width,
                             "height": render.height,
                             "retouch_pending": render.render_key.is_some(),
-                            "dcp_profile_filename": render.dcp_profile_filename,
+                            "dcp_profile_filename": effective_dcp_profile_filename(image, render),
                             "bw_filter_eligible": bw_filter_eligible,
                             "bw_filter": bw_filter,
                             "updated_at": render.updated_at,
@@ -4118,6 +4122,46 @@ pub(super) fn apply_base_render_done(
     render.error = None;
     render.duration_ms = Some(duration.as_millis() as u64);
     None
+}
+
+pub(super) fn apply_profile_retouch_done(
+    render: &mut ReviewProfileRender,
+    output: &Path,
+    duration: Duration,
+    dcp_profile_filename: Option<&str>,
+) {
+    render.status = ReviewRenderStatus::Done;
+    render.render_key = None;
+    render.output_path = Some(output.to_path_buf());
+    render.error = None;
+    render.duration_ms = Some(duration.as_millis() as u64);
+    render.dcp_profile_filename = dcp_profile_filename.map(str::to_string);
+    refresh_review_render_dimensions(render, output);
+}
+
+pub(super) fn effective_dcp_profile_filename<'a>(
+    image: &'a ReviewImage,
+    render: &'a ReviewProfileRender,
+) -> Option<&'a str> {
+    if render.status != ReviewRenderStatus::Done
+        || render.profile_index == SOOC_PROFILE_INDEX
+        || !is_raw_input_file(&image.raw_path)
+    {
+        return None;
+    }
+    if let Some(filename) = render.dcp_profile_filename.as_deref() {
+        return Some(filename);
+    }
+    let processing_key = render.processing_key.as_deref()?;
+    image
+        .profiles
+        .iter()
+        .filter(|candidate| {
+            candidate.status == ReviewRenderStatus::Done
+                && candidate.profile_index != SOOC_PROFILE_INDEX
+                && candidate.processing_key.as_deref() == Some(processing_key)
+        })
+        .find_map(|candidate| candidate.dcp_profile_filename.as_deref())
 }
 
 fn refresh_review_render_dimensions(render: &mut ReviewProfileRender, output: &Path) {

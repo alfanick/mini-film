@@ -703,6 +703,58 @@ fn preferred_preview_profile_keeps_selected_profile_even_when_publish_unchecked(
 }
 
 #[test]
+fn scheduled_profile_completion_records_dcp_provenance() {
+    let mut render = profile_render(SAMPLER_PROFILE_INDEX_BASE, "Sampler Film");
+    render.status = ReviewRenderStatus::Processing;
+    render.render_key = Some("render-key".to_string());
+
+    apply_profile_retouch_done(
+        &mut render,
+        Path::new("/out/Sampler Film/frame.jpg"),
+        Duration::from_millis(42),
+        Some("Nikon Z 7 2 Adobe Standard.dcp"),
+    );
+
+    assert_eq!(render.status, ReviewRenderStatus::Done);
+    assert_eq!(render.render_key, None);
+    assert_eq!(
+        render.dcp_profile_filename.as_deref(),
+        Some("Nikon Z 7 2 Adobe Standard.dcp")
+    );
+}
+
+#[test]
+fn dcp_provenance_fallback_is_limited_to_current_raw_profile_renders() {
+    let mut store = fully_populated_review_store();
+    let image = &mut store.images[0];
+    let known = &mut image.profiles[0];
+    known.status = ReviewRenderStatus::Done;
+    known.render_key = None;
+    known.processing_key = Some("raw-dcp-key".to_string());
+    let mut sidebar_render = profile_render(9, "Sidebar Film");
+    sidebar_render.processing_key = Some("raw-dcp-key".to_string());
+    image.profiles.push(sidebar_render);
+
+    assert_eq!(
+        effective_dcp_profile_filename(image, &image.profiles[1]),
+        Some("Nikon Z 7 2 Adobe Standard.dcp")
+    );
+
+    image.profiles[1].profile_index = SOOC_PROFILE_INDEX;
+    assert_eq!(
+        effective_dcp_profile_filename(image, &image.profiles[1]),
+        None
+    );
+
+    image.profiles[1].profile_index = 9;
+    image.raw_path = PathBuf::from("/in/one.JPG");
+    assert_eq!(
+        effective_dcp_profile_filename(image, &image.profiles[1]),
+        None
+    );
+}
+
+#[test]
 fn review_state_defaults_to_first_profile_and_records_outputs() {
     let temp = tempfile::tempdir().unwrap();
     let input = temp.path().join("in");
@@ -712,8 +764,11 @@ fn review_state_defaults_to_first_profile_and_records_outputs() {
     let raw = input.join("day").join("frame.NEF");
     fs::write(&raw, b"raw").unwrap();
     let rendered = output.join("day").join("Classic").join("frame.jpg");
+    let fade_rendered = output.join("day").join("Fade").join("frame.jpg");
     fs::create_dir_all(rendered.parent().unwrap()).unwrap();
+    fs::create_dir_all(fade_rendered.parent().unwrap()).unwrap();
     fs::write(&rendered, b"jpg").unwrap();
+    fs::write(&fade_rendered, b"jpg").unwrap();
 
     let mut classic = profile(0, "Classic");
     classic.retouch_base = BasicRetouchAdjustments {
@@ -736,13 +791,20 @@ fn review_state_defaults_to_first_profile_and_records_outputs() {
             Some("Nikon Z 7 2 Adobe Standard.dcp"),
         )
         .unwrap();
-    let text = handle.api_state_json().unwrap();
+    handle
+        .record_profile_done(&raw, 1, &fade_rendered, Duration::from_millis(43))
+        .unwrap();
+    let state = handle.api_state_value().unwrap();
+    let text = serde_json::to_string(&state).unwrap();
     assert!(text.contains("\"selected_profile_index\":0"));
     assert!(text.contains("\"publish_profile_indexes\":[0,1]"));
     assert!(text.contains("\"status\":\"done\""));
     assert!(text.contains("\"dcp_profile_filename\":\"Nikon Z 7 2 Adobe Standard.dcp\""));
     assert!(text.contains("media/1/0"));
-    let state = handle.api_state_value().unwrap();
+    assert_eq!(
+        state["images"][0]["profiles"][1]["dcp_profile_filename"],
+        json!("Nikon Z 7 2 Adobe Standard.dcp")
+    );
     let base = &state["profiles"][0]["retouch_base"];
     assert_eq!(base["exposure"], json!(0.5));
     assert_eq!(base["highlights"], json!(-18.0));
