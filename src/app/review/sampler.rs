@@ -526,19 +526,13 @@ impl ReviewHandle {
             })
             .await?;
         self.broadcast_state()?;
-        for (position, (raw, profile_index, output, render_key)) in jobs.into_iter().enumerate() {
-            let delay = if self
-                .store_snapshot()
-                .images
-                .iter()
-                .any(|image| image.id == priority_image_id && image.raw_path == raw)
-            {
+        for (position, job) in jobs.into_iter().enumerate() {
+            let delay = if job.image_id == priority_image_id {
                 Duration::ZERO
             } else {
                 Duration::from_millis(25 + position as u64)
             };
-            self.retouch_scheduler
-                .schedule_after(raw, profile_index, output, render_key, delay);
+            self.retouch_scheduler.schedule_after(job, delay);
         }
         Ok(())
     }

@@ -583,6 +583,30 @@ to `.jpg`. Startup replaces old generated copies and repairs stale links after
 the input folder moves. Crop/rotation variants use files in the temporary review
 cache, so the base original link remains intact.
 
+Pending full-resolution daemon renders are reprioritized dynamically whenever
+the current picture, selected profile, rating filter, rating, or profile
+availability changes. Only enabled creative profiles participate; SOOC remains
+eligible and can be the main profile when selected. For each profiled picture,
+the main profile is its selected enabled profile, falling back to its first
+enabled profile. A direct compressed picture's sole managed-link job is its
+main render. The daemon dispatches pending work in this order:
+
+1. the main profile of the current picture;
+2. the remaining eligible profiles of the current picture;
+3. the main profile of the other pictures visible under the current rating
+   filter, in image order;
+4. the remaining eligible profiles of those visible pictures, in image order;
+5. the main profile of pictures outside the current rating filter, in image
+   order;
+6. the remaining eligible profiles of those remaining pictures, in any order.
+
+Changing review state affects the next dispatch but does not interrupt a render
+that is already processing. High-quality rerenders triggered by retouch or
+profile-sidebar edits use a separate, debounced execution lane. Pending work
+whose debounce has expired follows the same six-level priority order within
+that reserved retouch lane, but executes independently from the daemon render
+lane.
+
 For standalone JPEG/HEIC, ordered background thumbnail and preview pipelines
 start at discovery time and run concurrently with managed-link installation.
 Each converter uses half of the available CPU threads; one thumbnail worker and

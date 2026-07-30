@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -37,7 +37,8 @@ use crate::app::progress::{
 };
 use crate::app::review::{
     ReviewConfig, ReviewGalleryConfig, ReviewHandle, ReviewProfile, ReviewProfileMetadata,
-    SOOC_PROFILE_INDEX, SOOC_PROFILE_STEM, review_profile_identity, start_review_server,
+    ReviewRenderPriorityKey, ReviewRenderPrioritySnapshot, SOOC_PROFILE_INDEX, SOOC_PROFILE_STEM,
+    review_profile_identity, start_review_server,
 };
 use crate::app::system_stats::{ResourceUsageSummary, sample_usage_block};
 use crate::app::util::{
@@ -106,6 +107,8 @@ struct DaemonProfile {
 struct PendingTask {
     raw: PathBuf,
     kind: DaemonTaskKind,
+    key: PendingTaskKey,
+    enqueue_sequence: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -115,7 +118,148 @@ enum DaemonTaskKind {
     SoocSidecar { sidecar: PathBuf },
 }
 
+impl DaemonTaskKind {
+    fn review_profile_index(&self) -> Option<usize> {
+        match self {
+            Self::RawProfile(profile_index) => Some(*profile_index),
+            Self::SoocSidecar { .. } => Some(SOOC_PROFILE_INDEX),
+            Self::StandaloneCompressed => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum PendingTaskSlot {
+    Profile(usize),
+    StandaloneCompressed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum PendingImageIdentity {
+    Review(u64),
+    Path(PathBuf),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct PendingTaskKey {
+    image: PendingImageIdentity,
+    slot: PendingTaskSlot,
+}
+
+impl PendingTaskKey {
+    fn new(raw: &Path, kind: &DaemonTaskKind, review_image_id: Option<u64>) -> Self {
+        let image = review_image_id.map_or_else(
+            || PendingImageIdentity::Path(raw.to_path_buf()),
+            PendingImageIdentity::Review,
+        );
+        let slot = match kind {
+            DaemonTaskKind::RawProfile(profile_index) => PendingTaskSlot::Profile(*profile_index),
+            DaemonTaskKind::SoocSidecar { .. } => PendingTaskSlot::Profile(SOOC_PROFILE_INDEX),
+            DaemonTaskKind::StandaloneCompressed => PendingTaskSlot::StandaloneCompressed,
+        };
+        Self { image, slot }
+    }
+
+    fn review_image_id(&self) -> Option<u64> {
+        match self.image {
+            PendingImageIdentity::Review(image_id) => Some(image_id),
+            PendingImageIdentity::Path(_) => None,
+        }
+    }
+}
+
+#[derive(Default)]
+struct PendingTasks {
+    tasks: Vec<PendingTask>,
+    next_sequence: u64,
+}
+
+impl PendingTasks {
+    fn push(&mut self, raw: PathBuf, kind: DaemonTaskKind, review_image_id: Option<u64>) -> bool {
+        let key = PendingTaskKey::new(&raw, &kind, review_image_id);
+        if let Some(existing) = self.tasks.iter_mut().find(|task| task.key == key) {
+            existing.raw = raw;
+            existing.kind = kind;
+            return false;
+        }
+
+        let enqueue_sequence = self.next_sequence;
+        self.next_sequence = self
+            .next_sequence
+            .checked_add(1)
+            .expect("daemon pending task sequence exhausted");
+        self.tasks.push(PendingTask {
+            raw,
+            kind,
+            key,
+            enqueue_sequence,
+        });
+        true
+    }
+
+    fn len(&self) -> usize {
+        self.tasks.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.tasks.is_empty()
+    }
+
+    fn has_unblocked(&self, excluded: &HashSet<PendingTaskKey>) -> bool {
+        self.tasks.iter().any(|task| !excluded.contains(&task.key))
+    }
+
+    fn contains_key(&self, key: &PendingTaskKey) -> bool {
+        self.tasks.iter().any(|task| &task.key == key)
+    }
+
+    fn pop_fifo_excluding(&mut self, excluded: &HashSet<PendingTaskKey>) -> Option<PendingTask> {
+        let index = self
+            .tasks
+            .iter()
+            .position(|task| !excluded.contains(&task.key))?;
+        Some(self.tasks.remove(index))
+    }
+
+    fn drop_unschedulable<K>(
+        &mut self,
+        mut key_for: impl FnMut(&PendingTask) -> Option<K>,
+    ) -> usize {
+        let before = self.tasks.len();
+        self.tasks.retain(|task| key_for(task).is_some());
+        before - self.tasks.len()
+    }
+
+    fn pop_ranked_excluding<K: Ord>(
+        &mut self,
+        excluded: &HashSet<PendingTaskKey>,
+        mut key_for: impl FnMut(&PendingTask) -> Option<K>,
+    ) -> Option<PendingTask> {
+        let index = self
+            .tasks
+            .iter()
+            .enumerate()
+            .filter(|(_, task)| !excluded.contains(&task.key))
+            .filter_map(|(index, task)| key_for(task).map(|key| (index, key)))
+            .min_by(|(_, left), (_, right)| left.cmp(right))
+            .map(|(index, _)| index)?;
+        Some(self.tasks.remove(index))
+    }
+}
+
+fn review_pending_task_key(
+    snapshot: &ReviewRenderPrioritySnapshot,
+    task: &PendingTask,
+) -> Option<ReviewRenderPriorityKey> {
+    snapshot.key_for(
+        task.key.review_image_id(),
+        task.kind.review_profile_index(),
+        task.enqueue_sequence,
+    )
+}
+
 struct InFlightTask {
+    key: PendingTaskKey,
     kind: DaemonTaskKind,
     raw: PathBuf,
     handle: thread::JoinHandle<DaemonFileResult>,
@@ -569,7 +713,7 @@ pub(crate) fn run_batch_daemon(mut args: BatchDaemonArgs) -> Result<()> {
         );
     }
 
-    let mut queue: VecDeque<PendingTask> = VecDeque::new();
+    let mut queue = PendingTasks::default();
     let mut in_flight: Vec<InFlightTask> = Vec::new();
     let estimates = Arc::new(StageEstimates::default());
     let mut state = DaemonProgressState {
@@ -659,10 +803,35 @@ pub(crate) fn run_batch_daemon(mut args: BatchDaemonArgs) -> Result<()> {
             },
         )?;
 
-        while in_flight.len() < jobs {
-            let Some(task) = queue.pop_front() else {
+        let mut active_keys = in_flight
+            .iter()
+            .map(|task| task.key.clone())
+            .collect::<HashSet<_>>();
+        while in_flight.len() < jobs && queue.has_unblocked(&active_keys) {
+            let task = match &review {
+                Some(review) => {
+                    let snapshot = review.render_priority_snapshot();
+                    let dropped =
+                        queue.drop_unschedulable(|task| review_pending_task_key(&snapshot, task));
+                    batch.inc(dropped as u64);
+                    queue.pop_ranked_excluding(&active_keys, |task| {
+                        review_pending_task_key(&snapshot, task)
+                    })
+                }
+                None => queue.pop_fifo_excluding(&active_keys),
+            };
+            let Some(mut task) = task else {
                 break;
             };
+            if let Some(image_id) = task.key.review_image_id()
+                && let Some(review) = &review
+            {
+                let Some(current_raw) = review.review_raw_for_image_id(image_id) else {
+                    batch.inc(1);
+                    continue;
+                };
+                task.raw = current_raw;
+            }
             if matches!(
                 &task.kind,
                 DaemonTaskKind::RawProfile(_) | DaemonTaskKind::SoocSidecar { .. }
@@ -675,15 +844,20 @@ pub(crate) fn run_batch_daemon(mut args: BatchDaemonArgs) -> Result<()> {
                 DaemonTaskKind::RawProfile(profile_index) => {
                     match profiles.get(*profile_index).cloned() {
                         Some(profile) => Some(profile),
-                        None => continue,
+                        None => {
+                            batch.inc(1);
+                            continue;
+                        }
                     }
                 }
                 DaemonTaskKind::StandaloneCompressed | DaemonTaskKind::SoocSidecar { .. } => None,
             };
             let bar = acquire_worker_bar(&worker_bars);
+            let task_key = task.key.clone();
             let raw = task.raw.clone();
             let worker_raw = raw.clone();
             let task_kind = task.kind.clone();
+            let task_review_image_id = task.key.review_image_id();
             let raw_name = raw
                 .file_name()
                 .and_then(|name| name.to_str())
@@ -707,7 +881,11 @@ pub(crate) fn run_batch_daemon(mut args: BatchDaemonArgs) -> Result<()> {
                     DaemonTaskKind::RawProfile(profile_index) => {
                         let profile = profile.expect("profile exists for RAW task");
                         if let Some(review) = &context.review {
-                            let _ = review.record_profile_processing(&worker_raw, profile_index);
+                            let _ = if let Some(image_id) = task_review_image_id {
+                                review.record_profile_processing_for_image(image_id, profile_index)
+                            } else {
+                                review.record_profile_processing(&worker_raw, profile_index)
+                            };
                         }
                         process_single_profile(
                             &worker_raw,
@@ -727,79 +905,39 @@ pub(crate) fn run_batch_daemon(mut args: BatchDaemonArgs) -> Result<()> {
                     }
                     DaemonTaskKind::SoocSidecar { sidecar } => {
                         if let Some(review) = &context.review {
-                            let _ =
-                                review.record_profile_processing(&worker_raw, SOOC_PROFILE_INDEX);
+                            let _ = if let Some(image_id) = task_review_image_id {
+                                review.record_profile_processing_for_image(
+                                    image_id,
+                                    SOOC_PROFILE_INDEX,
+                                )
+                            } else {
+                                review.record_profile_processing(&worker_raw, SOOC_PROFILE_INDEX)
+                            };
                         }
                         process_single_sooc(&worker_raw, &sidecar, &context, &bar, &raw_name)
                     }
                 };
-                if let Some(review) = &context.review {
-                    if result.raw != worker_raw
-                        && let Err(error) = review.rebind_raw_source(&worker_raw, &result.raw)
-                    {
-                        result.error = Some(format!(
-                            "render succeeded but review database could not replace {} with {}: {error:#}",
-                            worker_raw.display(),
-                            result.raw.display()
-                        ));
-                        result.raw.clone_from(&worker_raw);
-                    }
-                    match result.profile_index {
-                        Some(profile_index) => {
-                            if let Some(error) = &result.error {
-                                let output = if result.output.as_os_str().is_empty() {
-                                    None
-                                } else {
-                                    Some(result.output.as_path())
-                                };
-                                let _ = review.record_profile_failed(
-                                    &result.raw,
-                                    profile_index,
-                                    output,
-                                    result.duration,
-                                    error,
-                                );
-                            } else {
-                                let _ = review.record_profile_done_with_dcp(
-                                    &result.raw,
-                                    profile_index,
-                                    &result.output,
-                                    result.duration,
-                                    result.dcp_profile_filename.as_deref(),
-                                );
-                            }
-                        }
-                        None => {
-                            if let Some(error) = &result.error {
-                                let output = if result.output.as_os_str().is_empty() {
-                                    None
-                                } else {
-                                    Some(result.output.as_path())
-                                };
-                                let _ = review.record_compressed_failed(
-                                    &result.raw,
-                                    output,
-                                    result.duration,
-                                    error,
-                                );
-                            } else {
-                                let _ = review.record_compressed_done(
-                                    &result.raw,
-                                    &result.output,
-                                    result.duration,
-                                );
-                            }
-                        }
-                    }
+                if let Some(review) = &context.review
+                    && result.raw != worker_raw
+                    && let Err(error) = review.rebind_raw_source(&worker_raw, &result.raw)
+                {
+                    result.error = Some(format!(
+                        "render succeeded but review database could not replace {} with {}: {error:#}",
+                        worker_raw.display(),
+                        result.raw.display()
+                    ));
+                    result.raw.clone_from(&worker_raw);
                 }
                 release_worker_bar(&bar_pool, bar);
                 result
             });
             in_flight.push(InFlightTask {
+                key: task_key.clone(),
                 kind: task.kind,
                 raw,
                 handle,
             });
+            active_keys.insert(task_key);
         }
 
         let mut index = 0;
@@ -811,14 +949,15 @@ pub(crate) fn run_batch_daemon(mut args: BatchDaemonArgs) -> Result<()> {
 
             let task = in_flight.swap_remove(index);
             batch.inc(1);
+            let deferred_rerun = queue.contains_key(&task.key);
             let result = match task.handle.join() {
                 Ok(result) => result,
                 Err(_) => DaemonFileResult {
-                    raw: task.raw,
+                    raw: task.raw.clone(),
                     output: PathBuf::new(),
                     duration: Duration::ZERO,
-                    profile_index: match task.kind {
-                        DaemonTaskKind::RawProfile(profile_index) => Some(profile_index),
+                    profile_index: match &task.kind {
+                        DaemonTaskKind::RawProfile(profile_index) => Some(*profile_index),
                         DaemonTaskKind::SoocSidecar { .. } => Some(SOOC_PROFILE_INDEX),
                         DaemonTaskKind::StandaloneCompressed => None,
                     },
@@ -829,6 +968,9 @@ pub(crate) fn run_batch_daemon(mut args: BatchDaemonArgs) -> Result<()> {
                     denoise_status: denoise_status(false),
                 },
             };
+            if !deferred_rerun && let Some(review) = &review {
+                record_daemon_review_result(review, task.key.review_image_id(), &result);
+            }
             if let Some(error) = &result.error {
                 batch.println(format!("failed {}: {}", result.raw.display(), error));
             }
@@ -863,6 +1005,70 @@ pub(crate) fn run_batch_daemon(mut args: BatchDaemonArgs) -> Result<()> {
         }
 
         std::thread::sleep(DEFAULT_POLL_INTERVAL);
+    }
+}
+
+fn record_daemon_review_result(
+    review: &ReviewHandle,
+    review_image_id: Option<u64>,
+    result: &DaemonFileResult,
+) {
+    let current_raw = review_image_id
+        .and_then(|image_id| review.review_raw_for_image_id(image_id))
+        .unwrap_or_else(|| result.raw.clone());
+    match result.profile_index {
+        Some(profile_index) => {
+            if let Some(error) = &result.error {
+                let output =
+                    (!result.output.as_os_str().is_empty()).then_some(result.output.as_path());
+                let _ = if let Some(image_id) = review_image_id {
+                    review.record_profile_failed_for_image(
+                        image_id,
+                        profile_index,
+                        output,
+                        result.duration,
+                        error,
+                    )
+                } else {
+                    review.record_profile_failed(
+                        &current_raw,
+                        profile_index,
+                        output,
+                        result.duration,
+                        error,
+                    )
+                };
+            } else {
+                let _ = if let Some(image_id) = review_image_id {
+                    review.record_profile_done_with_dcp_for_image(
+                        image_id,
+                        profile_index,
+                        &result.output,
+                        result.duration,
+                        result.dcp_profile_filename.as_deref(),
+                    )
+                } else {
+                    review.record_profile_done_with_dcp(
+                        &current_raw,
+                        profile_index,
+                        &result.output,
+                        result.duration,
+                        result.dcp_profile_filename.as_deref(),
+                    )
+                };
+            }
+        }
+        None => {
+            if let Some(error) = &result.error {
+                let output =
+                    (!result.output.as_os_str().is_empty()).then_some(result.output.as_path());
+                let _ =
+                    review.record_compressed_failed(&current_raw, output, result.duration, error);
+            } else {
+                let _ =
+                    review.record_compressed_done(&current_raw, &result.output, result.duration);
+            }
+        }
     }
 }
 
@@ -1302,7 +1508,7 @@ fn drain_watch_events(
 fn schedule_pending_due_paths(
     pending: &mut HashMap<PathBuf, PendingFile>,
     debounce: Duration,
-    queue: &mut VecDeque<PendingTask>,
+    queue: &mut PendingTasks,
     profiles: &[Arc<DaemonProfile>],
     batch: &ProgressBar,
     context: &ProfileScheduleContext<'_>,
@@ -1327,7 +1533,7 @@ fn schedule_pending_due_paths(
 }
 
 fn enqueue_profile_jobs(
-    queue: &mut VecDeque<PendingTask>,
+    queue: &mut PendingTasks,
     profiles: &[Arc<DaemonProfile>],
     raw: PathBuf,
     context: &ProfileScheduleContext<'_>,
@@ -1350,6 +1556,9 @@ fn enqueue_profile_jobs(
             review.record_profiled_compressed_discovered(&raw)?;
         }
     }
+    let review_image_id = context
+        .review
+        .and_then(|review| review.review_image_id_for(&raw));
     for (profile_index, profile) in profiles.iter().enumerate() {
         let expected_output = daemon_output_path(
             context.input_root,
@@ -1362,18 +1571,20 @@ fn enqueue_profile_jobs(
             continue;
         }
 
-        if let Some(review) = context.review {
-            review.record_profile_queued(&raw, profile_index, &expected_output)?;
+        if let Some(review) = context.review
+            && !review.record_profile_queued(&raw, profile_index, &expected_output)?
+        {
+            continue;
         }
-        queue.push_back(PendingTask {
-            raw: raw.clone(),
-            kind: DaemonTaskKind::RawProfile(profile_index),
-        });
-        queued += 1;
+        queued += usize::from(queue.push(
+            raw.clone(),
+            DaemonTaskKind::RawProfile(profile_index),
+            review_image_id,
+        ));
     }
     let sooc_source = sooc_sidecar.or_else(|| (!raw_input).then(|| raw.clone()));
     if let Some(sidecar) = sooc_source {
-        queued += enqueue_sooc_job(queue, raw, sidecar, context)?;
+        queued += enqueue_sooc_job(queue, raw, sidecar, review_image_id, context)?;
     }
     Ok(queued)
 }
@@ -1385,7 +1596,7 @@ fn daemon_profiles_are_explicit(profiles: &[Arc<DaemonProfile>]) -> bool {
 }
 
 fn enqueue_compressed_job(
-    queue: &mut VecDeque<PendingTask>,
+    queue: &mut PendingTasks,
     input: PathBuf,
     context: &ProfileScheduleContext<'_>,
 ) -> Result<usize> {
@@ -1401,17 +1612,18 @@ fn enqueue_compressed_job(
         return Ok(0);
     }
 
-    queue.push_back(PendingTask {
-        raw: input,
-        kind: DaemonTaskKind::StandaloneCompressed,
-    });
-    Ok(1)
+    let review_image_id = context
+        .review
+        .and_then(|review| review.review_image_id_for(&input));
+    let inserted = queue.push(input, DaemonTaskKind::StandaloneCompressed, review_image_id);
+    Ok(usize::from(inserted))
 }
 
 fn enqueue_sooc_job(
-    queue: &mut VecDeque<PendingTask>,
+    queue: &mut PendingTasks,
     raw: PathBuf,
     sidecar: PathBuf,
+    review_image_id: Option<u64>,
     context: &ProfileScheduleContext<'_>,
 ) -> Result<usize> {
     let expected_output =
@@ -1419,15 +1631,18 @@ fn enqueue_sooc_job(
     if should_skip_existing_profile_output(context, &raw, SOOC_PROFILE_INDEX, &expected_output) {
         return Ok(0);
     }
-    if let Some(review) = context.review {
-        review.record_profile_queued(&raw, SOOC_PROFILE_INDEX, &expected_output)?;
+    if let Some(review) = context.review
+        && !review.record_profile_queued(&raw, SOOC_PROFILE_INDEX, &expected_output)?
+    {
+        return Ok(0);
     }
 
-    queue.push_back(PendingTask {
+    let inserted = queue.push(
         raw,
-        kind: DaemonTaskKind::SoocSidecar { sidecar },
-    });
-    Ok(1)
+        DaemonTaskKind::SoocSidecar { sidecar },
+        review_image_id,
+    );
+    Ok(usize::from(inserted))
 }
 
 fn should_skip_existing_profile_output(
@@ -2155,6 +2370,316 @@ mod tests {
     };
     use std::collections::{HashMap, HashSet};
 
+    fn queued_task(queue: &mut PendingTasks, image_id: u64, file_name: &str, kind: DaemonTaskKind) {
+        queue.push(PathBuf::from(file_name), kind, Some(image_id));
+    }
+
+    fn task_identity(task: &PendingTask) -> (u64, Option<usize>) {
+        (
+            task.key
+                .review_image_id()
+                .expect("test task has review image id"),
+            task.kind.review_profile_index(),
+        )
+    }
+
+    #[test]
+    fn pending_tasks_preserve_fifo_without_review_priority() {
+        let mut queue = PendingTasks::default();
+        queued_task(&mut queue, 1, "first.NEF", DaemonTaskKind::RawProfile(1));
+        queued_task(
+            &mut queue,
+            2,
+            "second.JPG",
+            DaemonTaskKind::StandaloneCompressed,
+        );
+        queued_task(
+            &mut queue,
+            3,
+            "third.NEF",
+            DaemonTaskKind::SoocSidecar {
+                sidecar: PathBuf::from("third.JPG"),
+            },
+        );
+
+        let active = HashSet::new();
+        assert_eq!(
+            queue.pop_fifo_excluding(&active).map(|task| task.raw),
+            Some(PathBuf::from("first.NEF"))
+        );
+        assert_eq!(
+            queue.pop_fifo_excluding(&active).map(|task| task.raw),
+            Some(PathBuf::from("second.JPG"))
+        );
+        assert_eq!(
+            queue.pop_fifo_excluding(&active).map(|task| task.raw),
+            Some(PathBuf::from("third.NEF"))
+        );
+        assert!(queue.pop_fifo_excluding(&active).is_none());
+    }
+
+    #[test]
+    fn pending_tasks_follow_all_six_review_priority_buckets() {
+        let mut queue = PendingTasks::default();
+        queued_task(&mut queue, 30, "hidden.NEF", DaemonTaskKind::RawProfile(0));
+        queued_task(&mut queue, 20, "visible.NEF", DaemonTaskKind::RawProfile(0));
+        queued_task(&mut queue, 10, "current.NEF", DaemonTaskKind::RawProfile(0));
+        queued_task(&mut queue, 30, "hidden.NEF", DaemonTaskKind::RawProfile(2));
+        queued_task(
+            &mut queue,
+            20,
+            "visible.NEF",
+            DaemonTaskKind::SoocSidecar {
+                sidecar: PathBuf::from("visible.JPG"),
+            },
+        );
+        queued_task(&mut queue, 10, "current.NEF", DaemonTaskKind::RawProfile(1));
+        queued_task(
+            &mut queue,
+            10,
+            "current.NEF",
+            DaemonTaskKind::SoocSidecar {
+                sidecar: PathBuf::from("current.JPG"),
+            },
+        );
+
+        let schedule = |task: &PendingTask| {
+            let (image_id, profile_index) = task_identity(task);
+            let (bucket, image_order) = match (image_id, profile_index) {
+                (10, Some(1)) => (1, 0),
+                (10, _) => (2, 0),
+                (20, Some(0)) => (3, 1),
+                (20, _) => (4, 1),
+                (30, Some(2)) => (5, 2),
+                (30, _) => (6, 2),
+                _ => return None,
+            };
+            Some((bucket, image_order, task.enqueue_sequence))
+        };
+
+        let active = HashSet::new();
+        let mut claimed = Vec::new();
+        while let Some(task) = queue.pop_ranked_excluding(&active, schedule) {
+            claimed.push(task_identity(&task));
+        }
+        assert_eq!(
+            claimed,
+            vec![
+                (10, Some(1)),
+                (10, Some(0)),
+                (10, Some(SOOC_PROFILE_INDEX)),
+                (20, Some(0)),
+                (20, Some(SOOC_PROFILE_INDEX)),
+                (30, Some(2)),
+                (30, Some(0)),
+            ]
+        );
+    }
+
+    #[test]
+    fn pending_tasks_recompute_priority_for_every_claim() {
+        let mut queue = PendingTasks::default();
+        for image_id in [1, 2] {
+            queued_task(
+                &mut queue,
+                image_id,
+                &format!("{image_id}.NEF"),
+                DaemonTaskKind::RawProfile(0),
+            );
+            queued_task(
+                &mut queue,
+                image_id,
+                &format!("{image_id}.NEF"),
+                DaemonTaskKind::RawProfile(1),
+            );
+        }
+
+        let mut active = HashSet::new();
+        let first = queue
+            .pop_ranked_excluding(&active, |task| {
+                let (image_id, profile_index) = task_identity(task);
+                Some((
+                    if image_id == 1 && profile_index == Some(0) {
+                        1
+                    } else if image_id == 1 {
+                        2
+                    } else if profile_index == Some(0) {
+                        3
+                    } else {
+                        4
+                    },
+                    image_id as usize,
+                    task.enqueue_sequence,
+                ))
+            })
+            .unwrap();
+        assert_eq!(task_identity(&first), (1, Some(0)));
+        active.insert(first.key);
+
+        let second = queue
+            .pop_ranked_excluding(&active, |task| {
+                let (image_id, profile_index) = task_identity(task);
+                Some((
+                    if image_id == 2 && profile_index == Some(1) {
+                        1
+                    } else if image_id == 2 {
+                        2
+                    } else if profile_index == Some(1) {
+                        3
+                    } else {
+                        4
+                    },
+                    image_id as usize,
+                    task.enqueue_sequence,
+                ))
+            })
+            .unwrap();
+        assert_eq!(task_identity(&second), (2, Some(1)));
+    }
+
+    #[test]
+    fn pending_tasks_drop_disabled_profiles_and_keep_unknown_fifo() {
+        let mut queue = PendingTasks::default();
+        queued_task(&mut queue, 1, "disabled.NEF", DaemonTaskKind::RawProfile(9));
+        queue.push(
+            PathBuf::from("unknown-first.NEF"),
+            DaemonTaskKind::RawProfile(0),
+            None,
+        );
+        queue.push(
+            PathBuf::from("unknown-second.JPG"),
+            DaemonTaskKind::StandaloneCompressed,
+            None,
+        );
+        queued_task(&mut queue, 2, "ranked.NEF", DaemonTaskKind::RawProfile(0));
+
+        let schedule = |task: &PendingTask| match task.key.review_image_id() {
+            Some(1) => None,
+            Some(2) => Some((false, 5, 2, task.enqueue_sequence)),
+            _ => Some((true, u8::MAX, usize::MAX, task.enqueue_sequence)),
+        };
+        let active = HashSet::new();
+        assert_eq!(queue.drop_unschedulable(schedule), 1);
+        assert_eq!(
+            queue
+                .pop_ranked_excluding(&active, schedule)
+                .map(|task| task.raw),
+            Some(PathBuf::from("ranked.NEF"))
+        );
+        assert_eq!(
+            queue
+                .pop_ranked_excluding(&active, schedule)
+                .map(|task| task.raw),
+            Some(PathBuf::from("unknown-first.NEF"))
+        );
+        assert_eq!(
+            queue
+                .pop_ranked_excluding(&active, schedule)
+                .map(|task| task.raw),
+            Some(PathBuf::from("unknown-second.JPG"))
+        );
+    }
+
+    #[test]
+    fn pending_tasks_coalesce_latest_payload_and_preserve_sequence() {
+        let mut queue = PendingTasks::default();
+        assert!(queue.push(
+            PathBuf::from("first-path.NEF"),
+            DaemonTaskKind::SoocSidecar {
+                sidecar: PathBuf::from("first.JPG"),
+            },
+            Some(42),
+        ));
+        let sequence = queue.tasks[0].enqueue_sequence;
+
+        assert!(!queue.push(
+            PathBuf::from("updated-path.NEF"),
+            DaemonTaskKind::SoocSidecar {
+                sidecar: PathBuf::from("updated.JPG"),
+            },
+            Some(42),
+        ));
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue.tasks[0].raw, PathBuf::from("updated-path.NEF"));
+        assert_eq!(queue.tasks[0].enqueue_sequence, sequence);
+        assert!(matches!(
+            &queue.tasks[0].kind,
+            DaemonTaskKind::SoocSidecar { sidecar }
+                if sidecar == &PathBuf::from("updated.JPG")
+        ));
+    }
+
+    #[test]
+    fn pending_tasks_deduplicate_by_path_without_review_ids() {
+        let mut queue = PendingTasks::default();
+        assert!(queue.push(
+            PathBuf::from("frame.NEF"),
+            DaemonTaskKind::RawProfile(0),
+            None,
+        ));
+        assert!(!queue.push(
+            PathBuf::from("frame.NEF"),
+            DaemonTaskKind::RawProfile(0),
+            None,
+        ));
+        assert!(queue.push(
+            PathBuf::from("frame.NEF"),
+            DaemonTaskKind::RawProfile(1),
+            None,
+        ));
+        assert_eq!(queue.len(), 2);
+    }
+
+    #[test]
+    fn pending_tasks_defer_one_rerun_while_matching_job_is_active() {
+        let mut queue = PendingTasks::default();
+        queued_task(&mut queue, 1, "active.NEF", DaemonTaskKind::RawProfile(0));
+        queued_task(&mut queue, 2, "ready.NEF", DaemonTaskKind::RawProfile(0));
+        let active_key = queue.tasks[0].key.clone();
+        let active = HashSet::from([active_key]);
+
+        assert_eq!(
+            queue.pop_fifo_excluding(&active).map(|task| task.raw),
+            Some(PathBuf::from("ready.NEF"))
+        );
+        assert!(queue.pop_fifo_excluding(&active).is_none());
+        assert_eq!(queue.len(), 1);
+
+        assert!(!queue.push(
+            PathBuf::from("active-newer.NEF"),
+            DaemonTaskKind::RawProfile(0),
+            Some(1),
+        ));
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue.tasks[0].raw, PathBuf::from("active-newer.NEF"));
+
+        assert_eq!(
+            queue
+                .pop_fifo_excluding(&HashSet::new())
+                .map(|task| task.raw),
+            Some(PathBuf::from("active-newer.NEF"))
+        );
+    }
+
+    #[test]
+    fn daemon_task_kinds_map_to_review_profile_identity() {
+        assert_eq!(
+            DaemonTaskKind::RawProfile(7).review_profile_index(),
+            Some(7)
+        );
+        assert_eq!(
+            DaemonTaskKind::SoocSidecar {
+                sidecar: PathBuf::from("frame.JPG")
+            }
+            .review_profile_index(),
+            Some(SOOC_PROFILE_INDEX)
+        );
+        assert_eq!(
+            DaemonTaskKind::StandaloneCompressed.review_profile_index(),
+            None
+        );
+    }
+
     #[test]
     fn compressed_inputs_queue_profile_tasks_only_for_explicit_profiles() {
         let root = tempfile::tempdir().unwrap();
@@ -2179,17 +2704,17 @@ mod tests {
             resolved: neutral_profile(),
             profile_report: String::new(),
         })];
-        let mut queue = VecDeque::new();
+        let mut queue = PendingTasks::default();
         assert_eq!(
             enqueue_profile_jobs(&mut queue, &explicit, compressed.clone(), &context).unwrap(),
             2
         );
         assert!(matches!(
-            queue.front().map(|task| &task.kind),
+            queue.tasks.first().map(|task| &task.kind),
             Some(DaemonTaskKind::RawProfile(0))
         ));
         assert!(matches!(
-            queue.back().map(|task| &task.kind),
+            queue.tasks.last().map(|task| &task.kind),
             Some(DaemonTaskKind::SoocSidecar { sidecar }) if sidecar == &compressed
         ));
 
@@ -2199,13 +2724,13 @@ mod tests {
             resolved: neutral_profile(),
             profile_report: String::new(),
         })];
-        queue.clear();
+        queue.tasks.clear();
         assert_eq!(
             enqueue_profile_jobs(&mut queue, &implicit, compressed, &context).unwrap(),
             1
         );
         assert!(matches!(
-            queue.front().map(|task| &task.kind),
+            queue.tasks.first().map(|task| &task.kind),
             Some(DaemonTaskKind::StandaloneCompressed)
         ));
     }
@@ -2235,7 +2760,7 @@ mod tests {
             resolved: neutral_profile(),
             profile_report: String::new(),
         })];
-        let mut queue = VecDeque::new();
+        let mut queue = PendingTasks::default();
 
         assert_eq!(
             enqueue_profile_jobs(&mut queue, &profiles, sidecar, &context).unwrap(),

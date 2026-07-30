@@ -584,6 +584,201 @@ fn profile_render(index: usize, stem: &str) -> ReviewProfileRender {
     }
 }
 
+fn priority_image(
+    id: u64,
+    raw: &str,
+    capture_timestamp: i64,
+    rating: u8,
+    selected_profile_index: usize,
+    profiles: Vec<ReviewProfileRender>,
+) -> ReviewImage {
+    ReviewImage {
+        id,
+        raw_path: PathBuf::from(raw),
+        sooc_sidecar_path: None,
+        relative_path: raw.trim_start_matches('/').to_string(),
+        file_name: Path::new(raw)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string(),
+        exif: GalleryExifData {
+            capture_timestamp: Some(capture_timestamp),
+            ..GalleryExifData::default()
+        },
+        preview: ReviewPreview::default(),
+        selected_profile_index,
+        rating,
+        label: ReviewLabel::None,
+        labels: Vec::new(),
+        tags: Vec::new(),
+        notes: String::new(),
+        rating_source: ReviewMetadataSource::Default,
+        tags_source: ReviewMetadataSource::Default,
+        notes_source: ReviewMetadataSource::Default,
+        codex: ReviewCodexAnalysis::default(),
+        retouch: RetouchSettings::default(),
+        publish_profile_indexes: None,
+        profile_bw_filters: Vec::new(),
+        profiles,
+        updated_at: now_string(),
+    }
+}
+
+#[test]
+fn render_priority_snapshot_orders_six_buckets_and_enforces_eligibility() {
+    let sampler_index = SAMPLER_PROFILE_INDEX_BASE;
+    let mut disabled = profile_render(2, "Disabled");
+    disabled.enabled = false;
+    let mut sooc = profile_render(SOOC_PROFILE_INDEX, SOOC_PROFILE_STEM);
+    sooc.enabled = false;
+    let current = priority_image(
+        10,
+        "/in/current.NEF",
+        100,
+        5,
+        sampler_index,
+        vec![
+            profile_render(0, "Classic"),
+            profile_render(sampler_index, "Sampler"),
+        ],
+    );
+    let visible = priority_image(
+        20,
+        "/in/visible.NEF",
+        200,
+        3,
+        2,
+        vec![
+            profile_render(0, "Classic"),
+            profile_render(1, "Fade"),
+            disabled,
+            sooc,
+        ],
+    );
+    let later_hidden = priority_image(
+        30,
+        "/in/later.NEF",
+        400,
+        1,
+        0,
+        vec![profile_render(0, "Classic"), profile_render(1, "Fade")],
+    );
+    let earlier_hidden = priority_image(
+        40,
+        "/in/earlier.NEF",
+        300,
+        1,
+        0,
+        vec![profile_render(0, "Classic"), profile_render(1, "Fade")],
+    );
+    let mut store = ReviewStore::new(Vec::new());
+    store.images = vec![later_hidden, visible, current, earlier_hidden];
+    store.ui = ReviewUiState {
+        current_image_id: Some(10),
+        min_rating: 3,
+    };
+
+    let priorities = store.render_priority_snapshot();
+    let ordered = [
+        priorities.key_for(Some(10), Some(sampler_index), 50),
+        priorities.key_for(Some(10), Some(0), 40),
+        priorities.key_for(Some(20), Some(0), 30),
+        priorities.key_for(Some(20), Some(1), 20),
+        priorities.key_for(Some(30), Some(0), 10),
+        priorities.key_for(Some(30), Some(1), 0),
+    ]
+    .into_iter()
+    .map(Option::unwrap)
+    .collect::<Vec<_>>();
+    assert!(ordered.windows(2).all(|pair| pair[0] < pair[1]));
+
+    assert!(priorities.key_for(Some(20), Some(2), 0).is_none());
+    assert!(
+        priorities
+            .key_for(Some(20), Some(SOOC_PROFILE_INDEX), 0)
+            .is_some()
+    );
+    assert!(
+        priorities.key_for(Some(20), None, 0).unwrap()
+            < priorities.key_for(Some(20), Some(1), 0).unwrap()
+    );
+    assert!(
+        priorities.key_for(Some(40), Some(0), 999).unwrap()
+            < priorities.key_for(Some(30), Some(0), 0).unwrap()
+    );
+
+    let captured_id = Some(10);
+    store
+        .images
+        .iter_mut()
+        .find(|image| image.id == 10)
+        .unwrap()
+        .raw_path = PathBuf::from("/in/current.dng");
+    let rebound = store.render_priority_snapshot();
+    assert!(
+        rebound
+            .key_for(captured_id, Some(sampler_index), 0)
+            .is_some()
+    );
+
+    store.ui.current_image_id = Some(20);
+    store
+        .images
+        .iter_mut()
+        .find(|image| image.id == 20)
+        .unwrap()
+        .selected_profile_index = SOOC_PROFILE_INDEX;
+    let selected_sooc = store.render_priority_snapshot();
+    assert!(
+        selected_sooc
+            .key_for(Some(20), Some(SOOC_PROFILE_INDEX), 100)
+            .unwrap()
+            < selected_sooc.key_for(Some(20), Some(0), 0).unwrap()
+    );
+
+    store.ui.current_image_id = Some(10);
+    store.ui.min_rating = 4;
+    store
+        .images
+        .iter_mut()
+        .find(|image| image.id == 40)
+        .unwrap()
+        .rating = 5;
+    let filtered = store.render_priority_snapshot();
+    assert!(
+        filtered.key_for(Some(40), Some(0), 100).unwrap()
+            < filtered
+                .key_for(Some(20), Some(SOOC_PROFILE_INDEX), 0)
+                .unwrap()
+    );
+    store
+        .images
+        .iter_mut()
+        .find(|image| image.id == 20)
+        .unwrap()
+        .rating = 5;
+    let rerated = store.render_priority_snapshot();
+    assert!(
+        rerated
+            .key_for(Some(20), Some(SOOC_PROFILE_INDEX), 100)
+            .unwrap()
+            < rerated.key_for(Some(40), Some(0), 0).unwrap()
+    );
+
+    store
+        .images
+        .push(priority_image(50, "/in/direct.JPG", 500, 0, 0, Vec::new()));
+    store.ui.current_image_id = Some(50);
+    let direct = store.render_priority_snapshot();
+    assert!(
+        direct.key_for(Some(50), None, 100).unwrap()
+            < direct
+                .key_for(Some(20), Some(SOOC_PROFILE_INDEX), 0)
+                .unwrap()
+    );
+}
+
 #[test]
 fn profile_bw_filter_eligibility_uses_combined_saturation() {
     let eligible = bw_profile(0, "BW", -60.0, -40.0);
@@ -959,6 +1154,57 @@ fn dng_rebind_keeps_review_identity_and_user_data_in_sqlite() {
         original.profiles[0].profile_index
     );
     assert_eq!(restored.profiles[0].enabled, original.profiles[0].enabled);
+}
+
+#[test]
+fn stable_image_render_updates_follow_dng_rebind_without_creating_a_ghost_image() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let nef = input.join("one.NEF");
+    let dng = input.join("one.dng");
+    let rendered = output.join("Classic/one.jpg");
+    fs::write(&nef, b"unsupported nef").unwrap();
+    fs::write(&dng, b"validated dng").unwrap();
+    fs::create_dir_all(rendered.parent().unwrap()).unwrap();
+    fs::write(&rendered, b"rendered").unwrap();
+
+    let handle = test_handle(input, output, vec![profile(0, "Classic")]);
+    handle.record_discovered_raw(&nef).unwrap();
+    handle.record_profile_queued(&nef, 0, &rendered).unwrap();
+    assert!(handle.rebind_raw_source(&nef, &dng).unwrap());
+    assert_eq!(
+        handle.review_raw_for_image_id(1).as_deref(),
+        Some(dng.as_path())
+    );
+
+    handle.record_profile_processing_for_image(1, 0).unwrap();
+    handle
+        .record_profile_done_with_dcp_for_image(1, 0, &rendered, Duration::from_millis(10), None)
+        .unwrap();
+
+    let store = handle.store_snapshot();
+    assert_eq!(store.images.len(), 1);
+    assert_eq!(store.images[0].id, 1);
+    assert_eq!(store.images[0].raw_path, dng);
+    assert_eq!(store.images[0].profiles[0].status, ReviewRenderStatus::Done);
+    drop(store);
+
+    handle
+        .update_store(|store| {
+            let render = &mut store.images[0].profiles[0];
+            render.status = ReviewRenderStatus::Queued;
+            render.render_key = Some("retouch-after-rebind".to_string());
+            Ok(())
+        })
+        .unwrap();
+    let snapshot = handle
+        .retouch_task_snapshot(1, 0, "retouch-after-rebind")
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot.raw, dng);
 }
 
 #[test]
@@ -3129,7 +3375,9 @@ fn queued_missing_output_reuses_saved_retouch_settings() {
     handle
         .record_profile_done(&raw, 0, &rendered, Duration::from_millis(42))
         .unwrap();
-    let job = handle.retouch_scheduler.next_job();
+    let job = handle
+        .retouch_scheduler
+        .next_job(|| handle.render_priority_snapshot());
     assert_eq!(job.raw, raw);
     assert_eq!(job.profile_index, Some(0));
     assert_eq!(job.output, rendered);
@@ -3248,26 +3496,182 @@ fn review_update_enables_sampler_profile_and_aligns_publish_selection() {
 }
 
 #[test]
-fn retouch_scheduler_coalesces_same_raw_profile_to_latest_job() {
+fn disabling_queued_profile_marks_it_missing_and_unschedulable() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let raw = input.join("frame.NEF");
+    fs::write(&raw, b"raw").unwrap();
+    let handle = test_handle(
+        input,
+        output.clone(),
+        vec![profile(0, "Classic"), profile(1, "Fade")],
+    );
+    handle.record_discovered_raw(&raw).unwrap();
+    handle
+        .record_profile_queued(&raw, 1, &output.join("Fade/frame.jpg"))
+        .unwrap();
+
+    handle
+        .apply_review_update(ReviewUpdateRequest {
+            image_id: 1,
+            rating: 0,
+            label: ReviewLabel::None,
+            labels: Vec::new(),
+            tags: Vec::new(),
+            notes: String::new(),
+            retouch: None,
+            selected_profile_index: Some(0),
+            publish_profile_indexes: Some(vec![0]),
+            enabled_profile_indexes: Some(vec![0]),
+            profile_bw_filters: None,
+            advance_after_update: false,
+        })
+        .unwrap();
+
+    let store = handle.store_snapshot();
+    let disabled = store.images[0]
+        .profiles
+        .iter()
+        .find(|render| render.profile_index == 1)
+        .unwrap();
+    assert!(!disabled.enabled);
+    assert_eq!(disabled.status, ReviewRenderStatus::Missing);
+    assert_eq!(disabled.render_key, None);
+    assert!(
+        handle
+            .render_priority_snapshot()
+            .key_for(Some(1), Some(1), 0)
+            .is_none()
+    );
+    assert!(
+        !handle
+            .record_profile_queued(&raw, 1, &output.join("Fade/frame.jpg"))
+            .unwrap()
+    );
+    assert_eq!(
+        handle.store_snapshot().images[0].profiles[1].status,
+        ReviewRenderStatus::Missing
+    );
+
+    handle
+        .update_store(|store| {
+            let render = store.images[0]
+                .profiles
+                .iter_mut()
+                .find(|render| render.profile_index == 1)
+                .unwrap();
+            render.enabled = true;
+            render.status = ReviewRenderStatus::Processing;
+            render.render_key = Some("active-retouch".to_string());
+            store.set_profile_enabled_for_image(1, 1, false)?;
+            Ok(())
+        })
+        .unwrap();
+    let store = handle.store_snapshot();
+    let disabled = store.images[0]
+        .profiles
+        .iter()
+        .find(|render| render.profile_index == 1)
+        .unwrap();
+    assert!(!disabled.enabled);
+    assert_eq!(disabled.status, ReviewRenderStatus::Missing);
+    assert_eq!(disabled.render_key, None);
+}
+
+#[test]
+fn retouch_scheduler_reorders_due_jobs_from_fresh_review_state() {
+    let mut disabled = profile_render(2, "Disabled");
+    disabled.enabled = false;
+    let mut store = ReviewStore::new(Vec::new());
+    store.images = vec![
+        priority_image(
+            1,
+            "/in/first.NEF",
+            100,
+            5,
+            1,
+            vec![profile_render(0, "Classic"), profile_render(1, "Fade")],
+        ),
+        priority_image(
+            2,
+            "/in/second.NEF",
+            200,
+            5,
+            0,
+            vec![
+                profile_render(0, "Classic"),
+                profile_render(1, "Fade"),
+                disabled,
+            ],
+        ),
+    ];
+    store.ui = ReviewUiState {
+        current_image_id: Some(1),
+        min_rating: 0,
+    };
+    let scheduler = ReviewRetouchScheduler::default();
+    for (image_id, raw, profile_index) in [
+        (2, "/in/second.NEF", Some(0)),
+        (1, "/in/first.NEF", Some(0)),
+        (1, "/in/first.NEF", Some(1)),
+        (2, "/in/second.NEF", Some(2)),
+    ] {
+        scheduler.schedule_after(
+            ReviewRetouchRequest {
+                image_id,
+                raw: PathBuf::from(raw),
+                profile_index,
+                output: PathBuf::from(format!("{raw}-{profile_index:?}.jpg")),
+                render_key: format!("{raw}-{profile_index:?}"),
+            },
+            Duration::ZERO,
+        );
+    }
+
+    let first = scheduler.next_job(|| store.render_priority_snapshot());
+    assert_eq!((first.image_id, first.profile_index), (1, Some(1)));
+
+    store.ui.current_image_id = Some(2);
+    let second = scheduler.next_job(|| store.render_priority_snapshot());
+    assert_eq!((second.image_id, second.profile_index), (2, Some(0)));
+    let third = scheduler.next_job(|| store.render_priority_snapshot());
+    assert_eq!((third.image_id, third.profile_index), (1, Some(0)));
+    assert!(scheduler.pending.load_full().is_empty());
+}
+
+#[test]
+fn retouch_scheduler_coalesces_stable_image_profile_to_latest_job() {
     let scheduler = ReviewRetouchScheduler::default();
     scheduler.schedule_after(
-        PathBuf::from("frame.NEF"),
-        Some(1),
-        PathBuf::from("old.jpg"),
-        "old".to_string(),
+        ReviewRetouchRequest {
+            image_id: 7,
+            raw: PathBuf::from("frame.NEF"),
+            profile_index: Some(1),
+            output: PathBuf::from("old.jpg"),
+            render_key: "old".to_string(),
+        },
         Duration::ZERO,
     );
     scheduler.schedule_after(
-        PathBuf::from("frame.NEF"),
-        Some(1),
-        PathBuf::from("new.jpg"),
-        "new".to_string(),
+        ReviewRetouchRequest {
+            image_id: 7,
+            raw: PathBuf::from("frame.dng"),
+            profile_index: Some(1),
+            output: PathBuf::from("new.jpg"),
+            render_key: "new".to_string(),
+        },
         Duration::ZERO,
     );
 
-    let job = scheduler.next_job();
+    assert_eq!(scheduler.pending.load_full().len(), 1);
+    let priorities = ReviewStore::new(Vec::new()).render_priority_snapshot();
+    let job = scheduler.next_job(|| priorities.clone());
 
-    assert_eq!(job.raw, PathBuf::from("frame.NEF"));
+    assert_eq!(job.image_id, 7);
+    assert_eq!(job.raw, PathBuf::from("frame.dng"));
     assert_eq!(job.profile_index, Some(1));
     assert_eq!(job.output, PathBuf::from("new.jpg"));
     assert_eq!(job.render_key, "new");

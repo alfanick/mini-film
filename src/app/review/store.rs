@@ -1,5 +1,6 @@
 use super::model::*;
 use super::prelude::*;
+use super::scheduler::{ReviewRenderPriorityImage, ReviewRenderPrioritySnapshot};
 
 const SOOC_RENDER_PIPELINE_KEY: &str = "sooc-managed-symlink-v3";
 const PROFILED_COMPRESSED_RENDER_PIPELINE_KEY: &str =
@@ -556,6 +557,51 @@ impl ReviewStore {
         sort_review_image_refs(&mut images);
         images.into_iter().map(|image| image.id).collect()
     }
+
+    pub(super) fn render_priority_snapshot(&self) -> ReviewRenderPrioritySnapshot {
+        let mut ordered = self.images.iter().collect::<Vec<_>>();
+        sort_review_image_refs(&mut ordered);
+        let mut images = HashMap::with_capacity(ordered.len());
+        for (order, image) in ordered.into_iter().enumerate() {
+            let enabled_profile_indexes = image
+                .profiles
+                .iter()
+                .filter(|render| render.profile_index != SOOC_PROFILE_INDEX && render.enabled)
+                .map(|render| render.profile_index)
+                .collect::<HashSet<_>>();
+            let sooc_available = image
+                .profiles
+                .iter()
+                .any(|render| render.profile_index == SOOC_PROFILE_INDEX);
+            let selected_is_available = if image.selected_profile_index == SOOC_PROFILE_INDEX {
+                sooc_available
+            } else {
+                enabled_profile_indexes.contains(&image.selected_profile_index)
+            };
+            let main_profile_index = selected_is_available
+                .then_some(image.selected_profile_index)
+                .or_else(|| {
+                    image
+                        .profiles
+                        .iter()
+                        .find(|render| render.profile_index == SOOC_PROFILE_INDEX || render.enabled)
+                        .map(|render| render.profile_index)
+                });
+            images.insert(
+                image.id,
+                ReviewRenderPriorityImage {
+                    order,
+                    visible: image.rating >= self.ui.min_rating,
+                    main_profile_index,
+                    enabled_profile_indexes,
+                },
+            );
+        }
+        ReviewRenderPrioritySnapshot {
+            current_image_id: self.ui.current_image_id,
+            images,
+        }
+    }
 }
 
 fn review_profiles_match(left: &ReviewProfile, right: &ReviewProfile) -> bool {
@@ -603,7 +649,14 @@ fn set_image_profile_enabled(
     let newly_enabled = enabled && !render.enabled;
     render.enabled = enabled;
     if !enabled {
+        let queued_or_retouch_processing = render.status == ReviewRenderStatus::Queued
+            || (render.status == ReviewRenderStatus::Processing && render.render_key.is_some());
         render.render_key = None;
+        if queued_or_retouch_processing {
+            render.status = ReviewRenderStatus::Missing;
+            render.error = None;
+            render.duration_ms = None;
+        }
     }
 
     let mut publish = image

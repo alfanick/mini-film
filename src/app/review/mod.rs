@@ -24,3 +24,4 @@ pub(crate) use model::{
     ReviewPublishCommandArgs, SOOC_PROFILE_INDEX, SOOC_PROFILE_STEM, review_profile_identity,
 };
 pub(crate) use publish::run_review_publish;
+pub(crate) use scheduler::{ReviewRenderPriorityKey, ReviewRenderPrioritySnapshot};
