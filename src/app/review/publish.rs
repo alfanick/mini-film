@@ -218,6 +218,13 @@ where
     if args.no_grain {
         command.arg("--no-grain");
     }
+    if let Some(reference_mpix) = args.normalize_grain_mpix {
+        command
+            .arg("--normalize-grain")
+            .arg(reference_mpix.to_string());
+    } else {
+        command.arg("--no-normalize-grain");
+    }
     if args.lens_corrections.is_enabled() {
         command
             .arg("--lens-corrections")
@@ -338,6 +345,7 @@ pub(super) fn publish_review_state(
         grain_preset: args.grain_preset.clone(),
         grain_seed: args.grain_seed,
         grain_engine: args.grain_engine,
+        normalize_grain_mpix: args.normalize_grain_mpix,
         write_metadata: true,
     };
     let mut report = publish_store_inner(&store, &input_root, &output_root, &options, progress)?;
@@ -758,6 +766,7 @@ pub(super) fn rerender_review_output(
         convert: options.convert.clone(),
         keep_intermediate: None,
         no_grain: options.no_grain,
+        normalize_grain_mpix: options.normalize_grain_mpix,
         color_noise_iso_threshold: options.color_noise_iso_threshold,
         lens_corrections: options.lens_corrections,
         grain: options.grain.clone(),

@@ -487,6 +487,7 @@ fn test_handle(input: PathBuf, output: PathBuf, profiles: Vec<ReviewProfile>) ->
         grain_preset: None,
         grain_seed: Some(1),
         grain_engine: mini_film::GrainEngine::default(),
+        normalize_grain_mpix: Some(mini_film::DEFAULT_GRAIN_REFERENCE_MPIX),
         publish_defaults: ReviewPublishDefaults::new(
             "published".to_string(),
             BatchOutputFormat::Jpg,
@@ -497,6 +498,7 @@ fn test_handle(input: PathBuf, output: PathBuf, profiles: Vec<ReviewProfile>) ->
                 columns: 4,
             },
             mini_film::GrainEngine::default(),
+            Some(mini_film::DEFAULT_GRAIN_REFERENCE_MPIX),
         ),
         publish_jobs: Arc::new(ArcSwap::from_pointee(Vec::new())),
         next_publish_job_id: Arc::new(AtomicU64::new(1)),
@@ -558,6 +560,7 @@ fn test_publish_options(album: &str) -> ReviewPublishOptions {
         grain_preset: None,
         grain_seed: Some(1),
         grain_engine: mini_film::GrainEngine::default(),
+        normalize_grain_mpix: Some(mini_film::DEFAULT_GRAIN_REFERENCE_MPIX),
         write_metadata: false,
     }
 }
@@ -724,6 +727,41 @@ fn scheduled_profile_completion_records_dcp_provenance() {
 }
 
 #[test]
+fn requeued_profile_keeps_dcp_provenance_visible() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let raw = input.join("frame.NEF");
+    let rendered = output.join("Classic").join("frame.jpg");
+    fs::write(&raw, b"raw").unwrap();
+    fs::create_dir_all(rendered.parent().unwrap()).unwrap();
+    fs::write(&rendered, b"rendered").unwrap();
+    let handle = test_handle(input, output, vec![profile(0, "Classic")]);
+
+    handle.record_discovered_raw(&raw).unwrap();
+    handle.record_profile_queued(&raw, 0, &rendered).unwrap();
+    handle
+        .record_profile_done_with_dcp(
+            &raw,
+            0,
+            &rendered,
+            Duration::from_millis(42),
+            Some("Nikon Z 7 2 Adobe Standard.dcp"),
+        )
+        .unwrap();
+    handle.record_profile_queued(&raw, 0, &rendered).unwrap();
+
+    let store = handle.store_snapshot();
+    let image = &store.images[0];
+    assert_eq!(
+        effective_dcp_profile_filename(image, &image.profiles[0]),
+        Some("Nikon Z 7 2 Adobe Standard.dcp")
+    );
+}
+
+#[test]
 fn dcp_provenance_fallback_is_limited_to_current_raw_profile_renders() {
     let mut store = fully_populated_review_store();
     let image = &mut store.images[0];
@@ -732,6 +770,7 @@ fn dcp_provenance_fallback_is_limited_to_current_raw_profile_renders() {
     known.render_key = None;
     known.processing_key = Some("raw-dcp-key".to_string());
     let mut sidebar_render = profile_render(9, "Sidebar Film");
+    sidebar_render.status = ReviewRenderStatus::Queued;
     sidebar_render.processing_key = Some("raw-dcp-key".to_string());
     image.profiles.push(sidebar_render);
 
@@ -920,6 +959,45 @@ fn dng_rebind_keeps_review_identity_and_user_data_in_sqlite() {
         original.profiles[0].profile_index
     );
     assert_eq!(restored.profiles[0].enabled, original.profiles[0].enabled);
+}
+
+#[test]
+fn dng_rebind_does_not_hide_a_changed_grain_normalization_key() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    fs::create_dir_all(&input).unwrap();
+    let nef = input.join("one.NEF");
+    let dng = input.join("one.dng");
+    fs::write(&nef, b"unsupported nef").unwrap();
+    fs::write(&dng, b"validated dng").unwrap();
+    let profiles = vec![profile(0, "Classic")];
+    let mut store = ReviewStore::new(profiles.clone());
+    let old_processing_key =
+        review_render_processing_key_for_input_with_normalization(&nef, 0, Some(12.0));
+    {
+        let image = store.ensure_image(&input, &nef).unwrap();
+        image.profiles[0].status = ReviewRenderStatus::Done;
+        image.profiles[0].processing_key = Some(old_processing_key.clone());
+    }
+
+    store.normalize_grain_mpix = Some(24.0);
+    assert!(store.rebind_raw_source(&input, &nef, &dng).unwrap());
+    assert_eq!(
+        store.images[0].profiles[0].processing_key.as_deref(),
+        Some(
+            review_render_processing_key_for_input_with_normalization(&dng, 0, Some(24.0)).as_str()
+        )
+    );
+    assert_eq!(
+        store.images[0].profiles[0].status,
+        ReviewRenderStatus::Missing
+    );
+
+    store.sync_profiles(profiles);
+    assert_eq!(
+        store.images[0].profiles[0].status,
+        ReviewRenderStatus::Missing
+    );
 }
 
 #[test]
@@ -1225,20 +1303,85 @@ fn sync_profiles_invalidates_renders_from_old_processing_pipeline() {
 
 #[test]
 fn rendered_profile_processing_keys_track_input_sharpening_policy() {
+    let normalization = grain_normalization_identity(Some(mini_film::DEFAULT_GRAIN_REFERENCE_MPIX));
     for input in [Path::new("frame.jpg"), Path::new("frame.HEIC")] {
         assert_eq!(
             review_render_processing_key_for_input(input, 0),
-            "profiled-compressed-render-v4-local-contrast"
+            format!("profiled-compressed-render-v5-normalized-grain:{normalization}")
         );
     }
     assert_eq!(
         review_render_processing_key_for_input(Path::new("frame.NEF"), 0),
-        format!("{RAW_RENDER_PIPELINE_KEY}:dcp-none")
+        format!("{RAW_RENDER_PIPELINE_KEY}:dcp-none:{normalization}")
     );
     assert_eq!(
         review_render_processing_key_for_input(Path::new("frame.TIFF"), 0),
-        "profiled-tiff-render-v2-local-contrast"
+        format!("profiled-tiff-render-v3-normalized-grain:{normalization}")
     );
+}
+
+#[test]
+fn rendered_profile_processing_keys_track_grain_normalization() {
+    for input in [
+        Path::new("frame.jpg"),
+        Path::new("frame.NEF"),
+        Path::new("frame.TIFF"),
+    ] {
+        let default =
+            review_render_processing_key_for_input_with_normalization(input, 0, Some(12.0));
+        let custom =
+            review_render_processing_key_for_input_with_normalization(input, 0, Some(24.0));
+        let disabled = review_render_processing_key_for_input_with_normalization(input, 0, None);
+        assert_ne!(default, custom);
+        assert_ne!(default, disabled);
+        assert_ne!(custom, disabled);
+
+        assert_eq!(
+            review_render_processing_key_for_input_with_normalization(
+                input,
+                SOOC_PROFILE_INDEX,
+                Some(12.0),
+            ),
+            review_render_processing_key_for_input_with_normalization(
+                input,
+                SOOC_PROFILE_INDEX,
+                None,
+            ),
+        );
+    }
+}
+
+#[test]
+fn profiled_retouch_cache_keys_track_grain_normalization() {
+    let retouch = RetouchSettings {
+        adjustments: BasicRetouchAdjustments {
+            exposure: 0.25,
+            ..BasicRetouchAdjustments::default()
+        },
+        ..RetouchSettings::default()
+    };
+    let default = profile_render_key_value(
+        &retouch,
+        RetouchWhiteBalance::default(),
+        BwFilter::None,
+        Some(12.0),
+    );
+    let custom = profile_render_key_value(
+        &retouch,
+        RetouchWhiteBalance::default(),
+        BwFilter::None,
+        Some(24.0),
+    );
+    let disabled = profile_render_key_value(
+        &retouch,
+        RetouchWhiteBalance::default(),
+        BwFilter::None,
+        None,
+    );
+
+    assert_ne!(default, custom);
+    assert_ne!(default, disabled);
+    assert_ne!(custom, disabled);
 }
 
 #[test]
@@ -2735,7 +2878,12 @@ fn base_render_done_uses_cached_retouch_output_without_scheduling() {
         ..RetouchSettings::default()
     }
     .normalized();
-    let expected_key = saved_retouch.render_key();
+    let expected_key = profile_render_key_value(
+        &saved_retouch,
+        RetouchWhiteBalance::default(),
+        BwFilter::None,
+        Some(mini_film::DEFAULT_GRAIN_REFERENCE_MPIX),
+    );
     let cached = retouch_cache_output(
         &rendered,
         &expected_key,
@@ -2860,9 +3008,15 @@ fn cached_retouch_output_is_current_for_its_base_profile() {
         ..RetouchSettings::default()
     }
     .normalized();
+    let render_key = profile_render_key_value(
+        &saved_retouch,
+        RetouchWhiteBalance::default(),
+        BwFilter::None,
+        Some(mini_film::DEFAULT_GRAIN_REFERENCE_MPIX),
+    );
     let cached = retouch_cache_output(
         &rendered,
-        &saved_retouch.render_key(),
+        &render_key,
         handle.output_root(),
         handle.cache_root(),
     );
@@ -2890,6 +3044,38 @@ fn cached_retouch_output_is_current_for_its_base_profile() {
 }
 
 #[test]
+fn missing_profile_render_does_not_adopt_a_stale_base_output() {
+    let temp = tempfile::tempdir().unwrap();
+    let output_root = temp.path().join("out");
+    let cache_root = temp.path().join("cache");
+    let output = output_root.join("Classic").join("frame.jpg");
+    fs::create_dir_all(output.parent().unwrap()).unwrap();
+    fs::write(&output, b"stale base render").unwrap();
+    let mut render = profile_render(0, "Classic");
+    render.status = ReviewRenderStatus::Missing;
+
+    assert!(!apply_cached_profile_output(
+        &mut render,
+        &output,
+        "normalized-grain-key",
+        true,
+        &output_root,
+        &cache_root,
+    ));
+    assert_eq!(render.status, ReviewRenderStatus::Missing);
+
+    render.status = ReviewRenderStatus::Done;
+    assert!(apply_cached_profile_output(
+        &mut render,
+        &output,
+        "normalized-grain-key",
+        true,
+        &output_root,
+        &cache_root,
+    ));
+}
+
+#[test]
 fn queued_missing_output_reuses_saved_retouch_settings() {
     let temp = tempfile::tempdir().unwrap();
     let input = temp.path().join("in");
@@ -2911,7 +3097,12 @@ fn queued_missing_output_reuses_saved_retouch_settings() {
         ..RetouchSettings::default()
     }
     .normalized();
-    let expected_key = saved_retouch.render_key();
+    let expected_key = profile_render_key_value(
+        &saved_retouch,
+        RetouchWhiteBalance::default(),
+        BwFilter::None,
+        Some(mini_film::DEFAULT_GRAIN_REFERENCE_MPIX),
+    );
     {
         handle
             .update_store(|store| {
@@ -2967,6 +3158,7 @@ fn review_update_uses_cached_bw_filter_output_without_scheduling() {
         &RetouchSettings::default(),
         RetouchWhiteBalance::default(),
         BwFilter::Yellow,
+        Some(mini_film::DEFAULT_GRAIN_REFERENCE_MPIX),
     );
     let cached = retouch_cache_output(
         &rendered,
@@ -3360,6 +3552,10 @@ fn review_state_publish_defaults_include_daemon_grain_engine() {
         state["publish_defaults"]["grain_engine"],
         mini_film::GrainEngine::default().to_string()
     );
+    assert_eq!(
+        state["publish_defaults"]["normalize_grain_mpix"],
+        mini_film::DEFAULT_GRAIN_REFERENCE_MPIX
+    );
 }
 
 #[test]
@@ -3388,6 +3584,85 @@ fn publish_args_rerender_when_publish_grain_engine_differs_from_daemon() {
         .unwrap();
     assert!(changed.rerender_raw);
     assert_eq!(changed.grain_engine, mini_film::GrainEngine::Rfgr);
+}
+
+#[test]
+fn publish_args_rerender_when_grain_normalization_differs_from_daemon() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+
+    let handle = test_handle(input, output, vec![profile(0, "Classic")]);
+    let inherited = handle
+        .publish_args_from_request(&PublishRequest::default())
+        .unwrap();
+    assert!(!inherited.rerender_raw);
+    assert_eq!(
+        inherited.normalize_grain_mpix,
+        Some(mini_film::DEFAULT_GRAIN_REFERENCE_MPIX)
+    );
+
+    let matching = handle
+        .publish_args_from_request(&PublishRequest {
+            normalize_grain: Some(true),
+            normalize_grain_mpix: Some(mini_film::DEFAULT_GRAIN_REFERENCE_MPIX),
+            ..PublishRequest::default()
+        })
+        .unwrap();
+    assert!(!matching.rerender_raw);
+
+    let omitted_enablement = handle
+        .publish_args_from_request(&PublishRequest {
+            normalize_grain_mpix: Some(24.5),
+            ..PublishRequest::default()
+        })
+        .unwrap();
+    assert!(!omitted_enablement.rerender_raw);
+    assert_eq!(
+        omitted_enablement.normalize_grain_mpix,
+        Some(mini_film::DEFAULT_GRAIN_REFERENCE_MPIX)
+    );
+
+    let custom = handle
+        .publish_args_from_request(&PublishRequest {
+            normalize_grain: Some(true),
+            normalize_grain_mpix: Some(24.5),
+            ..PublishRequest::default()
+        })
+        .unwrap();
+    assert!(custom.rerender_raw);
+    assert_eq!(custom.normalize_grain_mpix, Some(24.5));
+
+    let disabled = handle
+        .publish_args_from_request(&PublishRequest {
+            normalize_grain: Some(false),
+            normalize_grain_mpix: Some(24.5),
+            ..PublishRequest::default()
+        })
+        .unwrap();
+    assert!(disabled.rerender_raw);
+    assert_eq!(disabled.normalize_grain_mpix, None);
+
+    assert!(
+        handle
+            .publish_args_from_request(&PublishRequest {
+                normalize_grain: Some(false),
+                normalize_grain_mpix: Some(0.0),
+                ..PublishRequest::default()
+            })
+            .is_ok()
+    );
+    assert!(
+        handle
+            .publish_args_from_request(&PublishRequest {
+                normalize_grain: Some(true),
+                normalize_grain_mpix: Some(0.0),
+                ..PublishRequest::default()
+            })
+            .is_err()
+    );
 }
 
 #[test]

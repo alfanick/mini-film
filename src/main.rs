@@ -12,6 +12,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::Parser;
+use mini_film::DEFAULT_GRAIN_REFERENCE_MPIX;
 
 use crate::app::apply::{ApplyArgs, run_apply};
 use crate::app::batch::{BatchArgs, run_batch};
@@ -113,6 +114,8 @@ fn main() -> Result<()> {
             convert,
             keep_intermediate,
             no_grain,
+            normalize_grain,
+            no_normalize_grain,
             color_noise_iso_threshold,
             lens_corrections,
             lcp_root,
@@ -140,6 +143,7 @@ fn main() -> Result<()> {
             convert,
             keep_intermediate,
             no_grain,
+            normalize_grain_mpix: resolve_grain_normalization(normalize_grain, no_normalize_grain),
             lens_corrections: lens_corrections.unwrap_or_default(),
             lcp_root: resolve_lcp_root(lcp_root),
             color_noise_iso_threshold,
@@ -203,6 +207,8 @@ fn main() -> Result<()> {
             dng_fallback,
             convert,
             no_grain,
+            normalize_grain,
+            no_normalize_grain,
             color_noise_iso_threshold,
             lens_corrections,
             lcp_root,
@@ -237,6 +243,7 @@ fn main() -> Result<()> {
             dng_fallback: resolve_dng_fallback(dng_fallback),
             convert,
             no_grain,
+            normalize_grain_mpix: resolve_grain_normalization(normalize_grain, no_normalize_grain),
             lens_corrections: lens_corrections.unwrap_or_default(),
             lcp_root: resolve_lcp_root(lcp_root),
             color_noise_iso_threshold,
@@ -271,6 +278,8 @@ fn main() -> Result<()> {
             dng_fallback,
             convert,
             no_grain,
+            normalize_grain,
+            no_normalize_grain,
             color_noise_iso_threshold,
             lens_corrections,
             lcp_root,
@@ -318,6 +327,7 @@ fn main() -> Result<()> {
             dng_fallback: resolve_dng_fallback(dng_fallback),
             convert,
             no_grain,
+            normalize_grain_mpix: resolve_grain_normalization(normalize_grain, no_normalize_grain),
             lens_corrections: lens_corrections.unwrap_or_default(),
             lcp_root: resolve_lcp_root(lcp_root),
             color_noise_iso_threshold,
@@ -366,6 +376,8 @@ fn main() -> Result<()> {
             convert,
             montage: _,
             no_grain,
+            normalize_grain,
+            no_normalize_grain,
             color_noise_iso_threshold,
             lens_corrections,
             lcp_root,
@@ -389,6 +401,7 @@ fn main() -> Result<()> {
             dng_fallback: resolve_dng_fallback(dng_fallback),
             convert,
             no_grain,
+            normalize_grain_mpix: resolve_grain_normalization(normalize_grain, no_normalize_grain),
             lens_corrections: lens_corrections.unwrap_or_default(),
             lcp_root: resolve_lcp_root(lcp_root),
             color_noise_iso_threshold,
@@ -432,6 +445,8 @@ fn main() -> Result<()> {
             progressive_jpeg,
             rerender_raw,
             no_grain,
+            normalize_grain,
+            no_normalize_grain,
             color_noise_iso_threshold,
             lens_corrections,
             lcp_root,
@@ -472,6 +487,7 @@ fn main() -> Result<()> {
             },
             rerender_raw,
             no_grain,
+            normalize_grain_mpix: resolve_grain_normalization(normalize_grain, no_normalize_grain),
             color_noise_iso_threshold,
             lens_corrections: lens_corrections.unwrap_or_default(),
             grain,
@@ -481,6 +497,17 @@ fn main() -> Result<()> {
             progress_events,
         }),
         CommandKind::Update => run_update(),
+    }
+}
+
+fn resolve_grain_normalization(
+    normalize_grain: Option<f64>,
+    no_normalize_grain: bool,
+) -> Option<f64> {
+    if no_normalize_grain {
+        None
+    } else {
+        Some(normalize_grain.unwrap_or(DEFAULT_GRAIN_REFERENCE_MPIX))
     }
 }
 
@@ -720,6 +747,16 @@ mod tests {
     fn explicit_flags_are_not_rewritten_to_app_command() {
         let args = args_with_default_command(vec!["mini-film".to_string(), "--help".to_string()]);
         assert_eq!(args, vec!["mini-film".to_string(), "--help".to_string()]);
+    }
+
+    #[test]
+    fn grain_normalization_resolves_default_custom_and_disabled_modes() {
+        assert_eq!(
+            resolve_grain_normalization(None, false),
+            Some(DEFAULT_GRAIN_REFERENCE_MPIX)
+        );
+        assert_eq!(resolve_grain_normalization(Some(24.5), false), Some(24.5));
+        assert_eq!(resolve_grain_normalization(Some(24.5), true), None);
     }
 
     #[test]

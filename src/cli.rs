@@ -176,6 +176,14 @@ pub(crate) enum CommandKind {
         #[arg(long)]
         no_grain: bool,
 
+        /// Normalize grain size for this reference image size in decimal megapixels. Defaults to 12 MPix.
+        #[arg(long, value_name = "MPIX", value_parser = parse_normalize_grain_mpix, conflicts_with = "no_normalize_grain")]
+        normalize_grain: Option<f64>,
+
+        /// Disable image-size normalization for grain.
+        #[arg(long, conflicts_with = "normalize_grain")]
+        no_normalize_grain: bool,
+
         /// Minimum raw ISO for enabling RawTherapee directional pyramid color noise.
         /// Use 0 to disable color-noise processing.
         #[arg(long, default_value_t = 1600)]
@@ -349,6 +357,14 @@ pub(crate) enum CommandKind {
         #[arg(long)]
         no_grain: bool,
 
+        /// Normalize grain size for this reference image size in decimal megapixels. Defaults to 12 MPix.
+        #[arg(long, value_name = "MPIX", value_parser = parse_normalize_grain_mpix, conflicts_with = "no_normalize_grain")]
+        normalize_grain: Option<f64>,
+
+        /// Disable image-size normalization for grain.
+        #[arg(long, conflicts_with = "normalize_grain")]
+        no_normalize_grain: bool,
+
         /// Minimum raw ISO for enabling RawTherapee directional pyramid color noise.
         /// Use 0 to disable color-noise processing.
         #[arg(long, default_value_t = 1600)]
@@ -488,6 +504,14 @@ pub(crate) enum CommandKind {
         #[arg(long)]
         no_grain: bool,
 
+        /// Normalize grain size for this reference image size in decimal megapixels. Defaults to 12 MPix.
+        #[arg(long, value_name = "MPIX", value_parser = parse_normalize_grain_mpix, conflicts_with = "no_normalize_grain")]
+        normalize_grain: Option<f64>,
+
+        /// Disable image-size normalization for grain.
+        #[arg(long, conflicts_with = "normalize_grain")]
+        no_normalize_grain: bool,
+
         /// Minimum raw ISO for enabling RawTherapee directional pyramid color noise.
         /// Use 0 to disable color-noise processing.
         #[arg(long, default_value_t = 1600)]
@@ -592,6 +616,14 @@ pub(crate) enum CommandKind {
         /// Disable Lightroom XMP grain emulation.
         #[arg(long)]
         no_grain: bool,
+
+        /// Normalize grain size for this reference image size in decimal megapixels. Defaults to 12 MPix.
+        #[arg(long, value_name = "MPIX", value_parser = parse_normalize_grain_mpix, conflicts_with = "no_normalize_grain")]
+        normalize_grain: Option<f64>,
+
+        /// Disable image-size normalization for grain.
+        #[arg(long, conflicts_with = "normalize_grain")]
+        no_normalize_grain: bool,
 
         /// Minimum raw ISO for enabling RawTherapee directional pyramid color noise.
         /// Use 0 to disable color-noise processing.
@@ -869,6 +901,14 @@ pub(crate) enum CommandKind {
         /// Disable Lightroom XMP grain emulation when rerendering RAWs.
         #[arg(long)]
         no_grain: bool,
+
+        /// Normalize grain size for this reference image size in decimal megapixels. Defaults to 12 MPix.
+        #[arg(long, value_name = "MPIX", value_parser = parse_normalize_grain_mpix, conflicts_with = "no_normalize_grain")]
+        normalize_grain: Option<f64>,
+
+        /// Disable image-size normalization for grain.
+        #[arg(long, conflicts_with = "normalize_grain")]
+        no_normalize_grain: bool,
 
         /// Minimum raw ISO for enabling RawTherapee directional pyramid color noise.
         /// Use 0 to disable color-noise processing.
@@ -1175,6 +1215,16 @@ fn parse_codex_analysis(raw: &str) -> Result<CodexAnalysisFlags, String> {
 
 fn parse_lens_corrections_arg(raw: &str) -> Result<LensCorrections, String> {
     parse_lens_corrections(raw)
+}
+
+fn parse_normalize_grain_mpix(raw: &str) -> Result<f64, String> {
+    let value = raw
+        .parse::<f64>()
+        .map_err(|_| format!("invalid grain normalization reference {raw:?}"))?;
+    if !value.is_finite() || value <= 0.0 {
+        return Err("grain normalization reference must be finite and greater than zero".into());
+    }
+    Ok(value)
 }
 
 fn parse_lens_corrections(raw: &str) -> Result<LensCorrections, String> {
@@ -1862,6 +1912,122 @@ mod tests {
         .to_string();
 
         assert!(error.contains("invalid value 'paper'"));
+    }
+
+    #[test]
+    fn cli_grain_normalization_defaults_and_accepts_custom_references() {
+        let apply = Cli::parse_from(["mini-film", "apply", "input.dng", "--output", "out.jpg"]);
+        assert!(matches!(
+            apply.command,
+            CommandKind::Apply {
+                normalize_grain: None,
+                no_normalize_grain: false,
+                ..
+            }
+        ));
+
+        let batch = Cli::parse_from([
+            "mini-film",
+            "batch",
+            "input-dir",
+            "output-dir",
+            "--normalize-grain",
+            "24.5",
+        ]);
+        assert!(matches!(
+            batch.command,
+            CommandKind::Batch {
+                normalize_grain: Some(value),
+                no_normalize_grain: false,
+                ..
+            } if value == 24.5
+        ));
+
+        let sampler = Cli::parse_from([
+            "mini-film",
+            "sampler",
+            "input.dng",
+            "--output",
+            "out.jpg",
+            "--no-normalize-grain",
+        ]);
+        assert!(matches!(
+            sampler.command,
+            CommandKind::Sampler {
+                normalize_grain: None,
+                no_normalize_grain: true,
+                ..
+            }
+        ));
+
+        let daemon = Cli::parse_from([
+            "mini-film",
+            "daemon",
+            "input-dir",
+            "output-dir",
+            "--normalize-grain",
+            "18",
+        ]);
+        assert!(matches!(
+            daemon.command,
+            CommandKind::BatchDaemon {
+                normalize_grain: Some(value),
+                ..
+            } if value == 18.0
+        ));
+
+        let publish = Cli::parse_from([
+            "mini-film",
+            "review-publish",
+            "--state",
+            "state.json",
+            "--input-root",
+            "in",
+            "--output-root",
+            "out",
+            "--album",
+            "published",
+            "--normalize-grain",
+            "6",
+        ]);
+        assert!(matches!(
+            publish.command,
+            CommandKind::ReviewPublish {
+                normalize_grain: Some(value),
+                ..
+            } if value == 6.0
+        ));
+    }
+
+    #[test]
+    fn cli_grain_normalization_rejects_conflicts_and_invalid_references() {
+        let conflict = Cli::try_parse_from([
+            "mini-film",
+            "apply",
+            "input.dng",
+            "--output",
+            "out.jpg",
+            "--normalize-grain",
+            "12",
+            "--no-normalize-grain",
+        ])
+        .unwrap_err();
+        assert_eq!(conflict.kind(), clap::error::ErrorKind::ArgumentConflict);
+
+        for value in ["0", "-1", "NaN", "inf"] {
+            let normalize_grain = format!("--normalize-grain={value}");
+            let error = Cli::try_parse_from([
+                "mini-film",
+                "apply",
+                "input.dng",
+                "--output",
+                "out.jpg",
+                &normalize_grain,
+            ])
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("finite and greater than zero"));
+        }
     }
 
     #[test]

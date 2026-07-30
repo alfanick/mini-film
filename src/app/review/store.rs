@@ -3,8 +3,9 @@ use super::prelude::*;
 
 const SOOC_RENDER_PIPELINE_KEY: &str = "sooc-managed-symlink-v3";
 const PROFILED_COMPRESSED_RENDER_PIPELINE_KEY: &str =
-    "profiled-compressed-render-v4-local-contrast";
-const PROFILED_TIFF_RENDER_PIPELINE_KEY: &str = "profiled-tiff-render-v2-local-contrast";
+    "profiled-compressed-render-v5-normalized-grain";
+const PROFILED_TIFF_RENDER_PIPELINE_KEY: &str = "profiled-tiff-render-v3-normalized-grain";
+const GRAIN_NORMALIZATION_PIPELINE_KEY: &str = "grain-normalization-v1";
 
 impl ReviewStore {
     const EXIF_SCHEMA_VERSION: u32 = 11;
@@ -16,6 +17,7 @@ impl ReviewStore {
             images: Vec::new(),
             ui: ReviewUiState::default(),
             exif_schema_version: Self::EXIF_SCHEMA_VERSION,
+            normalize_grain_mpix: default_review_normalize_grain_mpix(),
         }
     }
 
@@ -70,6 +72,7 @@ impl ReviewStore {
             .collect::<HashSet<_>>();
         self.profiles = profiles;
         let profiles = self.profiles.clone();
+        let normalize_grain_mpix = self.normalize_grain_mpix;
         for image in &mut self.images {
             normalize_review_metadata_sources(image);
             if matches!(
@@ -84,6 +87,7 @@ impl ReviewStore {
                 &profiles,
                 profiles_changed,
                 &unchanged_profile_indexes,
+                normalize_grain_mpix,
             );
         }
         self.merge_standalone_sooc_sidecars();
@@ -122,8 +126,15 @@ impl ReviewStore {
         self.profiles.push(profile);
 
         let profiles = self.profiles.clone();
+        let normalize_grain_mpix = self.normalize_grain_mpix;
         for image in &mut self.images {
-            sync_image_profile_renders(image, &profiles, false, &HashSet::new());
+            sync_image_profile_renders(
+                image,
+                &profiles,
+                false,
+                &HashSet::new(),
+                normalize_grain_mpix,
+            );
         }
         Ok(index)
     }
@@ -251,7 +262,13 @@ impl ReviewStore {
             profiles: Vec::new(),
             updated_at: now_string(),
         };
-        sync_image_profile_renders(&mut image, &self.profiles, false, &HashSet::new());
+        sync_image_profile_renders(
+            &mut image,
+            &self.profiles,
+            false,
+            &HashSet::new(),
+            self.normalize_grain_mpix,
+        );
         self.images.push(image);
         self.normalize_ui();
         let index = self.images.len() - 1;
@@ -336,10 +353,22 @@ impl ReviewStore {
             image.codex.updated_at = now_string();
         }
         for render in &mut image.profiles {
-            render.processing_key = Some(
-                review_render_processing_key_for_input(new_path, render.profile_index).to_string(),
+            let previous_processing_key = review_render_processing_key_for_input_with_normalization(
+                old_path,
+                render.profile_index,
+                self.normalize_grain_mpix,
             );
-            if render.status == ReviewRenderStatus::Failed {
+            let processing_key_matches =
+                render.processing_key.as_deref() == Some(previous_processing_key.as_str());
+            render.processing_key = Some(
+                review_render_processing_key_for_input_with_normalization(
+                    new_path,
+                    render.profile_index,
+                    self.normalize_grain_mpix,
+                )
+                .to_string(),
+            );
+            if !processing_key_matches || render.status == ReviewRenderStatus::Failed {
                 render.status = ReviewRenderStatus::Missing;
                 render.output_path = None;
                 render.error = None;
@@ -368,6 +397,7 @@ impl ReviewStore {
             return false;
         };
         let profiles = self.profiles.clone();
+        let normalize_grain_mpix = self.normalize_grain_mpix;
         let image = &mut self.images[raw_index];
         if image.sooc_sidecar_path.as_deref() == Some(sidecar) {
             return true;
@@ -376,7 +406,13 @@ impl ReviewStore {
             return false;
         }
         image.sooc_sidecar_path = Some(sidecar.to_path_buf());
-        sync_image_profile_renders(image, &profiles, false, &HashSet::new());
+        sync_image_profile_renders(
+            image,
+            &profiles,
+            false,
+            &HashSet::new(),
+            normalize_grain_mpix,
+        );
         image.updated_at = now_string();
         self.normalize_ui();
         true
@@ -391,6 +427,7 @@ impl ReviewStore {
             .map(|(index, image)| (index, image.raw_path.clone()))
             .collect::<Vec<_>>();
         let profiles = self.profiles.clone();
+        let normalize_grain_mpix = self.normalize_grain_mpix;
         let mut remove_ids = HashSet::new();
         let mut redirect_ids = HashMap::new();
 
@@ -416,7 +453,13 @@ impl ReviewStore {
             let raw = &mut self.images[raw_index];
             raw.sooc_sidecar_path = Some(sidecar.raw_path.clone());
             merge_sidecar_review_metadata(raw, &sidecar);
-            sync_image_profile_renders(raw, &profiles, false, &HashSet::new());
+            sync_image_profile_renders(
+                raw,
+                &profiles,
+                false,
+                &HashSet::new(),
+                normalize_grain_mpix,
+            );
             raw.updated_at = now_string();
             remove_ids.insert(sidecar.id);
             redirect_ids.insert(sidecar.id, raw.id);
@@ -842,6 +885,7 @@ pub(super) fn sync_image_profile_renders(
     profiles: &[ReviewProfile],
     profiles_changed: bool,
     unchanged_profile_indexes: &HashSet<usize>,
+    normalize_grain_mpix: Option<f64>,
 ) {
     let profiles_apply_to_compressed = profiles
         .iter()
@@ -867,8 +911,11 @@ pub(super) fn sync_image_profile_renders(
     image.profiles = profiles
         .iter()
         .map(|profile| {
-            let processing_key =
-                review_render_processing_key_for_input(&image.raw_path, profile.index);
+            let processing_key = review_render_processing_key_for_input_with_normalization(
+                &image.raw_path,
+                profile.index,
+                normalize_grain_mpix,
+            );
             existing
                 .get(&profile.index)
                 .filter(|render| {
@@ -895,7 +942,10 @@ pub(super) fn sync_image_profile_renders(
     let include_sooc_profile = image.sooc_sidecar_path.is_some()
         || (is_rendered_input_file(&image.raw_path) && profiles_apply_to_compressed);
     if include_sooc_profile {
-        let processing_key = review_render_processing_key(SOOC_PROFILE_INDEX);
+        let processing_key = review_render_processing_key_with_normalization(
+            SOOC_PROFILE_INDEX,
+            normalize_grain_mpix,
+        );
         image.profiles.push(
             existing
                 .get(&SOOC_PROFILE_INDEX)
@@ -950,11 +1000,39 @@ pub(super) fn sync_image_profile_renders(
         normalize_profile_bw_filters(&image.profile_bw_filters, &image.profiles);
 }
 
+#[cfg(test)]
 pub(super) fn review_render_processing_key(profile_index: usize) -> String {
-    review_render_processing_key_for_input(Path::new("image.raw"), profile_index)
+    review_render_processing_key_with_normalization(
+        profile_index,
+        default_review_normalize_grain_mpix(),
+    )
 }
 
+#[cfg(test)]
 pub(super) fn review_render_processing_key_for_input(input: &Path, profile_index: usize) -> String {
+    review_render_processing_key_for_input_with_normalization(
+        input,
+        profile_index,
+        default_review_normalize_grain_mpix(),
+    )
+}
+
+pub(super) fn review_render_processing_key_with_normalization(
+    profile_index: usize,
+    normalize_grain_mpix: Option<f64>,
+) -> String {
+    review_render_processing_key_for_input_with_normalization(
+        Path::new("image.raw"),
+        profile_index,
+        normalize_grain_mpix,
+    )
+}
+
+pub(super) fn review_render_processing_key_for_input_with_normalization(
+    input: &Path,
+    profile_index: usize,
+    normalize_grain_mpix: Option<f64>,
+) -> String {
     let base = if profile_index == SOOC_PROFILE_INDEX {
         SOOC_RENDER_PIPELINE_KEY
     } else if is_tiff_input_file(input) {
@@ -964,14 +1042,33 @@ pub(super) fn review_render_processing_key_for_input(input: &Path, profile_index
     } else {
         RAW_RENDER_PIPELINE_KEY
     };
-    if profile_index != SOOC_PROFILE_INDEX && is_raw_input_file(input) {
+    if profile_index == SOOC_PROFILE_INDEX {
+        return base.to_string();
+    }
+    let base = if is_raw_input_file(input) {
         format!(
             "{base}:{}",
             dcp_cache_identity(input, &crate::app::dng::DngFallbackConfig::default())
         )
     } else {
         base.to_string()
-    }
+    };
+    format!(
+        "{base}:{}",
+        grain_normalization_identity(normalize_grain_mpix)
+    )
+}
+
+pub(super) fn grain_normalization_identity(normalize_grain_mpix: Option<f64>) -> String {
+    normalize_grain_mpix.map_or_else(
+        || format!("{GRAIN_NORMALIZATION_PIPELINE_KEY}-off"),
+        |reference_mpix| {
+            format!(
+                "{GRAIN_NORMALIZATION_PIPELINE_KEY}-mpix-{:016x}",
+                reference_mpix.to_bits()
+            )
+        },
+    )
 }
 
 fn missing_profile_render(

@@ -5,8 +5,8 @@ use crate::app::dng::DngFallbackConfig;
 use crate::app::profile::{Pp3AdjustmentSection, ResolvedProfileMetadata};
 
 use mini_film::{
-    CalibrationAdjustments, GrainEngine, GrainSettings, HslAdjustments, ParametricTone,
-    ProfileAdjustments, SharpeningSettings, ToneCurves,
+    CalibrationAdjustments, DEFAULT_GRAIN_REFERENCE_MPIX, GrainEngine, GrainSettings,
+    HslAdjustments, ParametricTone, ProfileAdjustments, SharpeningSettings, ToneCurves,
 };
 
 pub(crate) const SOOC_PROFILE_INDEX: usize = 1_000_000_000;
@@ -39,6 +39,7 @@ pub(crate) struct ReviewConfig {
     pub(crate) grain_preset: Option<String>,
     pub(crate) grain_seed: Option<u64>,
     pub(crate) grain_engine: GrainEngine,
+    pub(crate) normalize_grain_mpix: Option<f64>,
     pub(crate) codex: Option<CodexAnalysisFlags>,
     pub(crate) codex_binary: PathBuf,
     pub(crate) codex_model: String,
@@ -441,6 +442,7 @@ pub(crate) struct ReviewHandle {
     pub(super) grain_preset: Option<String>,
     pub(super) grain_seed: Option<u64>,
     pub(super) grain_engine: GrainEngine,
+    pub(super) normalize_grain_mpix: Option<f64>,
     pub(super) publish_defaults: ReviewPublishDefaults,
     pub(super) publish_jobs: Arc<ArcSwap<Vec<ReviewPublishJob>>>,
     pub(super) next_publish_job_id: Arc<AtomicU64>,
@@ -612,6 +614,12 @@ pub(super) struct ReviewStore {
     pub(super) ui: ReviewUiState,
     #[serde(default)]
     pub(super) exif_schema_version: u32,
+    #[serde(skip, default = "default_review_normalize_grain_mpix")]
+    pub(super) normalize_grain_mpix: Option<f64>,
+}
+
+pub(super) const fn default_review_normalize_grain_mpix() -> Option<f64> {
+    Some(DEFAULT_GRAIN_REFERENCE_MPIX)
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -950,6 +958,10 @@ pub(super) struct PublishRequest {
     pub(super) gallery_columns: Option<u32>,
     #[serde(default)]
     pub(super) grain_engine: Option<String>,
+    #[serde(default)]
+    pub(super) normalize_grain: Option<bool>,
+    #[serde(default)]
+    pub(super) normalize_grain_mpix: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -991,6 +1003,7 @@ pub(crate) struct ReviewPublishCommandArgs {
     pub(crate) grain_preset: Option<String>,
     pub(crate) grain_seed: Option<u64>,
     pub(crate) grain_engine: GrainEngine,
+    pub(crate) normalize_grain_mpix: Option<f64>,
     pub(crate) progress_events: bool,
 }
 
@@ -1010,6 +1023,7 @@ pub(super) struct ReviewPublishDefaults {
     pub(super) gallery_thumbnail_long_edge: u32,
     pub(super) gallery_columns: u32,
     pub(super) grain_engine: String,
+    pub(super) normalize_grain_mpix: Option<f64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1070,6 +1084,7 @@ pub(super) struct ReviewPublishOptions {
     pub(super) grain_preset: Option<String>,
     pub(super) grain_seed: Option<u64>,
     pub(super) grain_engine: GrainEngine,
+    pub(super) normalize_grain_mpix: Option<f64>,
     pub(super) write_metadata: bool,
 }
 
@@ -1120,6 +1135,7 @@ impl ReviewPublishDefaults {
         export: &ExportOptions,
         gallery: ReviewGalleryDefaults,
         grain_engine: GrainEngine,
+        normalize_grain_mpix: Option<f64>,
     ) -> Self {
         Self {
             album,
@@ -1136,6 +1152,7 @@ impl ReviewPublishDefaults {
             gallery_thumbnail_long_edge: gallery.thumbnail_long_edge,
             gallery_columns: gallery.columns,
             grain_engine: grain_engine.to_string(),
+            normalize_grain_mpix,
         }
     }
 }

@@ -26,6 +26,7 @@ pub(crate) struct OutputEditMetadata<'a> {
     pub(crate) grain: GrainSettings,
     pub(crate) grain_seed: Option<u64>,
     pub(crate) grain_engine: Option<GrainEngine>,
+    pub(crate) normalize_grain_mpix: Option<f64>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
@@ -543,6 +544,10 @@ fn history_parameters(raw: &Path, edit: &OutputEditMetadata<'_>) -> String {
         if let Some(engine) = edit.grain_engine {
             parts.push(format!("grain_engine={engine}"));
         }
+        parts.push(edit.normalize_grain_mpix.map_or_else(
+            || "grain_normalize_mpix=off".to_string(),
+            |mpix| format!("grain_normalize_mpix={mpix}"),
+        ));
     } else {
         parts.push("grain=off".to_string());
     }
@@ -1879,6 +1884,7 @@ mod tests {
                 grain: GrainSettings::default(),
                 grain_seed: None,
                 grain_engine: None,
+                normalize_grain_mpix: None,
             };
             let mut command = Command::new("exiftool");
             add_edit_metadata_args(&mut command, Path::new("frame.jpg"), &edit);

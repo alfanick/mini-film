@@ -1197,6 +1197,7 @@ mod tests {
             convert: PathBuf::from("convert"),
             keep_intermediate: None,
             no_grain: false,
+            normalize_grain_mpix: Some(12.0),
             color_noise_iso_threshold: 1600,
             lens_corrections: LensCorrections::default(),
             lcp_root: None,

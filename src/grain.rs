@@ -2,12 +2,12 @@
 use std::simd::prelude::*;
 use std::{fs, path::Path};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use image::{DynamicImage, GenericImageView, ImageBuffer, ImageReader, Rgba};
 use noise::{NoiseFn, Perlin};
 use rayon::prelude::*;
 
-use crate::model::{GrainEngine, GrainSettings};
+use crate::model::{GrainEngine, GrainRenderOptions, GrainSettings};
 
 const KERNEL_LUT_SIZE: usize = 1024;
 const KERNEL_MAX_RADIUS2: f64 = 9.0;
@@ -20,7 +20,7 @@ const KERNEL_MAX_RADIUS2: f64 = 9.0;
 /// memory, and writes the result through the `image` crate. Keeping IO here and
 /// noise synthesis in `render_grain` makes the renderer easier to optimize.
 pub fn apply_grain(input: &Path, output: &Path, grain: GrainSettings, seed: u64) -> Result<()> {
-    apply_grain_with_engine(input, output, grain, seed, GrainEngine::default())
+    apply_grain_with_options(input, output, grain, seed, GrainRenderOptions::default())
 }
 
 pub fn apply_grain_with_engine(
@@ -30,6 +30,26 @@ pub fn apply_grain_with_engine(
     seed: u64,
     engine: GrainEngine,
 ) -> Result<()> {
+    apply_grain_with_options(
+        input,
+        output,
+        grain,
+        seed,
+        GrainRenderOptions {
+            engine,
+            ..GrainRenderOptions::default()
+        },
+    )
+}
+
+pub fn apply_grain_with_options(
+    input: &Path,
+    output: &Path,
+    grain: GrainSettings,
+    seed: u64,
+    options: GrainRenderOptions,
+) -> Result<()> {
+    validate_grain_render_options(options)?;
     if !grain.is_enabled() {
         fs::copy(input, output)
             .with_context(|| format!("copying {} to {}", input.display(), output.display()))?;
@@ -46,10 +66,14 @@ pub fn apply_grain_with_engine(
     let image = reader
         .decode()
         .with_context(|| format!("decoding {}", input.display()))?;
-    let grained = match engine {
-        GrainEngine::Rfgr => crate::grain_rfgr::render_grain(image, grain, seed)?,
-        GrainEngine::RfgrFast => crate::grain_rfgr::render_grain_fast(image, grain, seed)?,
-        GrainEngine::Legacy => render_legacy_grain(image, grain, seed)?,
+    let (width, height) = image.dimensions();
+    let spatial_scale = grain_spatial_scale(width, height, options.normalize_grain_mpix)?;
+    let grained = match options.engine {
+        GrainEngine::Rfgr => crate::grain_rfgr::render_grain(image, grain, seed, spatial_scale)?,
+        GrainEngine::RfgrFast => {
+            crate::grain_rfgr::render_grain_fast(image, grain, seed, spatial_scale)?
+        }
+        GrainEngine::Legacy => render_legacy_grain(image, grain, seed, spatial_scale)?,
     };
     grained
         .save(output)
@@ -69,7 +93,7 @@ pub fn apply_grain_8bit(
     grain: GrainSettings,
     seed: u64,
 ) -> Result<()> {
-    apply_grain_8bit_with_engine(input, output, grain, seed, GrainEngine::default())
+    apply_grain_8bit_with_options(input, output, grain, seed, GrainRenderOptions::default())
 }
 
 pub fn apply_grain_8bit_with_engine(
@@ -79,6 +103,26 @@ pub fn apply_grain_8bit_with_engine(
     seed: u64,
     engine: GrainEngine,
 ) -> Result<()> {
+    apply_grain_8bit_with_options(
+        input,
+        output,
+        grain,
+        seed,
+        GrainRenderOptions {
+            engine,
+            ..GrainRenderOptions::default()
+        },
+    )
+}
+
+pub fn apply_grain_8bit_with_options(
+    input: &Path,
+    output: &Path,
+    grain: GrainSettings,
+    seed: u64,
+    options: GrainRenderOptions,
+) -> Result<()> {
+    validate_grain_render_options(options)?;
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
@@ -89,11 +133,17 @@ pub fn apply_grain_8bit_with_engine(
     let image = reader
         .decode()
         .with_context(|| format!("decoding {}", input.display()))?;
+    let (width, height) = image.dimensions();
+    let spatial_scale = grain_spatial_scale(width, height, options.normalize_grain_mpix)?;
     let grained = if grain.is_enabled() {
-        DynamicImage::ImageRgb8(match engine {
-            GrainEngine::Rfgr => crate::grain_rfgr::render_grain_8(image, grain, seed)?,
-            GrainEngine::RfgrFast => crate::grain_rfgr::render_grain_8_fast(image, grain, seed)?,
-            GrainEngine::Legacy => render_legacy_grain_8(image, grain, seed)?,
+        DynamicImage::ImageRgb8(match options.engine {
+            GrainEngine::Rfgr => {
+                crate::grain_rfgr::render_grain_8(image, grain, seed, spatial_scale)?
+            }
+            GrainEngine::RfgrFast => {
+                crate::grain_rfgr::render_grain_8_fast(image, grain, seed, spatial_scale)?
+            }
+            GrainEngine::Legacy => render_legacy_grain_8(image, grain, seed, spatial_scale)?,
         })
     } else {
         DynamicImage::ImageRgb8(image.to_rgb8())
@@ -103,6 +153,35 @@ pub fn apply_grain_8bit_with_engine(
         .save(output)
         .with_context(|| format!("saving {}", output.display()))?;
     Ok(())
+}
+
+fn validate_grain_render_options(options: GrainRenderOptions) -> Result<()> {
+    if let Some(reference_mpix) = options.normalize_grain_mpix
+        && (!reference_mpix.is_finite() || reference_mpix <= 0.0)
+    {
+        bail!("grain normalization reference megapixels must be finite and greater than zero");
+    }
+    Ok(())
+}
+
+fn grain_spatial_scale(width: u32, height: u32, normalize_grain_mpix: Option<f64>) -> Result<f64> {
+    let Some(reference_mpix) = normalize_grain_mpix else {
+        return Ok(1.0);
+    };
+    if !reference_mpix.is_finite() || reference_mpix <= 0.0 {
+        bail!("grain normalization reference megapixels must be finite and greater than zero");
+    }
+    let pixels = u64::from(width) * u64::from(height);
+    let spatial_scale = (pixels as f64 / 1_000_000.0 / reference_mpix).sqrt();
+    let renderer_scale = spatial_scale as f32;
+    if !spatial_scale.is_finite()
+        || spatial_scale <= 0.0
+        || !renderer_scale.is_finite()
+        || renderer_scale <= 0.0
+    {
+        bail!("grain normalization reference produces an unsupported spatial scale");
+    }
+    Ok(spatial_scale)
 }
 
 /// Render silver-clump grain into a 16-bit RGBA image buffer.
@@ -123,11 +202,12 @@ fn render_legacy_grain(
     image: DynamicImage,
     grain: GrainSettings,
     seed: u64,
+    spatial_scale: f64,
 ) -> Result<DynamicImage> {
     let (width, height) = image.dimensions();
     let mut out = image.to_rgba16().into_raw();
     let luma_weight = luma_weight_lut_u16();
-    let model = GrainModel::from_settings(grain);
+    let model = GrainModel::from_settings(grain, spatial_scale);
     let texture = GrainTexture::build(width, height, seed, &model);
 
     render_grain_16_rows(&mut out, width, seed, &luma_weight, &model, &texture);
@@ -286,11 +366,12 @@ fn render_legacy_grain_8(
     image: DynamicImage,
     grain: GrainSettings,
     seed: u64,
+    spatial_scale: f64,
 ) -> Result<ImageBuffer<image::Rgb<u8>, Vec<u8>>> {
     let (width, height) = image.dimensions();
     let mut out = image.to_rgb8().into_raw();
     let luma_weight = luma_weight_lut_u8();
-    let model = GrainModel::from_settings(grain);
+    let model = GrainModel::from_settings(grain, spatial_scale);
     let texture = GrainTexture::build(width, height, seed, &model);
 
     render_grain_8_rows(&mut out, width, seed, &luma_weight, &model, &texture);
@@ -571,24 +652,28 @@ struct GrainModel {
 }
 
 impl GrainModel {
-    fn from_settings(grain: GrainSettings) -> Self {
+    fn from_settings(grain: GrainSettings, spatial_scale: f64) -> Self {
         let amount = grain.amount as f32 / 100.0;
         let size = (grain.size.max(1) as f64 / 50.0).clamp(0.18, 3.2);
         let frequency = (grain.frequency.max(1) as f32 / 50.0).clamp(0.25, 2.4);
-        let cell_size = (4.0 + size * 7.5) / frequency as f64;
-        let secondary_cell_size = cell_size * 2.4;
-        let clump_grid_step = adaptive_clump_grid_step(cell_size);
+        let base_cell_size = (4.0 + size * 7.5) / frequency as f64;
+        let base_secondary_cell_size = base_cell_size * 2.4;
+        let base_clump_radius = (base_cell_size * 0.72).max(1.5);
+        let base_secondary_radius = (base_secondary_cell_size * 0.85).max(3.0);
+        let cell_size = base_cell_size * spatial_scale;
+        let secondary_cell_size = base_secondary_cell_size * spatial_scale;
+        let clump_grid_step = scaled_clump_grid_step(base_cell_size, spatial_scale);
         Self {
             sigma_8: amount * 31.0,
             sigma_16: amount * 31.0 * 257.0,
             cell_size,
             secondary_cell_size,
-            clump_radius: (cell_size * 0.72).max(1.5),
-            secondary_radius: (secondary_cell_size * 0.85).max(3.0),
+            clump_radius: base_clump_radius * spatial_scale,
+            secondary_radius: base_secondary_radius * spatial_scale,
             clump_density: (0.55 + amount * 0.38).clamp(0.35, 0.92),
             fine_mix: (0.46 + 0.16 * frequency).clamp(0.42, 0.82),
             color_jitter: (0.08 + 0.10 / frequency).clamp(0.08, 0.32),
-            perlin_scale: 65.0 * size,
+            perlin_scale: 65.0 * size * spatial_scale,
             clump_grid_step,
             kernel_lut: build_kernel_lut(),
         }
@@ -602,6 +687,19 @@ fn adaptive_clump_grid_step(cell_size: f64) -> usize {
         4
     } else {
         2
+    }
+}
+
+fn scaled_clump_grid_step(base_cell_size: f64, spatial_scale: f64) -> usize {
+    let desired = adaptive_clump_grid_step(base_cell_size) as f64 * spatial_scale;
+    if desired >= 6.0 {
+        8
+    } else if desired >= 3.0 {
+        4
+    } else if desired >= 1.5 {
+        2
+    } else {
+        1
     }
 }
 
@@ -840,6 +938,37 @@ mod tests {
     use super::*;
     use image::{ImageFormat, Rgb};
 
+    fn assert_close(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() < 1.0e-12,
+            "expected {expected}, got {actual}"
+        );
+    }
+
+    #[test]
+    fn grain_spatial_scale_uses_actual_megapixels_and_custom_references() {
+        assert_close(grain_spatial_scale(2_000, 1_500, Some(12.0)).unwrap(), 0.5);
+        assert_close(grain_spatial_scale(4_000, 3_000, Some(12.0)).unwrap(), 1.0);
+        assert_close(grain_spatial_scale(8_000, 6_000, Some(12.0)).unwrap(), 2.0);
+        assert_close(grain_spatial_scale(4_000, 3_000, Some(3.0)).unwrap(), 2.0);
+        assert_close(grain_spatial_scale(8_000, 6_000, None).unwrap(), 1.0);
+    }
+
+    #[test]
+    fn grain_spatial_scale_rejects_invalid_references() {
+        for reference in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let options = GrainRenderOptions {
+                engine: GrainEngine::Legacy,
+                normalize_grain_mpix: Some(reference),
+            };
+            assert!(validate_grain_render_options(options).is_err());
+            assert!(grain_spatial_scale(4_000, 3_000, Some(reference)).is_err());
+        }
+        for reference in [1.0e-320, 1.0e308] {
+            assert!(grain_spatial_scale(4_000, 3_000, Some(reference)).is_err());
+        }
+    }
+
     #[test]
     fn grain_channel_addition_rounds_and_clamps() {
         assert_eq!(add_grain(10, 2.4), 12);
@@ -871,16 +1000,22 @@ mod tests {
 
     #[test]
     fn grain_model_scales_amount_size_and_frequency_into_positive_parameters() {
-        let low = GrainModel::from_settings(GrainSettings {
-            amount: 10,
-            size: 10,
-            frequency: 10,
-        });
-        let high = GrainModel::from_settings(GrainSettings {
-            amount: 80,
-            size: 80,
-            frequency: 80,
-        });
+        let low = GrainModel::from_settings(
+            GrainSettings {
+                amount: 10,
+                size: 10,
+                frequency: 10,
+            },
+            1.0,
+        );
+        let high = GrainModel::from_settings(
+            GrainSettings {
+                amount: 80,
+                size: 80,
+                frequency: 80,
+            },
+            1.0,
+        );
         assert!(high.sigma_8 > low.sigma_8);
         assert!(high.sigma_16 > low.sigma_16);
         assert!(low.cell_size > 0.0);
@@ -888,6 +1023,46 @@ mod tests {
         assert!(matches!(adaptive_clump_grid_step(5.0), 2));
         assert!(matches!(adaptive_clump_grid_step(12.0), 4));
         assert!(matches!(adaptive_clump_grid_step(20.0), 8));
+    }
+
+    #[test]
+    fn legacy_model_scales_only_spatial_parameters() {
+        let grain = GrainSettings {
+            amount: 30,
+            size: 50,
+            frequency: 50,
+        };
+        let half = GrainModel::from_settings(grain, 0.5);
+        let base = GrainModel::from_settings(grain, 1.0);
+        let double = GrainModel::from_settings(grain, 2.0);
+
+        for (half_value, base_value, double_value) in [
+            (half.cell_size, base.cell_size, double.cell_size),
+            (
+                half.secondary_cell_size,
+                base.secondary_cell_size,
+                double.secondary_cell_size,
+            ),
+            (half.clump_radius, base.clump_radius, double.clump_radius),
+            (
+                half.secondary_radius,
+                base.secondary_radius,
+                double.secondary_radius,
+            ),
+            (half.perlin_scale, base.perlin_scale, double.perlin_scale),
+        ] {
+            assert_close(half_value, base_value * 0.5);
+            assert_close(double_value, base_value * 2.0);
+        }
+        assert_eq!(half.sigma_8, base.sigma_8);
+        assert_eq!(double.sigma_16, base.sigma_16);
+        assert_eq!(half.clump_density, base.clump_density);
+        assert_eq!(double.fine_mix, base.fine_mix);
+        assert_eq!(double.color_jitter, base.color_jitter);
+        assert_eq!(half.clump_grid_step, 2);
+        assert_eq!(base.clump_grid_step, 4);
+        assert_eq!(double.clump_grid_step, 8);
+        assert_eq!(GrainModel::from_settings(grain, 0.25).clump_grid_step, 1);
     }
 
     #[test]
@@ -906,11 +1081,14 @@ mod tests {
 
     #[test]
     fn grain_texture_is_deterministic_for_same_seed_and_changes_for_different_seed() {
-        let model = GrainModel::from_settings(GrainSettings {
-            amount: 30,
-            size: 40,
-            frequency: 50,
-        });
+        let model = GrainModel::from_settings(
+            GrainSettings {
+                amount: 30,
+                size: 40,
+                frequency: 50,
+            },
+            1.0,
+        );
         let a = GrainTexture::build(8, 6, 123, &model);
         let b = GrainTexture::build(8, 6, 123, &model);
         let c = GrainTexture::build(8, 6, 124, &model);
@@ -966,9 +1144,21 @@ mod tests {
             size: 45,
             frequency: 50,
         };
-        let expected = render_legacy_grain_8(image, grain, 42).unwrap().into_raw();
+        let expected = render_legacy_grain_8(image, grain, 42, 1.0)
+            .unwrap()
+            .into_raw();
 
-        apply_grain_8bit_with_engine(&input, &output, grain, 42, GrainEngine::Legacy).unwrap();
+        apply_grain_8bit_with_options(
+            &input,
+            &output,
+            grain,
+            42,
+            GrainRenderOptions {
+                engine: GrainEngine::Legacy,
+                normalize_grain_mpix: None,
+            },
+        )
+        .unwrap();
         let actual = ImageReader::open(output)
             .unwrap()
             .decode()

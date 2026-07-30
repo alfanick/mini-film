@@ -1278,6 +1278,18 @@ function PublishOutputSection() {
     h(
       "label",
       null,
+      h("span", null, "Grain reference MPix"),
+      h("input", {
+        id: "publish-normalize-grain-mpix",
+        type: "number",
+        min: "5e-324",
+        step: "any",
+        required: true,
+      }),
+    ),
+    h(
+      "label",
+      null,
       h("span", null, "Size"),
       h(
         "select",
@@ -1317,6 +1329,7 @@ function PublishOutputSection() {
     h(
       "div",
       { class: "publish-checks" },
+      h("label", null, h("input", { id: "publish-normalize-grain", type: "checkbox" }), " Normalize grain"),
       h("label", null, h("input", { id: "publish-progressive", type: "checkbox" }), " Progressive JPG"),
       h("label", null, h("input", { id: "publish-strip-metadata", type: "checkbox" }), " Strip metadata"),
     ),
@@ -2008,6 +2021,8 @@ const els = {
   publishTags: document.getElementById("publish-tags"),
   publishOutputFormat: document.getElementById("publish-output-format"),
   publishGrainEngine: document.getElementById("publish-grain-engine"),
+  publishNormalizeGrain: document.getElementById("publish-normalize-grain"),
+  publishNormalizeGrainMpix: document.getElementById("publish-normalize-grain-mpix"),
   publishSizeMode: document.getElementById("publish-size-mode"),
   publishLongEdge: document.getElementById("publish-long-edge"),
   publishMaxWidth: document.getElementById("publish-max-width"),
@@ -2673,10 +2688,7 @@ function currentCodexStateText(image) {
 
 function renderProfileStateSummary(image, selected, selectedState, previewNote, codexState, hideProfiles) {
   const selectedName = !hideProfiles && selected ? profileDisplayName(selected) : "";
-  const dcpFilename =
-    selected?.status === "done" && typeof selected.dcp_profile_filename === "string"
-      ? selected.dcp_profile_filename.trim()
-      : "";
+  const dcpFilename = typeof selected?.dcp_profile_filename === "string" ? selected.dcp_profile_filename.trim() : "";
   if (isDirectCompressedImage(image) || !selectedName) {
     els.profileState.textContent = `${selectedState?.text || ""}${codexState ? ` | ${codexState}` : ""}`.trim();
     return;
@@ -4156,6 +4168,8 @@ function populatePublishWizard() {
   });
   els.publishOutputFormat.value = defaults.output_format || "jpg";
   els.publishGrainEngine.value = defaults.grain_engine || "legacy";
+  els.publishNormalizeGrain.checked = defaults.normalize_grain_mpix !== null;
+  els.publishNormalizeGrainMpix.value = String(defaults.normalize_grain_mpix ?? 12);
   els.publishJpgQuality.value = String(defaults.jpg_quality || 95);
   els.publishJpegSubsampling.value = defaults.jpeg_subsampling || "s444";
   els.publishProgressive.checked = Boolean(defaults.progressive_jpeg);
@@ -4178,7 +4192,12 @@ function populatePublishWizard() {
     els.publishSizeMode.value = "original";
   }
   syncPublishSizeFields();
+  syncPublishNormalizeGrainField();
   updatePublishModeText();
+}
+
+function syncPublishNormalizeGrainField() {
+  els.publishNormalizeGrainMpix.disabled = !els.publishNormalizeGrain.checked;
 }
 
 function syncPublishSizeFields() {
@@ -4198,6 +4217,8 @@ function publishFormBody() {
     tags: splitPublishTags(els.publishTags.value),
     output_format: els.publishOutputFormat.value,
     grain_engine: els.publishGrainEngine.value,
+    normalize_grain: els.publishNormalizeGrain.checked,
+    normalize_grain_mpix: numberOrNull(els.publishNormalizeGrainMpix.value),
     gallery: els.publishGallery.value,
     size_mode: sizeMode,
     jpg_quality: Number(els.publishJpgQuality.value || 95),
@@ -4266,9 +4287,13 @@ function publishWouldRerender() {
       : defaults.max_width || defaults.max_height
         ? "bounds"
         : "original";
+  const defaultNormalizeGrain = defaults.normalize_grain_mpix !== null;
+  const defaultNormalizeGrainMpix = Number(defaults.normalize_grain_mpix ?? 12);
   return (
     body.output_format !== (defaults.output_format || "jpg") ||
     body.grain_engine !== (defaults.grain_engine || "legacy") ||
+    body.normalize_grain !== defaultNormalizeGrain ||
+    (body.normalize_grain && body.normalize_grain_mpix !== defaultNormalizeGrainMpix) ||
     body.size_mode !== defaultsSizeMode ||
     body.jpg_quality !== Number(defaults.jpg_quality || 95) ||
     body.jpeg_subsampling !== (defaults.jpeg_subsampling || "s444") ||
@@ -6339,6 +6364,9 @@ els.publishForm.addEventListener("input", updatePublishModeText);
 els.publishForm.addEventListener("change", (event) => {
   if (event.target === els.publishSizeMode) {
     syncPublishSizeFields();
+  }
+  if (event.target === els.publishNormalizeGrain) {
+    syncPublishNormalizeGrainField();
   }
   updatePublishModeText();
 });

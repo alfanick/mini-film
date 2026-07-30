@@ -16,7 +16,8 @@ use anyhow::{Context, Result, bail};
 use handlebars::Handlebars;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use mini_film::{
-    GrainEngine, GrainSettings, apply_grain_8bit_with_engine, write_rawtherapee_resize_profile,
+    GrainEngine, GrainRenderOptions, GrainSettings, apply_grain_8bit_with_options,
+    write_rawtherapee_resize_profile,
 };
 use rayon::prelude::*;
 use serde_json::json;
@@ -60,6 +61,7 @@ pub(crate) struct SamplerArgs {
     pub(crate) convert: PathBuf,
     pub(crate) lcp_root: Option<PathBuf>,
     pub(crate) no_grain: bool,
+    pub(crate) normalize_grain_mpix: Option<f64>,
     pub(crate) color_noise_iso_threshold: u32,
     pub(crate) lens_corrections: LensCorrections,
     pub(crate) grain_seed: Option<u64>,
@@ -396,7 +398,11 @@ impl ThumbnailCache {
         let grain_mode = if args.no_grain {
             "nograin".to_string()
         } else {
-            format!("grain-{}", args.grain_engine)
+            let normalization = args
+                .normalize_grain_mpix
+                .map(|mpix| format!("norm-{:016x}", mpix.to_bits()))
+                .unwrap_or_else(|| "norm-off".to_string());
+            format!("grain-{}-{normalization}", args.grain_engine)
         };
         let subsampling = format!("{:?}", args.jpeg_subsampling).to_ascii_lowercase();
         let lens_corrections = if args.lens_corrections == LensCorrections::default() {
@@ -418,7 +424,7 @@ impl ThumbnailCache {
             )
         };
         Ok(self.dir.join(format!(
-            "{}-{}-{}-{}-l{}-{}px-lc{}-q{}-{}-{}-sg2-strip{}-prog{}.jpg",
+            "{}-{}-{}-{}-l{}-{}px-lc{}-q{}-{}-{}-sg3-strip{}-prog{}.jpg",
             self.raw_sha1,
             xmp_sha1,
             RAW_RENDER_PIPELINE_KEY,
@@ -621,7 +627,7 @@ fn render_profile_thumbnail(
 
     let grain_enabled = !context.args.no_grain && resolved.grain.is_enabled();
     let metadata_grain = if grain_enabled {
-        scale_sampler_grain(resolved.grain, context.args.thumbnail_long_edge)
+        attenuate_sampler_grain_amount(resolved.grain, context.args.thumbnail_long_edge)
     } else {
         GrainSettings::default()
     };
@@ -639,12 +645,15 @@ fn render_profile_thumbnail(
             estimate_sampler_grain_duration(context.args.thumbnail_long_edge),
         );
         let grained = profile_temp.join("grained-8.ppm");
-        apply_grain_8bit_with_engine(
+        apply_grain_8bit_with_options(
             &developed,
             &grained,
             metadata_grain,
             metadata_grain_seed.unwrap_or_default(),
-            context.args.grain_engine,
+            GrainRenderOptions {
+                engine: context.args.grain_engine,
+                normalize_grain_mpix: context.args.normalize_grain_mpix,
+            },
         )?;
         grain_stage.finish();
         grained
@@ -698,6 +707,7 @@ fn render_profile_thumbnail(
                 grain: metadata_grain,
                 grain_seed: metadata_grain_seed,
                 grain_engine: grain_enabled.then_some(context.args.grain_engine),
+                normalize_grain_mpix: context.args.normalize_grain_mpix,
             },
             Some(&color_profile_source),
         )?;
@@ -1456,18 +1466,17 @@ fn estimate_sheet_duration(thumbs: usize) -> Duration {
     Duration::from_secs_f64((0.5 + thumbs as f64 * 0.01).clamp(1.0, 20.0))
 }
 
-fn scale_sampler_grain(grain: GrainSettings, thumbnail_long_edge: u32) -> GrainSettings {
+fn attenuate_sampler_grain_amount(grain: GrainSettings, thumbnail_long_edge: u32) -> GrainSettings {
     if !grain.is_enabled() || thumbnail_long_edge >= 3000 {
         return grain;
     }
 
     let linear = (thumbnail_long_edge.max(1) as f32 / 3600.0).clamp(0.25, 1.0);
     let amount_scale = linear.sqrt().clamp(0.45, 1.0);
-    let size_scale = linear.clamp(0.35, 1.0);
 
     GrainSettings {
         amount: scale_grain_byte(grain.amount, amount_scale),
-        size: scale_grain_byte(grain.size, size_scale),
+        size: grain.size,
         frequency: grain.frequency,
     }
 }
@@ -2096,6 +2105,7 @@ mod tests {
             convert: PathBuf::from("convert"),
             lcp_root: None,
             no_grain: false,
+            normalize_grain_mpix: Some(12.0),
             grain_seed: Some(123),
             grain_engine: GrainEngine::default(),
             lens_corrections: crate::cli::LensCorrections::default(),
@@ -2501,6 +2511,15 @@ mod tests {
         let larger = cache.path_for(&xmp, &args).unwrap();
         assert_ne!(cached, larger);
 
+        args.thumbnail_long_edge = 512;
+        args.normalize_grain_mpix = Some(24.0);
+        let custom_normalization = cache.path_for(&xmp, &args).unwrap();
+        args.normalize_grain_mpix = None;
+        let disabled_normalization = cache.path_for(&xmp, &args).unwrap();
+        assert_ne!(cached, custom_normalization);
+        assert_ne!(cached, disabled_normalization);
+        assert_ne!(custom_normalization, disabled_normalization);
+
         args.color_noise_iso_threshold = 0;
         let no_noise = cache.path_for(&xmp, &args).unwrap();
         args.color_noise_iso_threshold = 6400;
@@ -2516,12 +2535,12 @@ mod tests {
             frequency: 50,
         };
 
-        let small = scale_sampler_grain(grain, 512);
-        let medium = scale_sampler_grain(grain, 1024);
-        let full = scale_sampler_grain(grain, 4000);
+        let small = attenuate_sampler_grain_amount(grain, 512);
+        let medium = attenuate_sampler_grain_amount(grain, 1024);
+        let full = attenuate_sampler_grain_amount(grain, 4000);
 
         assert!(small.amount < grain.amount);
-        assert!(small.size < grain.size);
+        assert_eq!(small.size, grain.size);
         assert!(medium.amount > small.amount);
         assert!(medium.amount < grain.amount);
         assert_eq!(small.frequency, grain.frequency);

@@ -29,6 +29,7 @@ where
             min_rating: i64_to_u8(settings.min_rating, "minimum rating")?,
         },
         exif_schema_version: i64_to_u32(settings.exif_schema_version, "EXIF schema version")?,
+        normalize_grain_mpix: default_review_normalize_grain_mpix(),
     }))
 }
 

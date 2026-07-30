@@ -12,7 +12,8 @@ use std::{
 use anyhow::{Context, Result, bail};
 use indicatif::ProgressBar;
 use mini_film::{
-    GrainEngine, GrainSettings, apply_grain_8bit_with_engine, apply_grain_with_engine,
+    GrainEngine, GrainRenderOptions, GrainSettings, apply_grain_8bit_with_options,
+    apply_grain_with_options,
 };
 use sha1::{Digest, Sha1};
 use tempfile::Builder;
@@ -59,6 +60,7 @@ pub(crate) struct ApplyArgs {
     pub(crate) convert: PathBuf,
     pub(crate) keep_intermediate: Option<PathBuf>,
     pub(crate) no_grain: bool,
+    pub(crate) normalize_grain_mpix: Option<f64>,
     pub(crate) color_noise_iso_threshold: u32,
     pub(crate) lens_corrections: LensCorrections,
     pub(crate) lcp_root: Option<PathBuf>,
@@ -81,6 +83,7 @@ pub(crate) struct ApplyJob<'a> {
     pub(crate) convert: &'a Path,
     pub(crate) keep_intermediate: Option<&'a Path>,
     pub(crate) no_grain: bool,
+    pub(crate) normalize_grain_mpix: Option<f64>,
     pub(crate) grain_engine: GrainEngine,
     pub(crate) color_noise_iso_threshold: u32,
     pub(crate) lens_corrections: LensCorrections,
@@ -215,6 +218,7 @@ pub(crate) fn run_apply(args: ApplyArgs) -> Result<()> {
             convert: &args.convert,
             keep_intermediate: args.keep_intermediate.as_deref(),
             no_grain: args.no_grain,
+            normalize_grain_mpix: args.normalize_grain_mpix,
             grain_engine: args.grain_engine,
             color_noise_iso_threshold: args.color_noise_iso_threshold,
             lens_corrections: args.lens_corrections,
@@ -473,12 +477,15 @@ pub(crate) fn apply_resolved(
             estimate_grain_duration(raw_source.active(), true),
         );
         let grained = temp_dir.join("grained-8.ppm");
-        apply_grain_8bit_with_engine(
+        apply_grain_8bit_with_options(
             &intermediate,
             &grained,
             resolved.grain,
             grain_seed,
-            job.grain_engine,
+            GrainRenderOptions {
+                engine: job.grain_engine,
+                normalize_grain_mpix: job.normalize_grain_mpix,
+            },
         )?;
         grain_stage.finish();
         if progress.is_none() && !job.quiet {
@@ -511,12 +518,15 @@ pub(crate) fn apply_resolved(
             estimate_grain_duration(raw_source.active(), false),
         );
         let grained = temp_dir.join("grained.tif");
-        apply_grain_with_engine(
+        apply_grain_with_options(
             &intermediate,
             &grained,
             resolved.grain,
             grain_seed,
-            job.grain_engine,
+            GrainRenderOptions {
+                engine: job.grain_engine,
+                normalize_grain_mpix: job.normalize_grain_mpix,
+            },
         )?;
         grain_stage.finish();
         if progress.is_none() && !job.quiet {
@@ -587,6 +597,7 @@ pub(crate) fn apply_resolved(
                 grain: actual_grain,
                 grain_seed: grain_enabled.then_some(grain_seed),
                 grain_engine: grain_enabled.then_some(job.grain_engine),
+                normalize_grain_mpix: job.normalize_grain_mpix,
             },
             Some(&intermediate),
         )?;
@@ -1410,6 +1421,7 @@ mod tests {
                 convert: &temp.path().join("convert"),
                 keep_intermediate: None,
                 no_grain: true,
+                normalize_grain_mpix: Some(12.0),
                 grain_engine: GrainEngine::default(),
                 color_noise_iso_threshold: 0,
                 lens_corrections: LensCorrections::default(),
@@ -1479,6 +1491,7 @@ mod tests {
                 convert: &temp.path().join("convert"),
                 keep_intermediate: None,
                 no_grain: false,
+                normalize_grain_mpix: Some(12.0),
                 grain_engine: GrainEngine::default(),
                 color_noise_iso_threshold: 0,
                 lens_corrections: LensCorrections::default(),
@@ -1540,6 +1553,7 @@ mod tests {
                 convert: &temp.path().join("convert"),
                 keep_intermediate: None,
                 no_grain: false,
+                normalize_grain_mpix: Some(12.0),
                 grain_engine: GrainEngine::default(),
                 color_noise_iso_threshold: 0,
                 lens_corrections: LensCorrections::default(),
@@ -1599,6 +1613,7 @@ mod tests {
             convert,
             keep_intermediate: None,
             no_grain: true,
+            normalize_grain_mpix: Some(12.0),
             color_noise_iso_threshold: 1,
             lens_corrections: LensCorrections::all(),
             lcp_root: None,
@@ -1660,6 +1675,7 @@ mod tests {
                     convert: &convert,
                     keep_intermediate: None,
                     no_grain: true,
+                    normalize_grain_mpix: Some(12.0),
                     grain_engine: GrainEngine::default(),
                     color_noise_iso_threshold: 1,
                     lens_corrections: LensCorrections::all(),

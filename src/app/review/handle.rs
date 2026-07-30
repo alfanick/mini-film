@@ -45,6 +45,7 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
     let mut store = stored
         .clone()
         .unwrap_or_else(|| ReviewStore::new(Vec::new()));
+    store.normalize_grain_mpix = config.normalize_grain_mpix;
     let stored_raw_paths = store
         .images
         .iter()
@@ -114,6 +115,7 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
         &config.export,
         gallery_defaults,
         config.grain_engine,
+        config.normalize_grain_mpix,
     );
     let codex = config
         .codex
@@ -153,6 +155,7 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
         grain_preset: config.grain_preset,
         grain_seed: config.grain_seed,
         grain_engine: config.grain_engine,
+        normalize_grain_mpix: config.normalize_grain_mpix,
         publish_defaults,
         publish_jobs: Arc::new(ArcSwap::from_pointee(Vec::new())),
         next_publish_job_id: Arc::new(AtomicU64::new(1)),
@@ -875,7 +878,13 @@ impl ReviewHandle {
                     }
                 }
                 if image.sooc_sidecar_path != old_sidecar {
-                    sync_image_profile_renders(image, &profiles, false, &HashSet::new());
+                    sync_image_profile_renders(
+                        image,
+                        &profiles,
+                        false,
+                        &HashSet::new(),
+                        self.normalize_grain_mpix,
+                    );
                 }
                 let preview_path = self.preview_path_for(raw, image.id);
                 let mut preview_queued = false;
@@ -1322,7 +1331,14 @@ impl ReviewHandle {
                 .map(|profile| effective_bw_filter_for_profile(image, profile))
                 .unwrap_or_default();
             let white_balance = retouch_white_balance_for_image(image);
-            let render_key = profile_render_key(&image.retouch, white_balance, bw_filter);
+            let render_key = profile_render_key(
+                &image.retouch,
+                white_balance,
+                bw_filter,
+                (profile_index != SOOC_PROFILE_INDEX)
+                    .then_some(self.normalize_grain_mpix)
+                    .flatten(),
+            );
             let Some(render) = image
                 .profiles
                 .iter_mut()
@@ -1336,9 +1352,14 @@ impl ReviewHandle {
             render.error = None;
             render.duration_ms = None;
             render.render_key = render_key;
-            render.processing_key =
-                Some(review_render_processing_key_for_input(raw, profile_index).to_string());
-            render.dcp_profile_filename = None;
+            render.processing_key = Some(
+                review_render_processing_key_for_input_with_normalization(
+                    raw,
+                    profile_index,
+                    self.normalize_grain_mpix,
+                )
+                .to_string(),
+            );
             render.width = None;
             render.height = None;
             render.updated_at = now_string();
@@ -1371,7 +1392,11 @@ impl ReviewHandle {
             };
             render.profile_index == profile_index
                 && render.processing_key
-                    == Some(review_render_processing_key_for_input(raw, profile_index))
+                    == Some(review_render_processing_key_for_input_with_normalization(
+                        raw,
+                        profile_index,
+                        self.normalize_grain_mpix,
+                    ))
                 && output.is_file()
                 && retouch_base_output(output, &self.output_root, &self.cache_root)
                     == expected_output
@@ -2243,6 +2268,7 @@ impl ReviewHandle {
             lcp_root: self.lcp_root.clone(),
             keep_intermediate: None,
             no_grain: self.no_grain,
+            normalize_grain_mpix: self.normalize_grain_mpix,
             color_noise_iso_threshold: self.color_noise_iso_threshold,
             lens_corrections: self.lens_corrections,
             grain: self.grain.clone(),
@@ -2274,6 +2300,7 @@ impl ReviewHandle {
                 convert: &self.convert,
                 keep_intermediate: None,
                 no_grain: self.no_grain,
+                normalize_grain_mpix: self.normalize_grain_mpix,
                 grain_engine: self.grain_engine,
                 color_noise_iso_threshold: self.color_noise_iso_threshold,
                 lens_corrections: self.lens_corrections,
@@ -2590,6 +2617,9 @@ impl ReviewHandle {
                                     &image.retouch,
                                     retouch_white_balance_for_image(image),
                                     bw_filter,
+                                    (profile_index != SOOC_PROFILE_INDEX)
+                                        .then_some(self.normalize_grain_mpix)
+                                        .flatten(),
                                 );
                                 queue_profile_retouch_render(
                                     image,
@@ -2632,9 +2662,10 @@ impl ReviewHandle {
                                     )?);
                             }
                             image.profiles[index].processing_key = Some(
-                                review_render_processing_key_for_input(
+                                review_render_processing_key_for_input_with_normalization(
                                     &image.raw_path,
                                     profile_index,
+                                    self.normalize_grain_mpix,
                                 )
                                 .to_string(),
                             );
@@ -2643,6 +2674,9 @@ impl ReviewHandle {
                                 &image.retouch,
                                 retouch_white_balance_for_image(image),
                                 bw_filter,
+                                (profile_index != SOOC_PROFILE_INDEX)
+                                    .then_some(self.normalize_grain_mpix)
+                                    .flatten(),
                             );
                             queue_profile_retouch_render(
                                 image,
@@ -3081,6 +3115,7 @@ impl ReviewHandle {
             lcp_root: self.lcp_root.clone(),
             keep_intermediate: None,
             no_grain: self.no_grain,
+            normalize_grain_mpix: self.normalize_grain_mpix,
             color_noise_iso_threshold: self.color_noise_iso_threshold,
             lens_corrections: self.lens_corrections,
             grain: self.grain.clone(),
@@ -3333,9 +3368,26 @@ impl ReviewHandle {
             .map(parse_grain_engine)
             .transpose()?
             .unwrap_or(self.grain_engine);
+        let normalize_grain_mpix = match request.normalize_grain {
+            None => self.normalize_grain_mpix,
+            Some(false) => None,
+            Some(true) => {
+                let reference_mpix = request
+                    .normalize_grain_mpix
+                    .or(self.normalize_grain_mpix)
+                    .unwrap_or(mini_film::DEFAULT_GRAIN_REFERENCE_MPIX);
+                if !reference_mpix.is_finite() || reference_mpix <= 0.0 {
+                    bail!(
+                        "grain normalization reference MPix must be finite and greater than zero"
+                    );
+                }
+                Some(reference_mpix)
+            }
+        };
         let rerender_raw = output_format != self.output_format
             || export != self.export
-            || grain_engine != self.grain_engine;
+            || grain_engine != self.grain_engine
+            || normalize_grain_mpix != self.normalize_grain_mpix;
 
         Ok(ReviewPublishCommandArgs {
             state: self.state_path.clone(),
@@ -3381,6 +3433,7 @@ impl ReviewHandle {
             grain_preset: self.grain_preset.clone(),
             grain_seed: self.grain_seed,
             grain_engine,
+            normalize_grain_mpix,
             progress_events: true,
         })
     }
@@ -3915,26 +3968,35 @@ pub(super) fn profile_render_key(
     retouch: &RetouchSettings,
     white_balance: RetouchWhiteBalance,
     bw_filter: BwFilter,
+    normalize_grain_mpix: Option<f64>,
 ) -> Option<String> {
     let normalized = retouch.clone().normalized();
-    (normalized != RetouchSettings::default() || bw_filter != BwFilter::None)
-        .then(|| profile_render_key_value(&normalized, white_balance, bw_filter))
+    (normalized != RetouchSettings::default() || bw_filter != BwFilter::None).then(|| {
+        profile_render_key_value(&normalized, white_balance, bw_filter, normalize_grain_mpix)
+    })
 }
 
 pub(super) fn profile_render_key_value(
     retouch: &RetouchSettings,
     white_balance: RetouchWhiteBalance,
     bw_filter: BwFilter,
+    normalize_grain_mpix: Option<f64>,
 ) -> String {
     let normalized = retouch.clone().normalized();
     let retouch_key = normalized.render_key_with_white_balance(white_balance);
-    if bw_filter == BwFilter::None {
+    if normalize_grain_mpix.is_none() && bw_filter == BwFilter::None {
         return retouch_key;
     }
     let mut hasher = Sha1::new();
     hasher.update(retouch_key);
-    hasher.update("|bw-filter-v2=");
-    hasher.update(bw_filter.as_str());
+    if bw_filter != BwFilter::None {
+        hasher.update("|bw-filter-v2=");
+        hasher.update(bw_filter.as_str());
+    }
+    if normalize_grain_mpix.is_some() {
+        hasher.update("|");
+        hasher.update(grain_normalization_identity(normalize_grain_mpix));
+    }
     let digest = hasher.finalize();
     digest
         .iter()
@@ -4011,7 +4073,7 @@ fn profile_retouch_output(
     }
 }
 
-fn apply_cached_profile_output(
+pub(super) fn apply_cached_profile_output(
     render: &mut ReviewProfileRender,
     output: &Path,
     render_key: &str,
@@ -4019,6 +4081,9 @@ fn apply_cached_profile_output(
     output_root: &Path,
     cache_root: &Path,
 ) -> bool {
+    if use_base_output && render.status != ReviewRenderStatus::Done {
+        return false;
+    }
     let output =
         profile_retouch_output(output, render_key, use_base_output, output_root, cache_root);
     if !output.is_file() {
@@ -4143,10 +4208,7 @@ pub(super) fn effective_dcp_profile_filename<'a>(
     image: &'a ReviewImage,
     render: &'a ReviewProfileRender,
 ) -> Option<&'a str> {
-    if render.status != ReviewRenderStatus::Done
-        || render.profile_index == SOOC_PROFILE_INDEX
-        || !is_raw_input_file(&image.raw_path)
-    {
+    if render.profile_index == SOOC_PROFILE_INDEX || !is_raw_input_file(&image.raw_path) {
         return None;
     }
     if let Some(filename) = render.dcp_profile_filename.as_deref() {

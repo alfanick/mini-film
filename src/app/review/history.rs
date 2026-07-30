@@ -264,6 +264,10 @@ pub(super) fn history_publish_started(
     entry.line(format!("tags: {}", list_text(&args.tags)));
     entry.line(format!("format: {}", args.output_format));
     entry.line(format!("grain engine: {}", args.grain_engine));
+    entry.line(args.normalize_grain_mpix.map_or_else(
+        || "grain normalization: off".to_string(),
+        |mpix| format!("grain normalization: {mpix} MPix"),
+    ));
     entry.line(format!("rerender raw: {}", yes_no(args.rerender_raw)));
     entry.line(format!("jobs: {}", args.jobs));
     if let Some(gallery) = args.gallery {

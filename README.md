@@ -401,7 +401,8 @@ Output metadata behavior for `apply`, `batch`, `daemon`, and `sampler`:
   data for the render
 - the XMP packet also records mini-film as the creator/converter and adds a
   high-level `xmpMM` history entry with the raw file, profile, linked profile,
-  Hald or PP3 source, grain state, grain engine, and grain seed
+  Hald or PP3 source, grain state, grain engine, grain seed, and
+  grain-normalization reference
 - an EXIF comment is written as  
   `mini-film <version> usage=<command> profile=<profile-or-emulation>`
   or `profile=none` when no profile was configured
@@ -813,7 +814,8 @@ Publishing opens a wizard that acts as a browser frontend for a spawned
 `mini-film review-publish` job. The wizard can filter by rating, color label,
 and tags; choose a relative album folder inside the daemon output directory;
 select JPG/TIFF output, original size or resize options, JPEG
-quality/subsampling/progressive mode, and an optional gallery template.
+quality/subsampling/progressive mode, grain engine and normalization settings,
+and an optional gallery template.
 Publish jobs run in parallel with the daemon job count, which defaults to half
 the available CPU threads, and stream live progress back to every open review
 browser.
@@ -822,7 +824,9 @@ The default publish settings match the daemon render settings, so publishing
 uses hardlinks to the already-reviewed outputs when possible and falls back to
 symlinks if hardlinks are not available. If output settings differ, mini-film
 rerenders the selected pictures from the original RAW, JPEG, or HEIC inputs
-through the normal `apply` pipeline before building the gallery.
+through the normal `apply` pipeline before building the gallery. Changing the
+grain engine, normalization reference, or normalization enabled state in the
+publish wizard therefore also requires a rerender.
 
 Published outputs are flat under the chosen album folder:
 
@@ -946,6 +950,12 @@ or reuse the same computer name/GUID with `--nikon-wtu-name` and
 --jpg-quality 92
 --no-grain
 ```
+
+Sampler grain normalization uses each developed thumbnail's actual width and
+height at the grain stage. Its existing small-thumbnail grain-amount
+attenuation remains a separate sampler-specific adjustment;
+`--no-normalize-grain` disables spatial normalization but does not disable that
+amount attenuation.
 
 Use a non-default convert binary or write a progressive sampler JPEG with:
 
@@ -1120,6 +1130,44 @@ Lightroom grain fields are read from preset XMPs:
 Grain is rendered internally after RawTherapee. TIFF outputs use the 16-bit
 grain path; JPEG outputs use the optimized 8-bit grain path. The default engine
 is `legacy`, mini-film's older additive procedural renderer.
+
+By default, mini-film normalizes the engine's spatial grain structure against a
+12-megapixel reference so the same profile keeps a comparable grain scale
+across source resolutions. For the image dimensions that enter the grain stage,
+the engine uses:
+
+```text
+linear_scale = sqrt(actual_grain_stage_pixels / (reference_mpix * 1_000_000))
+```
+
+At the default 12 MP reference, a 3 MP grain-stage image uses `0.5x`, a 12 MP
+image uses `1x`, and a 48 MP image uses `2x`. The scale is applied to the
+engine's spatial grain structure after its size/frequency mapping; grain amount
+and deterministic seed are unchanged.
+
+The actual grain-stage dimensions are the dimensions of the image mini-film
+passes to the grain renderer. For normal `apply`, `batch`, daemon, review, and
+publish rendering, that is the RawTherapee intermediate. Final export resizing
+with `--resize`, `--long-edge`, `--max-width`, or `--max-height` happens after
+grain and therefore does not change the normalization calculation. Sampler is
+different because RawTherapee develops its thumbnail-sized intermediate before
+grain.
+
+Set another positive reference size with:
+
+```sh
+--normalize-grain 24
+```
+
+Disable spatial normalization and use the engine's unscaled spatial mapping
+with:
+
+```sh
+--no-normalize-grain
+```
+
+The desktop launcher exposes the same setting as a checked **Normalize grain**
+control with an editable **Grain Reference MPix** value, defaulting to `12`.
 
 RFGR remains available as an opt-in engine. It is an original implementation
 derived from the algorithm described in Newson, Faraj, Galerne, and Delon's IPOL

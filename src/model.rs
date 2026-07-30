@@ -16,6 +16,8 @@ pub struct GrainSettings {
     pub frequency: u8,
 }
 
+pub const DEFAULT_GRAIN_REFERENCE_MPIX: f64 = 12.0;
+
 impl GrainSettings {
     pub fn is_enabled(self) -> bool {
         self.amount > 0
@@ -29,6 +31,21 @@ pub enum GrainEngine {
     RfgrFast,
     #[default]
     Legacy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GrainRenderOptions {
+    pub engine: GrainEngine,
+    pub normalize_grain_mpix: Option<f64>,
+}
+
+impl Default for GrainRenderOptions {
+    fn default() -> Self {
+        Self {
+            engine: GrainEngine::Legacy,
+            normalize_grain_mpix: Some(DEFAULT_GRAIN_REFERENCE_MPIX),
+        }
+    }
 }
 
 impl GrainEngine {
@@ -329,6 +346,16 @@ mod tests {
                 frequency: 0,
             }
             .is_enabled()
+        );
+    }
+
+    #[test]
+    fn grain_render_options_default_to_legacy_at_twelve_megapixels() {
+        let options = GrainRenderOptions::default();
+        assert_eq!(options.engine, GrainEngine::Legacy);
+        assert_eq!(
+            options.normalize_grain_mpix,
+            Some(DEFAULT_GRAIN_REFERENCE_MPIX)
         );
     }
 

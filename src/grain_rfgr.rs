@@ -37,11 +37,12 @@ pub(crate) fn render_grain(
     image: DynamicImage,
     grain: GrainSettings,
     seed: u64,
+    spatial_scale: f64,
 ) -> Result<DynamicImage> {
     let (width, height) = image.dimensions();
     let source = image.to_rgba16().into_raw();
     let mut out = source.clone();
-    let model = RfgrModel::from_settings(grain);
+    let model = RfgrModel::from_settings(grain, spatial_scale);
 
     render_rgba16_rows(&source, &mut out, width, height, seed, &model);
 
@@ -55,11 +56,12 @@ pub(crate) fn render_grain_8(
     image: DynamicImage,
     grain: GrainSettings,
     seed: u64,
+    spatial_scale: f64,
 ) -> Result<ImageBuffer<Rgb<u8>, Vec<u8>>> {
     let (width, height) = image.dimensions();
     let source = image.to_rgb8().into_raw();
     let mut out = source.clone();
-    let model = RfgrModel::from_settings(grain);
+    let model = RfgrModel::from_settings(grain, spatial_scale);
 
     render_rgb8_rows(&source, &mut out, width, height, seed, &model);
 
@@ -78,11 +80,12 @@ pub(crate) fn render_grain_fast(
     image: DynamicImage,
     grain: GrainSettings,
     seed: u64,
+    spatial_scale: f64,
 ) -> Result<DynamicImage> {
     let (width, height) = image.dimensions();
     let source = image.to_rgba16().into_raw();
     let mut out = source.clone();
-    let model = RfgrModel::from_settings(grain);
+    let model = RfgrModel::from_settings(grain, spatial_scale);
 
     render_rgba16_fast_rows(&source, &mut out, width, height, seed, &model);
 
@@ -96,11 +99,12 @@ pub(crate) fn render_grain_8_fast(
     image: DynamicImage,
     grain: GrainSettings,
     seed: u64,
+    spatial_scale: f64,
 ) -> Result<ImageBuffer<Rgb<u8>, Vec<u8>>> {
     let (width, height) = image.dimensions();
     let source = image.to_rgb8().into_raw();
     let mut out = source.clone();
-    let model = RfgrModel::from_settings(grain);
+    let model = RfgrModel::from_settings(grain, spatial_scale);
 
     render_rgb8_fast_rows(&source, &mut out, width, height, seed, &model);
 
@@ -1015,10 +1019,11 @@ pub(crate) struct RfgrModel {
     max_radius: f32,
     cell_size: f32,
     variable_radius: bool,
+    spatial_scale: f32,
 }
 
 impl RfgrModel {
-    pub(crate) fn from_settings(grain: GrainSettings) -> Self {
+    pub(crate) fn from_settings(grain: GrainSettings, spatial_scale: f64) -> Self {
         let amount = (grain.amount as f32 / 100.0).clamp(0.0, 1.0);
         let alpha = amount.powf(0.85).clamp(0.0, 1.0);
         let size_n = (grain.size.clamp(1, 100) as f32 / 100.0).clamp(0.01, 1.0);
@@ -1051,6 +1056,7 @@ impl RfgrModel {
             max_radius,
             cell_size,
             variable_radius,
+            spatial_scale: spatial_scale as f32,
         }
     }
 
@@ -1065,13 +1071,27 @@ impl RfgrModel {
     }
 
     fn sample_radius(&self, hash: u64) -> f32 {
-        if !self.variable_radius {
-            return self.mu_r.max(RFGR_MIN_RADIUS);
-        }
-        let z = normal_from_hash(hash);
-        (self.log_mu + self.log_sigma * z)
-            .exp()
-            .clamp(RFGR_MIN_RADIUS, self.max_radius)
+        let radius = if !self.variable_radius {
+            self.mu_r.max(RFGR_MIN_RADIUS)
+        } else {
+            let z = normal_from_hash(hash);
+            (self.log_mu + self.log_sigma * z)
+                .exp()
+                .clamp(RFGR_MIN_RADIUS, self.max_radius)
+        };
+        radius * self.spatial_scale
+    }
+
+    fn gaussian_sigma(&self) -> f32 {
+        RFGR_GAUSSIAN_SIGMA * self.spatial_scale
+    }
+
+    fn spatial_cell_size(&self) -> f32 {
+        self.cell_size * self.spatial_scale
+    }
+
+    fn spatial_max_radius(&self) -> f32 {
+        self.max_radius * self.spatial_scale
     }
 
     fn fast_filter_sigma(&self) -> f32 {
@@ -1079,6 +1099,7 @@ impl RfgrModel {
         (RFGR_GAUSSIAN_SIGMA.powi(2) + disk_sigma.powi(2))
             .sqrt()
             .clamp(RFGR_GAUSSIAN_SIGMA, 4.25)
+            * self.spatial_scale
     }
 }
 
@@ -1103,8 +1124,8 @@ impl Rgb8Context<'_> {
         let mut hits = 0u32;
         for sample in 0..RFGR_MONTE_CARLO_SAMPLES {
             let (dx, dy) = gaussian_sample(self.seed, x, y, channel, sample);
-            let sx = x as f32 + 0.5 + dx * RFGR_GAUSSIAN_SIGMA;
-            let sy = y as f32 + 0.5 + dy * RFGR_GAUSSIAN_SIGMA;
+            let sx = x as f32 + 0.5 + dx * self.model.gaussian_sigma();
+            let sy = y as f32 + 0.5 + dy * self.model.gaussian_sigma();
             if boolean_hit(sx, sy, channel, self.seed, self.model, |cx, cy| {
                 self.sample_linear(cx, cy, channel)
             }) {
@@ -1118,8 +1139,8 @@ impl Rgb8Context<'_> {
         let mut hits = 0u32;
         for sample in 0..RFGR_MONTE_CARLO_SAMPLES {
             let (dx, dy) = gaussian_sample(self.seed, x, y, MONOCHROME_CHANNEL, sample);
-            let sx = x as f32 + 0.5 + dx * RFGR_GAUSSIAN_SIGMA;
-            let sy = y as f32 + 0.5 + dy * RFGR_GAUSSIAN_SIGMA;
+            let sx = x as f32 + 0.5 + dx * self.model.gaussian_sigma();
+            let sy = y as f32 + 0.5 + dy * self.model.gaussian_sigma();
             if boolean_hit(
                 sx,
                 sy,
@@ -1166,8 +1187,8 @@ impl Rgba16Context<'_> {
         let mut hits = 0u32;
         for sample in 0..RFGR_MONTE_CARLO_SAMPLES {
             let (dx, dy) = gaussian_sample(self.seed, x, y, channel, sample);
-            let sx = x as f32 + 0.5 + dx * RFGR_GAUSSIAN_SIGMA;
-            let sy = y as f32 + 0.5 + dy * RFGR_GAUSSIAN_SIGMA;
+            let sx = x as f32 + 0.5 + dx * self.model.gaussian_sigma();
+            let sy = y as f32 + 0.5 + dy * self.model.gaussian_sigma();
             if boolean_hit(sx, sy, channel, self.seed, self.model, |cx, cy| {
                 self.sample_linear(cx, cy, channel)
             }) {
@@ -1181,8 +1202,8 @@ impl Rgba16Context<'_> {
         let mut hits = 0u32;
         for sample in 0..RFGR_MONTE_CARLO_SAMPLES {
             let (dx, dy) = gaussian_sample(self.seed, x, y, MONOCHROME_CHANNEL, sample);
-            let sx = x as f32 + 0.5 + dx * RFGR_GAUSSIAN_SIGMA;
-            let sy = y as f32 + 0.5 + dy * RFGR_GAUSSIAN_SIGMA;
+            let sx = x as f32 + 0.5 + dx * self.model.gaussian_sigma();
+            let sy = y as f32 + 0.5 + dy * self.model.gaussian_sigma();
             if boolean_hit(
                 sx,
                 sy,
@@ -1235,10 +1256,10 @@ fn boolean_hit<F>(
 where
     F: FnMut(f32, f32) -> f32,
 {
-    let cell = model.cell_size;
+    let cell = model.spatial_cell_size();
     let gx = (sx / cell).floor() as i64;
     let gy = (sy / cell).floor() as i64;
-    let cell_radius = (model.max_radius / cell).ceil() as i64 + 1;
+    let cell_radius = (model.spatial_max_radius() / cell).ceil() as i64 + 1;
     let channel_seed = seed ^ CHANNEL_STREAMS[channel];
 
     for cy in (gy - cell_radius)..=(gy + cell_radius) {
@@ -1447,7 +1468,7 @@ mod tests {
     use super::*;
 
     fn model(grain: GrainSettings) -> RfgrModel {
-        RfgrModel::from_settings(grain)
+        RfgrModel::from_settings(grain, 1.0)
     }
 
     #[test]
@@ -1485,6 +1506,63 @@ mod tests {
         assert!(large_low_freq.log_sigma > large_high_freq.log_sigma);
         assert!(large_high_freq.max_radius > 0.0);
         assert!(large_low_freq.fast_filter_sigma() > large_high_freq.fast_filter_sigma());
+    }
+
+    #[test]
+    fn rfgr_resolution_scale_changes_spatial_terms_but_not_coverage() {
+        let grain = GrainSettings {
+            amount: 30,
+            size: 45,
+            frequency: 45,
+        };
+        let half = RfgrModel::from_settings(grain, 0.5);
+        let base = RfgrModel::from_settings(grain, 1.0);
+        let double = RfgrModel::from_settings(grain, 2.0);
+        let hash = hash_sample(1, 2, 3, 4);
+
+        for (half_value, base_value, double_value) in [
+            (
+                half.spatial_cell_size(),
+                base.spatial_cell_size(),
+                double.spatial_cell_size(),
+            ),
+            (
+                half.spatial_max_radius(),
+                base.spatial_max_radius(),
+                double.spatial_max_radius(),
+            ),
+            (
+                half.sample_radius(hash),
+                base.sample_radius(hash),
+                double.sample_radius(hash),
+            ),
+            (
+                half.gaussian_sigma(),
+                base.gaussian_sigma(),
+                double.gaussian_sigma(),
+            ),
+            (
+                half.fast_filter_sigma(),
+                base.fast_filter_sigma(),
+                double.fast_filter_sigma(),
+            ),
+        ] {
+            assert!((half_value - base_value * 0.5).abs() < 1.0e-6);
+            assert!((double_value - base_value * 2.0).abs() < 1.0e-6);
+        }
+        assert_eq!(half.alpha, base.alpha);
+        assert_eq!(double.mu_r, base.mu_r);
+        assert_eq!(half.log_sigma, base.log_sigma);
+        assert_eq!(double.radius_second_moment, base.radius_second_moment);
+        let intensity = 0.42;
+        assert_eq!(
+            half.poisson_mean_for_intensity(intensity),
+            base.poisson_mean_for_intensity(intensity)
+        );
+        assert_eq!(
+            double.poisson_mean_for_intensity(intensity),
+            base.poisson_mean_for_intensity(intensity)
+        );
     }
 
     #[test]
@@ -1546,7 +1624,7 @@ mod tests {
             frequency: 45,
         };
 
-        let out = render_grain_8(image, grain, 123).unwrap().into_raw();
+        let out = render_grain_8(image, grain, 123, 1.0).unwrap().into_raw();
         for pixel in out.as_chunks::<3>().0 {
             assert_eq!(pixel[0], pixel[1]);
             assert_eq!(pixel[1], pixel[2]);
@@ -1565,7 +1643,9 @@ mod tests {
             frequency: 35,
         };
 
-        let out = render_grain_8_fast(image, grain, 123).unwrap().into_raw();
+        let out = render_grain_8_fast(image, grain, 123, 1.0)
+            .unwrap()
+            .into_raw();
         for pixel in out.as_chunks::<3>().0 {
             assert_eq!(pixel[0], pixel[1]);
             assert_eq!(pixel[1], pixel[2]);
@@ -1587,13 +1667,13 @@ mod tests {
             frequency: 45,
         };
 
-        let a = render_grain_8(image.clone(), grain, 123)
+        let a = render_grain_8(image.clone(), grain, 123, 1.0)
             .unwrap()
             .into_raw();
-        let b = render_grain_8(image.clone(), grain, 123)
+        let b = render_grain_8(image.clone(), grain, 123, 1.0)
             .unwrap()
             .into_raw();
-        let c = render_grain_8(image, grain, 124).unwrap().into_raw();
+        let c = render_grain_8(image, grain, 124, 1.0).unwrap().into_raw();
         assert_eq!(a, b);
         assert_ne!(a, c);
     }
@@ -1613,13 +1693,15 @@ mod tests {
             frequency: 35,
         };
 
-        let a = render_grain_8_fast(image.clone(), grain, 123)
+        let a = render_grain_8_fast(image.clone(), grain, 123, 1.0)
             .unwrap()
             .into_raw();
-        let b = render_grain_8_fast(image.clone(), grain, 123)
+        let b = render_grain_8_fast(image.clone(), grain, 123, 1.0)
             .unwrap()
             .into_raw();
-        let c = render_grain_8_fast(image, grain, 124).unwrap().into_raw();
+        let c = render_grain_8_fast(image, grain, 124, 1.0)
+            .unwrap()
+            .into_raw();
         assert_eq!(a, b);
         assert_ne!(a, c);
     }
@@ -1640,7 +1722,9 @@ mod tests {
             frequency: 50,
         };
 
-        let out = render_grain(image.clone(), grain, 5).unwrap().to_rgba16();
+        let out = render_grain(image.clone(), grain, 5, 1.0)
+            .unwrap()
+            .to_rgba16();
         let input = image.to_rgba16();
         for (before, after) in input.pixels().zip(out.pixels()) {
             assert_eq!(before[3], after[3]);
@@ -1663,7 +1747,7 @@ mod tests {
             frequency: 50,
         };
 
-        let out = render_grain_fast(image.clone(), grain, 5)
+        let out = render_grain_fast(image.clone(), grain, 5, 1.0)
             .unwrap()
             .to_rgba16();
         let input = image.to_rgba16();

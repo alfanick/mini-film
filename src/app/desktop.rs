@@ -64,6 +64,7 @@ mod enabled {
         nikon_wtu: String,
         color_noise_iso_threshold: u32,
         grain_preset: String,
+        normalize_grain_mpix: Option<f64>,
         progressive_jpeg: bool,
         no_grain: bool,
         lens_corrections: bool,
@@ -98,6 +99,8 @@ mod enabled {
         nikon_wtu: String,
         color_noise_iso_threshold: Option<u32>,
         grain_preset: String,
+        #[serde(default = "default_normalize_grain_mpix")]
+        normalize_grain_mpix: Option<f64>,
         progressive_jpeg: bool,
         no_grain: bool,
         lens_corrections: bool,
@@ -174,6 +177,7 @@ mod enabled {
                 nikon_wtu: String::new(),
                 color_noise_iso_threshold: 1600,
                 grain_preset: String::new(),
+                normalize_grain_mpix: Some(mini_film::DEFAULT_GRAIN_REFERENCE_MPIX),
                 progressive_jpeg: false,
                 no_grain: false,
                 lens_corrections: true,
@@ -208,6 +212,7 @@ mod enabled {
                 .color_noise_iso_threshold
                 .unwrap_or(self.color_noise_iso_threshold);
             self.grain_preset = saved.grain_preset;
+            self.normalize_grain_mpix = saved.normalize_grain_mpix;
             self.progressive_jpeg = saved.progressive_jpeg;
             self.no_grain = saved.no_grain;
             self.lens_corrections = saved.lens_corrections;
@@ -364,6 +369,12 @@ mod enabled {
                 self.publish_album.trim().to_string()
             };
             let grain_preset = optional_string(&self.grain_preset);
+            let normalize_grain_mpix = self.normalize_grain_mpix;
+            if let Some(reference_mpix) = normalize_grain_mpix
+                && (!reference_mpix.is_finite() || reference_mpix <= 0.0)
+            {
+                bail!("grain normalization reference MPix must be finite and greater than zero");
+            }
             let codex_flags = if self.codex {
                 let mut flags = CodexAnalysisFlags {
                     tags: self.codex_tags,
@@ -409,6 +420,7 @@ mod enabled {
                 grain_preset,
                 grain_seed: None,
                 grain_engine: GrainEngine::default(),
+                normalize_grain_mpix,
                 color_noise_iso_threshold: self.color_noise_iso_threshold.unwrap_or(1600),
                 jobs: self.jobs,
                 debounce_seconds: 0,
@@ -636,6 +648,10 @@ mod enabled {
         } else {
             saved
         }
+    }
+
+    fn default_normalize_grain_mpix() -> Option<f64> {
+        Some(mini_film::DEFAULT_GRAIN_REFERENCE_MPIX)
     }
 
     fn file_path_to_string(path: tauri_plugin_dialog::FilePath) -> Result<String> {

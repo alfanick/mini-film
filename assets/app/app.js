@@ -19,8 +19,10 @@ const fields = {
   nikonWtu: document.getElementById("nikonWtu"),
   colorNoiseIsoThreshold: document.getElementById("colorNoiseIsoThreshold"),
   grainPreset: document.getElementById("grainPreset"),
+  normalizeGrainMpix: document.getElementById("normalizeGrainMpix"),
   progressiveJpeg: document.getElementById("progressiveJpeg"),
   noGrain: document.getElementById("noGrain"),
+  normalizeGrain: document.getElementById("normalizeGrain"),
   lensCorrections: document.getElementById("lensCorrections"),
   codex: document.getElementById("codex"),
   codexTags: document.getElementById("codexTags"),
@@ -62,6 +64,19 @@ function numericValue(field) {
   return Number.isFinite(value) ? value : null;
 }
 
+function normalizeGrainMpixValue() {
+  if (!fields.normalizeGrain.checked) return null;
+  const value = numericValue(fields.normalizeGrainMpix);
+  if (value === null || value <= 0) {
+    throw new Error("Grain Reference MPix must be greater than zero.");
+  }
+  return value;
+}
+
+function syncNormalizeGrainField() {
+  fields.normalizeGrainMpix.disabled = !fields.normalizeGrain.checked;
+}
+
 function requestFromForm() {
   return {
     input: fields.input.value.trim(),
@@ -85,6 +100,7 @@ function requestFromForm() {
     nikonWtu: fields.nikonWtu.value.trim(),
     colorNoiseIsoThreshold: numericValue(fields.colorNoiseIsoThreshold),
     grainPreset: fields.grainPreset.value,
+    normalizeGrainMpix: normalizeGrainMpixValue(),
     progressiveJpeg: fields.progressiveJpeg.checked,
     noGrain: fields.noGrain.checked,
     lensCorrections: fields.lensCorrections.checked,
@@ -124,10 +140,13 @@ async function loadDefaults() {
   setIfEmpty(fields.nikonWtu, defaults.nikonWtu);
   setIfEmpty(fields.colorNoiseIsoThreshold, String(defaults.colorNoiseIsoThreshold));
   setIfEmpty(fields.grainPreset, defaults.grainPreset);
+  setIfEmpty(fields.normalizeGrainMpix, String(defaults.normalizeGrainMpix ?? 12));
   fields.allowOthers.checked = Boolean(defaults.allowOthers);
   fields.autoImport.checked = Boolean(defaults.autoImport);
   fields.progressiveJpeg.checked = Boolean(defaults.progressiveJpeg);
   fields.noGrain.checked = Boolean(defaults.noGrain);
+  fields.normalizeGrain.checked = defaults.normalizeGrainMpix !== null;
+  syncNormalizeGrainField();
   fields.lensCorrections.checked = Boolean(defaults.lensCorrections);
   fields.codex.checked = Boolean(defaults.codex);
   fields.codexTags.checked = Boolean(defaults.codexTags);
@@ -137,6 +156,8 @@ async function loadDefaults() {
   setIfEmpty(fields.codexModel, defaults.codexModel);
   setIfEmpty(fields.codexTimeout, String(defaults.codexTimeout));
 }
+
+fields.normalizeGrain.addEventListener("change", syncNormalizeGrainField);
 
 function directoryTitle(fieldName) {
   if (fieldName === "input") return "Choose input inbox";

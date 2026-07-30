@@ -26,7 +26,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const REVIEW_SAMPLER_CACHE_VERSION: &str = "review-sampler-v2-adobe-dcp";
+const REVIEW_SAMPLER_CACHE_VERSION: &str = "review-sampler-v3-normalized-grain";
 const REVIEW_SAMPLER_LONG_EDGE: u32 = 512;
 const REVIEW_SAMPLER_JPEG_QUALITY: u8 = 85;
 
@@ -497,14 +497,19 @@ impl ReviewHandle {
                             )?);
                     }
                     image.profiles[render_index].processing_key = Some(
-                        review_render_processing_key_for_input(&image.raw_path, profile_index)
-                            .to_string(),
+                        review_render_processing_key_for_input_with_normalization(
+                            &image.raw_path,
+                            profile_index,
+                            self.normalize_grain_mpix,
+                        )
+                        .to_string(),
                     );
                     let bw_filter = effective_bw_filter_for_profile(image, &profile);
                     let render_key = profile_render_key_value(
                         &image.retouch,
                         retouch_white_balance_for_image(image),
                         bw_filter,
+                        self.normalize_grain_mpix,
                     );
                     queue_profile_retouch_render(
                         image,
@@ -748,6 +753,7 @@ impl ReviewHandle {
                     convert: &self.convert,
                     keep_intermediate: None,
                     no_grain: self.no_grain,
+                    normalize_grain_mpix: self.normalize_grain_mpix,
                     grain_engine: self.grain_engine,
                     color_noise_iso_threshold: 0,
                     lens_corrections: LensCorrections::default(),
@@ -998,6 +1004,7 @@ fn sampler_profile_digest(
     hasher.update(prepared.digest.as_bytes());
     hasher.update(REVIEW_SAMPLER_JPEG_QUALITY.to_le_bytes());
     hasher.update(format!("{}:{}", handle.no_grain, handle.grain_engine));
+    hasher.update(grain_normalization_identity(handle.normalize_grain_mpix));
     hasher.update(handle.grain.as_deref().unwrap_or_default());
     hasher.update(handle.grain_preset.as_deref().unwrap_or_default());
     hash_file_into(&mut hasher, &entry.profile_path)?;

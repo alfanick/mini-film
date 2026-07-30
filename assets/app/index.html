@@ -134,10 +134,15 @@
                   <option value="heavy">Heavy</option>
                 </select>
               </label>
+              <label>
+                <span>Grain Reference MPix</span>
+                <input id="normalizeGrainMpix" name="normalizeGrainMpix" type="number" min="5e-324" step="any" />
+              </label>
             </div>
             <div class="checks">
               <label><input id="progressiveJpeg" name="progressiveJpeg" type="checkbox" /> Progressive JPEG</label>
               <label><input id="noGrain" name="noGrain" type="checkbox" /> Disable profile grain</label>
+              <label><input id="normalizeGrain" name="normalizeGrain" type="checkbox" checked /> Normalize grain</label>
               <label><input id="lensCorrections" name="lensCorrections" type="checkbox" /> Lens corrections</label>
             </div>
             <div class="field compact-field">
