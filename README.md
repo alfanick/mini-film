@@ -607,6 +607,12 @@ whose debounce has expired follows the same six-level priority order within
 that reserved retouch lane, but executes independently from the daemon render
 lane.
 
+On restart, review reuses a completed profile render only when its RAW pipeline
+and final export settings still match. Changing JPEG quality, resize or
+long-edge bounds, subsampling, metadata stripping, or progressive JPEG mode
+queues affected profile and retouch outputs again. Source-derived camera
+previews, compressed thumbnails, and originals remain cached.
+
 For standalone JPEG/HEIC, ordered background thumbnail and preview pipelines
 start at discovery time and run concurrently with managed-link installation.
 Each converter uses half of the available CPU threads; one thumbnail worker and

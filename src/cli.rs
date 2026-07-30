@@ -1332,6 +1332,21 @@ pub(crate) struct ExportOptions {
     pub(crate) progressive_jpeg: bool,
 }
 
+impl Default for ExportOptions {
+    fn default() -> Self {
+        Self {
+            jpg_quality: 95,
+            resize: None,
+            long_edge: None,
+            max_width: None,
+            max_height: None,
+            jpeg_subsampling: JpegSubsampling::S444,
+            strip_metadata: false,
+            progressive_jpeg: false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

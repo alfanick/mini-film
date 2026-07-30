@@ -54,6 +54,7 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
         .clone()
         .unwrap_or_else(|| ReviewStore::new(Vec::new()));
     store.normalize_grain_mpix = config.normalize_grain_mpix;
+    store.render_export.clone_from(&config.export);
     let stored_raw_paths = store
         .images
         .iter()
@@ -892,6 +893,7 @@ impl ReviewHandle {
                         false,
                         &HashSet::new(),
                         self.normalize_grain_mpix,
+                        &self.export,
                     );
                 }
                 let preview_path = self.preview_path_for(raw, image.id);
@@ -979,7 +981,7 @@ impl ReviewHandle {
             image.preview.path = Some(expected_output.to_path_buf());
             image.preview.error = None;
             image.preview.duration_ms = None;
-            image.preview.render_key = retouch_render_key(&image.retouch);
+            image.preview.render_key = retouch_render_key(&image.retouch, &self.export);
             image.preview.updated_at = now_string();
             image.updated_at = now_string();
             if discovered {
@@ -1340,6 +1342,12 @@ impl ReviewHandle {
                 .find(|profile| profile.index == profile_index)
                 .cloned();
             let image = store.ensure_image(&self.input_root, raw)?;
+            let processing_key = review_render_processing_key_for_input_with_options(
+                raw,
+                profile_index,
+                self.normalize_grain_mpix,
+                &self.export,
+            );
             let bw_filter = profile
                 .as_ref()
                 .map(|profile| effective_bw_filter_for_profile(image, profile))
@@ -1352,6 +1360,7 @@ impl ReviewHandle {
                 (profile_index != SOOC_PROFILE_INDEX)
                     .then_some(self.normalize_grain_mpix)
                     .flatten(),
+                &processing_key,
             );
             let Some(render) = image
                 .profiles
@@ -1369,14 +1378,7 @@ impl ReviewHandle {
             render.error = None;
             render.duration_ms = None;
             render.render_key = render_key;
-            render.processing_key = Some(
-                review_render_processing_key_for_input_with_normalization(
-                    raw,
-                    profile_index,
-                    self.normalize_grain_mpix,
-                )
-                .to_string(),
-            );
+            render.processing_key = Some(processing_key);
             render.width = None;
             render.height = None;
             render.updated_at = now_string();
@@ -1404,17 +1406,18 @@ impl ReviewHandle {
         let Some(image) = store.images.iter().find(|image| image.raw_path == raw) else {
             return false;
         };
+        let processing_key = review_render_processing_key_for_input_with_options(
+            raw,
+            profile_index,
+            self.normalize_grain_mpix,
+            &self.export,
+        );
         image.profiles.iter().any(|render| {
             let Some(output) = render.output_path.as_deref() else {
                 return false;
             };
             render.profile_index == profile_index
-                && render.processing_key
-                    == Some(review_render_processing_key_for_input_with_normalization(
-                        raw,
-                        profile_index,
-                        self.normalize_grain_mpix,
-                    ))
+                && render.processing_key.as_deref() == Some(processing_key.as_str())
                 && output.is_file()
                 && retouch_base_output(output, &self.output_root, &self.cache_root)
                     == expected_output
@@ -2739,7 +2742,9 @@ impl ReviewHandle {
                             let base_output = image.preview.path.as_deref().map(|output| {
                                 retouch_base_output(output, &self.output_root, &self.cache_root)
                             });
-                            if let Some(render_key) = retouch_render_key(&image.retouch) {
+                            if let Some(render_key) =
+                                retouch_render_key(&image.retouch, &self.export)
+                            {
                                 let cached = base_output.as_deref().is_some_and(|output| {
                                     apply_cached_preview_output(
                                         &mut image.preview,
@@ -2805,6 +2810,13 @@ impl ReviewHandle {
                             render_order.sort_by_key(|(priority, index)| (*priority, *index));
                             for (_, index) in render_order {
                                 let profile_index = image.profiles[index].profile_index;
+                                let processing_key =
+                                    review_render_processing_key_for_input_with_options(
+                                        &image.raw_path,
+                                        profile_index,
+                                        self.normalize_grain_mpix,
+                                        &self.export,
+                                    );
                                 if image.profiles[index].output_path.is_none()
                                     && let Some(profile) = profiles_by_index.get(&profile_index)
                                 {
@@ -2828,6 +2840,7 @@ impl ReviewHandle {
                                     (profile_index != SOOC_PROFILE_INDEX)
                                         .then_some(self.normalize_grain_mpix)
                                         .flatten(),
+                                    &processing_key,
                                 );
                                 queue_profile_retouch_render(
                                     image,
@@ -2869,14 +2882,14 @@ impl ReviewHandle {
                                         &profile.stem,
                                     )?);
                             }
-                            image.profiles[index].processing_key = Some(
-                                review_render_processing_key_for_input_with_normalization(
+                            let processing_key =
+                                review_render_processing_key_for_input_with_options(
                                     &image.raw_path,
                                     profile_index,
                                     self.normalize_grain_mpix,
-                                )
-                                .to_string(),
-                            );
+                                    &self.export,
+                                );
+                            image.profiles[index].processing_key = Some(processing_key.clone());
                             let bw_filter = effective_bw_filter_for_profile(image, profile);
                             let render_key = profile_render_key_value(
                                 &image.retouch,
@@ -2885,6 +2898,7 @@ impl ReviewHandle {
                                 (profile_index != SOOC_PROFILE_INDEX)
                                     .then_some(self.normalize_grain_mpix)
                                     .flatten(),
+                                &processing_key,
                             );
                             queue_profile_retouch_render(
                                 image,
@@ -4187,9 +4201,18 @@ pub(super) fn retouch_cache_output(
     ))
 }
 
-pub(super) fn retouch_render_key(retouch: &RetouchSettings) -> Option<String> {
+pub(super) fn retouch_render_key(
+    retouch: &RetouchSettings,
+    export: &ExportOptions,
+) -> Option<String> {
     let normalized = retouch.clone().normalized();
-    (normalized != RetouchSettings::default()).then(|| normalized.render_key())
+    (normalized != RetouchSettings::default()).then(|| {
+        let mut hasher = Sha1::new();
+        hasher.update(normalized.render_key());
+        hasher.update("|");
+        hasher.update(review_export_processing_identity(export));
+        short_render_digest(hasher)
+    })
 }
 
 pub(super) fn profile_render_key(
@@ -4197,10 +4220,17 @@ pub(super) fn profile_render_key(
     white_balance: RetouchWhiteBalance,
     bw_filter: BwFilter,
     normalize_grain_mpix: Option<f64>,
+    processing_key: &str,
 ) -> Option<String> {
     let normalized = retouch.clone().normalized();
     (normalized != RetouchSettings::default() || bw_filter != BwFilter::None).then(|| {
-        profile_render_key_value(&normalized, white_balance, bw_filter, normalize_grain_mpix)
+        profile_render_key_value(
+            &normalized,
+            white_balance,
+            bw_filter,
+            normalize_grain_mpix,
+            processing_key,
+        )
     })
 }
 
@@ -4209,12 +4239,10 @@ pub(super) fn profile_render_key_value(
     white_balance: RetouchWhiteBalance,
     bw_filter: BwFilter,
     normalize_grain_mpix: Option<f64>,
+    processing_key: &str,
 ) -> String {
     let normalized = retouch.clone().normalized();
     let retouch_key = normalized.render_key_with_white_balance(white_balance);
-    if normalize_grain_mpix.is_none() && bw_filter == BwFilter::None {
-        return retouch_key;
-    }
     let mut hasher = Sha1::new();
     hasher.update(retouch_key);
     if bw_filter != BwFilter::None {
@@ -4225,6 +4253,12 @@ pub(super) fn profile_render_key_value(
         hasher.update("|");
         hasher.update(grain_normalization_identity(normalize_grain_mpix));
     }
+    hasher.update("|base=");
+    hasher.update(processing_key);
+    short_render_digest(hasher)
+}
+
+fn short_render_digest(hasher: Sha1) -> String {
     let digest = hasher.finalize();
     digest
         .iter()

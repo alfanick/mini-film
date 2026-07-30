@@ -616,6 +616,8 @@ pub(super) struct ReviewStore {
     pub(super) exif_schema_version: u32,
     #[serde(skip, default = "default_review_normalize_grain_mpix")]
     pub(super) normalize_grain_mpix: Option<f64>,
+    #[serde(skip)]
+    pub(super) render_export: ExportOptions,
 }
 
 pub(super) const fn default_review_normalize_grain_mpix() -> Option<f64> {

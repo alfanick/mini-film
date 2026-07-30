@@ -429,6 +429,19 @@ fn test_export_options() -> ExportOptions {
     }
 }
 
+fn test_processing_key(
+    input: &Path,
+    profile_index: usize,
+    normalize_grain_mpix: Option<f64>,
+) -> String {
+    review_render_processing_key_for_input_with_options(
+        input,
+        profile_index,
+        normalize_grain_mpix,
+        &test_export_options(),
+    )
+}
+
 fn test_handle(input: PathBuf, output: PathBuf, profiles: Vec<ReviewProfile>) -> ReviewHandle {
     let export = test_export_options();
     let (subscribers, _) = broadcast::channel(256);
@@ -439,7 +452,8 @@ fn test_handle(input: PathBuf, output: PathBuf, profiles: Vec<ReviewProfile>) ->
             .build()
             .unwrap(),
     );
-    let store = ReviewStore::new(profiles);
+    let mut store = ReviewStore::new(profiles);
+    store.render_export.clone_from(&export);
     let database = {
         let database_runtime = Arc::clone(&database_runtime);
         let input = input.clone();
@@ -1550,19 +1564,20 @@ fn sync_profiles_invalidates_renders_from_old_processing_pipeline() {
 #[test]
 fn rendered_profile_processing_keys_track_input_sharpening_policy() {
     let normalization = grain_normalization_identity(Some(mini_film::DEFAULT_GRAIN_REFERENCE_MPIX));
+    let export = review_export_processing_identity(&ExportOptions::default());
     for input in [Path::new("frame.jpg"), Path::new("frame.HEIC")] {
         assert_eq!(
             review_render_processing_key_for_input(input, 0),
-            format!("profiled-compressed-render-v5-normalized-grain:{normalization}")
+            format!("profiled-compressed-render-v5-normalized-grain:{normalization}:{export}")
         );
     }
     assert_eq!(
         review_render_processing_key_for_input(Path::new("frame.NEF"), 0),
-        format!("{RAW_RENDER_PIPELINE_KEY}:dcp-none:{normalization}")
+        format!("{RAW_RENDER_PIPELINE_KEY}:dcp-none:{normalization}:{export}")
     );
     assert_eq!(
         review_render_processing_key_for_input(Path::new("frame.TIFF"), 0),
-        format!("profiled-tiff-render-v3-normalized-grain:{normalization}")
+        format!("profiled-tiff-render-v3-normalized-grain:{normalization}:{export}")
     );
 }
 
@@ -1598,6 +1613,108 @@ fn rendered_profile_processing_keys_track_grain_normalization() {
 }
 
 #[test]
+fn rendered_profile_processing_keys_track_every_export_option() {
+    let input = Path::new("frame.NEF");
+    let base = ExportOptions::default();
+    let expected = review_render_processing_key_for_input_with_options(input, 0, Some(12.0), &base);
+    assert_eq!(
+        expected,
+        review_render_processing_key_for_input_with_options(input, 0, Some(12.0), &base)
+    );
+
+    let mut variants = Vec::new();
+    let mut changed = base.clone();
+    changed.jpg_quality = 87;
+    variants.push(changed);
+    let mut changed = base.clone();
+    changed.resize = Some("3000x2000>".to_string());
+    variants.push(changed);
+    let mut changed = base.clone();
+    changed.long_edge = Some(3000);
+    variants.push(changed);
+    let mut changed = base.clone();
+    changed.max_width = Some(3000);
+    variants.push(changed);
+    let mut changed = base.clone();
+    changed.max_height = Some(2000);
+    variants.push(changed);
+    let mut changed = base.clone();
+    changed.jpeg_subsampling = crate::cli::JpegSubsampling::S420;
+    variants.push(changed);
+    let mut changed = base.clone();
+    changed.strip_metadata = true;
+    variants.push(changed);
+    let mut changed = base.clone();
+    changed.progressive_jpeg = true;
+    variants.push(changed);
+
+    for export in variants {
+        assert_ne!(
+            expected,
+            review_render_processing_key_for_input_with_options(input, 0, Some(12.0), &export,)
+        );
+    }
+
+    let sooc_default = review_render_processing_key_for_input_with_options(
+        input,
+        SOOC_PROFILE_INDEX,
+        Some(12.0),
+        &base,
+    );
+    let mut progressive = base.clone();
+    progressive.progressive_jpeg = true;
+    assert_ne!(
+        sooc_default,
+        review_render_processing_key_for_input_with_options(
+            input,
+            SOOC_PROFILE_INDEX,
+            Some(12.0),
+            &progressive,
+        )
+    );
+    assert_eq!(
+        sooc_default,
+        review_render_processing_key_for_input_with_options(input, SOOC_PROFILE_INDEX, None, &base,)
+    );
+}
+
+#[test]
+fn sync_profiles_invalidates_completed_render_when_export_options_change() {
+    let temp = tempfile::tempdir().unwrap();
+    let raw = temp.path().join("frame.NEF");
+    fs::write(&raw, b"raw").unwrap();
+    let profiles = vec![profile(0, "Classic")];
+    let mut store = ReviewStore::new(profiles.clone());
+    let render = &mut store.ensure_image(temp.path(), &raw).unwrap().profiles[0];
+    render.enabled = false;
+    render.status = ReviewRenderStatus::Done;
+    render.output_path = Some(temp.path().join("Classic/frame.jpg"));
+
+    store.sync_profiles(profiles.clone());
+    assert!(!store.images[0].profiles[0].enabled);
+    assert_eq!(store.images[0].profiles[0].status, ReviewRenderStatus::Done);
+
+    store.render_export.long_edge = Some(2048);
+    store.render_export.progressive_jpeg = true;
+    store.sync_profiles(profiles);
+
+    let expected_processing_key = review_render_processing_key_for_input_with_options(
+        &raw,
+        0,
+        store.normalize_grain_mpix,
+        &store.render_export,
+    );
+    let render = &store.images[0].profiles[0];
+    assert!(!render.enabled);
+    assert_eq!(render.status, ReviewRenderStatus::Missing);
+    assert_eq!(render.output_path, None);
+    assert_eq!(
+        render.processing_key.as_deref(),
+        Some(expected_processing_key.as_str())
+    );
+}
+
+#[test]
 fn profiled_retouch_cache_keys_track_grain_normalization() {
     let retouch = RetouchSettings {
         adjustments: BasicRetouchAdjustments {
@@ -1611,23 +1728,67 @@ fn profiled_retouch_cache_keys_track_grain_normalization() {
         RetouchWhiteBalance::default(),
         BwFilter::None,
         Some(12.0),
+        &review_render_processing_key_with_normalization(0, Some(12.0)),
     );
     let custom = profile_render_key_value(
         &retouch,
         RetouchWhiteBalance::default(),
         BwFilter::None,
         Some(24.0),
+        &review_render_processing_key_with_normalization(0, Some(24.0)),
     );
     let disabled = profile_render_key_value(
         &retouch,
         RetouchWhiteBalance::default(),
         BwFilter::None,
         None,
+        &review_render_processing_key_with_normalization(0, None),
     );
 
     assert_ne!(default, custom);
     assert_ne!(default, disabled);
     assert_ne!(custom, disabled);
+}
+
+#[test]
+fn retouch_cache_keys_track_base_export_options() {
+    let retouch = RetouchSettings {
+        adjustments: BasicRetouchAdjustments {
+            exposure: 0.25,
+            ..BasicRetouchAdjustments::default()
+        },
+        ..RetouchSettings::default()
+    };
+    let input = Path::new("frame.NEF");
+    let base_export = ExportOptions::default();
+    let base_processing =
+        review_render_processing_key_for_input_with_options(input, 0, Some(12.0), &base_export);
+    let mut changed_export = base_export.clone();
+    changed_export.long_edge = Some(2048);
+    changed_export.progressive_jpeg = true;
+    let changed_processing =
+        review_render_processing_key_for_input_with_options(input, 0, Some(12.0), &changed_export);
+
+    assert_ne!(
+        profile_render_key_value(
+            &retouch,
+            RetouchWhiteBalance::default(),
+            BwFilter::None,
+            Some(12.0),
+            &base_processing,
+        ),
+        profile_render_key_value(
+            &retouch,
+            RetouchWhiteBalance::default(),
+            BwFilter::None,
+            Some(12.0),
+            &changed_processing,
+        )
+    );
+    assert_ne!(
+        retouch_render_key(&retouch, &base_export),
+        retouch_render_key(&retouch, &changed_export)
+    );
 }
 
 #[test]
@@ -3129,6 +3290,7 @@ fn base_render_done_uses_cached_retouch_output_without_scheduling() {
         RetouchWhiteBalance::default(),
         BwFilter::None,
         Some(mini_film::DEFAULT_GRAIN_REFERENCE_MPIX),
+        &test_processing_key(&raw, 0, Some(mini_film::DEFAULT_GRAIN_REFERENCE_MPIX)),
     );
     let cached = retouch_cache_output(
         &rendered,
@@ -3189,9 +3351,10 @@ fn direct_compressed_retouch_uses_cache_without_replacing_source_link() {
         ..RetouchSettings::default()
     }
     .normalized();
+    let render_key = retouch_render_key(&retouch, &handle.export).unwrap();
     let cached = retouch_cache_output(
         &base,
-        &retouch.render_key(),
+        &render_key,
         handle.output_root(),
         handle.cache_root(),
     );
@@ -3259,6 +3422,7 @@ fn cached_retouch_output_is_current_for_its_base_profile() {
         RetouchWhiteBalance::default(),
         BwFilter::None,
         Some(mini_film::DEFAULT_GRAIN_REFERENCE_MPIX),
+        &test_processing_key(&raw, 0, Some(mini_film::DEFAULT_GRAIN_REFERENCE_MPIX)),
     );
     let cached = retouch_cache_output(
         &rendered,
@@ -3287,6 +3451,33 @@ fn cached_retouch_output_is_current_for_its_base_profile() {
     assert!(handle.profile_render_current(&raw, 0, &rendered));
     fs::remove_file(&cached).unwrap();
     assert!(!handle.profile_render_current(&raw, 0, &rendered));
+}
+
+#[test]
+fn profile_render_current_rejects_changed_export_options() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let raw = input.join("frame.NEF");
+    let rendered = output.join("Classic").join("frame.jpg");
+    fs::create_dir_all(rendered.parent().unwrap()).unwrap();
+    fs::write(&raw, b"raw").unwrap();
+    fs::write(&rendered, b"base").unwrap();
+
+    let handle = test_handle(input, output, vec![profile(0, "Classic")]);
+    handle.record_discovered_raw(&raw).unwrap();
+    handle.record_profile_queued(&raw, 0, &rendered).unwrap();
+    handle
+        .record_profile_done(&raw, 0, &rendered, Duration::from_millis(42))
+        .unwrap();
+    assert!(handle.profile_render_current(&raw, 0, &rendered));
+
+    let mut changed = handle.clone();
+    changed.export.long_edge = Some(2048);
+    changed.export.progressive_jpeg = true;
+    assert!(!changed.profile_render_current(&raw, 0, &rendered));
 }
 
 #[test]
@@ -3348,6 +3539,7 @@ fn queued_missing_output_reuses_saved_retouch_settings() {
         RetouchWhiteBalance::default(),
         BwFilter::None,
         Some(mini_film::DEFAULT_GRAIN_REFERENCE_MPIX),
+        &test_processing_key(&raw, 0, Some(mini_film::DEFAULT_GRAIN_REFERENCE_MPIX)),
     );
     {
         handle
@@ -3407,6 +3599,7 @@ fn review_update_uses_cached_bw_filter_output_without_scheduling() {
         RetouchWhiteBalance::default(),
         BwFilter::Yellow,
         Some(mini_film::DEFAULT_GRAIN_REFERENCE_MPIX),
+        &test_processing_key(&raw, 0, Some(mini_film::DEFAULT_GRAIN_REFERENCE_MPIX)),
     );
     let cached = retouch_cache_output(
         &rendered,

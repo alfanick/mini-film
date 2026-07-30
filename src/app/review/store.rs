@@ -19,6 +19,7 @@ impl ReviewStore {
             ui: ReviewUiState::default(),
             exif_schema_version: Self::EXIF_SCHEMA_VERSION,
             normalize_grain_mpix: default_review_normalize_grain_mpix(),
+            render_export: ExportOptions::default(),
         }
     }
 
@@ -74,6 +75,7 @@ impl ReviewStore {
         self.profiles = profiles;
         let profiles = self.profiles.clone();
         let normalize_grain_mpix = self.normalize_grain_mpix;
+        let render_export = self.render_export.clone();
         for image in &mut self.images {
             normalize_review_metadata_sources(image);
             if matches!(
@@ -89,6 +91,7 @@ impl ReviewStore {
                 profiles_changed,
                 &unchanged_profile_indexes,
                 normalize_grain_mpix,
+                &render_export,
             );
         }
         self.merge_standalone_sooc_sidecars();
@@ -128,6 +131,7 @@ impl ReviewStore {
 
         let profiles = self.profiles.clone();
         let normalize_grain_mpix = self.normalize_grain_mpix;
+        let render_export = self.render_export.clone();
         for image in &mut self.images {
             sync_image_profile_renders(
                 image,
@@ -135,6 +139,7 @@ impl ReviewStore {
                 false,
                 &HashSet::new(),
                 normalize_grain_mpix,
+                &render_export,
             );
         }
         Ok(index)
@@ -269,6 +274,7 @@ impl ReviewStore {
             false,
             &HashSet::new(),
             self.normalize_grain_mpix,
+            &self.render_export,
         );
         self.images.push(image);
         self.normalize_ui();
@@ -354,18 +360,20 @@ impl ReviewStore {
             image.codex.updated_at = now_string();
         }
         for render in &mut image.profiles {
-            let previous_processing_key = review_render_processing_key_for_input_with_normalization(
+            let previous_processing_key = review_render_processing_key_for_input_with_options(
                 old_path,
                 render.profile_index,
                 self.normalize_grain_mpix,
+                &self.render_export,
             );
             let processing_key_matches =
                 render.processing_key.as_deref() == Some(previous_processing_key.as_str());
             render.processing_key = Some(
-                review_render_processing_key_for_input_with_normalization(
+                review_render_processing_key_for_input_with_options(
                     new_path,
                     render.profile_index,
                     self.normalize_grain_mpix,
+                    &self.render_export,
                 )
                 .to_string(),
             );
@@ -399,6 +407,7 @@ impl ReviewStore {
         };
         let profiles = self.profiles.clone();
         let normalize_grain_mpix = self.normalize_grain_mpix;
+        let render_export = self.render_export.clone();
         let image = &mut self.images[raw_index];
         if image.sooc_sidecar_path.as_deref() == Some(sidecar) {
             return true;
@@ -413,6 +422,7 @@ impl ReviewStore {
             false,
             &HashSet::new(),
             normalize_grain_mpix,
+            &render_export,
         );
         image.updated_at = now_string();
         self.normalize_ui();
@@ -429,6 +439,7 @@ impl ReviewStore {
             .collect::<Vec<_>>();
         let profiles = self.profiles.clone();
         let normalize_grain_mpix = self.normalize_grain_mpix;
+        let render_export = self.render_export.clone();
         let mut remove_ids = HashSet::new();
         let mut redirect_ids = HashMap::new();
 
@@ -460,6 +471,7 @@ impl ReviewStore {
                 false,
                 &HashSet::new(),
                 normalize_grain_mpix,
+                &render_export,
             );
             raw.updated_at = now_string();
             remove_ids.insert(sidecar.id);
@@ -939,6 +951,7 @@ pub(super) fn sync_image_profile_renders(
     profiles_changed: bool,
     unchanged_profile_indexes: &HashSet<usize>,
     normalize_grain_mpix: Option<f64>,
+    export: &ExportOptions,
 ) {
     let profiles_apply_to_compressed = profiles
         .iter()
@@ -964,17 +977,24 @@ pub(super) fn sync_image_profile_renders(
     image.profiles = profiles
         .iter()
         .map(|profile| {
-            let processing_key = review_render_processing_key_for_input_with_normalization(
+            let processing_key = review_render_processing_key_for_input_with_options(
                 &image.raw_path,
                 profile.index,
                 normalize_grain_mpix,
+                export,
             );
-            existing
-                .get(&profile.index)
+            let existing_render = existing.get(&profile.index);
+            let profile_matches = existing_render.is_some_and(|render| {
+                render.profile_stem == profile.stem
+                    && (!profiles_changed || unchanged_profile_indexes.contains(&profile.index))
+            });
+            let enabled = existing_render
+                .filter(|_| profile_matches)
+                .map_or(profile.enabled_by_default, |render| render.enabled);
+            existing_render
                 .filter(|render| {
-                    render.profile_stem == profile.stem
+                    profile_matches
                         && render.processing_key.as_deref() == Some(processing_key.as_str())
-                        && (!profiles_changed || unchanged_profile_indexes.contains(&profile.index))
                 })
                 .cloned()
                 .map(|mut render| {
@@ -986,7 +1006,7 @@ pub(super) fn sync_image_profile_renders(
                         profile.index,
                         profile.stem.clone(),
                         None,
-                        profile.enabled_by_default,
+                        enabled,
                         &processing_key,
                     )
                 })
@@ -995,9 +1015,10 @@ pub(super) fn sync_image_profile_renders(
     let include_sooc_profile = image.sooc_sidecar_path.is_some()
         || (is_rendered_input_file(&image.raw_path) && profiles_apply_to_compressed);
     if include_sooc_profile {
-        let processing_key = review_render_processing_key_with_normalization(
+        let processing_key = review_render_processing_key_with_options(
             SOOC_PROFILE_INDEX,
             normalize_grain_mpix,
+            export,
         );
         image.profiles.push(
             existing
@@ -1055,36 +1076,67 @@ pub(super) fn sync_image_profile_renders(
 
 #[cfg(test)]
 pub(super) fn review_render_processing_key(profile_index: usize) -> String {
-    review_render_processing_key_with_normalization(
+    review_render_processing_key_with_options(
         profile_index,
         default_review_normalize_grain_mpix(),
+        &ExportOptions::default(),
     )
 }
 
 #[cfg(test)]
 pub(super) fn review_render_processing_key_for_input(input: &Path, profile_index: usize) -> String {
-    review_render_processing_key_for_input_with_normalization(
+    review_render_processing_key_for_input_with_options(
         input,
         profile_index,
         default_review_normalize_grain_mpix(),
+        &ExportOptions::default(),
     )
 }
 
+#[cfg(test)]
 pub(super) fn review_render_processing_key_with_normalization(
     profile_index: usize,
     normalize_grain_mpix: Option<f64>,
 ) -> String {
-    review_render_processing_key_for_input_with_normalization(
-        Path::new("image.raw"),
+    review_render_processing_key_with_options(
         profile_index,
         normalize_grain_mpix,
+        &ExportOptions::default(),
     )
 }
 
+pub(super) fn review_render_processing_key_with_options(
+    profile_index: usize,
+    normalize_grain_mpix: Option<f64>,
+    export: &ExportOptions,
+) -> String {
+    review_render_processing_key_for_input_with_options(
+        Path::new("image.raw"),
+        profile_index,
+        normalize_grain_mpix,
+        export,
+    )
+}
+
+#[cfg(test)]
 pub(super) fn review_render_processing_key_for_input_with_normalization(
     input: &Path,
     profile_index: usize,
     normalize_grain_mpix: Option<f64>,
+) -> String {
+    review_render_processing_key_for_input_with_options(
+        input,
+        profile_index,
+        normalize_grain_mpix,
+        &ExportOptions::default(),
+    )
+}
+
+pub(super) fn review_render_processing_key_for_input_with_options(
+    input: &Path,
+    profile_index: usize,
+    normalize_grain_mpix: Option<f64>,
+    export: &ExportOptions,
 ) -> String {
     let base = if profile_index == SOOC_PROFILE_INDEX {
         SOOC_RENDER_PIPELINE_KEY
@@ -1095,8 +1147,9 @@ pub(super) fn review_render_processing_key_for_input_with_normalization(
     } else {
         RAW_RENDER_PIPELINE_KEY
     };
+    let export_identity = review_export_processing_identity(export);
     if profile_index == SOOC_PROFILE_INDEX {
-        return base.to_string();
+        return format!("{base}:{export_identity}");
     }
     let base = if is_raw_input_file(input) {
         format!(
@@ -1107,9 +1160,45 @@ pub(super) fn review_render_processing_key_for_input_with_normalization(
         base.to_string()
     };
     format!(
-        "{base}:{}",
-        grain_normalization_identity(normalize_grain_mpix)
+        "{base}:{}:{export_identity}",
+        grain_normalization_identity(normalize_grain_mpix),
     )
+}
+
+pub(super) fn review_export_processing_identity(export: &ExportOptions) -> String {
+    const KEY: &str = "jpeg-export-v1";
+
+    let mut hasher = Sha1::new();
+    hasher.update(KEY);
+    hasher.update([export.jpg_quality]);
+    match export.resize.as_deref() {
+        Some(resize) => {
+            hasher.update([1]);
+            hasher.update((resize.len() as u64).to_le_bytes());
+            hasher.update(resize.as_bytes());
+        }
+        None => hasher.update([0]),
+    }
+    for value in [export.long_edge, export.max_width, export.max_height] {
+        match value {
+            Some(value) => {
+                hasher.update([1]);
+                hasher.update(value.to_le_bytes());
+            }
+            None => hasher.update([0]),
+        }
+    }
+    hasher.update(export.jpeg_subsampling.to_string());
+    hasher.update([
+        u8::from(export.strip_metadata),
+        u8::from(export.progressive_jpeg),
+    ]);
+    let digest = hasher.finalize();
+    let digest = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("{KEY}-{digest}")
 }
 
 pub(super) fn grain_normalization_identity(normalize_grain_mpix: Option<f64>) -> String {

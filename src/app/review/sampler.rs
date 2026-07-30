@@ -496,20 +496,20 @@ impl ReviewHandle {
                                 &profile.stem,
                             )?);
                     }
-                    image.profiles[render_index].processing_key = Some(
-                        review_render_processing_key_for_input_with_normalization(
-                            &image.raw_path,
-                            profile_index,
-                            self.normalize_grain_mpix,
-                        )
-                        .to_string(),
+                    let processing_key = review_render_processing_key_for_input_with_options(
+                        &image.raw_path,
+                        profile_index,
+                        self.normalize_grain_mpix,
+                        &self.export,
                     );
+                    image.profiles[render_index].processing_key = Some(processing_key.clone());
                     let bw_filter = effective_bw_filter_for_profile(image, &profile);
                     let render_key = profile_render_key_value(
                         &image.retouch,
                         retouch_white_balance_for_image(image),
                         bw_filter,
                         self.normalize_grain_mpix,
+                        &processing_key,
                     );
                     queue_profile_retouch_render(
                         image,

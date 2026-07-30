@@ -30,6 +30,7 @@ where
         },
         exif_schema_version: i64_to_u32(settings.exif_schema_version, "EXIF schema version")?,
         normalize_grain_mpix: default_review_normalize_grain_mpix(),
+        render_export: ExportOptions::default(),
     }))
 }
 
