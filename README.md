@@ -237,7 +237,9 @@ staging directory, verifies its lossless compression, raw-image digest, DNG
 identity, dimensions, and `OriginalRawFileName`, preserves source filesystem
 timestamps and permissions, and confirms the normal mini-film render before
 permanently removing the replaced RAW. Existing validated DNGs are reused after
-an interrupted run. In daemon review mode the existing SQLite image row is
+an interrupted run. Validation accepts zero-padded capture subseconds that
+ExifTool emits as text instead of a JSON number, retaining their exact digits
+for identity comparison. In daemon review mode the existing SQLite image row is
 rebound to the DNG in place, so its image ID, ratings, labels, tags, notes,
 retouch settings, profile selection, and related rows remain intact. A restart
 also repairs a stored RAW path when its validated replacement DNG already

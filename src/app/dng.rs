@@ -11,7 +11,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use filetime::{FileTime, set_file_times};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use tempfile::Builder;
 
 use crate::app::util::is_raw_input_file;
@@ -70,8 +70,12 @@ struct DngMetadata {
     model: Option<String>,
     #[serde(rename = "DateTimeOriginal")]
     date_time_original: Option<String>,
-    #[serde(rename = "SubSecTimeOriginal")]
-    subsec_time_original: Option<u64>,
+    #[serde(
+        rename = "SubSecTimeOriginal",
+        default,
+        deserialize_with = "deserialize_optional_subsecond"
+    )]
+    subsec_time_original: Option<String>,
     #[serde(rename = "ShutterCount")]
     shutter_count: Option<u64>,
 }
@@ -80,6 +84,28 @@ struct DngMetadata {
 struct NikonCompressionMetadata {
     #[serde(rename = "NEFCompression")]
     nef_compression: Option<u16>,
+}
+
+fn deserialize_optional_subsecond<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match Option::<serde_json::Value>::deserialize(deserializer)? {
+        None => Ok(None),
+        Some(serde_json::Value::String(value))
+            if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) =>
+        {
+            Ok(Some(value))
+        }
+        Some(serde_json::Value::Number(value)) if value.as_u64().is_some() => {
+            Ok(Some(value.to_string()))
+        }
+        Some(value) => Err(serde::de::Error::custom(format!(
+            "expected capture subsecond as digits or a non-negative integer, got {value}"
+        ))),
+    }
 }
 
 struct DngConversionLock(PathBuf);
@@ -578,8 +604,8 @@ fn validate_source_identity(
     )?;
     ensure_identity_match(
         "capture subsecond",
-        source_identity.subsec_time_original,
-        dng_identity.subsec_time_original,
+        source_identity.subsec_time_original.as_deref(),
+        dng_identity.subsec_time_original.as_deref(),
         source,
         dng,
     )?;
@@ -827,6 +853,44 @@ mod tests {
     }
 
     #[test]
+    fn conversion_identity_accepts_numeric_and_zero_padded_subseconds() {
+        let numeric: DngMetadata = serde_json::from_str(r#"{"SubSecTimeOriginal":36}"#).unwrap();
+        assert_eq!(numeric.subsec_time_original.as_deref(), Some("36"));
+
+        let text: DngMetadata = serde_json::from_str(r#"{"SubSecTimeOriginal":"36"}"#).unwrap();
+        assert_eq!(text.subsec_time_original, numeric.subsec_time_original);
+
+        let zero_padded: DngMetadata =
+            serde_json::from_str(r#"{"SubSecTimeOriginal":"06"}"#).unwrap();
+        assert_eq!(zero_padded.subsec_time_original.as_deref(), Some("06"));
+
+        let numeric_six: DngMetadata = serde_json::from_str(r#"{"SubSecTimeOriginal":6}"#).unwrap();
+        assert_ne!(
+            zero_padded.subsec_time_original,
+            numeric_six.subsec_time_original
+        );
+
+        let missing: DngMetadata = serde_json::from_str("{}").unwrap();
+        let null: DngMetadata = serde_json::from_str(r#"{"SubSecTimeOriginal":null}"#).unwrap();
+        assert_eq!(missing.subsec_time_original, None);
+        assert_eq!(null.subsec_time_original, None);
+    }
+
+    #[test]
+    fn conversion_identity_rejects_invalid_subseconds() {
+        for value in ["\"\"", r#""6a""#, "-1", "6.5", "true", r#"["06"]"#, "{}"] {
+            let json = format!(r#"{{"SubSecTimeOriginal":{value}}}"#);
+            let error = serde_json::from_str::<DngMetadata>(&json).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("expected capture subsecond as digits or a non-negative integer"),
+                "unexpected error for {value}: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn prepared_source_reports_replacement() {
         let prepared =
             PreparedRawSource::converted(Path::new("/in/frame.nef"), "/in/frame.dng".into());
@@ -892,7 +956,7 @@ case "$*" in
     printf '%s\n' '[{"NEFCompression":14}]'
     ;;
   *)
-    printf '%s\n' '[{"FileType":"DNG","DNGVersion":"1.7.1.0","Compression":7,"BitsPerSample":16,"NewRawImageDigest":"0123456789abcdef0123456789abcdef","OriginalRawFileName":"frame.nef","ImageWidth":8256,"ImageHeight":5504}]'
+    printf '%s\n' '[{"FileType":"DNG","DNGVersion":"1.7.1.0","Compression":7,"BitsPerSample":16,"NewRawImageDigest":"0123456789abcdef0123456789abcdef","OriginalRawFileName":"frame.nef","ImageWidth":8256,"ImageHeight":5504,"SubSecTimeOriginal":"06"}]'
     ;;
 esac
 "#,
