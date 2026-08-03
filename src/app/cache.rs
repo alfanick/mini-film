@@ -12,6 +12,7 @@ pub(crate) const PROFILE_INPUT_CACHE_DIR: &str = ".mini-film-profile-inputs";
 pub(crate) const GALLERY_DOWNLOAD_CACHE_DIR: &str = ".mini-film-gallery-downloads";
 pub(crate) const RETOUCH_CACHE_DIR: &str = ".mini-film-retouch";
 pub(crate) const PROFILE_DETAILS_CACHE_DIR: &str = ".mini-film-profile-details";
+pub(crate) const DIFFUSION_PREVIEWS_CACHE_DIR: &str = ".mini-film-diffusion-previews";
 pub(crate) const DAEMON_PROFILE_OUTPUTS_CACHE_DIR: &str = ".mini-film-profile-outputs";
 pub(crate) const LEGACY_OUTPUT_CACHE_DIR: &str = ".mini-film-legacy-output";
 pub(crate) const MIGRATION_CONFLICT_CACHE_DIR: &str = ".mini-film-migration-conflicts";

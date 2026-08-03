@@ -1205,6 +1205,7 @@ mod tests {
             grain_preset: None,
             grain_seed: None,
             grain_engine: mini_film::GrainEngine::default(),
+            diffusion: mini_film::DiffusionSettings::default(),
             export: ExportOptions {
                 jpg_quality: 95,
                 resize: None,

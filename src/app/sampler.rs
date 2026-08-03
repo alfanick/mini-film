@@ -16,8 +16,8 @@ use anyhow::{Context, Result, bail};
 use handlebars::Handlebars;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use mini_film::{
-    GrainEngine, GrainRenderOptions, GrainSettings, apply_grain_8bit_with_options,
-    write_rawtherapee_resize_profile,
+    DiffusionSettings, GrainEngine, GrainRenderOptions, GrainSettings, apply_diffusion,
+    apply_grain_8bit_with_options, write_rawtherapee_resize_profile,
 };
 use rayon::prelude::*;
 use serde_json::json;
@@ -31,22 +31,23 @@ use crate::app::export::{add_convert_thread_limit, finalize_output, output_ext};
 use crate::app::pp3::{
     RAW_RENDER_PIPELINE_KEY, write_rawtherapee_auto_matched_curve_profile,
     write_rawtherapee_color_noise_profile, write_rawtherapee_dcp_profile,
-    write_rawtherapee_lens_corrections_profile,
+    write_rawtherapee_lens_corrections_profile, write_rawtherapee_srgb_output_profile,
 };
 use crate::app::profile::{profile_from_xmp_quiet, rawtherapee_profiles_with_hald};
 use crate::app::progress::{
     ApplyProgress, StageEstimates, format_duration, progress_length, progress_position,
     progress_stage, progress_stage_adaptive, set_progress,
 };
-use crate::app::raw::run_raw_develop_jpeg;
+use crate::app::raw::{run_raw_develop, run_raw_develop_jpeg};
 use crate::app::sampler_assets::{
     html_children_template, html_grid_template, html_page_template, html_script,
     html_section_template, html_styles, html_tile_template,
 };
 use crate::app::util::{
     OutputEditMetadata, extract_capture_iso, half_cpu_thread_count, is_raw_input_file,
-    remove_temp_file, sync_output_metadata_from_raw_with_color_profile,
-    sync_output_timestamps_from_exif, time_of_day_seed,
+    remove_temp_file, restore_output_color_profile,
+    sync_output_metadata_from_raw_with_color_profile, sync_output_timestamps_from_exif,
+    time_of_day_seed,
 };
 use crate::cli::{ExportOptions, JpegSubsampling, LensCorrections};
 
@@ -66,6 +67,7 @@ pub(crate) struct SamplerArgs {
     pub(crate) lens_corrections: LensCorrections,
     pub(crate) grain_seed: Option<u64>,
     pub(crate) grain_engine: GrainEngine,
+    pub(crate) diffusion: DiffusionSettings,
     pub(crate) no_cache: bool,
     pub(crate) jobs: Option<usize>,
     pub(crate) thumbnail_long_edge: u32,
@@ -112,6 +114,29 @@ struct SheetLayout {
 enum SheetOutputKind {
     Jpeg,
     Html,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SamplerIntermediateKind {
+    Jpeg8,
+    Tiff16,
+}
+
+impl SamplerIntermediateKind {
+    fn for_diffusion(settings: DiffusionSettings) -> Self {
+        if settings.is_enabled() {
+            Self::Tiff16
+        } else {
+            Self::Jpeg8
+        }
+    }
+
+    const fn filename(self) -> &'static str {
+        match self {
+            Self::Jpeg8 => "rawtherapee.jpg",
+            Self::Tiff16 => "rawtherapee.tif",
+        }
+    }
 }
 
 struct SamplerProgress {
@@ -404,6 +429,10 @@ impl ThumbnailCache {
                 .unwrap_or_else(|| "norm-off".to_string());
             format!("grain-{}-{normalization}", args.grain_engine)
         };
+        let diffusion_mode = format!(
+            "diffusion-v1-{:?}-{}-{}",
+            args.diffusion.method, args.diffusion.softness, args.diffusion.highlight_glow
+        );
         let subsampling = format!("{:?}", args.jpeg_subsampling).to_ascii_lowercase();
         let lens_corrections = if args.lens_corrections == LensCorrections::default() {
             "none".to_string()
@@ -424,7 +453,7 @@ impl ThumbnailCache {
             )
         };
         Ok(self.dir.join(format!(
-            "{}-{}-{}-{}-l{}-{}px-lc{}-q{}-{}-{}-sg3-strip{}-prog{}.jpg",
+            "{}-{}-{}-{}-l{}-{}px-lc{}-q{}-{}-{}-{}-sg3-strip{}-prog{}.jpg",
             self.raw_sha1,
             xmp_sha1,
             RAW_RENDER_PIPELINE_KEY,
@@ -435,6 +464,7 @@ impl ThumbnailCache {
             args.jpg_quality,
             subsampling,
             grain_mode,
+            diffusion_mode,
             args.strip_metadata as u8,
             args.progressive_jpeg as u8,
         )))
@@ -577,7 +607,9 @@ fn render_profile_thumbnail(
     .with_context(|| format!("resolving profile {}", profile.display()))?;
     let prepared_source = context.args.dng_fallback.prepare_known(&context.args.raw)?;
     let active_source = prepared_source.active().to_path_buf();
-    let developed = profile_temp.join("rawtherapee.jpg");
+    let intermediate_kind = SamplerIntermediateKind::for_diffusion(context.args.diffusion);
+    let diffusion_enabled = intermediate_kind == SamplerIntermediateKind::Tiff16;
+    let developed = profile_temp.join(intermediate_kind.filename());
     let mut rawtherapee_profiles = rawtherapee_profiles_with_hald(&resolved, &profile_temp)?;
     append_color_noise_if_qualified(
         &active_source,
@@ -595,6 +627,11 @@ fn render_profile_thumbnail(
         &profile_temp,
         context.dcp_profile,
     )?;
+    if diffusion_enabled {
+        rawtherapee_profiles.push(write_rawtherapee_srgb_output_profile(
+            &profile_temp.join("diffusion-srgb-output.pp3"),
+        )?);
+    }
     rawtherapee_profiles.push(write_rawtherapee_resize_profile(
         &profile_temp.join("resize.pp3"),
         context.args.thumbnail_long_edge,
@@ -612,18 +649,39 @@ fn render_profile_thumbnail(
         "rawtherapee",
         estimate_sampler_raw_duration(context.args.thumbnail_long_edge),
     );
-    let raw_outcome = run_raw_develop_jpeg(
-        &context.args.rawtherapee,
-        &rawtherapee_profiles,
-        prepared_source,
-        &developed,
-        context.args.jpg_quality,
-        context.args.jpeg_subsampling,
-        context.args.lcp_root.as_deref(),
-        true,
-        &context.args.dng_fallback,
-    )?;
+    let raw_outcome = match intermediate_kind {
+        SamplerIntermediateKind::Tiff16 => run_raw_develop(
+            &context.args.rawtherapee,
+            &rawtherapee_profiles,
+            prepared_source,
+            &developed,
+            context.args.lcp_root.as_deref(),
+            true,
+            &context.args.dng_fallback,
+        )?,
+        SamplerIntermediateKind::Jpeg8 => run_raw_develop_jpeg(
+            &context.args.rawtherapee,
+            &rawtherapee_profiles,
+            prepared_source,
+            &developed,
+            context.args.jpg_quality,
+            context.args.jpeg_subsampling,
+            context.args.lcp_root.as_deref(),
+            true,
+            &context.args.dng_fallback,
+        )?,
+    };
     raw_stage.finish();
+
+    let diffused = if diffusion_enabled {
+        sampler_step(context.progress, 3, "diffusion");
+        let output = profile_temp.join("diffused.tif");
+        apply_diffusion(&developed, &output, context.args.diffusion)?;
+        Some(output)
+    } else {
+        None
+    };
+    let developed_for_grain = diffused.as_deref().unwrap_or(&developed);
 
     let grain_enabled = !context.args.no_grain && resolved.grain.is_enabled();
     let metadata_grain = if grain_enabled {
@@ -646,7 +704,7 @@ fn render_profile_thumbnail(
         );
         let grained = profile_temp.join("grained-8.ppm");
         apply_grain_8bit_with_options(
-            &developed,
+            developed_for_grain,
             &grained,
             metadata_grain,
             metadata_grain_seed.unwrap_or_default(),
@@ -659,7 +717,7 @@ fn render_profile_thumbnail(
         grained
     } else {
         sampler_step(context.progress, 3, "grain skipped");
-        developed
+        developed_for_grain.to_path_buf()
     };
 
     let thumbnail_stage = progress_stage_adaptive(
@@ -674,6 +732,9 @@ fn render_profile_thumbnail(
     finalize_output(&context.args.convert, &source, &thumb, context.export)?;
     thumbnail_stage.finish();
     if context.args.strip_metadata {
+        if diffusion_enabled {
+            restore_output_color_profile(Some(&color_profile_source), &thumb)?;
+        }
         let metadata_stage = progress_stage_adaptive(
             Some(&apply_progress),
             5,
@@ -708,6 +769,7 @@ fn render_profile_thumbnail(
                 grain_seed: metadata_grain_seed,
                 grain_engine: grain_enabled.then_some(context.args.grain_engine),
                 normalize_grain_mpix: context.args.normalize_grain_mpix,
+                diffusion: context.args.diffusion,
             },
             Some(&color_profile_source),
         )?;
@@ -715,8 +777,13 @@ fn render_profile_thumbnail(
         metadata_stage.finish();
     }
     remove_temp_file(&source)?;
-    if grain_enabled {
-        remove_temp_file(&color_profile_source)?;
+    if developed != source {
+        remove_temp_file(&developed)?;
+    }
+    if let Some(diffused) = diffused
+        && diffused != source
+    {
+        remove_temp_file(&diffused)?;
     }
     let image = if let Some(cache) = context.cache {
         let cached = cache.path_for(profile, context.args)?;
@@ -2108,6 +2175,7 @@ mod tests {
             normalize_grain_mpix: Some(12.0),
             grain_seed: Some(123),
             grain_engine: GrainEngine::default(),
+            diffusion: DiffusionSettings::default(),
             lens_corrections: crate::cli::LensCorrections::default(),
             color_noise_iso_threshold: 1600,
             no_cache: false,
@@ -2119,6 +2187,29 @@ mod tests {
             strip_metadata: false,
             progressive_jpeg: false,
         }
+    }
+
+    #[test]
+    fn enabled_diffusion_selects_the_sampler_tiff16_intermediate() {
+        assert_eq!(
+            SamplerIntermediateKind::for_diffusion(DiffusionSettings::default()),
+            SamplerIntermediateKind::Jpeg8
+        );
+        assert_eq!(SamplerIntermediateKind::Jpeg8.filename(), "rawtherapee.jpg");
+
+        let enabled = DiffusionSettings {
+            method: mini_film::DiffusionMethod::MultiScaleMist,
+            softness: 25,
+            highlight_glow: 0,
+        };
+        assert_eq!(
+            SamplerIntermediateKind::for_diffusion(enabled),
+            SamplerIntermediateKind::Tiff16
+        );
+        assert_eq!(
+            SamplerIntermediateKind::Tiff16.filename(),
+            "rawtherapee.tif"
+        );
     }
 
     #[test]
@@ -2525,6 +2616,25 @@ mod tests {
         args.color_noise_iso_threshold = 6400;
         let with_noise = cache.path_for(&xmp, &args).unwrap();
         assert_eq!(no_noise, with_noise);
+
+        args.diffusion = DiffusionSettings {
+            method: mini_film::DiffusionMethod::MultiScaleMist,
+            softness: 50,
+            highlight_glow: 50,
+        };
+        let mist_diffusion = cache.path_for(&xmp, &args).unwrap();
+        assert_ne!(with_noise, mist_diffusion);
+        assert!(
+            mist_diffusion
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains("diffusion-v1-MultiScaleMist-50-50")
+        );
+
+        args.diffusion.method = mini_film::DiffusionMethod::EdgeAwareGlow;
+        let edge_aware_diffusion = cache.path_for(&xmp, &args).unwrap();
+        assert_ne!(mist_diffusion, edge_aware_diffusion);
     }
 
     #[test]

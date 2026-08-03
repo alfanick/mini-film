@@ -3,15 +3,18 @@ use super::{
     sampler::*, scheduler::*, server::*, store::*,
 };
 use crate::app::cache::{
-    PANORAMA_CACHE_DIR, PROFILE_DETAILS_CACHE_DIR, RETOUCH_CACHE_DIR, REVIEW_PREVIEWS_CACHE_DIR,
+    DIFFUSION_PREVIEWS_CACHE_DIR, PANORAMA_CACHE_DIR, PROFILE_DETAILS_CACHE_DIR, RETOUCH_CACHE_DIR,
+    REVIEW_PREVIEWS_CACHE_DIR,
 };
 use crate::app::panorama::{
     PanoramaPreview, PanoramaProgress, PanoramaProgressSink, render_final, render_preview_row,
 };
+use mini_film::{DiffusionSettings, apply_diffusion, write_rawtherapee_resize_profile};
 
 pub(super) const REVIEW_CODEX_WORKERS: usize = 2;
 pub(super) const REVIEW_THUMBNAIL_WORKERS: usize = 1;
 pub(super) const REVIEW_PREVIEW_WORKERS: usize = 2;
+const REVIEW_DIFFUSION_PREVIEW_LONG_EDGE: u32 = 2048;
 
 pub(super) struct ReviewProfileRetouchTask {
     pub(super) raw: PathBuf,
@@ -19,6 +22,7 @@ pub(super) struct ReviewProfileRetouchTask {
     retouch: RetouchSettings,
     white_balance: RetouchWhiteBalance,
     bw_filter: BwFilter,
+    diffusion: DiffusionSettings,
 }
 
 /// Start the embedded review server and return a handle daemon workers can update.
@@ -55,6 +59,7 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
         .unwrap_or_else(|| ReviewStore::new(Vec::new()));
     store.normalize_grain_mpix = config.normalize_grain_mpix;
     store.render_export.clone_from(&config.export);
+    store.render_diffusion = config.diffusion;
     let stored_raw_paths = store
         .images
         .iter()
@@ -136,6 +141,7 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
             timeout: config.codex_timeout,
         });
     let (subscribers, _) = broadcast::channel(256);
+    let (diffusion_preview_sender, diffusion_preview_receiver) = std::sync::mpsc::channel();
     let handle = ReviewHandle {
         state: Arc::new(ArcSwap::from_pointee(store)),
         subscribers: Arc::new(subscribers),
@@ -164,6 +170,7 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
         grain_preset: config.grain_preset,
         grain_seed: config.grain_seed,
         grain_engine: config.grain_engine,
+        diffusion: config.diffusion,
         normalize_grain_mpix: config.normalize_grain_mpix,
         publish_defaults,
         publish_jobs: Arc::new(ArcSwap::from_pointee(Vec::new())),
@@ -178,6 +185,10 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
         panorama_projects: Arc::new(ArcSwap::from_pointee(panorama_projects)),
         panorama_operation: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         sampler_registry: Arc::new(ReviewSamplerRegistry::default()),
+        diffusion_jobs: Arc::new(std::sync::Mutex::new(Vec::new())),
+        next_diffusion_job_id: Arc::new(AtomicU64::new(1)),
+        latest_diffusion_job_id: Arc::new(AtomicU64::new(0)),
+        diffusion_preview_sender,
         trusted_input_sender: config.trusted_input_sender,
         converted_input_sender: config.converted_input_sender,
     };
@@ -187,6 +198,12 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
         &handle.output_root,
         &history_profiles,
     ))?;
+
+    let diffusion_handle = handle.clone();
+    thread::Builder::new()
+        .name("mini-film-diffusion-preview".to_string())
+        .spawn(move || diffusion_handle.run_diffusion_preview_worker(diffusion_preview_receiver))
+        .context("starting diffusion preview worker")?;
 
     let listener = std::net::TcpListener::bind(&config.address)
         .with_context(|| format!("binding review server to {}", config.address))?;
@@ -894,6 +911,7 @@ impl ReviewHandle {
                         &HashSet::new(),
                         self.normalize_grain_mpix,
                         &self.export,
+                        self.diffusion,
                     );
                 }
                 let preview_path = self.preview_path_for(raw, image.id);
@@ -1341,27 +1359,44 @@ impl ReviewHandle {
                 .iter()
                 .find(|profile| profile.index == profile_index)
                 .cloned();
+            let profile_diffusion_settings = store.profile_diffusion_settings.clone();
+            let image_profile_diffusion_settings = store.image_profile_diffusion_settings.clone();
             let image = store.ensure_image(&self.input_root, raw)?;
-            let processing_key = review_render_processing_key_for_input_with_options(
+            let processing_key = review_render_processing_key_for_input_with_diffusion(
                 raw,
                 profile_index,
                 self.normalize_grain_mpix,
                 &self.export,
+                self.diffusion,
             );
             let bw_filter = profile
                 .as_ref()
                 .map(|profile| effective_bw_filter_for_profile(image, profile))
                 .unwrap_or_default();
             let white_balance = retouch_white_balance_for_image(image);
-            let render_key = profile_render_key(
-                &image.retouch,
-                white_balance,
-                bw_filter,
-                (profile_index != SOOC_PROFILE_INDEX)
-                    .then_some(self.normalize_grain_mpix)
-                    .flatten(),
-                &processing_key,
-            );
+            let diffusion = effective_diffusion_settings_from(
+                &profile_diffusion_settings,
+                &image_profile_diffusion_settings,
+                image.id,
+                profile_index,
+                &self.diffusion,
+            )
+            .0;
+            let render_key = (image.retouch.clone().normalized() != RetouchSettings::default()
+                || bw_filter != BwFilter::None
+                || !diffusion_settings_render_equivalent(diffusion, self.diffusion))
+            .then(|| {
+                profile_render_key_value_with_diffusion(
+                    &image.retouch,
+                    white_balance,
+                    bw_filter,
+                    (profile_index != SOOC_PROFILE_INDEX)
+                        .then_some(self.normalize_grain_mpix)
+                        .flatten(),
+                    &processing_key,
+                    diffusion,
+                )
+            });
             let Some(render) = image
                 .profiles
                 .iter_mut()
@@ -1406,11 +1441,12 @@ impl ReviewHandle {
         let Some(image) = store.images.iter().find(|image| image.raw_path == raw) else {
             return false;
         };
-        let processing_key = review_render_processing_key_for_input_with_options(
+        let processing_key = review_render_processing_key_for_input_with_diffusion(
             raw,
             profile_index,
             self.normalize_grain_mpix,
             &self.export,
+            self.diffusion,
         );
         image.profiles.iter().any(|render| {
             let Some(output) = render.output_path.as_deref() else {
@@ -1761,12 +1797,16 @@ impl ReviewHandle {
         };
         let bw_filter = effective_bw_filter_for_profile(image, &profile);
         let white_balance = retouch_white_balance_for_image(image);
+        let diffusion = store
+            .effective_diffusion_settings(image_id, profile_index, &self.diffusion)
+            .0;
         Ok(Some(ReviewProfileRetouchTask {
             raw: image.raw_path.clone(),
             profile,
             retouch: image.retouch.clone(),
             white_balance,
             bw_filter,
+            diffusion,
         }))
     }
 
@@ -2113,7 +2153,9 @@ impl ReviewHandle {
         let retouch = task.retouch;
         let white_balance = task.white_balance;
         let bw_filter = task.bw_filter;
-        let use_base_output = profile_retouch_uses_base_output(&retouch, bw_filter);
+        let diffusion = task.diffusion;
+        let use_base_output = profile_retouch_uses_base_output(&retouch, bw_filter)
+            && diffusion_settings_render_equivalent(diffusion, self.diffusion);
         let dcp_profile_filename =
             resolve_dcp_profile(&job.raw, &self.dng_fallback).map(|profile| profile.filename);
         let started = Instant::now();
@@ -2159,6 +2201,7 @@ impl ReviewHandle {
             &retouch,
             white_balance,
             bw_filter,
+            diffusion,
             &temp_output,
         );
         if result.is_err() {
@@ -2181,6 +2224,7 @@ impl ReviewHandle {
                     &retouch,
                     white_balance,
                     bw_filter,
+                    diffusion,
                     &temp_output,
                 );
             }
@@ -2443,6 +2487,7 @@ impl ReviewHandle {
         let _ = fs::remove_file(temp_output);
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn render_retouch_output(
         &self,
         raw: &Path,
@@ -2450,6 +2495,7 @@ impl ReviewHandle {
         retouch: &RetouchSettings,
         white_balance: RetouchWhiteBalance,
         bw_filter: BwFilter,
+        diffusion: DiffusionSettings,
         output: &Path,
     ) -> Result<PathBuf> {
         let raw = safe_existing_raw_source(raw, &self.input_root)?;
@@ -2476,6 +2522,7 @@ impl ReviewHandle {
             grain_preset: self.grain_preset.clone(),
             grain_seed: self.grain_seed,
             grain_engine: self.grain_engine,
+            diffusion,
             export: self.export.clone(),
             retouch: None,
             retouch_white_balance: white_balance,
@@ -2503,6 +2550,7 @@ impl ReviewHandle {
                 no_grain: self.no_grain,
                 normalize_grain_mpix: self.normalize_grain_mpix,
                 grain_engine: self.grain_engine,
+                diffusion,
                 color_noise_iso_threshold: self.color_noise_iso_threshold,
                 lens_corrections: self.lens_corrections,
                 lcp_root: self.lcp_root.as_deref(),
@@ -2604,6 +2652,9 @@ impl ReviewHandle {
                     .cloned()
                     .map(|profile| (profile.index, profile))
                     .collect::<HashMap<_, _>>();
+                let profile_diffusion_settings = store.profile_diffusion_settings.clone();
+                let image_profile_diffusion_settings =
+                    store.image_profile_diffusion_settings.clone();
                 let advance = update
                     .advance_after_update
                     .then(|| store.planned_advance_after(update.image_id));
@@ -2811,11 +2862,12 @@ impl ReviewHandle {
                             for (_, index) in render_order {
                                 let profile_index = image.profiles[index].profile_index;
                                 let processing_key =
-                                    review_render_processing_key_for_input_with_options(
+                                    review_render_processing_key_for_input_with_diffusion(
                                         &image.raw_path,
                                         profile_index,
                                         self.normalize_grain_mpix,
                                         &self.export,
+                                        self.diffusion,
                                     );
                                 if image.profiles[index].output_path.is_none()
                                     && let Some(profile) = profiles_by_index.get(&profile_index)
@@ -2833,7 +2885,15 @@ impl ReviewHandle {
                                     .get(&profile_index)
                                     .map(|profile| effective_bw_filter_for_profile(image, profile))
                                     .unwrap_or_default();
-                                let render_key = profile_render_key_value(
+                                let diffusion = effective_diffusion_settings_from(
+                                    &profile_diffusion_settings,
+                                    &image_profile_diffusion_settings,
+                                    image.id,
+                                    profile_index,
+                                    &self.diffusion,
+                                )
+                                .0;
+                                let render_key = profile_render_key_value_with_diffusion(
                                     &image.retouch,
                                     retouch_white_balance_for_image(image),
                                     bw_filter,
@@ -2841,12 +2901,17 @@ impl ReviewHandle {
                                         .then_some(self.normalize_grain_mpix)
                                         .flatten(),
                                     &processing_key,
+                                    diffusion,
                                 );
                                 queue_profile_retouch_render(
                                     image,
                                     index,
                                     render_key,
-                                    profile_retouch_uses_base_output(&image.retouch, bw_filter),
+                                    profile_retouch_uses_base_output(&image.retouch, bw_filter)
+                                        && diffusion_settings_render_equivalent(
+                                            diffusion,
+                                            self.diffusion,
+                                        ),
                                     &mut retouch_jobs,
                                     &self.output_root,
                                     &self.cache_root,
@@ -2883,15 +2948,24 @@ impl ReviewHandle {
                                     )?);
                             }
                             let processing_key =
-                                review_render_processing_key_for_input_with_options(
+                                review_render_processing_key_for_input_with_diffusion(
                                     &image.raw_path,
                                     profile_index,
                                     self.normalize_grain_mpix,
                                     &self.export,
+                                    self.diffusion,
                                 );
                             image.profiles[index].processing_key = Some(processing_key.clone());
                             let bw_filter = effective_bw_filter_for_profile(image, profile);
-                            let render_key = profile_render_key_value(
+                            let diffusion = effective_diffusion_settings_from(
+                                &profile_diffusion_settings,
+                                &image_profile_diffusion_settings,
+                                image.id,
+                                profile_index,
+                                &self.diffusion,
+                            )
+                            .0;
+                            let render_key = profile_render_key_value_with_diffusion(
                                 &image.retouch,
                                 retouch_white_balance_for_image(image),
                                 bw_filter,
@@ -2899,12 +2973,17 @@ impl ReviewHandle {
                                     .then_some(self.normalize_grain_mpix)
                                     .flatten(),
                                 &processing_key,
+                                diffusion,
                             );
                             queue_profile_retouch_render(
                                 image,
                                 index,
                                 render_key,
-                                profile_retouch_uses_base_output(&image.retouch, bw_filter),
+                                profile_retouch_uses_base_output(&image.retouch, bw_filter)
+                                    && diffusion_settings_render_equivalent(
+                                        diffusion,
+                                        self.diffusion,
+                                    ),
                                 &mut retouch_jobs,
                                 &self.output_root,
                                 &self.cache_root,
@@ -2941,6 +3020,446 @@ impl ReviewHandle {
     pub(super) fn apply_ui_update(&self, update: ReviewUiUpdateRequest) -> Result<()> {
         self.database_runtime
             .block_on(self.apply_ui_update_async(update))
+    }
+
+    pub(super) async fn apply_diffusion_settings_async(
+        &self,
+        request: ReviewDiffusionSettingsRequest,
+    ) -> Result<()> {
+        let (history_entry, retouch_jobs) = self
+            .update_store_async(|store| {
+                let before = diffusion_target_effective_settings(
+                    store,
+                    request.scope,
+                    request.image_id,
+                    request.profile_index,
+                    self.diffusion,
+                );
+                let changed = store.set_diffusion_settings(
+                    request.scope,
+                    request.image_id,
+                    request.profile_index,
+                    request.settings,
+                )?;
+                if !changed {
+                    return Ok((None, Vec::new()));
+                }
+                let changed_image_ids = changed_diffusion_target_ids(
+                    store,
+                    request.scope,
+                    request.image_id,
+                    request.profile_index,
+                    self.diffusion,
+                    &before,
+                );
+                let retouch_jobs = queue_diffusion_target_renders(
+                    store,
+                    &changed_image_ids,
+                    request.profile_index,
+                    self.diffusion,
+                    self.normalize_grain_mpix,
+                    &self.export,
+                    &self.input_root,
+                    &self.output_root,
+                    &self.cache_root,
+                    self.output_format,
+                )?;
+                Ok((
+                    Some(history_diffusion_settings_changed(
+                        store,
+                        "applied",
+                        request.scope,
+                        request.image_id,
+                        request.profile_index,
+                        Some(request.settings),
+                        retouch_jobs.len(),
+                    )),
+                    retouch_jobs,
+                ))
+            })
+            .await?;
+        if let Some(entry) = history_entry {
+            self.append_history(entry)?;
+        }
+        self.broadcast_state()?;
+        for job in retouch_jobs {
+            self.retouch_scheduler.schedule(job);
+        }
+        Ok(())
+    }
+
+    pub(super) async fn reset_diffusion_settings_async(
+        &self,
+        request: ReviewDiffusionSettingsResetRequest,
+    ) -> Result<()> {
+        let (history_entry, retouch_jobs) = self
+            .update_store_async(|store| {
+                let before = diffusion_target_effective_settings(
+                    store,
+                    request.scope,
+                    request.image_id,
+                    request.profile_index,
+                    self.diffusion,
+                );
+                let changed = store.reset_diffusion_settings(
+                    request.scope,
+                    request.image_id,
+                    request.profile_index,
+                )?;
+                if !changed {
+                    return Ok((None, Vec::new()));
+                }
+                let changed_image_ids = changed_diffusion_target_ids(
+                    store,
+                    request.scope,
+                    request.image_id,
+                    request.profile_index,
+                    self.diffusion,
+                    &before,
+                );
+                let retouch_jobs = queue_diffusion_target_renders(
+                    store,
+                    &changed_image_ids,
+                    request.profile_index,
+                    self.diffusion,
+                    self.normalize_grain_mpix,
+                    &self.export,
+                    &self.input_root,
+                    &self.output_root,
+                    &self.cache_root,
+                    self.output_format,
+                )?;
+                Ok((
+                    Some(history_diffusion_settings_changed(
+                        store,
+                        "reset",
+                        request.scope,
+                        request.image_id,
+                        request.profile_index,
+                        None,
+                        retouch_jobs.len(),
+                    )),
+                    retouch_jobs,
+                ))
+            })
+            .await?;
+        if let Some(entry) = history_entry {
+            self.append_history(entry)?;
+        }
+        self.broadcast_state()?;
+        for job in retouch_jobs {
+            self.retouch_scheduler.schedule(job);
+        }
+        Ok(())
+    }
+
+    pub(super) fn start_diffusion_job(
+        &self,
+        request: ReviewDiffusionJobRequest,
+    ) -> Result<ReviewDiffusionJob> {
+        validate_diffusion_settings(&request.settings)?;
+        let store = self.store_snapshot();
+        store.validate_diffusion_target(request.image_id, request.profile_index)?;
+        let id = self.next_diffusion_job_id.fetch_add(1, Ordering::Relaxed);
+        let job = ReviewDiffusionJob {
+            id,
+            status: ReviewDiffusionJobStatus::Queued,
+            image_id: request.image_id,
+            profile_index: request.profile_index,
+            settings: request.settings,
+            before_url: None,
+            after_url: None,
+            error: None,
+            before_path: None,
+            after_path: None,
+        };
+        {
+            let mut jobs = self
+                .diffusion_jobs
+                .lock()
+                .map_err(|_| anyhow!("diffusion job registry lock is poisoned"))?;
+            if jobs.len() >= 64 {
+                jobs.remove(0);
+            }
+            jobs.push(job.clone());
+        }
+        self.latest_diffusion_job_id.store(id, Ordering::Release);
+        if let Err(error) = self.diffusion_preview_sender.send(id) {
+            self.update_diffusion_job(id, |job| {
+                job.status = ReviewDiffusionJobStatus::Failed;
+                job.error = Some("diffusion preview worker is unavailable".to_string());
+            })?;
+            return Err(error).context("queueing diffusion preview");
+        }
+        Ok(job)
+    }
+
+    pub(super) fn diffusion_job_snapshot(&self, job_id: u64) -> Result<ReviewDiffusionJob> {
+        self.diffusion_jobs
+            .lock()
+            .map_err(|_| anyhow!("diffusion job registry lock is poisoned"))?
+            .iter()
+            .find(|job| job.id == job_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("diffusion job {job_id} does not exist"))
+    }
+
+    fn update_diffusion_job<F>(&self, job_id: u64, update: F) -> Result<()>
+    where
+        F: FnOnce(&mut ReviewDiffusionJob),
+    {
+        let mut jobs = self
+            .diffusion_jobs
+            .lock()
+            .map_err(|_| anyhow!("diffusion job registry lock is poisoned"))?;
+        let job = jobs
+            .iter_mut()
+            .find(|job| job.id == job_id)
+            .ok_or_else(|| anyhow!("diffusion job {job_id} does not exist"))?;
+        update(job);
+        Ok(())
+    }
+
+    fn cancel_diffusion_job(&self, job_id: u64) {
+        let _ = self.update_diffusion_job(job_id, |job| {
+            if matches!(
+                job.status,
+                ReviewDiffusionJobStatus::Queued | ReviewDiffusionJobStatus::Processing
+            ) {
+                job.status = ReviewDiffusionJobStatus::Cancelled;
+                job.after_url = None;
+                job.after_path = None;
+                job.error = None;
+            }
+        });
+    }
+
+    fn run_diffusion_preview_worker(&self, receiver: std::sync::mpsc::Receiver<u64>) {
+        while let Ok(mut job_id) = receiver.recv() {
+            while let Ok(newer_job_id) = receiver.try_recv() {
+                self.cancel_diffusion_job(job_id);
+                job_id = newer_job_id;
+            }
+            if self.latest_diffusion_job_id.load(Ordering::Acquire) != job_id {
+                self.cancel_diffusion_job(job_id);
+                continue;
+            }
+            if self
+                .update_diffusion_job(job_id, |job| {
+                    job.status = ReviewDiffusionJobStatus::Processing;
+                    job.error = None;
+                })
+                .is_err()
+            {
+                continue;
+            }
+            match self.render_diffusion_preview_job(job_id) {
+                Ok(Some((before, after)))
+                    if self.latest_diffusion_job_id.load(Ordering::Acquire) == job_id =>
+                {
+                    let _ = self.update_diffusion_job(job_id, |job| {
+                        job.status = ReviewDiffusionJobStatus::Done;
+                        job.before_url = Some(format!("diffusion-preview/{job_id}/before"));
+                        job.after_url = Some(format!("diffusion-preview/{job_id}/after"));
+                        job.before_path = Some(before);
+                        job.after_path = Some(after);
+                        job.error = None;
+                    });
+                }
+                Ok(_) => self.cancel_diffusion_job(job_id),
+                Err(error) => {
+                    let _ = self.update_diffusion_job(job_id, |job| {
+                        job.status = ReviewDiffusionJobStatus::Failed;
+                        job.after_url = None;
+                        job.after_path = None;
+                        job.error = Some(format!("{error:#}"));
+                    });
+                }
+            }
+        }
+    }
+
+    fn render_diffusion_preview_job(&self, job_id: u64) -> Result<Option<(PathBuf, PathBuf)>> {
+        let job = self.diffusion_job_snapshot(job_id)?;
+        let store = self.store_snapshot();
+        store.validate_diffusion_target(job.image_id, job.profile_index)?;
+        let image = store
+            .images
+            .iter()
+            .find(|image| image.id == job.image_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("review image {} does not exist", job.image_id))?;
+        let profile = store
+            .profiles
+            .iter()
+            .find(|profile| profile.index == job.profile_index)
+            .cloned()
+            .ok_or_else(|| anyhow!("review profile {} does not exist", job.profile_index))?;
+        let raw = safe_existing_raw_source(&image.raw_path, &self.input_root)?;
+        let white_balance = retouch_white_balance_for_image(&image);
+        let bw_filter = effective_bw_filter_for_profile(&image, &profile);
+        let cache_key =
+            diffusion_preview_cache_key(&raw, &profile, &image.retouch, white_balance, bw_filter)?;
+        let cache_dir = self
+            .cache_root
+            .join(DIFFUSION_PREVIEWS_CACHE_DIR)
+            .join(cache_key);
+        fs::create_dir_all(&cache_dir)
+            .with_context(|| format!("creating {}", cache_dir.display()))?;
+        let base = cache_dir.join("base.tif");
+        let before = cache_dir.join("before.jpg");
+        let after = cache_dir.join(format!(
+            "{}-{}-{}.jpg",
+            job.settings.method.as_str(),
+            job.settings.softness,
+            job.settings.highlight_glow,
+        ));
+        let export = diffusion_preview_export_options(&self.export);
+
+        if !base.is_file() || !before.is_file() {
+            let work = Builder::new()
+                .prefix("mini-film-diffusion-preview-")
+                .tempdir()?;
+            let temp_base = cache_dir.join(format!(".base-{job_id}.tif"));
+            let temp_before = cache_dir.join(format!(".before-{job_id}.jpg"));
+            let _ = fs::remove_file(&temp_base);
+            let _ = fs::remove_file(&temp_before);
+            let apply_args = ApplyArgs {
+                raw: raw.clone(),
+                output: temp_before.clone(),
+                profile: optional_profile_selector(&profile.selector),
+                hald_dir: self.hald_dir.clone(),
+                profiles_root: self.profiles_root.clone(),
+                hald_level: self.hald_level,
+                rawtherapee: self.rawtherapee.clone(),
+                dng_fallback: self.dng_fallback.clone(),
+                convert: self.convert.clone(),
+                lcp_root: self.lcp_root.clone(),
+                keep_intermediate: Some(temp_base.clone()),
+                no_grain: true,
+                normalize_grain_mpix: self.normalize_grain_mpix,
+                color_noise_iso_threshold: self.color_noise_iso_threshold,
+                lens_corrections: self.lens_corrections,
+                grain: self.grain.clone(),
+                grain_preset: self.grain_preset.clone(),
+                grain_seed: self.grain_seed,
+                grain_engine: self.grain_engine,
+                diffusion: DiffusionSettings::default(),
+                export: export.clone(),
+                retouch: None,
+                retouch_white_balance: white_balance,
+                bw_filter,
+            };
+            let mut resolved = resolve_profile(&apply_args, work.path())?;
+            resolved
+                .rawtherapee_profiles
+                .push(write_rawtherapee_resize_profile(
+                    &work.path().join("diffusion-preview-resize.pp3"),
+                    REVIEW_DIFFUSION_PREVIEW_LONG_EDGE,
+                )?);
+            resolved.rawtherapee_profiles.push(
+                crate::app::pp3::write_rawtherapee_srgb_output_profile(
+                    &work.path().join("diffusion-preview-srgb.pp3"),
+                )?,
+            );
+            let outcome = apply_resolved(
+                ApplyJob {
+                    raw: &raw,
+                    output: &temp_before,
+                    rawtherapee: &self.rawtherapee,
+                    dng_fallback: &self.dng_fallback,
+                    prepared_raw: None,
+                    convert: &self.convert,
+                    keep_intermediate: Some(&temp_base),
+                    no_grain: true,
+                    normalize_grain_mpix: self.normalize_grain_mpix,
+                    grain_engine: self.grain_engine,
+                    diffusion: DiffusionSettings::default(),
+                    color_noise_iso_threshold: self.color_noise_iso_threshold,
+                    lens_corrections: self.lens_corrections,
+                    lcp_root: self.lcp_root.as_deref(),
+                    export: &export,
+                    quiet: true,
+                    exif_comment: None,
+                    retouch: Some(&image.retouch),
+                    retouch_white_balance: white_balance,
+                    bw_filter,
+                    profile_input_cache_root: Some(&self.cache_root),
+                },
+                &resolved,
+                review_publish_seed(0, &raw, profile.index),
+                work.path(),
+                None,
+            )?;
+            if base.exists() {
+                fs::remove_file(&base).with_context(|| format!("replacing {}", base.display()))?;
+            }
+            if before.exists() {
+                fs::remove_file(&before)
+                    .with_context(|| format!("replacing {}", before.display()))?;
+            }
+            fs::rename(&temp_base, &base)
+                .with_context(|| format!("publishing {}", base.display()))?;
+            fs::rename(&temp_before, &before)
+                .with_context(|| format!("publishing {}", before.display()))?;
+            if outcome.source_path != raw {
+                self.rebind_and_queue_converted_source(&raw, &outcome.source_path)?;
+            }
+        }
+
+        self.update_diffusion_job(job_id, |job| {
+            job.before_url = Some(format!("diffusion-preview/{job_id}/before"));
+            job.before_path = Some(before.clone());
+        })?;
+        if self.latest_diffusion_job_id.load(Ordering::Acquire) != job_id {
+            return Ok(None);
+        }
+        if !after.is_file() {
+            if job.settings.is_enabled() {
+                let diffused = cache_dir.join(format!(".diffused-{job_id}.tif"));
+                let temp_after = cache_dir.join(format!(".after-{job_id}.jpg"));
+                let _ = fs::remove_file(&diffused);
+                let _ = fs::remove_file(&temp_after);
+                let result = (|| {
+                    apply_diffusion(&base, &diffused, job.settings)?;
+                    crate::app::export::finalize_output_with_retouch(
+                        &self.convert,
+                        &diffused,
+                        &temp_after,
+                        &export,
+                        Some(&image.retouch),
+                    )?;
+                    fs::rename(&temp_after, &after)
+                        .with_context(|| format!("publishing {}", after.display()))?;
+                    Ok::<_, anyhow::Error>(())
+                })();
+                let _ = fs::remove_file(&diffused);
+                let _ = fs::remove_file(&temp_after);
+                result?;
+            } else if before != after {
+                fs::copy(&before, &after)
+                    .with_context(|| format!("writing {}", after.display()))?;
+            }
+        }
+        if self.latest_diffusion_job_id.load(Ordering::Acquire) != job_id {
+            return Ok(None);
+        }
+        Ok(Some((before, after)))
+    }
+
+    pub(super) fn diffusion_preview_media_path(&self, job_id: u64, after: bool) -> Result<PathBuf> {
+        let job = self.diffusion_job_snapshot(job_id)?;
+        let path = if after {
+            job.after_path
+        } else {
+            job.before_path
+        }
+        .ok_or_else(|| anyhow!("diffusion preview is not ready"))?;
+        let root = self.cache_root.join(DIFFUSION_PREVIEWS_CACHE_DIR);
+        if !path.starts_with(&root) || !path.is_file() {
+            bail!("diffusion preview is missing: {}", path.display());
+        }
+        Ok(path)
     }
 
     pub(super) async fn apply_ui_update_async(&self, update: ReviewUiUpdateRequest) -> Result<()> {
@@ -3005,6 +3524,12 @@ impl ReviewHandle {
                         let bw_filter = profile
                             .map(|profile| effective_bw_filter_for_profile(image, profile))
                             .unwrap_or_default();
+                        let (diffusion_settings, diffusion_source) = store
+                            .effective_diffusion_settings(
+                                image.id,
+                                render.profile_index,
+                                &self.diffusion,
+                            );
                         let base_output_ready = render
                             .output_path
                             .as_ref()
@@ -3048,6 +3573,12 @@ impl ReviewHandle {
                             "dcp_profile_filename": effective_dcp_profile_filename(image, render),
                             "bw_filter_eligible": bw_filter_eligible,
                             "bw_filter": bw_filter,
+                            "diffusion": {
+                                "settings": diffusion_settings,
+                                "source": diffusion_source,
+                            },
+                            "diffusion_settings": diffusion_settings,
+                            "diffusion_source": diffusion_source,
                             "updated_at": render.updated_at,
                         })
                     })
@@ -3115,6 +3646,11 @@ impl ReviewHandle {
                     "retouch": image.retouch,
                     "publish_profile_indexes": effective_publish_profile_indexes(image),
                     "profile_bw_filters": image.profile_bw_filters,
+                    "profile_diffusion_settings": store
+                        .image_profile_diffusion_settings
+                        .iter()
+                        .filter(|entry| entry.image_id == image.id)
+                        .collect::<Vec<_>>(),
                     "profiles": profiles,
                     "updated_at": image.updated_at,
                 })
@@ -3183,10 +3719,13 @@ impl ReviewHandle {
                 "failed": codex_summary.failed,
             },
             "publish_defaults": self.publish_defaults,
+            "diffusion_default": self.diffusion,
+            "profile_diffusion_settings": store.profile_diffusion_settings,
             "publish_jobs": self.publish_jobs_snapshot()?,
             "capabilities": {
                 "panorama": self.panorama_capability,
                 "sampler": self.sampler_available(),
+                "diffusion": true,
             },
             "panorama": {
                 "busy": self.panorama_operation.load(Ordering::Acquire),
@@ -3320,6 +3859,9 @@ impl ReviewHandle {
             .find(|profile| profile.index == profile_index)
             .ok_or_else(|| anyhow!("review profile {profile_index} does not exist"))?;
         let input = safe_existing_raw_source(&image.raw_path, &self.input_root)?;
+        let diffusion = store
+            .effective_diffusion_settings(image_id, profile_index, &self.diffusion)
+            .0;
         let temp_dir = Builder::new().prefix("mini-film-review-pp3-").tempdir()?;
         let apply_args = ApplyArgs {
             raw: input.clone(),
@@ -3344,6 +3886,7 @@ impl ReviewHandle {
             grain_preset: self.grain_preset.clone(),
             grain_seed: self.grain_seed,
             grain_engine: self.grain_engine,
+            diffusion,
             export: self.export.clone(),
             retouch: None,
             retouch_white_balance: retouch_white_balance_for_image(image),
@@ -3353,7 +3896,7 @@ impl ReviewHandle {
         let dcp_profile = is_raw_input_file(&input)
             .then(|| resolve_dcp_profile(&input, &self.dng_fallback))
             .flatten();
-        let profiles = rawtherapee_profiles_for_input(
+        let mut profiles = rawtherapee_profiles_for_input(
             RawTherapeeProfileOptions {
                 input: &input,
                 retouch: Some(&image.retouch),
@@ -3366,6 +3909,11 @@ impl ReviewHandle {
             &resolved,
             temp_dir.path(),
         )?;
+        if diffusion.is_enabled() {
+            profiles.push(crate::app::pp3::write_rawtherapee_srgb_output_profile(
+                &temp_dir.path().join("diffusion-srgb-output.pp3"),
+            )?);
+        }
         rawtherapee_profile_chain_text(&profiles)
     }
 
@@ -3655,6 +4203,7 @@ impl ReviewHandle {
             grain_preset: self.grain_preset.clone(),
             grain_seed: self.grain_seed,
             grain_engine,
+            diffusion: self.diffusion,
             normalize_grain_mpix,
             progress_events: true,
         })
@@ -3951,6 +4500,8 @@ fn review_state_patch_value(
         "client_count",
         "codex",
         "publish_defaults",
+        "diffusion_default",
+        "profile_diffusion_settings",
         "invocation",
         "publish_jobs",
         "capabilities",
@@ -4215,25 +4766,6 @@ pub(super) fn retouch_render_key(
     })
 }
 
-pub(super) fn profile_render_key(
-    retouch: &RetouchSettings,
-    white_balance: RetouchWhiteBalance,
-    bw_filter: BwFilter,
-    normalize_grain_mpix: Option<f64>,
-    processing_key: &str,
-) -> Option<String> {
-    let normalized = retouch.clone().normalized();
-    (normalized != RetouchSettings::default() || bw_filter != BwFilter::None).then(|| {
-        profile_render_key_value(
-            &normalized,
-            white_balance,
-            bw_filter,
-            normalize_grain_mpix,
-            processing_key,
-        )
-    })
-}
-
 pub(super) fn profile_render_key_value(
     retouch: &RetouchSettings,
     white_balance: RetouchWhiteBalance,
@@ -4258,6 +4790,35 @@ pub(super) fn profile_render_key_value(
     short_render_digest(hasher)
 }
 
+pub(super) fn profile_render_key_value_with_diffusion(
+    retouch: &RetouchSettings,
+    white_balance: RetouchWhiteBalance,
+    bw_filter: BwFilter,
+    normalize_grain_mpix: Option<f64>,
+    processing_key: &str,
+    diffusion: DiffusionSettings,
+) -> String {
+    let base = profile_render_key_value(
+        retouch,
+        white_balance,
+        bw_filter,
+        normalize_grain_mpix,
+        processing_key,
+    );
+    if !diffusion.is_enabled() {
+        return base;
+    }
+    let mut hasher = Sha1::new();
+    hasher.update(base);
+    hasher.update("|diffusion-v1=");
+    hasher.update(diffusion.method.as_str());
+    hasher.update("/");
+    hasher.update(diffusion.softness.to_string());
+    hasher.update("/");
+    hasher.update(diffusion.highlight_glow.to_string());
+    short_render_digest(hasher)
+}
+
 fn short_render_digest(hasher: Sha1) -> String {
     let digest = hasher.finalize();
     digest
@@ -4265,6 +4826,44 @@ fn short_render_digest(hasher: Sha1) -> String {
         .take(8)
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+fn diffusion_preview_cache_key(
+    raw: &Path,
+    profile: &ReviewProfile,
+    retouch: &RetouchSettings,
+    white_balance: RetouchWhiteBalance,
+    bw_filter: BwFilter,
+) -> Result<String> {
+    let mut hasher = Sha1::new();
+    hasher.update("diffusion-preview-v1");
+    hasher.update(raw.to_string_lossy().as_bytes());
+    if let Ok(metadata) = raw.metadata() {
+        hasher.update(metadata.len().to_le_bytes());
+        if let Ok(modified) = metadata.modified()
+            && let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH)
+        {
+            hasher.update(duration.as_nanos().to_le_bytes());
+        }
+    }
+    hasher.update(
+        serde_json::to_vec(profile).context("serializing diffusion preview profile identity")?,
+    );
+    hasher.update(retouch.render_key_with_white_balance(white_balance));
+    hasher.update(bw_filter.as_str());
+    Ok(short_render_digest(hasher))
+}
+
+fn diffusion_preview_export_options(base: &ExportOptions) -> ExportOptions {
+    let mut export = base.clone();
+    export.jpg_quality = export.jpg_quality.max(92);
+    export.resize = None;
+    export.long_edge = Some(REVIEW_DIFFUSION_PREVIEW_LONG_EDGE);
+    export.max_width = None;
+    export.max_height = None;
+    export.strip_metadata = true;
+    export.progressive_jpeg = false;
+    export
 }
 
 pub(super) fn retouch_white_balance_for_image(image: &ReviewImage) -> RetouchWhiteBalance {
@@ -4420,6 +5019,143 @@ pub(super) fn queue_profile_retouch_render(
             render_key,
         });
     }
+}
+
+fn diffusion_target_effective_settings(
+    store: &ReviewStore,
+    scope: ReviewDiffusionScope,
+    image_id: u64,
+    profile_index: usize,
+    daemon_default: DiffusionSettings,
+) -> HashMap<u64, DiffusionSettings> {
+    store
+        .images
+        .iter()
+        .filter(|image| {
+            (scope == ReviewDiffusionScope::All || image.id == image_id)
+                && image
+                    .profiles
+                    .iter()
+                    .any(|render| render.profile_index == profile_index)
+        })
+        .map(|image| {
+            (
+                image.id,
+                store
+                    .effective_diffusion_settings(image.id, profile_index, &daemon_default)
+                    .0,
+            )
+        })
+        .collect()
+}
+
+fn changed_diffusion_target_ids(
+    store: &ReviewStore,
+    scope: ReviewDiffusionScope,
+    image_id: u64,
+    profile_index: usize,
+    daemon_default: DiffusionSettings,
+    before: &HashMap<u64, DiffusionSettings>,
+) -> HashSet<u64> {
+    diffusion_target_effective_settings(store, scope, image_id, profile_index, daemon_default)
+        .into_iter()
+        .filter_map(|(image_id, settings)| {
+            before
+                .get(&image_id)
+                .is_none_or(|before| !diffusion_settings_render_equivalent(*before, settings))
+                .then_some(image_id)
+        })
+        .collect()
+}
+
+fn diffusion_settings_render_equivalent(left: DiffusionSettings, right: DiffusionSettings) -> bool {
+    left == right || (!left.is_enabled() && !right.is_enabled())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn queue_diffusion_target_renders(
+    store: &mut ReviewStore,
+    image_ids: &HashSet<u64>,
+    profile_index: usize,
+    daemon_default: DiffusionSettings,
+    normalize_grain_mpix: Option<f64>,
+    export: &ExportOptions,
+    input_root: &Path,
+    output_root: &Path,
+    cache_root: &Path,
+    output_format: BatchOutputFormat,
+) -> Result<Vec<ReviewRetouchRequest>> {
+    if image_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let profile = store
+        .profiles
+        .iter()
+        .find(|profile| profile.index == profile_index)
+        .cloned()
+        .ok_or_else(|| anyhow!("review profile {profile_index} does not exist"))?;
+    let profile_settings = store.profile_diffusion_settings.clone();
+    let image_settings = store.image_profile_diffusion_settings.clone();
+    let mut jobs = Vec::new();
+    for image in &mut store.images {
+        if !image_ids.contains(&image.id) {
+            continue;
+        }
+        let Some(render_index) = image
+            .profiles
+            .iter()
+            .position(|render| render.profile_index == profile_index && render.enabled)
+        else {
+            continue;
+        };
+        if image.profiles[render_index].output_path.is_none() {
+            image.profiles[render_index].output_path =
+                Some(crate::app::batch_daemon::daemon_output_path(
+                    input_root,
+                    output_root,
+                    output_format,
+                    &image.raw_path,
+                    &profile.stem,
+                )?);
+        }
+        let processing_key = review_render_processing_key_for_input_with_diffusion(
+            &image.raw_path,
+            profile_index,
+            normalize_grain_mpix,
+            export,
+            daemon_default,
+        );
+        image.profiles[render_index].processing_key = Some(processing_key.clone());
+        let bw_filter = effective_bw_filter_for_profile(image, &profile);
+        let diffusion = effective_diffusion_settings_from(
+            &profile_settings,
+            &image_settings,
+            image.id,
+            profile_index,
+            &daemon_default,
+        )
+        .0;
+        let render_key = profile_render_key_value_with_diffusion(
+            &image.retouch,
+            retouch_white_balance_for_image(image),
+            bw_filter,
+            normalize_grain_mpix,
+            &processing_key,
+            diffusion,
+        );
+        queue_profile_retouch_render(
+            image,
+            render_index,
+            render_key,
+            profile_retouch_uses_base_output(&image.retouch, bw_filter)
+                && diffusion_settings_render_equivalent(diffusion, daemon_default),
+            &mut jobs,
+            output_root,
+            cache_root,
+        );
+        image.updated_at = now_string();
+    }
+    Ok(jobs)
 }
 
 pub(super) fn retouch_without_adjustments(retouch: &RetouchSettings) -> RetouchSettings {

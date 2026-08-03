@@ -175,6 +175,16 @@ pub(super) async fn route_request(
         (Method::GET, _) | (Method::POST, _) if path.starts_with("/api/sampler/jobs/") => {
             sampler_job_response(method, path, &body, handle).await
         }
+        (Method::POST, "/api/diffusion/jobs") => diffusion_start_response(&body, handle).await,
+        (Method::GET, _) if path.starts_with("/api/diffusion/jobs/") => {
+            diffusion_job_response(path, handle).await
+        }
+        (Method::GET, _) if path.starts_with("/diffusion-preview/") => {
+            diffusion_preview_media_response(path, handle).await
+        }
+        (Method::POST, "/api/diffusion/settings") | (Method::DELETE, "/api/diffusion/settings") => {
+            diffusion_settings_response(method, &body, handle).await
+        }
         (Method::POST, "/api/panoramas") => panorama_create_response(&body, handle).await,
         (Method::PATCH, _) | (Method::POST, _) if path.starts_with("/api/panoramas/") => {
             panorama_project_response(method, path, &body, handle).await
@@ -254,6 +264,7 @@ pub(super) fn review_route_path(path: &str) -> String {
         "/outputs/",
         "/thumbnail/",
         "/preview/",
+        "/diffusion-preview/",
         "/panorama-preview/",
         "/sampler-media/",
     ] {
@@ -291,6 +302,99 @@ async fn sampler_start_response(body: &[u8], handle: &ReviewHandle) -> Response 
         .and_then(|snapshot| serde_json::to_string(&snapshot).context("serializing sampler job"));
     match result {
         Ok(body) => text_response(202, "application/json; charset=utf-8", &body).into_response(),
+        Err(error) => json_error(400, error).into_response(),
+    }
+}
+
+async fn diffusion_start_response(body: &[u8], handle: &ReviewHandle) -> Response {
+    if let Err(error) = handle.ensure_database_healthy() {
+        return json_error(503, error).into_response();
+    }
+    let result = serde_json::from_slice::<ReviewDiffusionJobRequest>(body)
+        .context("parsing diffusion preview request")
+        .and_then(|request| handle.start_diffusion_job(request))
+        .and_then(|job| serde_json::to_string(&job).context("serializing diffusion job"));
+    match result {
+        Ok(body) => text_response(202, "application/json; charset=utf-8", &body).into_response(),
+        Err(error) => json_error(400, error).into_response(),
+    }
+}
+
+async fn diffusion_job_response(path: &str, handle: &ReviewHandle) -> Response {
+    let job_id = path.trim_start_matches("/api/diffusion/jobs/");
+    let Some(job_id) = (!job_id.is_empty() && !job_id.contains('/'))
+        .then(|| job_id.parse::<u64>().ok())
+        .flatten()
+    else {
+        return text_response(400, "text/plain; charset=utf-8", "bad diffusion job id")
+            .into_response();
+    };
+    match handle
+        .diffusion_job_snapshot(job_id)
+        .and_then(|job| serde_json::to_string(&job).context("serializing diffusion job"))
+    {
+        Ok(body) => text_response(200, "application/json; charset=utf-8", &body).into_response(),
+        Err(error) => json_error(404, error).into_response(),
+    }
+}
+
+async fn diffusion_preview_media_response(path: &str, handle: &ReviewHandle) -> Response {
+    let parts = path
+        .trim_start_matches("/diffusion-preview/")
+        .split('/')
+        .collect::<Vec<_>>();
+    let [job_id, side] = parts.as_slice() else {
+        return text_response(404, "text/plain; charset=utf-8", "not found").into_response();
+    };
+    let Some(job_id) = job_id.parse::<u64>().ok() else {
+        return text_response(400, "text/plain; charset=utf-8", "bad diffusion job id")
+            .into_response();
+    };
+    let after = match *side {
+        "before" => false,
+        "after" => true,
+        _ => return text_response(404, "text/plain; charset=utf-8", "not found").into_response(),
+    };
+    match handle.diffusion_preview_media_path(job_id, after) {
+        Ok(path) => serve_review_file(path, "image/jpeg").await,
+        Err(error) => json_error(404, error).into_response(),
+    }
+}
+
+async fn diffusion_settings_response(
+    method: Method,
+    body: &[u8],
+    handle: &ReviewHandle,
+) -> Response {
+    if let Err(error) = handle.ensure_database_healthy() {
+        return json_error(503, error).into_response();
+    }
+    let previous = match handle.api_state_value() {
+        Ok(state) => state,
+        Err(error) => return json_error(500, error).into_response(),
+    };
+    let result = match method {
+        Method::POST => match serde_json::from_slice::<ReviewDiffusionSettingsRequest>(body)
+            .context("parsing diffusion settings")
+        {
+            Ok(request) => handle.apply_diffusion_settings_async(request).await,
+            Err(error) => Err(error),
+        },
+        Method::DELETE => {
+            match serde_json::from_slice::<ReviewDiffusionSettingsResetRequest>(body)
+                .context("parsing diffusion settings reset")
+            {
+                Ok(request) => handle.reset_diffusion_settings_async(request).await,
+                Err(error) => Err(error),
+            }
+        }
+        _ => unreachable!(),
+    };
+    match result.and_then(|()| handle.api_state_patch_json_since(&previous)) {
+        Ok(body) => text_response(200, "application/json; charset=utf-8", &body).into_response(),
+        Err(error) if handle.ensure_database_healthy().is_err() => {
+            json_error(503, error).into_response()
+        }
         Err(error) => json_error(400, error).into_response(),
     }
 }

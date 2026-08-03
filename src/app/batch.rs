@@ -11,7 +11,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use handlebars::Handlebars;
 use indicatif::{MultiProgress, ProgressBar};
-use mini_film::GrainEngine;
+use mini_film::{DiffusionSettings, GrainEngine};
 use rayon::prelude::*;
 use sanitize_filename::sanitize;
 use serde_json::json;
@@ -62,6 +62,7 @@ pub(crate) struct BatchArgs {
     pub(crate) grain_preset: Option<String>,
     pub(crate) grain_seed: Option<u64>,
     pub(crate) grain_engine: GrainEngine,
+    pub(crate) diffusion: DiffusionSettings,
     pub(crate) color_noise_iso_threshold: u32,
     pub(crate) jobs: Option<usize>,
     pub(crate) output_format: BatchOutputFormat,
@@ -201,6 +202,7 @@ pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
             grain_preset: args.grain_preset.clone(),
             grain_seed: args.grain_seed,
             grain_engine: args.grain_engine,
+            diffusion: args.diffusion,
             export: args.export.clone(),
             retouch: None,
             retouch_white_balance: crate::app::retouch::RetouchWhiteBalance::default(),
@@ -805,6 +807,7 @@ fn process_batch_file_inner(
                 no_grain: context.args.no_grain,
                 normalize_grain_mpix: context.args.normalize_grain_mpix,
                 grain_engine: context.args.grain_engine,
+                diffusion: context.args.diffusion,
                 color_noise_iso_threshold: context.args.color_noise_iso_threshold,
                 lcp_root: context.args.lcp_root.as_deref(),
                 lens_corrections: context.args.lens_corrections,

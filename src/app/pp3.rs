@@ -56,6 +56,14 @@ pub(crate) fn write_rawtherapee_dcp_profile(path: &Path, dcp_profile: &Path) -> 
     Ok(path.to_path_buf())
 }
 
+pub(crate) fn write_rawtherapee_srgb_output_profile(path: &Path) -> Result<PathBuf> {
+    let parent = path.parent().context("sRGB output profile has no parent")?;
+    fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    fs::write(path, rawtherapee_srgb_output_profile_text())
+        .with_context(|| format!("writing {}", path.display()))?;
+    Ok(path.to_path_buf())
+}
+
 pub(crate) fn write_rawtherapee_disable_sharpening_profile(path: &Path) -> Result<PathBuf> {
     let parent = path
         .parent()
@@ -105,6 +113,15 @@ fn rawtherapee_dcp_profile_text(dcp_profile: &Path) -> String {
     let _ = writeln!(out, "DCPIlluminant=0");
     let _ = writeln!(out);
     out
+}
+
+fn rawtherapee_srgb_output_profile_text() -> &'static str {
+    "[Color Management]\n\
+WorkingProfile=ProPhoto\n\
+WorkingTRC=none\n\
+OutputProfile=RTv4_sRGB\n\
+OutputProfileIntent=Relative\n\
+OutputBPC=true\n"
 }
 
 pub(crate) fn run_pp3(args: Pp3Args) -> Result<()> {
@@ -325,6 +342,17 @@ mod tests {
         assert!(text.contains("ApplyHueSatMap=true\n"));
         assert!(text.contains("DCPIlluminant=0\n"));
         assert!(!text.contains("HistogramMatching"));
+    }
+
+    #[test]
+    fn srgb_output_profile_makes_diffusion_color_space_explicit() {
+        let text = rawtherapee_srgb_output_profile_text();
+
+        assert!(text.contains("WorkingProfile=ProPhoto\n"));
+        assert!(text.contains("WorkingTRC=none\n"));
+        assert!(text.contains("OutputProfile=RTv4_sRGB\n"));
+        assert!(text.contains("OutputProfileIntent=Relative\n"));
+        assert!(text.contains("OutputBPC=true\n"));
     }
 
     #[test]

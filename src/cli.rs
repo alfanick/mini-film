@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use mini_film::GrainEngine;
+use mini_film::{DiffusionMethod, DiffusionPreset, DiffusionSettings, GrainEngine};
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_HALD_LEVEL: u32 = 16;
@@ -29,6 +29,41 @@ pub(crate) struct DngFallbackCliArgs {
     /// Wine prefix containing Adobe DNG Converter.
     #[arg(long)]
     pub(crate) wine_prefix: Option<PathBuf>,
+}
+
+#[derive(Args, Clone, Copy, Debug)]
+pub(crate) struct DiffusionCliArgs {
+    /// Film-like diffusion preset applied after simulation and before grain.
+    #[arg(long, value_enum, default_value = "off")]
+    diffusion: DiffusionPreset,
+
+    /// Diffusion renderer. Multi-scale mist is softer; edge-aware glow preserves major edges.
+    #[arg(long, value_enum, default_value = "multi-scale-mist")]
+    diffusion_method: DiffusionMethod,
+
+    /// Override diffusion softness, from 0 to 100.
+    #[arg(long, value_name = "0..100", value_parser = parse_diffusion_strength)]
+    diffusion_softness: Option<u8>,
+
+    /// Override highlight glow, from 0 to 100.
+    #[arg(long, value_name = "0..100", value_parser = parse_diffusion_strength)]
+    diffusion_glow: Option<u8>,
+}
+
+impl DiffusionCliArgs {
+    pub(crate) fn resolve(self) -> DiffusionSettings {
+        let (preset_softness, preset_glow) = match self.diffusion {
+            DiffusionPreset::Off => (0, 0),
+            DiffusionPreset::Subtle => (25, 25),
+            DiffusionPreset::Medium => (50, 50),
+            DiffusionPreset::Strong => (75, 75),
+        };
+        DiffusionSettings {
+            method: self.diffusion_method,
+            softness: self.diffusion_softness.unwrap_or(preset_softness),
+            highlight_glow: self.diffusion_glow.unwrap_or(preset_glow),
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -224,6 +259,9 @@ pub(crate) enum CommandKind {
         #[arg(long, value_enum, default_value_t = GrainEngine::default())]
         grain_engine: GrainEngine,
 
+        #[command(flatten)]
+        diffusion: DiffusionCliArgs,
+
         /// JPEG quality when output path ends in .jpg or .jpeg.
         #[arg(long, default_value_t = 95)]
         jpg_quality: u8,
@@ -400,6 +438,9 @@ pub(crate) enum CommandKind {
         #[arg(long, value_enum, default_value_t = GrainEngine::default())]
         grain_engine: GrainEngine,
 
+        #[command(flatten)]
+        diffusion: DiffusionCliArgs,
+
         /// Number of files to process in parallel. Defaults to half of CPU threads.
         #[arg(long)]
         jobs: Option<usize>,
@@ -539,6 +580,9 @@ pub(crate) enum CommandKind {
         #[arg(long, value_enum, default_value_t = GrainEngine::default())]
         grain_engine: GrainEngine,
 
+        #[command(flatten)]
+        diffusion: DiffusionCliArgs,
+
         /// Disable /tmp sampler thumbnail cache and regenerate every profile thumbnail.
         #[arg(long)]
         no_cache: bool,
@@ -659,6 +703,9 @@ pub(crate) enum CommandKind {
         /// Grain renderer to use for profiled outputs.
         #[arg(long, value_enum, default_value_t = GrainEngine::default())]
         grain_engine: GrainEngine,
+
+        #[command(flatten)]
+        diffusion: DiffusionCliArgs,
 
         /// Number of files to process in parallel. Defaults to half of CPU threads.
         #[arg(long)]
@@ -940,6 +987,9 @@ pub(crate) enum CommandKind {
         /// Grain renderer to use when rerendering RAWs.
         #[arg(long, value_enum, default_value_t = GrainEngine::default())]
         grain_engine: GrainEngine,
+
+        #[command(flatten)]
+        diffusion: DiffusionCliArgs,
 
         /// Emit newline-delimited progress events for the daemon review UI.
         #[arg(long, hide = true)]
@@ -1223,6 +1273,16 @@ fn parse_normalize_grain_mpix(raw: &str) -> Result<f64, String> {
         .map_err(|_| format!("invalid grain normalization reference {raw:?}"))?;
     if !value.is_finite() || value <= 0.0 {
         return Err("grain normalization reference must be finite and greater than zero".into());
+    }
+    Ok(value)
+}
+
+fn parse_diffusion_strength(raw: &str) -> Result<u8, String> {
+    let value = raw
+        .parse::<u8>()
+        .map_err(|_| format!("invalid diffusion strength {raw:?}"))?;
+    if value > 100 {
+        return Err("diffusion strength must be between 0 and 100".to_string());
     }
     Ok(value)
 }
@@ -2043,6 +2103,108 @@ mod tests {
             .to_string();
             assert!(error.contains("finite and greater than zero"));
         }
+    }
+
+    #[test]
+    fn cli_diffusion_defaults_off_and_resolves_presets_with_overrides() {
+        let default = Cli::parse_from(["mini-film", "apply", "input.dng", "--output", "out.jpg"]);
+        let CommandKind::Apply { diffusion, .. } = default.command else {
+            panic!("expected apply command");
+        };
+        assert_eq!(diffusion.resolve(), DiffusionSettings::default());
+
+        let custom = Cli::parse_from([
+            "mini-film",
+            "batch",
+            "input",
+            "output",
+            "--diffusion",
+            "medium",
+            "--diffusion-method",
+            "edge-aware-glow",
+            "--diffusion-softness",
+            "60",
+        ]);
+        let CommandKind::Batch { diffusion, .. } = custom.command else {
+            panic!("expected batch command");
+        };
+        assert_eq!(
+            diffusion.resolve(),
+            DiffusionSettings {
+                method: DiffusionMethod::EdgeAwareGlow,
+                softness: 60,
+                highlight_glow: 50,
+            }
+        );
+    }
+
+    #[test]
+    fn cli_diffusion_rejects_strength_above_one_hundred() {
+        let error = Cli::try_parse_from([
+            "mini-film",
+            "daemon",
+            "input",
+            "output",
+            "--diffusion-glow",
+            "101",
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("between 0 and 100"));
+    }
+
+    #[test]
+    fn cli_diffusion_options_are_available_to_sampler_and_review_publish() {
+        let sampler = Cli::parse_from([
+            "mini-film",
+            "sampler",
+            "input.dng",
+            "--output",
+            "sheet.jpg",
+            "--diffusion",
+            "strong",
+            "--diffusion-glow",
+            "40",
+        ]);
+        let CommandKind::Sampler { diffusion, .. } = sampler.command else {
+            panic!("expected sampler command");
+        };
+        assert_eq!(
+            diffusion.resolve(),
+            DiffusionSettings {
+                method: DiffusionMethod::MultiScaleMist,
+                softness: 75,
+                highlight_glow: 40,
+            }
+        );
+
+        let publish = Cli::parse_from([
+            "mini-film",
+            "review-publish",
+            "--state",
+            "review.sqlite",
+            "--input-root",
+            "input",
+            "--output-root",
+            "output",
+            "--album",
+            "album",
+            "--diffusion",
+            "subtle",
+            "--diffusion-method",
+            "edge-aware-glow",
+        ]);
+        let CommandKind::ReviewPublish { diffusion, .. } = publish.command else {
+            panic!("expected review-publish command");
+        };
+        assert_eq!(
+            diffusion.resolve(),
+            DiffusionSettings {
+                method: DiffusionMethod::EdgeAwareGlow,
+                softness: 25,
+                highlight_glow: 25,
+            }
+        );
     }
 
     #[test]

@@ -18,7 +18,7 @@ use notify::{
 use tempfile::{Builder, TempPath};
 use walkdir::WalkDir;
 
-use mini_film::GrainEngine;
+use mini_film::{DiffusionSettings, GrainEngine};
 
 use crate::app::apply::{
     ApplyArgs, ApplyJob, apply_resolved, resolve_apply_effects, resolve_grain_override,
@@ -74,6 +74,7 @@ pub(crate) struct BatchDaemonArgs {
     pub(crate) grain_preset: Option<String>,
     pub(crate) grain_seed: Option<u64>,
     pub(crate) grain_engine: GrainEngine,
+    pub(crate) diffusion: DiffusionSettings,
     pub(crate) color_noise_iso_threshold: u32,
     pub(crate) jobs: Option<usize>,
     pub(crate) debounce_seconds: u64,
@@ -532,6 +533,7 @@ pub(crate) fn run_batch_daemon(mut args: BatchDaemonArgs) -> Result<()> {
             grain_preset: args.grain_preset.clone(),
             grain_seed: Some(base_seed),
             grain_engine: args.grain_engine,
+            diffusion: args.diffusion,
             codex: args.codex,
             codex_binary: args.codex_binary.clone(),
             codex_model: args.codex_model.clone(),
@@ -1412,6 +1414,7 @@ fn resolve_daemon_profiles(args: &BatchDaemonArgs, temp_dir: &Path) -> Result<Ve
                 grain_preset: args.grain_preset.clone(),
                 grain_seed: args.grain_seed,
                 grain_engine: args.grain_engine,
+                diffusion: args.diffusion,
                 export: args.export.clone(),
                 retouch: None,
                 retouch_white_balance: crate::app::retouch::RetouchWhiteBalance::default(),
@@ -1849,6 +1852,7 @@ fn process_single_profile(
             no_grain: args.no_grain,
             normalize_grain_mpix: args.normalize_grain_mpix,
             grain_engine: args.grain_engine,
+            diffusion: args.diffusion,
             lcp_root: args.lcp_root.as_deref(),
             lens_corrections: args.lens_corrections,
             color_noise_iso_threshold: args.color_noise_iso_threshold,
@@ -2902,6 +2906,7 @@ mod tests {
             grain_preset: None,
             grain_seed: None,
             grain_engine: GrainEngine::default(),
+            diffusion: DiffusionSettings::default(),
             color_noise_iso_threshold: 1600,
             lcp_root: None,
             lens_corrections: LensCorrections::default(),
@@ -3049,6 +3054,7 @@ mod tests {
             grain_preset: None,
             grain_seed: None,
             grain_engine: GrainEngine::default(),
+            diffusion: DiffusionSettings::default(),
             color_noise_iso_threshold: 1600,
             lcp_root: None,
             lens_corrections: LensCorrections::default(),

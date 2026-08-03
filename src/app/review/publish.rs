@@ -5,7 +5,7 @@ use super::{
     prelude::*,
     store::*,
 };
-use mini_film::GrainEngine;
+use mini_film::{DiffusionSettings, GrainEngine};
 
 pub(super) fn parse_batch_output_format(raw: &str) -> Result<BatchOutputFormat> {
     match raw.trim().to_ascii_lowercase().as_str() {
@@ -245,6 +245,13 @@ where
     command
         .arg("--grain-engine")
         .arg(args.grain_engine.to_string());
+    command
+        .arg("--diffusion-method")
+        .arg(args.diffusion.method.as_str())
+        .arg("--diffusion-softness")
+        .arg(args.diffusion.softness.to_string())
+        .arg("--diffusion-glow")
+        .arg(args.diffusion.highlight_glow.to_string());
 
     let mut child = command
         .spawn()
@@ -345,6 +352,7 @@ pub(super) fn publish_review_state(
         grain_preset: args.grain_preset.clone(),
         grain_seed: args.grain_seed,
         grain_engine: args.grain_engine,
+        diffusion: args.diffusion,
         normalize_grain_mpix: args.normalize_grain_mpix,
         write_metadata: true,
     };
@@ -452,6 +460,7 @@ pub(super) fn publish_store_inner(
                 image: image.clone(),
                 render: None,
                 profile: None,
+                diffusion: DiffusionSettings::default(),
                 current: image.file_name.clone(),
             });
             continue;
@@ -520,6 +529,13 @@ pub(super) fn publish_store_inner(
                 image: image.clone(),
                 render: Some(render.clone()),
                 profile: profile.cloned(),
+                diffusion: if profile.is_some() {
+                    store
+                        .effective_diffusion_settings(image.id, profile_index, &options.diffusion)
+                        .0
+                } else {
+                    DiffusionSettings::default()
+                },
                 current: format!(
                     "{} / {}",
                     image.file_name,
@@ -578,6 +594,7 @@ pub(super) fn publish_store_inner(
                     image: &task.image,
                     render: task.render.as_ref(),
                     profile: task.profile.as_ref(),
+                    diffusion: task.diffusion,
                     options,
                 })?;
                 let linked_now = linked.fetch_add(1, Ordering::Relaxed) + 1;
@@ -706,6 +723,7 @@ pub(super) fn publish_review_output(item: ReviewPublishOutput<'_>) -> Result<()>
                 item.destination,
                 item.image,
                 profile,
+                item.diffusion,
                 item.options,
             )?;
         } else {
@@ -751,6 +769,7 @@ pub(super) fn rerender_review_output(
     destination: &Path,
     image: &ReviewImage,
     profile: &ReviewProfile,
+    diffusion: DiffusionSettings,
     options: &ReviewPublishOptions,
 ) -> Result<()> {
     let raw = safe_existing_raw_source(&image.raw_path, input_root)?;
@@ -776,6 +795,7 @@ pub(super) fn rerender_review_output(
             .grain_seed
             .map(|seed| review_publish_seed(seed, &image.raw_path, profile.index)),
         grain_engine: options.grain_engine,
+        diffusion,
         export: options.export.clone(),
         retouch: Some(image.retouch.clone()),
         retouch_white_balance: retouch_white_balance_for_image(image),

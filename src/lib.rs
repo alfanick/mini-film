@@ -1,6 +1,7 @@
 #![cfg_attr(target_arch = "x86_64", feature(portable_simd))]
 
 mod adjustments;
+mod diffusion;
 mod grain;
 mod grain_rfgr;
 mod hald;
@@ -11,6 +12,9 @@ mod rgb_table;
 pub mod util;
 mod xmp;
 
+pub use diffusion::{
+    DiffusionMethod, DiffusionPreset, DiffusionSettings, apply_diffusion, render_diffusion_rgb16,
+};
 pub use grain::{
     apply_grain, apply_grain_8bit, apply_grain_8bit_with_engine, apply_grain_8bit_with_options,
     apply_grain_with_engine, apply_grain_with_options,

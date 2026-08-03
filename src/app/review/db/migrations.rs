@@ -13,7 +13,8 @@ const RELATIVE_PATHS_SCHEMA_VERSION: i64 = 16;
 const CACHE_ROOT_SCHEMA_VERSION: i64 = 17;
 const AUTO_IMPORT_SCHEMA_VERSION: i64 = 18;
 const RETOUCH_CONTRAST_SCHEMA_VERSION: i64 = 19;
-pub(super) const LATEST_SCHEMA_VERSION: i64 = 20;
+const DCP_PROVENANCE_SCHEMA_VERSION: i64 = 20;
+pub(super) const LATEST_SCHEMA_VERSION: i64 = 21;
 pub(super) const V18_BASELINE_MIGRATION: &str = "m20260718_000001_v18_baseline";
 pub(super) const PANORAMA_PROJECTS_MIGRATION: &str = "m20260719_000002_panorama_projects";
 pub(super) const REVIEW_SAMPLER_MIGRATION: &str = "m20260721_000003_review_sampler";
@@ -23,6 +24,7 @@ pub(super) const CACHE_ROOT_MIGRATION: &str = "m20260726_000006_cache_root";
 pub(super) const AUTO_IMPORT_MIGRATION: &str = "m20260727_000007_auto_import";
 pub(super) const RETOUCH_CONTRAST_MIGRATION: &str = "m20260727_000008_retouch_contrast";
 pub(super) const DCP_PROVENANCE_MIGRATION: &str = "m20260729_000009_dcp_provenance";
+pub(super) const DIFFUSION_SETTINGS_MIGRATION: &str = "m20260803_000010_diffusion_settings";
 pub(super) const PRE_RELEASE_SEAORM_LEDGER: [&str; 2] = [
     "m20260718_000001_create_review_schema",
     "m20260718_000002_adopt_seaorm",
@@ -57,6 +59,7 @@ impl MigratorTrait for Migrator {
             Box::new(AutoImport),
             Box::new(RetouchContrast),
             Box::new(DcpProvenance),
+            Box::new(DiffusionSettings),
         ]
     }
 }
@@ -595,12 +598,66 @@ impl MigrationTrait for DcpProvenance {
                 )
                 .await?;
         }
-        sqlite_compat::set_user_version(manager.get_connection(), LATEST_SCHEMA_VERSION).await
+        sqlite_compat::set_user_version(manager.get_connection(), DCP_PROVENANCE_SCHEMA_VERSION)
+            .await
     }
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         // Older binaries ignore the nullable forward-compatible column.
         sqlite_compat::set_user_version(manager.get_connection(), RETOUCH_CONTRAST_SCHEMA_VERSION)
+            .await
+    }
+}
+
+struct DiffusionSettings;
+
+impl MigrationName for DiffusionSettings {
+    fn name(&self) -> &str {
+        DIFFUSION_SETTINGS_MIGRATION
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for DiffusionSettings {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        let schema = Schema::new(DbBackend::Sqlite);
+        create_entity_table(manager, &schema, profile_diffusion_settings::Entity).await?;
+        create_entity_table(manager, &schema, image_profile_diffusion_settings::Entity).await?;
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_image_profile_diffusion_profile")
+                    .table(image_profile_diffusion_settings::Entity)
+                    .col(image_profile_diffusion_settings::Column::ProfileIndex)
+                    .if_not_exists()
+                    .to_owned(),
+            )
+            .await?;
+        sqlite_compat::set_user_version(manager.get_connection(), LATEST_SCHEMA_VERSION).await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .drop_table(
+                Table::drop()
+                    .table(image_profile_diffusion_settings::Entity)
+                    .if_exists()
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .drop_table(
+                Table::drop()
+                    .table(profile_diffusion_settings::Entity)
+                    .if_exists()
+                    .to_owned(),
+            )
+            .await?;
+        sqlite_compat::set_user_version(manager.get_connection(), DCP_PROVENANCE_SCHEMA_VERSION)
             .await
     }
 }
@@ -814,6 +871,31 @@ where
                 Expr::col(image_profile_bw_filters::Column::BwFilter)
                     .is_in(["none", "yellow", "orange", "red", "green"]),
             );
+        }
+        "profile_diffusion_settings" => {
+            statement
+                .check(
+                    Expr::col(profile_diffusion_settings::Column::Method)
+                        .is_in(["multi-scale-mist", "edge-aware-glow"]),
+                )
+                .check(Expr::col(profile_diffusion_settings::Column::Softness).between(0, 100))
+                .check(
+                    Expr::col(profile_diffusion_settings::Column::HighlightGlow).between(0, 100),
+                );
+        }
+        "image_profile_diffusion_settings" => {
+            statement
+                .check(
+                    Expr::col(image_profile_diffusion_settings::Column::Method)
+                        .is_in(["multi-scale-mist", "edge-aware-glow"]),
+                )
+                .check(
+                    Expr::col(image_profile_diffusion_settings::Column::Softness).between(0, 100),
+                )
+                .check(
+                    Expr::col(image_profile_diffusion_settings::Column::HighlightGlow)
+                        .between(0, 100),
+                );
         }
         "image_focus_regions" => {
             statement

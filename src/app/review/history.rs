@@ -1,4 +1,5 @@
 use super::{model::*, prelude::*, store::*};
+use mini_film::DiffusionSettings;
 use std::{
     fs::OpenOptions,
     io::{BufWriter, Write},
@@ -251,6 +252,51 @@ pub(super) fn history_ui_changed(
         image_id_text(store, after.current_image_id),
     );
     (!entry.is_empty()).then_some(entry)
+}
+
+pub(super) fn history_diffusion_settings_changed(
+    store: &ReviewStore,
+    action: &str,
+    scope: ReviewDiffusionScope,
+    image_id: u64,
+    profile_index: usize,
+    settings: Option<DiffusionSettings>,
+    queued_renders: usize,
+) -> HistoryEntry {
+    let profile = store
+        .profiles
+        .iter()
+        .find(|profile| profile.index == profile_index)
+        .map(|profile| {
+            profile
+                .metadata
+                .as_ref()
+                .map(|metadata| metadata.profile_name.trim())
+                .filter(|name| !name.is_empty())
+                .unwrap_or(profile.stem.as_str())
+        })
+        .unwrap_or("unknown");
+    let mut entry = HistoryEntry::new(format!("review diffusion {action} [{profile}]"));
+    entry.line(format!(
+        "scope: {}",
+        match scope {
+            ReviewDiffusionScope::Current => "current picture/profile",
+            ReviewDiffusionScope::All => "profile on all pictures",
+        }
+    ));
+    if scope == ReviewDiffusionScope::Current {
+        entry.line(format!("image: {}", image_id_text(store, Some(image_id))));
+    }
+    if let Some(settings) = settings {
+        entry.line(format!(
+            "settings: method={} softness={} glow={}",
+            settings.method, settings.softness, settings.highlight_glow
+        ));
+    } else {
+        entry.line("settings: inherited");
+    }
+    entry.line(format!("renders queued: {queued_renders}"));
+    entry
 }
 
 pub(super) fn history_publish_started(

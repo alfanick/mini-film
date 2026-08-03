@@ -413,6 +413,15 @@ async fn verify_seaorm_database(connection: &DatabaseConnection) -> Result<()> {
             bail!("SeaORM review database is missing required table {table}");
         }
     }
+    for table in required_diffusion_tables() {
+        if !manager
+            .has_table(table)
+            .await
+            .with_context(|| format!("checking review table {table}"))?
+        {
+            bail!("SeaORM review database is missing required table {table}");
+        }
+    }
     sqlite_compat::verify_integrity(connection)
         .await
         .context("validating SeaORM review database")
@@ -563,6 +572,14 @@ fn required_auto_import_tables() -> impl Iterator<Item = &'static str> {
         "auto_import_groups",
         "auto_import_assets",
         "auto_import_sources",
+    ]
+    .into_iter()
+}
+
+fn required_diffusion_tables() -> impl Iterator<Item = &'static str> {
+    [
+        "profile_diffusion_settings",
+        "image_profile_diffusion_settings",
     ]
     .into_iter()
 }
@@ -749,6 +766,29 @@ pub(super) fn database_facts(path: &Path) -> Result<TestDatabaseFacts> {
             entities::image_profile_bw_filters::Entity::find()
                 .count(&connection)
                 .await?,
+        );
+        counts.insert(
+            "profile_diffusion_settings",
+            if manager.has_table("profile_diffusion_settings").await? {
+                entities::profile_diffusion_settings::Entity::find()
+                    .count(&connection)
+                    .await?
+            } else {
+                0
+            },
+        );
+        counts.insert(
+            "image_profile_diffusion_settings",
+            if manager
+                .has_table("image_profile_diffusion_settings")
+                .await?
+            {
+                entities::image_profile_diffusion_settings::Entity::find()
+                    .count(&connection)
+                    .await?
+            } else {
+                0
+            },
         );
         counts.insert(
             "image_focus_regions",
@@ -991,6 +1031,47 @@ pub(super) fn assert_domain_constraints(path: &Path) -> Result<()> {
             "review settings singleton constraint accepted a second row"
         );
 
+        let mut diffusion = entities::profile_diffusion_settings::Entity::find()
+            .one(&connection)
+            .await?
+            .context("missing profile diffusion fixture")?;
+        diffusion.profile_index = 9;
+        diffusion.method = "invalid".to_string();
+        ensure!(
+            entities::profile_diffusion_settings::Entity::insert(
+                diffusion.clone().into_active_model()
+            )
+            .exec(&connection)
+            .await
+            .is_err(),
+            "profile diffusion method constraint accepted invalid data"
+        );
+        diffusion.method = "multi-scale-mist".to_string();
+        diffusion.softness = 101;
+        ensure!(
+            entities::profile_diffusion_settings::Entity::insert(diffusion.into_active_model())
+                .exec(&connection)
+                .await
+                .is_err(),
+            "profile diffusion strength constraint accepted invalid data"
+        );
+
+        let mut image_diffusion = entities::image_profile_diffusion_settings::Entity::find()
+            .one(&connection)
+            .await?
+            .context("missing image diffusion fixture")?;
+        image_diffusion.profile_index = 9;
+        image_diffusion.highlight_glow = -1;
+        ensure!(
+            entities::image_profile_diffusion_settings::Entity::insert(
+                image_diffusion.into_active_model()
+            )
+            .exec(&connection)
+            .await
+            .is_err(),
+            "image diffusion strength constraint accepted invalid data"
+        );
+
         connection.close().await?;
         Ok(())
     })
@@ -1073,7 +1154,7 @@ pub(super) fn make_schema_v12_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(8)).await?;
+        Migrator::down(&connection, Some(9)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1089,7 +1170,7 @@ pub(super) fn make_schema_v13_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(7)).await?;
+        Migrator::down(&connection, Some(8)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1105,7 +1186,7 @@ pub(super) fn make_schema_v14_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(6)).await?;
+        Migrator::down(&connection, Some(7)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1121,7 +1202,7 @@ pub(super) fn make_schema_v15_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(5)).await?;
+        Migrator::down(&connection, Some(6)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1137,7 +1218,7 @@ pub(super) fn make_schema_v17_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(3)).await?;
+        Migrator::down(&connection, Some(4)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1153,7 +1234,23 @@ pub(super) fn make_schema_v18_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(2)).await?;
+        Migrator::down(&connection, Some(3)).await?;
+        sqlite_compat::verify_integrity(&connection).await?;
+        connection.close().await?;
+        Ok(())
+    })
+}
+
+#[cfg(test)]
+pub(super) fn make_schema_v20_database(path: &Path, store: &ReviewStore) -> Result<()> {
+    save_store(path, store)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("building review database runtime")?;
+    runtime.block_on(async {
+        let connection = connect_database(path, false).await?;
+        Migrator::down(&connection, Some(1)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1175,7 +1272,7 @@ pub(super) fn make_legacy_version_database(path: &Path, version: i64) -> Result<
 }
 
 #[cfg(test)]
-fn expected_indexes() -> [(&'static str, &'static str); 28] {
+fn expected_indexes() -> [(&'static str, &'static str); 29] {
     [
         ("profiles", "idx_profiles_position"),
         ("images", "idx_images_position"),
@@ -1191,6 +1288,10 @@ fn expected_indexes() -> [(&'static str, &'static str); 28] {
         (
             "image_profile_bw_filters",
             "idx_image_profile_bw_filters_profile",
+        ),
+        (
+            "image_profile_diffusion_settings",
+            "idx_image_profile_diffusion_profile",
         ),
         ("image_tags", "idx_image_tags_tag_id"),
         ("image_profile_renders", "idx_image_profile_renders_profile"),

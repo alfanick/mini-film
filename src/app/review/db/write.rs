@@ -96,6 +96,16 @@ async fn replace_store_in_transaction(
         )
         .await?;
     }
+    insert_models::<profile_diffusion_settings::Entity, _>(
+        transaction,
+        profile_diffusion_rows(store)?,
+    )
+    .await?;
+    insert_models::<image_profile_diffusion_settings::Entity, _>(
+        transaction,
+        image_profile_diffusion_rows(store)?,
+    )
+    .await?;
     review_settings::Entity::insert(settings_model(store, roots)?.into_active_model())
         .exec(transaction)
         .await
@@ -111,13 +121,26 @@ async fn apply_store_delta_in_transaction(
 ) -> Result<()> {
     let before_profiles = profile_row_set(before)?;
     let after_profiles = profile_row_set(after)?;
-    if before_profiles != after_profiles {
+    let profiles_changed = before_profiles != after_profiles;
+    if profiles_changed {
         delete_profiles(transaction).await?;
         for rows in after_profiles {
             insert_profile_rows(transaction, rows).await?;
         }
     }
 
+    let before_profile_diffusion = profile_diffusion_rows(before)?;
+    let after_profile_diffusion = profile_diffusion_rows(after)?;
+    if profiles_changed || before_profile_diffusion != after_profile_diffusion {
+        profile_diffusion_settings::Entity::delete_many()
+            .exec(transaction)
+            .await?;
+        insert_models::<profile_diffusion_settings::Entity, _>(
+            transaction,
+            after_profile_diffusion,
+        )
+        .await?;
+    }
     let before_images = image_row_map(before, roots)?;
     let after_images = image_row_map(after, roots)?;
     for image_id in before_images.keys() {
@@ -172,6 +195,19 @@ async fn apply_store_delta_in_transaction(
         }
     }
 
+    let before_image_diffusion = image_profile_diffusion_rows(before)?;
+    let after_image_diffusion = image_profile_diffusion_rows(after)?;
+    if profiles_changed || before_image_diffusion != after_image_diffusion {
+        image_profile_diffusion_settings::Entity::delete_many()
+            .exec(transaction)
+            .await?;
+        insert_models::<image_profile_diffusion_settings::Entity, _>(
+            transaction,
+            after_image_diffusion,
+        )
+        .await?;
+    }
+
     prune_unused_tags(transaction).await?;
     settings_model(after, roots)?
         .into_active_model()
@@ -211,6 +247,12 @@ where
         .exec(connection)
         .await?;
     image_profile_renders::Entity::delete_many()
+        .exec(connection)
+        .await?;
+    image_profile_diffusion_settings::Entity::delete_many()
+        .exec(connection)
+        .await?;
+    profile_diffusion_settings::Entity::delete_many()
         .exec(connection)
         .await?;
     image_profile_bw_filters::Entity::delete_many()
@@ -339,6 +381,41 @@ fn profile_rows(position: usize, profile: &ReviewProfile) -> Result<ProfileRows>
         }
     }
     Ok(rows)
+}
+
+fn profile_diffusion_rows(store: &ReviewStore) -> Result<Vec<profile_diffusion_settings::Model>> {
+    store
+        .profile_diffusion_settings
+        .iter()
+        .map(|entry| {
+            crate::app::review::store::validate_diffusion_settings(&entry.settings)?;
+            Ok(profile_diffusion_settings::Model {
+                profile_index: usize_to_i64(entry.profile_index, "diffusion profile index")?,
+                method: enum_text(&entry.settings.method)?,
+                softness: i64::from(entry.settings.softness),
+                highlight_glow: i64::from(entry.settings.highlight_glow),
+            })
+        })
+        .collect()
+}
+
+fn image_profile_diffusion_rows(
+    store: &ReviewStore,
+) -> Result<Vec<image_profile_diffusion_settings::Model>> {
+    store
+        .image_profile_diffusion_settings
+        .iter()
+        .map(|entry| {
+            crate::app::review::store::validate_diffusion_settings(&entry.settings)?;
+            Ok(image_profile_diffusion_settings::Model {
+                image_id: u64_to_i64(entry.image_id, "diffusion image id")?,
+                profile_index: usize_to_i64(entry.profile_index, "diffusion profile index")?,
+                method: enum_text(&entry.settings.method)?,
+                softness: i64::from(entry.settings.softness),
+                highlight_glow: i64::from(entry.settings.highlight_glow),
+            })
+        })
+        .collect()
 }
 
 fn append_profile_adjustment_rows(

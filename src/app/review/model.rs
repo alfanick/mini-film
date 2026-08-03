@@ -5,8 +5,9 @@ use crate::app::dng::DngFallbackConfig;
 use crate::app::profile::{Pp3AdjustmentSection, ResolvedProfileMetadata};
 
 use mini_film::{
-    CalibrationAdjustments, DEFAULT_GRAIN_REFERENCE_MPIX, GrainEngine, GrainSettings,
-    HslAdjustments, ParametricTone, ProfileAdjustments, SharpeningSettings, ToneCurves,
+    CalibrationAdjustments, DEFAULT_GRAIN_REFERENCE_MPIX, DiffusionSettings, GrainEngine,
+    GrainSettings, HslAdjustments, ParametricTone, ProfileAdjustments, SharpeningSettings,
+    ToneCurves,
 };
 
 pub(crate) const SOOC_PROFILE_INDEX: usize = 1_000_000_000;
@@ -39,6 +40,7 @@ pub(crate) struct ReviewConfig {
     pub(crate) grain_preset: Option<String>,
     pub(crate) grain_seed: Option<u64>,
     pub(crate) grain_engine: GrainEngine,
+    pub(crate) diffusion: DiffusionSettings,
     pub(crate) normalize_grain_mpix: Option<f64>,
     pub(crate) codex: Option<CodexAnalysisFlags>,
     pub(crate) codex_binary: PathBuf,
@@ -442,6 +444,7 @@ pub(crate) struct ReviewHandle {
     pub(super) grain_preset: Option<String>,
     pub(super) grain_seed: Option<u64>,
     pub(super) grain_engine: GrainEngine,
+    pub(super) diffusion: DiffusionSettings,
     pub(super) normalize_grain_mpix: Option<f64>,
     pub(super) publish_defaults: ReviewPublishDefaults,
     pub(super) publish_jobs: Arc<ArcSwap<Vec<ReviewPublishJob>>>,
@@ -456,6 +459,10 @@ pub(crate) struct ReviewHandle {
     pub(super) panorama_projects: Arc<ArcSwap<Vec<ReviewPanoramaProject>>>,
     pub(super) panorama_operation: Arc<std::sync::atomic::AtomicBool>,
     pub(super) sampler_registry: Arc<super::sampler::ReviewSamplerRegistry>,
+    pub(super) diffusion_jobs: Arc<std::sync::Mutex<Vec<ReviewDiffusionJob>>>,
+    pub(super) next_diffusion_job_id: Arc<AtomicU64>,
+    pub(super) latest_diffusion_job_id: Arc<AtomicU64>,
+    pub(super) diffusion_preview_sender: std::sync::mpsc::Sender<u64>,
     pub(super) trusted_input_sender: Option<std::sync::mpsc::Sender<PathBuf>>,
     pub(super) converted_input_sender: Option<std::sync::mpsc::Sender<PathBuf>>,
 }
@@ -611,6 +618,10 @@ pub(super) struct ReviewStore {
     pub(super) profiles: Vec<ReviewProfile>,
     pub(super) images: Vec<ReviewImage>,
     #[serde(default)]
+    pub(super) profile_diffusion_settings: Vec<ReviewProfileDiffusionSetting>,
+    #[serde(default)]
+    pub(super) image_profile_diffusion_settings: Vec<ReviewImageProfileDiffusionSetting>,
+    #[serde(default)]
     pub(super) ui: ReviewUiState,
     #[serde(default)]
     pub(super) exif_schema_version: u32,
@@ -618,6 +629,8 @@ pub(super) struct ReviewStore {
     pub(super) normalize_grain_mpix: Option<f64>,
     #[serde(skip)]
     pub(super) render_export: ExportOptions,
+    #[serde(skip)]
+    pub(super) render_diffusion: DiffusionSettings,
 }
 
 pub(super) const fn default_review_normalize_grain_mpix() -> Option<f64> {
@@ -677,6 +690,82 @@ pub(super) struct ReviewProfileBwFilter {
     pub(super) profile_index: usize,
     #[serde(default)]
     pub(super) filter: BwFilter,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct ReviewProfileDiffusionSetting {
+    pub(super) profile_index: usize,
+    pub(super) settings: DiffusionSettings,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct ReviewImageProfileDiffusionSetting {
+    pub(super) image_id: u64,
+    pub(super) profile_index: usize,
+    pub(super) settings: DiffusionSettings,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(super) enum ReviewDiffusionSettingSource {
+    Current,
+    All,
+    Daemon,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(super) enum ReviewDiffusionScope {
+    Current,
+    All,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub(super) struct ReviewDiffusionJobRequest {
+    pub(super) image_id: u64,
+    pub(super) profile_index: usize,
+    pub(super) settings: DiffusionSettings,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub(super) struct ReviewDiffusionSettingsRequest {
+    pub(super) scope: ReviewDiffusionScope,
+    pub(super) image_id: u64,
+    pub(super) profile_index: usize,
+    pub(super) settings: DiffusionSettings,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub(super) struct ReviewDiffusionSettingsResetRequest {
+    pub(super) scope: ReviewDiffusionScope,
+    pub(super) image_id: u64,
+    pub(super) profile_index: usize,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(super) enum ReviewDiffusionJobStatus {
+    Queued,
+    Processing,
+    Done,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct ReviewDiffusionJob {
+    pub(super) id: u64,
+    pub(super) status: ReviewDiffusionJobStatus,
+    pub(super) image_id: u64,
+    pub(super) profile_index: usize,
+    pub(super) settings: DiffusionSettings,
+    pub(super) before_url: Option<String>,
+    pub(super) after_url: Option<String>,
+    pub(super) error: Option<String>,
+    #[serde(skip)]
+    pub(super) before_path: Option<PathBuf>,
+    #[serde(skip)]
+    pub(super) after_path: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -1005,6 +1094,7 @@ pub(crate) struct ReviewPublishCommandArgs {
     pub(crate) grain_preset: Option<String>,
     pub(crate) grain_seed: Option<u64>,
     pub(crate) grain_engine: GrainEngine,
+    pub(crate) diffusion: DiffusionSettings,
     pub(crate) normalize_grain_mpix: Option<f64>,
     pub(crate) progress_events: bool,
 }
@@ -1086,6 +1176,7 @@ pub(super) struct ReviewPublishOptions {
     pub(super) grain_preset: Option<String>,
     pub(super) grain_seed: Option<u64>,
     pub(super) grain_engine: GrainEngine,
+    pub(super) diffusion: DiffusionSettings,
     pub(super) normalize_grain_mpix: Option<f64>,
     pub(super) write_metadata: bool,
 }
@@ -1097,6 +1188,7 @@ pub(super) struct ReviewPublishOutput<'a> {
     pub(super) image: &'a ReviewImage,
     pub(super) render: Option<&'a ReviewProfileRender>,
     pub(super) profile: Option<&'a ReviewProfile>,
+    pub(super) diffusion: DiffusionSettings,
     pub(super) options: &'a ReviewPublishOptions,
 }
 
@@ -1107,6 +1199,7 @@ pub(super) struct ReviewPublishTask {
     pub(super) image: ReviewImage,
     pub(super) render: Option<ReviewProfileRender>,
     pub(super) profile: Option<ReviewProfile>,
+    pub(super) diffusion: DiffusionSettings,
     pub(super) current: String,
 }
 

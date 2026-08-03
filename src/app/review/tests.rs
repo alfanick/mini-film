@@ -3,6 +3,7 @@ use super::{
     db::*, handle::*, model::*, preview::*, publish::*, sampler::*, scheduler::*, server::*,
     store::*,
 };
+use mini_film::{DiffusionMethod, DiffusionSettings};
 use std::sync::Mutex;
 
 fn profile(index: usize, stem: &str) -> ReviewProfile {
@@ -320,6 +321,23 @@ fn fully_populated_review_store() -> ReviewStore {
             updated_at: timestamp,
         },
     ];
+    store.profile_diffusion_settings = vec![ReviewProfileDiffusionSetting {
+        profile_index: 7,
+        settings: DiffusionSettings {
+            method: DiffusionMethod::MultiScaleMist,
+            softness: 42,
+            highlight_glow: 56,
+        },
+    }];
+    store.image_profile_diffusion_settings = vec![ReviewImageProfileDiffusionSetting {
+        image_id: 1,
+        profile_index: 7,
+        settings: DiffusionSettings {
+            method: DiffusionMethod::EdgeAwareGlow,
+            softness: 0,
+            highlight_glow: 0,
+        },
+    }];
     store
 }
 
@@ -334,6 +352,12 @@ fn migrated_pre_contrast_store(mut store: ReviewStore) -> ReviewStore {
     for image in &mut store.images {
         image.retouch.adjustments.clarity = 0.0;
     }
+    store
+}
+
+fn migrated_pre_diffusion_store(mut store: ReviewStore) -> ReviewStore {
+    store.profile_diffusion_settings.clear();
+    store.image_profile_diffusion_settings.clear();
     store
 }
 
@@ -388,7 +412,7 @@ fn rebase_review_cache_paths(
 }
 
 fn migrated_pre_sampler_store(mut store: ReviewStore) -> ReviewStore {
-    store = migrated_pre_contrast_store(persisted_store(store));
+    store = migrated_pre_diffusion_store(migrated_pre_contrast_store(persisted_store(store)));
     for profile in &mut store.profiles {
         profile.identity = format!("legacy:{}:{}", profile.index, profile.selector.trim());
         profile.sampler_added = false;
@@ -445,6 +469,8 @@ fn test_processing_key(
 fn test_handle(input: PathBuf, output: PathBuf, profiles: Vec<ReviewProfile>) -> ReviewHandle {
     let export = test_export_options();
     let (subscribers, _) = broadcast::channel(256);
+    let (diffusion_preview_sender, diffusion_preview_receiver) = std::sync::mpsc::channel();
+    std::mem::forget(diffusion_preview_receiver);
     let database_runtime = Arc::new(
         tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -501,6 +527,7 @@ fn test_handle(input: PathBuf, output: PathBuf, profiles: Vec<ReviewProfile>) ->
         grain_preset: None,
         grain_seed: Some(1),
         grain_engine: mini_film::GrainEngine::default(),
+        diffusion: DiffusionSettings::default(),
         normalize_grain_mpix: Some(mini_film::DEFAULT_GRAIN_REFERENCE_MPIX),
         publish_defaults: ReviewPublishDefaults::new(
             "published".to_string(),
@@ -538,6 +565,10 @@ fn test_handle(input: PathBuf, output: PathBuf, profiles: Vec<ReviewProfile>) ->
         panorama_projects: Arc::new(ArcSwap::from_pointee(Vec::new())),
         panorama_operation: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         sampler_registry: Arc::new(ReviewSamplerRegistry::default()),
+        diffusion_jobs: Arc::new(Mutex::new(Vec::new())),
+        next_diffusion_job_id: Arc::new(AtomicU64::new(1)),
+        latest_diffusion_job_id: Arc::new(AtomicU64::new(0)),
+        diffusion_preview_sender,
         trusted_input_sender: None,
         converted_input_sender: None,
     }
@@ -574,9 +605,89 @@ fn test_publish_options(album: &str) -> ReviewPublishOptions {
         grain_preset: None,
         grain_seed: Some(1),
         grain_engine: mini_film::GrainEngine::default(),
+        diffusion: DiffusionSettings::default(),
         normalize_grain_mpix: Some(mini_film::DEFAULT_GRAIN_REFERENCE_MPIX),
         write_metadata: false,
     }
+}
+
+#[cfg(unix)]
+fn write_publish_test_executable(path: &Path, script: &str) {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    fs::write(path, script).unwrap();
+    let mut permissions = fs::metadata(path).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).unwrap();
+}
+
+#[cfg(unix)]
+fn publish_test_shell_path(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', "'\"'\"'"))
+}
+
+#[cfg(unix)]
+fn write_publish_test_renderers(directory: &Path, rawtherapee_source: &Path) -> (PathBuf, PathBuf) {
+    let rawtherapee = directory.join("rawtherapee-test");
+    let convert = directory.join("convert-test");
+    let rawtherapee_script = format!(
+        r#"#!/bin/sh
+set -eu
+output=
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then
+    shift
+    output="$1"
+    break
+  fi
+  shift
+done
+test -n "$output"
+cp {} "$output"
+"#,
+        publish_test_shell_path(rawtherapee_source)
+    );
+    let convert_script = r#"#!/bin/sh
+set -eu
+input=
+output=
+for argument in "$@"; do
+  if [ -z "$input" ] && [ -f "$argument" ]; then
+    input="$argument"
+  fi
+  case "$argument" in
+    -*) ;;
+    *) output="$argument" ;;
+  esac
+done
+test -n "$input"
+test -n "$output"
+cp "$input" "$output"
+"#;
+    write_publish_test_executable(&rawtherapee, &rawtherapee_script);
+    write_publish_test_executable(&convert, convert_script);
+    (rawtherapee, convert)
+}
+
+#[cfg(unix)]
+fn write_publish_diffusion_source(path: &Path) {
+    let image = image::ImageBuffer::<image::Rgb<u16>, Vec<u16>>::from_fn(48, 32, |x, y| {
+        let distance = x.abs_diff(24) + y.abs_diff(16);
+        let highlight = if distance < 5 { 58_000 } else { 0 };
+        image::Rgb([
+            (1_000 + x * 900 + highlight).min(u16::MAX as u32) as u16,
+            (2_000 + y * 1_200 + highlight).min(u16::MAX as u32) as u16,
+            (3_000 + (x + y) * 650 + highlight).min(u16::MAX as u32) as u16,
+        ])
+    });
+    image
+        .save_with_format(path, image::ImageFormat::Tiff)
+        .unwrap();
+}
+
+#[cfg(unix)]
+fn rgb16_pixels(path: &Path) -> Vec<u16> {
+    image::open(path).unwrap().to_rgb16().into_raw()
 }
 
 fn profile_render(index: usize, stem: &str) -> ReviewProfileRender {
@@ -865,6 +976,378 @@ fn profile_bw_filter_eligibility_uses_combined_saturation() {
     assert_eq!(
         effective_bw_filter_for_profile(&image, &ineligible),
         BwFilter::None
+    );
+}
+
+#[test]
+fn diffusion_settings_preserve_explicit_off_and_follow_scope_precedence() {
+    let mut store = fully_populated_review_store();
+    store.profile_diffusion_settings.clear();
+    store.image_profile_diffusion_settings.clear();
+    let daemon_default = DiffusionSettings {
+        method: DiffusionMethod::MultiScaleMist,
+        softness: 25,
+        highlight_glow: 30,
+    };
+    let profile_default = DiffusionSettings {
+        method: DiffusionMethod::EdgeAwareGlow,
+        softness: 45,
+        highlight_glow: 50,
+    };
+    let explicit_off = DiffusionSettings {
+        method: DiffusionMethod::EdgeAwareGlow,
+        softness: 0,
+        highlight_glow: 0,
+    };
+
+    assert_eq!(
+        store.effective_diffusion_settings(1, 7, &daemon_default),
+        (daemon_default, ReviewDiffusionSettingSource::Daemon)
+    );
+
+    assert!(
+        store
+            .set_diffusion_settings(ReviewDiffusionScope::All, 1, 7, profile_default)
+            .unwrap()
+    );
+    assert_eq!(
+        store.effective_diffusion_settings(1, 7, &daemon_default),
+        (profile_default, ReviewDiffusionSettingSource::All)
+    );
+
+    assert!(
+        store
+            .set_diffusion_settings(ReviewDiffusionScope::Current, 1, 7, explicit_off)
+            .unwrap()
+    );
+    assert_eq!(
+        store.effective_diffusion_settings(1, 7, &daemon_default),
+        (explicit_off, ReviewDiffusionSettingSource::Current)
+    );
+
+    assert!(
+        store
+            .reset_diffusion_settings(ReviewDiffusionScope::Current, 1, 7)
+            .unwrap()
+    );
+    assert_eq!(
+        store.effective_diffusion_settings(1, 7, &daemon_default),
+        (profile_default, ReviewDiffusionSettingSource::All)
+    );
+
+    store
+        .set_diffusion_settings(ReviewDiffusionScope::Current, 1, 7, explicit_off)
+        .unwrap();
+    assert!(
+        store
+            .set_diffusion_settings(ReviewDiffusionScope::All, 1, 7, daemon_default)
+            .unwrap()
+    );
+    assert!(store.image_profile_diffusion_settings.is_empty());
+    assert!(
+        store
+            .reset_diffusion_settings(ReviewDiffusionScope::All, 1, 7)
+            .unwrap()
+    );
+    assert_eq!(
+        store.effective_diffusion_settings(1, 7, &profile_default),
+        (profile_default, ReviewDiffusionSettingSource::Daemon)
+    );
+}
+
+fn pending_retouch_targets(handle: &ReviewHandle) -> HashSet<(u64, Option<usize>)> {
+    handle
+        .retouch_scheduler
+        .pending
+        .load_full()
+        .values()
+        .map(|job| (job.image_id, job.profile_index))
+        .collect()
+}
+
+fn clear_pending_retouch_jobs(handle: &ReviewHandle) {
+    handle
+        .retouch_scheduler
+        .pending
+        .store(Arc::new(HashMap::new()));
+}
+
+#[test]
+fn diffusion_scope_changes_queue_only_affected_enabled_profile_renders() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let raws = (1..=3)
+        .map(|number| input.join(format!("frame-{number}.NEF")))
+        .collect::<Vec<_>>();
+    for raw in &raws {
+        fs::write(raw, b"raw").unwrap();
+    }
+
+    let handle = test_handle(input, output, vec![profile(0, "Classic")]);
+    for (index, raw) in raws.iter().enumerate() {
+        let preview = handle.preview_path_for(raw, index as u64 + 1);
+        fs::create_dir_all(preview.parent().unwrap()).unwrap();
+        fs::write(preview, b"preview").unwrap();
+        handle.record_discovered_raw(raw).unwrap();
+    }
+    handle
+        .update_store(|store| store.set_profile_enabled_for_image(3, 0, false).map(|_| ()))
+        .unwrap();
+
+    let current = DiffusionSettings {
+        method: DiffusionMethod::MultiScaleMist,
+        softness: 25,
+        highlight_glow: 30,
+    };
+    let all = DiffusionSettings {
+        method: DiffusionMethod::EdgeAwareGlow,
+        softness: 55,
+        highlight_glow: 60,
+    };
+    let explicit_off = DiffusionSettings {
+        method: DiffusionMethod::EdgeAwareGlow,
+        softness: 0,
+        highlight_glow: 0,
+    };
+
+    handle
+        .database_runtime
+        .block_on(
+            handle.apply_diffusion_settings_async(ReviewDiffusionSettingsRequest {
+                scope: ReviewDiffusionScope::Current,
+                image_id: 1,
+                profile_index: 0,
+                settings: current,
+            }),
+        )
+        .unwrap();
+    assert_eq!(
+        pending_retouch_targets(&handle),
+        HashSet::from([(1, Some(0))])
+    );
+    clear_pending_retouch_jobs(&handle);
+
+    handle
+        .database_runtime
+        .block_on(
+            handle.apply_diffusion_settings_async(ReviewDiffusionSettingsRequest {
+                scope: ReviewDiffusionScope::All,
+                image_id: 1,
+                profile_index: 0,
+                settings: all,
+            }),
+        )
+        .unwrap();
+    assert_eq!(
+        pending_retouch_targets(&handle),
+        HashSet::from([(1, Some(0)), (2, Some(0))])
+    );
+    assert!(!handle.store_snapshot().images[2].profiles[0].enabled);
+    clear_pending_retouch_jobs(&handle);
+
+    handle
+        .database_runtime
+        .block_on(
+            handle.apply_diffusion_settings_async(ReviewDiffusionSettingsRequest {
+                scope: ReviewDiffusionScope::Current,
+                image_id: 1,
+                profile_index: 0,
+                settings: explicit_off,
+            }),
+        )
+        .unwrap();
+    assert_eq!(
+        pending_retouch_targets(&handle),
+        HashSet::from([(1, Some(0))])
+    );
+    assert_eq!(
+        handle
+            .store_snapshot()
+            .effective_diffusion_settings(1, 0, &DiffusionSettings::default()),
+        (explicit_off, ReviewDiffusionSettingSource::Current)
+    );
+    clear_pending_retouch_jobs(&handle);
+
+    handle
+        .database_runtime
+        .block_on(
+            handle.reset_diffusion_settings_async(ReviewDiffusionSettingsResetRequest {
+                scope: ReviewDiffusionScope::Current,
+                image_id: 1,
+                profile_index: 0,
+            }),
+        )
+        .unwrap();
+    assert_eq!(
+        pending_retouch_targets(&handle),
+        HashSet::from([(1, Some(0))])
+    );
+    assert_eq!(
+        handle
+            .store_snapshot()
+            .effective_diffusion_settings(1, 0, &DiffusionSettings::default()),
+        (all, ReviewDiffusionSettingSource::All)
+    );
+    clear_pending_retouch_jobs(&handle);
+
+    handle
+        .database_runtime
+        .block_on(
+            handle.apply_diffusion_settings_async(ReviewDiffusionSettingsRequest {
+                scope: ReviewDiffusionScope::Current,
+                image_id: 1,
+                profile_index: 0,
+                settings: explicit_off,
+            }),
+        )
+        .unwrap();
+    clear_pending_retouch_jobs(&handle);
+    handle
+        .database_runtime
+        .block_on(
+            handle.reset_diffusion_settings_async(ReviewDiffusionSettingsResetRequest {
+                scope: ReviewDiffusionScope::All,
+                image_id: 1,
+                profile_index: 0,
+            }),
+        )
+        .unwrap();
+    assert_eq!(
+        pending_retouch_targets(&handle),
+        HashSet::from([(2, Some(0))])
+    );
+    let store = handle.store_snapshot();
+    assert_eq!(
+        store.effective_diffusion_settings(1, 0, &DiffusionSettings::default()),
+        (
+            DiffusionSettings::default(),
+            ReviewDiffusionSettingSource::Daemon
+        )
+    );
+    assert!(store.profile_diffusion_settings.is_empty());
+    assert!(store.image_profile_diffusion_settings.is_empty());
+}
+
+#[test]
+fn diffusion_preview_jobs_expose_state_and_only_ready_media_paths() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let raw = input.join("frame.NEF");
+    fs::write(&raw, b"raw").unwrap();
+
+    let mut handle = test_handle(input, output, vec![profile(0, "Classic")]);
+    let preview = handle.preview_path_for(&raw, 1);
+    fs::create_dir_all(preview.parent().unwrap()).unwrap();
+    fs::write(preview, b"preview").unwrap();
+    handle.record_discovered_raw(&raw).unwrap();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    handle.diffusion_preview_sender = sender;
+    let settings = DiffusionSettings {
+        method: DiffusionMethod::MultiScaleMist,
+        softness: 40,
+        highlight_glow: 45,
+    };
+
+    let queued = handle
+        .start_diffusion_job(ReviewDiffusionJobRequest {
+            image_id: 1,
+            profile_index: 0,
+            settings,
+        })
+        .unwrap();
+    assert_eq!(queued.status, ReviewDiffusionJobStatus::Queued);
+    assert_eq!(queued.before_url, None);
+    assert_eq!(queued.after_url, None);
+    assert_eq!(
+        receiver.recv_timeout(Duration::from_secs(1)).unwrap(),
+        queued.id
+    );
+    assert!(
+        handle
+            .diffusion_preview_media_path(queued.id, false)
+            .is_err()
+    );
+    assert!(
+        handle
+            .start_diffusion_job(ReviewDiffusionJobRequest {
+                image_id: 99,
+                profile_index: 0,
+                settings,
+            })
+            .is_err()
+    );
+
+    let preview_root = handle
+        .cache_root
+        .join(crate::app::cache::DIFFUSION_PREVIEWS_CACHE_DIR)
+        .join("test-job");
+    fs::create_dir_all(&preview_root).unwrap();
+    let before = preview_root.join("before.jpg");
+    let after = preview_root.join("after.jpg");
+    fs::write(&before, b"before").unwrap();
+    fs::write(&after, b"after").unwrap();
+    {
+        let mut jobs = handle.diffusion_jobs.lock().unwrap();
+        let job = jobs.iter_mut().find(|job| job.id == queued.id).unwrap();
+        job.status = ReviewDiffusionJobStatus::Done;
+        job.before_url = Some(format!("diffusion-preview/{}/before", job.id));
+        job.after_url = Some(format!("diffusion-preview/{}/after", job.id));
+        job.before_path = Some(before.clone());
+        job.after_path = Some(after.clone());
+    }
+
+    let done = handle.diffusion_job_snapshot(queued.id).unwrap();
+    assert_eq!(done.status, ReviewDiffusionJobStatus::Done);
+    assert_eq!(
+        handle
+            .diffusion_preview_media_path(queued.id, false)
+            .unwrap(),
+        before
+    );
+    assert_eq!(
+        handle
+            .diffusion_preview_media_path(queued.id, true)
+            .unwrap(),
+        after
+    );
+    let route = review_route_path(&format!(
+        "/mini-film/diffusion-preview/{}/before",
+        queued.id
+    ));
+    let runtime = test_async_runtime();
+    let response = runtime.block_on(route_request(
+        axum::http::Method::GET,
+        &route,
+        axum::body::Bytes::new(),
+        &handle,
+    ));
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .unwrap(),
+        "image/jpeg"
+    );
+    let body = runtime
+        .block_on(axum::body::to_bytes(response.into_body(), usize::MAX))
+        .unwrap();
+    assert_eq!(&body[..], b"before");
+    let serialized = serde_json::to_value(done).unwrap();
+    assert!(serialized.get("before_path").is_none());
+    assert!(serialized.get("after_path").is_none());
+
+    fs::remove_file(after).unwrap();
+    assert!(
+        handle
+            .diffusion_preview_media_path(queued.id, true)
+            .is_err()
     );
 }
 
@@ -1613,6 +2096,85 @@ fn rendered_profile_processing_keys_track_grain_normalization() {
 }
 
 #[test]
+fn rendered_profile_processing_keys_track_daemon_diffusion_without_changing_off_keys() {
+    let input = Path::new("frame.NEF");
+    let export = ExportOptions::default();
+    let legacy = review_render_processing_key_for_input_with_options(
+        input,
+        0,
+        Some(mini_film::DEFAULT_GRAIN_REFERENCE_MPIX),
+        &export,
+    );
+    let explicit_off = DiffusionSettings {
+        method: DiffusionMethod::EdgeAwareGlow,
+        softness: 0,
+        highlight_glow: 0,
+    };
+    assert_eq!(
+        review_render_processing_key_for_input_with_diffusion(
+            input,
+            0,
+            Some(mini_film::DEFAULT_GRAIN_REFERENCE_MPIX),
+            &export,
+            DiffusionSettings::default(),
+        ),
+        legacy
+    );
+    assert_eq!(
+        review_render_processing_key_for_input_with_diffusion(
+            input,
+            0,
+            Some(mini_film::DEFAULT_GRAIN_REFERENCE_MPIX),
+            &export,
+            explicit_off,
+        ),
+        legacy
+    );
+
+    let mist = DiffusionSettings {
+        method: DiffusionMethod::MultiScaleMist,
+        softness: 25,
+        highlight_glow: 30,
+    };
+    let stronger_mist = DiffusionSettings {
+        softness: 50,
+        ..mist
+    };
+    let edge_aware = DiffusionSettings {
+        method: DiffusionMethod::EdgeAwareGlow,
+        ..mist
+    };
+    let keys = [mist, stronger_mist, edge_aware].map(|diffusion| {
+        review_render_processing_key_for_input_with_diffusion(
+            input,
+            0,
+            Some(mini_film::DEFAULT_GRAIN_REFERENCE_MPIX),
+            &export,
+            diffusion,
+        )
+    });
+    assert!(keys.iter().all(|key| key != &legacy));
+    assert_eq!(keys.iter().collect::<HashSet<_>>().len(), keys.len());
+
+    let sooc_legacy = review_render_processing_key_for_input_with_options(
+        input,
+        SOOC_PROFILE_INDEX,
+        Some(mini_film::DEFAULT_GRAIN_REFERENCE_MPIX),
+        &export,
+    );
+    assert_eq!(
+        review_render_processing_key_for_input_with_diffusion(
+            input,
+            SOOC_PROFILE_INDEX,
+            Some(mini_film::DEFAULT_GRAIN_REFERENCE_MPIX),
+            &export,
+            mist,
+        ),
+        sooc_legacy
+    );
+}
+
+#[test]
 fn rendered_profile_processing_keys_track_every_export_option() {
     let input = Path::new("frame.NEF");
     let base = ExportOptions::default();
@@ -2062,9 +2624,9 @@ fn review_state_seaorm_round_trips_every_normalized_collection() {
         serde_json::to_value(persisted_store(store)).unwrap()
     );
     let facts = database_facts(&state_path).unwrap();
-    assert_eq!(facts.schema_version, 20);
+    assert_eq!(facts.schema_version, 21);
     assert!(facts.has_seaql_ledger);
-    assert_eq!(facts.seaql_migration_count, 9);
+    assert_eq!(facts.seaql_migration_count, 10);
     assert_eq!(
         facts.seaql_migrations,
         [
@@ -2077,6 +2639,7 @@ fn review_state_seaorm_round_trips_every_normalized_collection() {
             "m20260727_000007_auto_import",
             "m20260727_000008_retouch_contrast",
             "m20260729_000009_dcp_provenance",
+            "m20260803_000010_diffusion_settings",
         ]
     );
     assert!(!facts.has_legacy_ledger);
@@ -2100,7 +2663,9 @@ fn review_state_seaorm_round_trips_every_normalized_collection() {
     assert_eq!(facts.counts["auto_import_groups"], 0);
     assert_eq!(facts.counts["auto_import_assets"], 0);
     assert_eq!(facts.counts["auto_import_sources"], 0);
-    assert_eq!(facts.indexes.len(), 28);
+    assert_eq!(facts.counts["profile_diffusion_settings"], 1);
+    assert_eq!(facts.counts["image_profile_diffusion_settings"], 1);
+    assert_eq!(facts.indexes.len(), 29);
     let paths = stored_path_facts(&state_path).unwrap();
     assert_eq!(paths.input_root, "/in");
     assert_eq!(paths.output_root, "/out");
@@ -2143,10 +2708,10 @@ fn normalized_v11_database_is_backed_up_and_adopted_losslessly_once() {
     let backup_bytes = fs::read(&backup_path).unwrap();
 
     let after_facts = database_facts(&state_path).unwrap();
-    assert_eq!(after_facts.schema_version, 20);
+    assert_eq!(after_facts.schema_version, 21);
     assert!(!after_facts.has_legacy_ledger);
     assert!(after_facts.has_seaql_ledger);
-    assert_eq!(after_facts.seaql_migration_count, 9);
+    assert_eq!(after_facts.seaql_migration_count, 10);
     assert_eq!(
         after_facts.seaql_migrations,
         [
@@ -2159,6 +2724,7 @@ fn normalized_v11_database_is_backed_up_and_adopted_losslessly_once() {
             "m20260727_000007_auto_import",
             "m20260727_000008_retouch_contrast",
             "m20260729_000009_dcp_provenance",
+            "m20260803_000010_diffusion_settings",
         ]
     );
     assert!(!after_facts.has_json_storage_columns);
@@ -2197,7 +2763,7 @@ fn pre_release_two_entry_seaorm_ledger_is_collapsed_without_data_loss() {
         serde_json::to_value(migrated_pre_contrast_store(persisted_store(store))).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.seaql_migration_count, 9);
+    assert_eq!(after.seaql_migration_count, 10);
     assert_eq!(
         after.seaql_migrations,
         [
@@ -2210,6 +2776,7 @@ fn pre_release_two_entry_seaorm_ledger_is_collapsed_without_data_loss() {
             "m20260727_000007_auto_import",
             "m20260727_000008_retouch_contrast",
             "m20260729_000009_dcp_provenance",
+            "m20260803_000010_diffusion_settings",
         ]
     );
 }
@@ -2227,8 +2794,8 @@ fn schema_v12_migrates_to_panorama_schema_without_review_data_loss() {
         serde_json::to_value(migrated_pre_sampler_store(store)).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 20);
-    assert_eq!(after.seaql_migration_count, 9);
+    assert_eq!(after.schema_version, 21);
+    assert_eq!(after.seaql_migration_count, 10);
     assert_eq!(after.counts["panorama_projects"], 0);
     assert_eq!(after.counts["panorama_project_images"], 0);
     assert_eq!(after.counts["panorama_previews"], 0);
@@ -2257,9 +2824,9 @@ fn schema_v13_migrates_sampler_state_without_review_data_loss() {
             && profile.identity.starts_with("legacy:")
     }));
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 20);
-    assert_eq!(after.seaql_migration_count, 9);
-    assert_eq!(after.indexes.len(), 28);
+    assert_eq!(after.schema_version, 21);
+    assert_eq!(after.seaql_migration_count, 10);
+    assert_eq!(after.indexes.len(), 29);
 }
 
 #[test]
@@ -2278,13 +2845,16 @@ fn schema_v14_adds_focus_region_storage_without_review_data_loss() {
 
     assert_eq!(
         serde_json::to_value(&loaded).unwrap(),
-        serde_json::to_value(migrated_pre_contrast_store(persisted_store(store))).unwrap()
+        serde_json::to_value(migrated_pre_diffusion_store(migrated_pre_contrast_store(
+            persisted_store(store),
+        )))
+        .unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 20);
-    assert_eq!(after.seaql_migration_count, 9);
+    assert_eq!(after.schema_version, 21);
+    assert_eq!(after.seaql_migration_count, 10);
     assert_eq!(after.counts["image_focus_regions"], 0);
-    assert_eq!(after.indexes.len(), 28);
+    assert_eq!(after.indexes.len(), 29);
 }
 
 #[test]
@@ -2308,7 +2878,7 @@ fn schema_v15_paths_migrate_and_rebase_after_input_and_output_move() {
     let paths = stored_path_facts(&new_state).unwrap();
     let expected = rebase_review_cache_paths(
         rebase_review_store(
-            migrated_pre_contrast_store(persisted_store(store)),
+            migrated_pre_diffusion_store(migrated_pre_contrast_store(persisted_store(store))),
             &new_input,
             &new_output,
         ),
@@ -2321,8 +2891,8 @@ fn schema_v15_paths_migrate_and_rebase_after_input_and_output_move() {
     );
 
     let facts = database_facts(&new_state).unwrap();
-    assert_eq!(facts.schema_version, 20);
-    assert_eq!(facts.seaql_migration_count, 9);
+    assert_eq!(facts.schema_version, 21);
+    assert_eq!(facts.seaql_migration_count, 10);
     assert_eq!(paths.input_root, new_input.to_string_lossy());
     assert_eq!(paths.output_root, new_output.to_string_lossy());
     assert!(
@@ -2356,7 +2926,7 @@ fn schema_v15_render_paths_infer_moved_output_without_preview_cache() {
         .unwrap()
         .unwrap();
     let expected = rebase_review_store(
-        migrated_pre_contrast_store(persisted_store(store)),
+        migrated_pre_diffusion_store(migrated_pre_contrast_store(persisted_store(store))),
         &new_input,
         &new_output,
     );
@@ -2388,17 +2958,20 @@ fn schema_v17_adds_normalized_auto_import_tables_without_review_data_loss() {
     let loaded = load_store(&state_path).unwrap().unwrap();
     assert_eq!(
         serde_json::to_value(&loaded).unwrap(),
-        serde_json::to_value(migrated_pre_contrast_store(persisted_store(store))).unwrap()
+        serde_json::to_value(migrated_pre_diffusion_store(migrated_pre_contrast_store(
+            persisted_store(store),
+        )))
+        .unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 20);
-    assert_eq!(after.seaql_migration_count, 9);
+    assert_eq!(after.schema_version, 21);
+    assert_eq!(after.seaql_migration_count, 10);
     assert_eq!(after.counts["auto_import_devices"], 0);
     assert_eq!(after.counts["auto_import_storages"], 0);
     assert_eq!(after.counts["auto_import_groups"], 0);
     assert_eq!(after.counts["auto_import_assets"], 0);
     assert_eq!(after.counts["auto_import_sources"], 0);
-    assert_eq!(after.indexes.len(), 28);
+    assert_eq!(after.indexes.len(), 29);
 }
 
 #[test]
@@ -2409,7 +2982,8 @@ fn schema_v18_splits_contrast_from_clarity_without_losing_old_edits() {
     make_schema_v18_database(&state_path, &store).unwrap();
 
     let loaded = load_store(&state_path).unwrap().unwrap();
-    let expected = migrated_pre_contrast_store(persisted_store(store));
+    let expected =
+        migrated_pre_diffusion_store(migrated_pre_contrast_store(persisted_store(store)));
     assert_eq!(
         serde_json::to_value(&loaded).unwrap(),
         serde_json::to_value(expected).unwrap()
@@ -2430,8 +3004,34 @@ fn schema_v18_splits_contrast_from_clarity_without_losing_old_edits() {
     assert_eq!(detailed.retouch_base.clarity, 15.0);
 
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 20);
-    assert_eq!(after.seaql_migration_count, 9);
+    assert_eq!(after.schema_version, 21);
+    assert_eq!(after.seaql_migration_count, 10);
+}
+
+#[test]
+fn schema_v20_adds_diffusion_settings_without_losing_review_data() {
+    let temp = tempfile::tempdir().unwrap();
+    let state_path = temp.path().join(SQLITE_STATE_FILE);
+    let store = fully_populated_review_store();
+    make_schema_v20_database(&state_path, &store).unwrap();
+
+    let before = database_facts(&state_path).unwrap();
+    assert_eq!(before.schema_version, 20);
+    assert_eq!(before.seaql_migration_count, 9);
+    assert_eq!(before.counts["profile_diffusion_settings"], 0);
+    assert_eq!(before.counts["image_profile_diffusion_settings"], 0);
+
+    let loaded = load_store(&state_path).unwrap().unwrap();
+    assert_eq!(
+        serde_json::to_value(&loaded).unwrap(),
+        serde_json::to_value(migrated_pre_diffusion_store(persisted_store(store))).unwrap()
+    );
+    let after = database_facts(&state_path).unwrap();
+    assert_eq!(after.schema_version, 21);
+    assert_eq!(after.seaql_migration_count, 10);
+    assert_eq!(after.counts["profile_diffusion_settings"], 0);
+    assert_eq!(after.counts["image_profile_diffusion_settings"], 0);
+    assert_eq!(after.indexes.len(), 29);
 }
 
 #[test]
@@ -4283,6 +4883,10 @@ fn review_route_path_accepts_reverse_proxy_prefixes() {
     assert_eq!(review_route_path("/mini-film/thumbnail/1"), "/thumbnail/1");
     assert_eq!(review_route_path("/mini-film/preview/1"), "/preview/1");
     assert_eq!(
+        review_route_path("/mini-film/diffusion-preview/1/before"),
+        "/diffusion-preview/1/before"
+    );
+    assert_eq!(
         review_route_path("/mini-film/sampler-media/1/source"),
         "/sampler-media/1/source"
     );
@@ -4824,6 +5428,165 @@ fn focus_overlay_toggles_the_svg_hidden_attribute() {
     assert!(script.contains(r#"els.focusOverlay.setAttribute("hidden", "")"#));
     assert!(script.contains(r#"els.focusOverlay.removeAttribute("hidden")"#));
     assert!(!script.contains("els.focusOverlay.hidden ="));
+}
+
+#[cfg(unix)]
+#[test]
+fn publish_rerender_uses_effective_diffusion_and_skips_pending_profile_renders() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let raw = input.join("frame.NEF");
+    fs::write(&raw, b"raw").unwrap();
+
+    let rawtherapee_source = temp.path().join("rawtherapee-source.tif");
+    write_publish_diffusion_source(&rawtherapee_source);
+    let (rawtherapee, convert) = write_publish_test_renderers(temp.path(), &rawtherapee_source);
+
+    let stems = [
+        "Daemon",
+        "ProfileDefault",
+        "Current",
+        "ExplicitOff",
+        "Queued",
+        "Processing",
+    ];
+    let mut profiles = stems
+        .iter()
+        .enumerate()
+        .map(|(index, stem)| profile(index, stem))
+        .collect::<Vec<_>>();
+    for profile in &mut profiles {
+        profile.selector.clear();
+    }
+    let mut renders = stems
+        .iter()
+        .enumerate()
+        .map(|(index, stem)| {
+            let source = output.join("review").join(stem).join("frame.tif");
+            fs::create_dir_all(source.parent().unwrap()).unwrap();
+            fs::write(&source, b"existing review output").unwrap();
+            let mut render = profile_render(index, stem);
+            render.output_path = Some(source);
+            render
+        })
+        .collect::<Vec<_>>();
+    renders[4].status = ReviewRenderStatus::Queued;
+    renders[5].status = ReviewRenderStatus::Processing;
+
+    let mut store = ReviewStore::new(profiles);
+    let mut image = priority_image(1, raw.to_str().unwrap(), 1, 5, 0, renders);
+    image.relative_path = "frame.NEF".to_string();
+    image.publish_profile_indexes = Some((0..stems.len()).collect());
+    store.images.push(image);
+
+    let daemon = DiffusionSettings {
+        method: DiffusionMethod::MultiScaleMist,
+        softness: 20,
+        highlight_glow: 25,
+    };
+    let profile_default = DiffusionSettings {
+        method: DiffusionMethod::EdgeAwareGlow,
+        softness: 30,
+        highlight_glow: 35,
+    };
+    let overridden_profile_default = DiffusionSettings {
+        method: DiffusionMethod::EdgeAwareGlow,
+        softness: 15,
+        highlight_glow: 20,
+    };
+    let current = DiffusionSettings {
+        method: DiffusionMethod::MultiScaleMist,
+        softness: 55,
+        highlight_glow: 60,
+    };
+    let explicit_off = DiffusionSettings {
+        method: DiffusionMethod::EdgeAwareGlow,
+        softness: 0,
+        highlight_glow: 0,
+    };
+    store.profile_diffusion_settings = vec![
+        ReviewProfileDiffusionSetting {
+            profile_index: 1,
+            settings: profile_default,
+        },
+        ReviewProfileDiffusionSetting {
+            profile_index: 2,
+            settings: overridden_profile_default,
+        },
+        ReviewProfileDiffusionSetting {
+            profile_index: 3,
+            settings: profile_default,
+        },
+    ];
+    store.image_profile_diffusion_settings = vec![
+        ReviewImageProfileDiffusionSetting {
+            image_id: 1,
+            profile_index: 2,
+            settings: current,
+        },
+        ReviewImageProfileDiffusionSetting {
+            image_id: 1,
+            profile_index: 3,
+            settings: explicit_off,
+        },
+    ];
+    for (profile_index, settings, source) in [
+        (0, daemon, ReviewDiffusionSettingSource::Daemon),
+        (1, profile_default, ReviewDiffusionSettingSource::All),
+        (2, current, ReviewDiffusionSettingSource::Current),
+        (3, explicit_off, ReviewDiffusionSettingSource::Current),
+    ] {
+        assert_eq!(
+            store.effective_diffusion_settings(1, profile_index, &daemon),
+            (settings, source)
+        );
+    }
+
+    let mut options = test_publish_options("published");
+    options.output_format = BatchOutputFormat::Tiff;
+    options.rawtherapee = rawtherapee;
+    options.convert = convert;
+    options.profiles_root = input.clone();
+    options.hald_dir = output.join("hald");
+    options.jobs = 1;
+    options.rerender_raw = true;
+    options.no_grain = true;
+    options.diffusion = daemon;
+    options.export.strip_metadata = true;
+
+    let report = publish_store_inner(&store, &input, &output, &options, None).unwrap();
+    assert_eq!(report.linked, 4);
+    assert_eq!(report.skipped, 2);
+
+    let source_pixels = rgb16_pixels(&rawtherapee_source);
+    for (profile_index, stem, settings) in [
+        (0, stems[0], daemon),
+        (1, stems[1], profile_default),
+        (2, stems[2], current),
+        (3, stems[3], explicit_off),
+    ] {
+        let published = if profile_index == 0 {
+            output.join("published/frame.tif")
+        } else {
+            output.join(format!("published/frame-{stem}.tif"))
+        };
+        assert!(published.is_file(), "missing {}", published.display());
+        let expected_pixels = if settings.is_enabled() {
+            let expected = temp.path().join(format!("expected-{profile_index}.tif"));
+            mini_film::apply_diffusion(&rawtherapee_source, &expected, settings).unwrap();
+            let expected_pixels = rgb16_pixels(&expected);
+            assert_ne!(expected_pixels, source_pixels);
+            expected_pixels
+        } else {
+            source_pixels.clone()
+        };
+        assert_eq!(rgb16_pixels(&published), expected_pixels, "profile {stem}");
+    }
+    assert!(!output.join("published/frame-Queued.tif").exists());
+    assert!(!output.join("published/frame-Processing.tif").exists());
 }
 
 #[test]

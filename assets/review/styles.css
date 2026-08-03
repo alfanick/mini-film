@@ -1476,6 +1476,21 @@ button:disabled {
   backdrop-filter: blur(6px);
 }
 
+.diffusion-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 57;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(18, 18, 17, 0.55);
+  backdrop-filter: blur(6px);
+}
+
+.diffusion-overlay[hidden] {
+  display: none;
+}
+
 .sampler-overlay[hidden] {
   display: none;
 }
@@ -1840,6 +1855,244 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.diffusion-card {
+  width: min(1280px, 100%);
+  max-height: min(920px, calc(100dvh - 36px));
+  overflow: auto;
+  border: 1px solid #d8d8d2;
+  border-radius: 8px;
+  background: #fbfbf8;
+  box-shadow: 0 24px 72px rgba(0, 0, 0, 0.34);
+  padding: 16px;
+  display: grid;
+  gap: 12px;
+}
+
+.diffusion-header,
+.diffusion-footer,
+.diffusion-status,
+.diffusion-reset-actions,
+.diffusion-apply-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.diffusion-header,
+.diffusion-footer,
+.diffusion-status {
+  justify-content: space-between;
+}
+
+.diffusion-header h2 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.diffusion-header p {
+  margin: 4px 0 0;
+  color: #66665f;
+  font-size: 12px;
+}
+
+.diffusion-close {
+  width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border-radius: 999px;
+  font-size: 24px;
+  line-height: 1;
+}
+
+.diffusion-comparison {
+  height: clamp(260px, 42dvh, 520px);
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding-block: 9px;
+  border-block: 1px solid #deded7;
+}
+
+.diffusion-comparison figure {
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 4px;
+}
+
+.diffusion-comparison img,
+.diffusion-preview-placeholder {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  background: #272725;
+  color: #d1d1ca;
+}
+
+.diffusion-comparison img {
+  object-fit: contain;
+}
+
+.diffusion-preview-placeholder {
+  padding: 16px;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  text-align: center;
+}
+
+.diffusion-comparison figcaption {
+  color: #3d3d38;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.diffusion-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.diffusion-control-section {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 7px;
+}
+
+.diffusion-control-section h3 {
+  margin: 0;
+  color: #55554f;
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.diffusion-method-grid,
+.diffusion-preset-grid {
+  display: grid;
+  gap: 7px;
+}
+
+.diffusion-method-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.diffusion-preset-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.diffusion-method-tile,
+.diffusion-preset-tile {
+  min-width: 0;
+  min-height: 58px;
+  padding: 8px;
+  display: grid;
+  align-content: center;
+  gap: 3px;
+  border: 1px solid #d5d5ce;
+  border-radius: 6px;
+  background: #fff;
+  color: #292925;
+  text-align: left;
+}
+
+.diffusion-method-tile.active,
+.diffusion-preset-tile.active {
+  border-color: #171717;
+  background: #f1f1ec;
+  box-shadow: inset 0 0 0 1px #171717;
+}
+
+.diffusion-tile-title {
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 750;
+  text-overflow: ellipsis;
+}
+
+.diffusion-tile-description {
+  color: #686861;
+  font-size: 9px;
+  font-weight: 500;
+  line-height: 1.25;
+}
+
+.diffusion-sliders {
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 18px;
+  padding: 10px 12px;
+  border: 1px solid #deded7;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.diffusion-slider {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 94px minmax(80px, 1fr) 42px;
+  align-items: center;
+  gap: 8px;
+  color: #3f3f3a;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.diffusion-slider input {
+  width: 100%;
+  accent-color: #262622;
+}
+
+.diffusion-slider output {
+  color: #55554f;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.diffusion-status {
+  min-height: 26px;
+  color: #66665f;
+  font-size: 11px;
+}
+
+.diffusion-status.error {
+  color: #9f281f;
+}
+
+.diffusion-status progress {
+  width: min(360px, 45%);
+  height: 7px;
+}
+
+.diffusion-scope-note {
+  margin: -6px 0 0;
+  color: #77776f;
+  font-size: 10px;
+}
+
+.diffusion-footer {
+  padding-top: 10px;
+  border-top: 1px solid #deded7;
+}
+
+.diffusion-footer button {
+  min-height: 32px;
+}
+
+.diffusion-apply {
+  background: #171717;
+  border-color: #171717;
+  color: #fff;
+  font-weight: 700;
+}
+
+.diffusion-apply:hover:not(:disabled) {
+  background: #363633;
 }
 
 .sampler-header,
@@ -3332,6 +3585,7 @@ kbd {
   .publish-overlay,
   .panorama-overlay,
   .sampler-overlay,
+  .diffusion-overlay,
   .profile-info-overlay,
   .command-invocation-overlay {
     padding: max(10px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right))
@@ -3342,6 +3596,7 @@ kbd {
   .publish-card,
   .panorama-card,
   .sampler-card,
+  .diffusion-card,
   .profile-info-card,
   .command-invocation-card {
     max-height: calc(100dvh - max(20px, env(safe-area-inset-top) + env(safe-area-inset-bottom)));
@@ -3359,7 +3614,8 @@ kbd {
   .shortcuts-header h2,
   .publish-header h2,
   .panorama-header h2,
-  .sampler-header h2 {
+  .sampler-header h2,
+  .diffusion-header h2 {
     font-size: 18px;
   }
 
@@ -3370,6 +3626,39 @@ kbd {
   .sampler-card {
     height: auto;
     overflow: auto;
+  }
+
+  .diffusion-comparison,
+  .diffusion-controls,
+  .diffusion-sliders {
+    grid-template-columns: 1fr;
+  }
+
+  .diffusion-comparison {
+    height: auto;
+  }
+
+  .diffusion-comparison figure {
+    min-height: 220px;
+  }
+
+  .diffusion-preset-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .diffusion-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .diffusion-reset-actions,
+  .diffusion-apply-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .diffusion-apply-actions .diffusion-apply:last-child {
+    grid-column: 1 / -1;
   }
 
   .panorama-settings,

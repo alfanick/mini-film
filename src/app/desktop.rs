@@ -420,6 +420,7 @@ mod enabled {
                 grain_preset,
                 grain_seed: None,
                 grain_engine: GrainEngine::default(),
+                diffusion: mini_film::DiffusionSettings::default(),
                 normalize_grain_mpix,
                 color_noise_iso_threshold: self.color_noise_iso_threshold.unwrap_or(1600),
                 jobs: self.jobs,

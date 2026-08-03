@@ -12,8 +12,8 @@ use std::{
 use anyhow::{Context, Result, bail};
 use indicatif::ProgressBar;
 use mini_film::{
-    GrainEngine, GrainRenderOptions, GrainSettings, apply_grain_8bit_with_options,
-    apply_grain_with_options,
+    DiffusionSettings, GrainEngine, GrainRenderOptions, GrainSettings, apply_diffusion,
+    apply_grain_8bit_with_options, apply_grain_with_options,
 };
 use sha1::{Digest, Sha1};
 use tempfile::Builder;
@@ -27,7 +27,7 @@ use crate::app::export::{
 use crate::app::pp3::{
     write_rawtherapee_auto_matched_curve_profile, write_rawtherapee_color_noise_profile,
     write_rawtherapee_dcp_profile, write_rawtherapee_disable_sharpening_profile,
-    write_rawtherapee_lens_corrections_profile,
+    write_rawtherapee_lens_corrections_profile, write_rawtherapee_srgb_output_profile,
 };
 use crate::app::profile::{ResolvedProfile, normalize_name, resolve_profile};
 use crate::app::progress::{
@@ -41,7 +41,7 @@ use crate::app::retouch::{
 use crate::app::util::{
     OutputEditMetadata, extract_capture_iso, is_heic_input_file, is_jpeg_input_file,
     is_raw_input_file, is_rendered_input_file, is_tiff_input_file, remove_temp_file,
-    sync_output_metadata_from_image_with_color_profile,
+    restore_output_color_profile, sync_output_metadata_from_image_with_color_profile,
     sync_output_metadata_from_raw_with_color_profile, sync_output_timestamps_from_exif,
     time_of_day_seed,
 };
@@ -68,6 +68,7 @@ pub(crate) struct ApplyArgs {
     pub(crate) grain_preset: Option<String>,
     pub(crate) grain_seed: Option<u64>,
     pub(crate) grain_engine: GrainEngine,
+    pub(crate) diffusion: DiffusionSettings,
     pub(crate) export: ExportOptions,
     pub(crate) retouch: Option<RetouchSettings>,
     pub(crate) retouch_white_balance: RetouchWhiteBalance,
@@ -85,6 +86,7 @@ pub(crate) struct ApplyJob<'a> {
     pub(crate) no_grain: bool,
     pub(crate) normalize_grain_mpix: Option<f64>,
     pub(crate) grain_engine: GrainEngine,
+    pub(crate) diffusion: DiffusionSettings,
     pub(crate) color_noise_iso_threshold: u32,
     pub(crate) lens_corrections: LensCorrections,
     pub(crate) lcp_root: Option<&'a Path>,
@@ -155,6 +157,9 @@ pub(crate) fn run_apply(args: ApplyArgs) -> Result<()> {
         if args.grain.is_some() || args.grain_preset.is_some() {
             bail!("--grain and --grain-preset require --profile for JPEG/HEIC/TIFF inputs");
         }
+        if args.diffusion.is_enabled() {
+            bail!("--diffusion requires --profile for JPEG/HEIC/TIFF inputs");
+        }
 
         let file = ProgressBar::new(progress_length());
         file.set_style(file_progress_style());
@@ -220,6 +225,7 @@ pub(crate) fn run_apply(args: ApplyArgs) -> Result<()> {
             no_grain: args.no_grain,
             normalize_grain_mpix: args.normalize_grain_mpix,
             grain_engine: args.grain_engine,
+            diffusion: args.diffusion,
             color_noise_iso_threshold: args.color_noise_iso_threshold,
             lens_corrections: args.lens_corrections,
             lcp_root: args.lcp_root.as_deref(),
@@ -352,11 +358,11 @@ pub(crate) fn resolve_apply_effects(
 ///
 /// The function owns the processing graph. It develops the input with RawTherapee
 /// while applying generated `.pp3` adjustments and the Hald CLUT via Film
-/// Simulation, using 8-bit JPEG intermediates for JPEG-bound outputs and 16-bit
-/// TIFF intermediates for TIFF-bound outputs. It eagerly removes temporary
-/// files, optionally renders grain in either 8-bit JPEG space or 16-bit TIFF
-/// space, and finally exports to the requested output format while updating
-/// progress bars for batch callers.
+/// Simulation, using 8-bit JPEG intermediates for JPEG-bound outputs unless
+/// diffusion requires linear processing from a 16-bit TIFF. TIFF-bound outputs
+/// also use 16-bit intermediates. It eagerly removes temporary files, applies
+/// optional diffusion before grain, and finally exports to the requested output
+/// format while updating progress bars for batch callers.
 pub(crate) fn apply_resolved(
     job: ApplyJob<'_>,
     resolved: &ResolvedProfile,
@@ -382,7 +388,8 @@ pub(crate) fn apply_resolved(
     let grain_enabled = !job.no_grain && resolved.grain.is_enabled();
     let output_ext = output_ext(job.output)?;
     let jpeg_output = output_ext == "jpg" || output_ext == "jpeg";
-    let jpeg_intermediate = jpeg_output && job.keep_intermediate.is_none();
+    let diffusion_enabled = job.diffusion.is_enabled();
+    let jpeg_intermediate = jpeg_output && job.keep_intermediate.is_none() && !diffusion_enabled;
     let intermediate = job
         .keep_intermediate
         .map(Path::to_path_buf)
@@ -395,7 +402,7 @@ pub(crate) fn apply_resolved(
         });
     let cleanup_intermediate = job.keep_intermediate.is_none();
 
-    let rawtherapee_profiles = rawtherapee_profiles_for_input(
+    let mut rawtherapee_profiles = rawtherapee_profiles_for_input(
         RawTherapeeProfileOptions {
             input: &canonical_input,
             retouch: job.retouch,
@@ -408,6 +415,11 @@ pub(crate) fn apply_resolved(
         resolved,
         temp_dir,
     )?;
+    if diffusion_enabled {
+        rawtherapee_profiles.push(write_rawtherapee_srgb_output_profile(
+            &temp_dir.join("diffusion-srgb-output.pp3"),
+        )?);
+    }
     let raw_stage = progress_stage_adaptive(
         progress,
         1,
@@ -467,6 +479,16 @@ pub(crate) fn apply_resolved(
     }
     raw_stage.finish();
 
+    let diffused = if diffusion_enabled {
+        progress_step(progress, 3, "diffusion");
+        let diffused = temp_dir.join("diffused.tif");
+        apply_diffusion(&intermediate, &diffused, job.diffusion)?;
+        Some(diffused)
+    } else {
+        None
+    };
+    let developed = diffused.as_deref().unwrap_or(&intermediate);
+
     if grain_enabled && jpeg_output {
         let grain_stage = progress_stage_adaptive(
             progress,
@@ -478,7 +500,7 @@ pub(crate) fn apply_resolved(
         );
         let grained = temp_dir.join("grained-8.ppm");
         apply_grain_8bit_with_options(
-            &intermediate,
+            developed,
             &grained,
             resolved.grain,
             grain_seed,
@@ -519,7 +541,7 @@ pub(crate) fn apply_resolved(
         );
         let grained = temp_dir.join("grained.tif");
         apply_grain_with_options(
-            &intermediate,
+            developed,
             &grained,
             resolved.grain,
             grain_seed,
@@ -563,13 +585,7 @@ pub(crate) fn apply_resolved(
             "export",
             estimate_export_duration(jpeg_output),
         );
-        finalize_output_with_retouch(
-            job.convert,
-            &intermediate,
-            job.output,
-            job.export,
-            job.retouch,
-        )?;
+        finalize_output_with_retouch(job.convert, developed, job.output, job.export, job.retouch)?;
         export_stage.finish();
     }
 
@@ -598,12 +614,16 @@ pub(crate) fn apply_resolved(
                 grain_seed: grain_enabled.then_some(grain_seed),
                 grain_engine: grain_enabled.then_some(job.grain_engine),
                 normalize_grain_mpix: job.normalize_grain_mpix,
+                diffusion: job.diffusion,
             },
             Some(&intermediate),
         )?;
         sync_output_timestamps_from_exif(raw_source.active(), job.output)?;
         exif_stage.finish();
     } else {
+        if diffusion_enabled {
+            restore_output_color_profile(Some(&intermediate), job.output)?;
+        }
         let timestamp_stage = progress_stage_adaptive(
             progress,
             5,
@@ -617,6 +637,9 @@ pub(crate) fn apply_resolved(
     }
     if cleanup_intermediate {
         remove_temp_file(&intermediate)?;
+    }
+    if let Some(diffused) = diffused {
+        remove_temp_file(&diffused)?;
     }
     job.dng_fallback
         .finish_successful_development(&raw_source)?;
@@ -1318,6 +1341,33 @@ mod tests {
         Ok(path.with_file_name("convert.log"))
     }
 
+    fn write_copying_convert(path: &Path) -> Result<PathBuf> {
+        let log = path.with_file_name("copying-convert.log");
+        let rendered = format!(
+            r#"#!/usr/bin/env bash
+set -eu
+printf '%s\n' "$*" >> '{}'
+first_input=
+last_argument=
+for argument in "$@"; do
+  if [ -z "$first_input" ] && [ -f "$argument" ]; then
+    first_input="$argument"
+  fi
+  case "$argument" in
+    -*) ;;
+    *) last_argument="$argument" ;;
+  esac
+done
+test -n "$first_input"
+test -n "$last_argument"
+cp "$first_input" "$last_argument"
+"#,
+            log.display()
+        );
+        write_executable_script(path, &rendered)?;
+        Ok(log)
+    }
+
     fn write_executable_script(path: &Path, rendered: &str) -> Result<()> {
         let temp_path = path.with_extension("tmp");
         let mut file = fs::File::create(&temp_path)?;
@@ -1350,6 +1400,26 @@ mod tests {
             "tif" | "tiff" => image.save_with_format(path, ImageFormat::Tiff).unwrap(),
             _ => image.save(path).unwrap(),
         }
+    }
+
+    fn make_diffusion_source_image(path: &Path) {
+        let width = 384;
+        let height = 256;
+        let image = ImageBuffer::from_fn(width, height, |x, y| {
+            let horizontal = (u64::from(x) * 52_000 / u64::from(width - 1)) as u16;
+            let vertical = (u64::from(y) * 36_000 / u64::from(height - 1)) as u16;
+            let highlight = if (x as i32 - 270).pow(2) + (y as i32 - 72).pow(2) < 24_i32.pow(2) {
+                65_535
+            } else {
+                horizontal.saturating_add(vertical / 4)
+            };
+            Rgb([
+                highlight,
+                vertical.saturating_add(horizontal / 5),
+                8_000u16.saturating_add(horizontal / 2),
+            ])
+        });
+        image.save_with_format(path, ImageFormat::Tiff).unwrap();
     }
 
     fn test_export_options() -> ExportOptions {
@@ -1423,6 +1493,7 @@ mod tests {
                 no_grain: true,
                 normalize_grain_mpix: Some(12.0),
                 grain_engine: GrainEngine::default(),
+                diffusion: DiffusionSettings::default(),
                 color_noise_iso_threshold: 0,
                 lens_corrections: LensCorrections::default(),
                 lcp_root: None,
@@ -1460,6 +1531,161 @@ mod tests {
     }
 
     #[test]
+    fn apply_resolved_diffusion_forces_tiff16_for_jpeg_output() {
+        let temp = tempfile::tempdir().unwrap();
+        let raw = temp.path().join("frame.NEF");
+        fs::write(&raw, b"raw").unwrap();
+        let source_image = temp.path().join("fake-rawtherapee-output.tif");
+        make_diffusion_source_image(&source_image);
+
+        let raw_log = write_fake_rawtherapee(&temp.path().join("rawtherapee"), &source_image)
+            .unwrap()
+            .log;
+        write_fake_convert(&temp.path().join("convert")).unwrap();
+        let out = temp.path().join("out.jpg");
+        let resolved = resolved_profile(GrainSettings::default(), None);
+        let mut export = test_export_options();
+        export.strip_metadata = true;
+
+        apply_resolved(
+            ApplyJob {
+                raw: &raw,
+                output: &out,
+                rawtherapee: &temp.path().join("rawtherapee"),
+                dng_fallback: &DngFallbackConfig::default(),
+                prepared_raw: None,
+                convert: &temp.path().join("convert"),
+                keep_intermediate: None,
+                no_grain: true,
+                normalize_grain_mpix: Some(12.0),
+                grain_engine: GrainEngine::default(),
+                diffusion: DiffusionSettings {
+                    method: mini_film::DiffusionMethod::MultiScaleMist,
+                    softness: 60,
+                    highlight_glow: 60,
+                },
+                color_noise_iso_threshold: 0,
+                lens_corrections: LensCorrections::default(),
+                lcp_root: None,
+                export: &export,
+                quiet: true,
+                exif_comment: Some("mini-film test".to_string()),
+                retouch: None,
+                retouch_white_balance: RetouchWhiteBalance::default(),
+                bw_filter: BwFilter::None,
+                profile_input_cache_root: None,
+            },
+            &resolved,
+            0,
+            temp.path(),
+            None,
+        )
+        .unwrap();
+
+        assert!(out.is_file());
+        let raw_invocation = fs::read_to_string(raw_log).unwrap();
+        assert!(raw_invocation.contains("-t"));
+        assert!(raw_invocation.contains("-b16"));
+        assert!(!raw_invocation.contains("-j90"));
+        assert!(raw_invocation.contains("diffusion-srgb-output.pp3"));
+        assert!(raw_invocation.contains("rawtherapee.tif"));
+    }
+
+    #[test]
+    fn apply_resolved_applies_diffusion_after_simulation_and_before_grain() {
+        let temp = tempfile::tempdir().unwrap();
+        let raw = temp.path().join("frame.ARW");
+        fs::write(&raw, b"raw").unwrap();
+        let source_image = temp.path().join("fake-rawtherapee-output.tif");
+        make_diffusion_source_image(&source_image);
+
+        let raw_log = write_fake_rawtherapee(&temp.path().join("rawtherapee"), &source_image)
+            .unwrap()
+            .log;
+        let convert_log = write_copying_convert(&temp.path().join("convert")).unwrap();
+        let look = temp.path().join("film-simulation.pp3");
+        fs::write(&look, "[Film Simulation]\nEnabled=true\n").unwrap();
+        let grain = GrainSettings {
+            amount: 30,
+            size: 45,
+            frequency: 40,
+        };
+        let mut resolved = resolved_profile(grain, None);
+        resolved.rawtherapee_profiles.push(look.clone());
+        let diffusion = DiffusionSettings {
+            method: mini_film::DiffusionMethod::MultiScaleMist,
+            softness: 70,
+            highlight_glow: 65,
+        };
+        let seed = 7;
+        let grain_options = GrainRenderOptions {
+            engine: GrainEngine::default(),
+            normalize_grain_mpix: None,
+        };
+
+        let expected_diffused = temp.path().join("expected-diffused.tif");
+        let expected = temp.path().join("expected-diffused-then-grained.tif");
+        apply_diffusion(&source_image, &expected_diffused, diffusion).unwrap();
+        apply_grain_with_options(&expected_diffused, &expected, grain, seed, grain_options)
+            .unwrap();
+
+        let reversed_grain = temp.path().join("reversed-grained.tif");
+        let reversed = temp.path().join("reversed-grained-then-diffused.tif");
+        apply_grain_with_options(&source_image, &reversed_grain, grain, seed, grain_options)
+            .unwrap();
+        apply_diffusion(&reversed_grain, &reversed, diffusion).unwrap();
+
+        let out = temp.path().join("out.tif");
+        let mut export = test_export_options();
+        export.strip_metadata = true;
+        apply_resolved(
+            ApplyJob {
+                raw: &raw,
+                output: &out,
+                rawtherapee: &temp.path().join("rawtherapee"),
+                dng_fallback: &DngFallbackConfig::default(),
+                prepared_raw: None,
+                convert: &temp.path().join("convert"),
+                keep_intermediate: None,
+                no_grain: false,
+                normalize_grain_mpix: None,
+                grain_engine: GrainEngine::default(),
+                diffusion,
+                color_noise_iso_threshold: 0,
+                lens_corrections: LensCorrections::default(),
+                lcp_root: None,
+                export: &export,
+                quiet: true,
+                exif_comment: Some("mini-film test".to_string()),
+                retouch: None,
+                retouch_white_balance: RetouchWhiteBalance::default(),
+                bw_filter: BwFilter::None,
+                profile_input_cache_root: None,
+            },
+            &resolved,
+            seed,
+            temp.path(),
+            None,
+        )
+        .unwrap();
+
+        let actual_pixels = image::open(&out).unwrap().to_rgb16().into_raw();
+        let expected_pixels = image::open(&expected).unwrap().to_rgb16().into_raw();
+        let reversed_pixels = image::open(&reversed).unwrap().to_rgb16().into_raw();
+        let original_pixels = image::open(&source_image).unwrap().to_rgb16().into_raw();
+        assert_eq!(actual_pixels, expected_pixels);
+        assert_ne!(actual_pixels, reversed_pixels);
+        assert_ne!(actual_pixels, original_pixels);
+
+        let raw_invocation = fs::read_to_string(raw_log).unwrap();
+        assert!(raw_invocation.contains(&look.display().to_string()));
+        assert!(raw_invocation.contains("diffusion-srgb-output.pp3"));
+        let convert_invocation = fs::read_to_string(convert_log).unwrap();
+        assert!(convert_invocation.contains("grained.tif"));
+        assert!(!convert_invocation.contains("diffused.tif"));
+    }
+
+    #[test]
     fn apply_resolved_runs_tiff_with_grain_and_intermediate_grain_step() {
         let temp = tempfile::tempdir().unwrap();
         let raw = temp.path().join("frame.ARW");
@@ -1493,6 +1719,7 @@ mod tests {
                 no_grain: false,
                 normalize_grain_mpix: Some(12.0),
                 grain_engine: GrainEngine::default(),
+                diffusion: DiffusionSettings::default(),
                 color_noise_iso_threshold: 0,
                 lens_corrections: LensCorrections::default(),
                 lcp_root: None,
@@ -1555,6 +1782,7 @@ mod tests {
                 no_grain: false,
                 normalize_grain_mpix: Some(12.0),
                 grain_engine: GrainEngine::default(),
+                diffusion: DiffusionSettings::default(),
                 color_noise_iso_threshold: 0,
                 lens_corrections: LensCorrections::default(),
                 lcp_root: None,
@@ -1621,6 +1849,7 @@ mod tests {
             grain_preset: None,
             grain_seed: Some(1),
             grain_engine: GrainEngine::default(),
+            diffusion: DiffusionSettings::default(),
             export,
             retouch: None,
             retouch_white_balance: RetouchWhiteBalance::default(),
@@ -1677,6 +1906,7 @@ mod tests {
                     no_grain: true,
                     normalize_grain_mpix: Some(12.0),
                     grain_engine: GrainEngine::default(),
+                    diffusion: DiffusionSettings::default(),
                     color_noise_iso_threshold: 1,
                     lens_corrections: LensCorrections::all(),
                     lcp_root: None,

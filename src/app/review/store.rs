@@ -1,6 +1,7 @@
 use super::model::*;
 use super::prelude::*;
 use super::scheduler::{ReviewRenderPriorityImage, ReviewRenderPrioritySnapshot};
+use mini_film::DiffusionSettings;
 
 const SOOC_RENDER_PIPELINE_KEY: &str = "sooc-managed-symlink-v3";
 const PROFILED_COMPRESSED_RENDER_PIPELINE_KEY: &str =
@@ -16,10 +17,13 @@ impl ReviewStore {
             next_id: 1,
             profiles,
             images: Vec::new(),
+            profile_diffusion_settings: Vec::new(),
+            image_profile_diffusion_settings: Vec::new(),
             ui: ReviewUiState::default(),
             exif_schema_version: Self::EXIF_SCHEMA_VERSION,
             normalize_grain_mpix: default_review_normalize_grain_mpix(),
             render_export: ExportOptions::default(),
+            render_diffusion: DiffusionSettings::default(),
         }
     }
 
@@ -76,6 +80,7 @@ impl ReviewStore {
         let profiles = self.profiles.clone();
         let normalize_grain_mpix = self.normalize_grain_mpix;
         let render_export = self.render_export.clone();
+        let render_diffusion = self.render_diffusion;
         for image in &mut self.images {
             normalize_review_metadata_sources(image);
             if matches!(
@@ -92,9 +97,11 @@ impl ReviewStore {
                 &unchanged_profile_indexes,
                 normalize_grain_mpix,
                 &render_export,
+                render_diffusion,
             );
         }
         self.merge_standalone_sooc_sidecars();
+        self.normalize_diffusion_settings();
         self.normalize_ui();
     }
 
@@ -132,6 +139,7 @@ impl ReviewStore {
         let profiles = self.profiles.clone();
         let normalize_grain_mpix = self.normalize_grain_mpix;
         let render_export = self.render_export.clone();
+        let render_diffusion = self.render_diffusion;
         for image in &mut self.images {
             sync_image_profile_renders(
                 image,
@@ -140,6 +148,7 @@ impl ReviewStore {
                 &HashSet::new(),
                 normalize_grain_mpix,
                 &render_export,
+                render_diffusion,
             );
         }
         Ok(index)
@@ -177,6 +186,187 @@ impl ReviewStore {
             }
         }
         Ok(newly_enabled)
+    }
+
+    pub(super) fn set_diffusion_settings(
+        &mut self,
+        scope: ReviewDiffusionScope,
+        image_id: u64,
+        profile_index: usize,
+        settings: DiffusionSettings,
+    ) -> Result<bool> {
+        self.validate_diffusion_target(image_id, profile_index)?;
+        validate_diffusion_settings(&settings)?;
+        let changed = match scope {
+            ReviewDiffusionScope::Current => {
+                let before = self.image_profile_diffusion_settings.clone();
+                self.image_profile_diffusion_settings.retain(|entry| {
+                    entry.image_id != image_id || entry.profile_index != profile_index
+                });
+                self.image_profile_diffusion_settings
+                    .push(ReviewImageProfileDiffusionSetting {
+                        image_id,
+                        profile_index,
+                        settings,
+                    });
+                self.normalize_diffusion_settings();
+                before != self.image_profile_diffusion_settings
+            }
+            ReviewDiffusionScope::All => {
+                let before_defaults = self.profile_diffusion_settings.clone();
+                let before_overrides = self.image_profile_diffusion_settings.clone();
+                self.profile_diffusion_settings
+                    .retain(|entry| entry.profile_index != profile_index);
+                self.profile_diffusion_settings
+                    .push(ReviewProfileDiffusionSetting {
+                        profile_index,
+                        settings,
+                    });
+                self.image_profile_diffusion_settings
+                    .retain(|entry| entry.profile_index != profile_index);
+                self.normalize_diffusion_settings();
+                before_defaults != self.profile_diffusion_settings
+                    || before_overrides != self.image_profile_diffusion_settings
+            }
+        };
+        if changed {
+            self.touch_diffusion_targets(scope, image_id, profile_index);
+        }
+        Ok(changed)
+    }
+
+    pub(super) fn reset_diffusion_settings(
+        &mut self,
+        scope: ReviewDiffusionScope,
+        image_id: u64,
+        profile_index: usize,
+    ) -> Result<bool> {
+        self.validate_diffusion_target(image_id, profile_index)?;
+        let before_defaults = self.profile_diffusion_settings.len();
+        let before_overrides = self.image_profile_diffusion_settings.len();
+        match scope {
+            ReviewDiffusionScope::Current => {
+                self.image_profile_diffusion_settings.retain(|entry| {
+                    entry.image_id != image_id || entry.profile_index != profile_index
+                });
+            }
+            ReviewDiffusionScope::All => {
+                self.profile_diffusion_settings
+                    .retain(|entry| entry.profile_index != profile_index);
+                self.image_profile_diffusion_settings
+                    .retain(|entry| entry.profile_index != profile_index);
+            }
+        }
+        let changed = before_defaults != self.profile_diffusion_settings.len()
+            || before_overrides != self.image_profile_diffusion_settings.len();
+        if changed {
+            self.touch_diffusion_targets(scope, image_id, profile_index);
+        }
+        Ok(changed)
+    }
+
+    pub(super) fn effective_diffusion_settings(
+        &self,
+        image_id: u64,
+        profile_index: usize,
+        daemon_default: &DiffusionSettings,
+    ) -> (DiffusionSettings, ReviewDiffusionSettingSource) {
+        effective_diffusion_settings_from(
+            &self.profile_diffusion_settings,
+            &self.image_profile_diffusion_settings,
+            image_id,
+            profile_index,
+            daemon_default,
+        )
+    }
+
+    pub(super) fn normalize_diffusion_settings(&mut self) {
+        let profile_indexes = self
+            .profiles
+            .iter()
+            .map(|profile| profile.index)
+            .collect::<HashSet<_>>();
+        let defaults = self.profile_diffusion_settings.clone();
+        self.profile_diffusion_settings = self
+            .profiles
+            .iter()
+            .filter_map(|profile| {
+                defaults
+                    .iter()
+                    .rev()
+                    .find(|entry| entry.profile_index == profile.index)
+                    .cloned()
+            })
+            .collect();
+
+        let overrides = self.image_profile_diffusion_settings.clone();
+        self.image_profile_diffusion_settings = self
+            .images
+            .iter()
+            .flat_map(|image| {
+                let profile_indexes = &profile_indexes;
+                let overrides = &overrides;
+                image.profiles.iter().filter_map(move |render| {
+                    profile_indexes
+                        .contains(&render.profile_index)
+                        .then(|| {
+                            overrides.iter().rev().find(|entry| {
+                                entry.image_id == image.id
+                                    && entry.profile_index == render.profile_index
+                            })
+                        })
+                        .flatten()
+                        .cloned()
+                })
+            })
+            .collect();
+    }
+
+    pub(super) fn validate_diffusion_target(
+        &self,
+        image_id: u64,
+        profile_index: usize,
+    ) -> Result<()> {
+        if !self
+            .profiles
+            .iter()
+            .any(|profile| profile.index == profile_index)
+        {
+            bail!("review profile {profile_index} does not exist");
+        }
+        let image = self
+            .images
+            .iter()
+            .find(|image| image.id == image_id)
+            .ok_or_else(|| anyhow!("review image {image_id} does not exist"))?;
+        if !image
+            .profiles
+            .iter()
+            .any(|render| render.profile_index == profile_index)
+        {
+            bail!("review image {image_id} has no profile {profile_index}");
+        }
+        Ok(())
+    }
+
+    fn touch_diffusion_targets(
+        &mut self,
+        scope: ReviewDiffusionScope,
+        image_id: u64,
+        profile_index: usize,
+    ) {
+        let updated_at = now_string();
+        for image in &mut self.images {
+            if (scope == ReviewDiffusionScope::Current && image.id == image_id)
+                || (scope == ReviewDiffusionScope::All
+                    && image
+                        .profiles
+                        .iter()
+                        .any(|render| render.profile_index == profile_index))
+            {
+                image.updated_at.clone_from(&updated_at);
+            }
+        }
     }
 
     pub(super) fn needs_exif_schema_refresh(&self) -> bool {
@@ -275,6 +465,7 @@ impl ReviewStore {
             &HashSet::new(),
             self.normalize_grain_mpix,
             &self.render_export,
+            self.render_diffusion,
         );
         self.images.push(image);
         self.normalize_ui();
@@ -360,20 +551,22 @@ impl ReviewStore {
             image.codex.updated_at = now_string();
         }
         for render in &mut image.profiles {
-            let previous_processing_key = review_render_processing_key_for_input_with_options(
+            let previous_processing_key = review_render_processing_key_for_input_with_diffusion(
                 old_path,
                 render.profile_index,
                 self.normalize_grain_mpix,
                 &self.render_export,
+                self.render_diffusion,
             );
             let processing_key_matches =
                 render.processing_key.as_deref() == Some(previous_processing_key.as_str());
             render.processing_key = Some(
-                review_render_processing_key_for_input_with_options(
+                review_render_processing_key_for_input_with_diffusion(
                     new_path,
                     render.profile_index,
                     self.normalize_grain_mpix,
                     &self.render_export,
+                    self.render_diffusion,
                 )
                 .to_string(),
             );
@@ -408,6 +601,7 @@ impl ReviewStore {
         let profiles = self.profiles.clone();
         let normalize_grain_mpix = self.normalize_grain_mpix;
         let render_export = self.render_export.clone();
+        let render_diffusion = self.render_diffusion;
         let image = &mut self.images[raw_index];
         if image.sooc_sidecar_path.as_deref() == Some(sidecar) {
             return true;
@@ -423,6 +617,7 @@ impl ReviewStore {
             &HashSet::new(),
             normalize_grain_mpix,
             &render_export,
+            render_diffusion,
         );
         image.updated_at = now_string();
         self.normalize_ui();
@@ -440,6 +635,7 @@ impl ReviewStore {
         let profiles = self.profiles.clone();
         let normalize_grain_mpix = self.normalize_grain_mpix;
         let render_export = self.render_export.clone();
+        let render_diffusion = self.render_diffusion;
         let mut remove_ids = HashSet::new();
         let mut redirect_ids = HashMap::new();
 
@@ -472,6 +668,7 @@ impl ReviewStore {
                 &HashSet::new(),
                 normalize_grain_mpix,
                 &render_export,
+                render_diffusion,
             );
             raw.updated_at = now_string();
             remove_ids.insert(sidecar.id);
@@ -616,11 +813,40 @@ impl ReviewStore {
     }
 }
 
+pub(super) fn effective_diffusion_settings_from(
+    profile_settings: &[ReviewProfileDiffusionSetting],
+    image_settings: &[ReviewImageProfileDiffusionSetting],
+    image_id: u64,
+    profile_index: usize,
+    daemon_default: &DiffusionSettings,
+) -> (DiffusionSettings, ReviewDiffusionSettingSource) {
+    if let Some(entry) = image_settings
+        .iter()
+        .find(|entry| entry.image_id == image_id && entry.profile_index == profile_index)
+    {
+        return (entry.settings, ReviewDiffusionSettingSource::Current);
+    }
+    if let Some(entry) = profile_settings
+        .iter()
+        .find(|entry| entry.profile_index == profile_index)
+    {
+        return (entry.settings, ReviewDiffusionSettingSource::All);
+    }
+    (*daemon_default, ReviewDiffusionSettingSource::Daemon)
+}
+
 fn review_profiles_match(left: &ReviewProfile, right: &ReviewProfile) -> bool {
     left.index == right.index
         && left.selector == right.selector
         && left.stem == right.stem
         && left.retouch_base == right.retouch_base
+}
+
+pub(super) fn validate_diffusion_settings(settings: &DiffusionSettings) -> Result<()> {
+    if settings.softness > 100 || settings.highlight_glow > 100 {
+        bail!("diffusion softness and highlight_glow must be in 0..100");
+    }
+    Ok(())
 }
 
 fn unique_sampler_profile_stem(
@@ -952,6 +1178,7 @@ pub(super) fn sync_image_profile_renders(
     unchanged_profile_indexes: &HashSet<usize>,
     normalize_grain_mpix: Option<f64>,
     export: &ExportOptions,
+    diffusion: DiffusionSettings,
 ) {
     let profiles_apply_to_compressed = profiles
         .iter()
@@ -977,11 +1204,12 @@ pub(super) fn sync_image_profile_renders(
     image.profiles = profiles
         .iter()
         .map(|profile| {
-            let processing_key = review_render_processing_key_for_input_with_options(
+            let processing_key = review_render_processing_key_for_input_with_diffusion(
                 &image.raw_path,
                 profile.index,
                 normalize_grain_mpix,
                 export,
+                diffusion,
             );
             let existing_render = existing.get(&profile.index);
             let profile_matches = existing_render.is_some_and(|render| {
@@ -1015,10 +1243,11 @@ pub(super) fn sync_image_profile_renders(
     let include_sooc_profile = image.sooc_sidecar_path.is_some()
         || (is_rendered_input_file(&image.raw_path) && profiles_apply_to_compressed);
     if include_sooc_profile {
-        let processing_key = review_render_processing_key_with_options(
+        let processing_key = review_render_processing_key_with_diffusion(
             SOOC_PROFILE_INDEX,
             normalize_grain_mpix,
             export,
+            diffusion,
         );
         image.profiles.push(
             existing
@@ -1105,6 +1334,7 @@ pub(super) fn review_render_processing_key_with_normalization(
     )
 }
 
+#[cfg(test)]
 pub(super) fn review_render_processing_key_with_options(
     profile_index: usize,
     normalize_grain_mpix: Option<f64>,
@@ -1115,6 +1345,21 @@ pub(super) fn review_render_processing_key_with_options(
         profile_index,
         normalize_grain_mpix,
         export,
+    )
+}
+
+pub(super) fn review_render_processing_key_with_diffusion(
+    profile_index: usize,
+    normalize_grain_mpix: Option<f64>,
+    export: &ExportOptions,
+    diffusion: DiffusionSettings,
+) -> String {
+    review_render_processing_key_for_input_with_diffusion(
+        Path::new("image.raw"),
+        profile_index,
+        normalize_grain_mpix,
+        export,
+        diffusion,
     )
 }
 
@@ -1162,6 +1407,30 @@ pub(super) fn review_render_processing_key_for_input_with_options(
     format!(
         "{base}:{}:{export_identity}",
         grain_normalization_identity(normalize_grain_mpix),
+    )
+}
+
+pub(super) fn review_render_processing_key_for_input_with_diffusion(
+    input: &Path,
+    profile_index: usize,
+    normalize_grain_mpix: Option<f64>,
+    export: &ExportOptions,
+    diffusion: DiffusionSettings,
+) -> String {
+    let base = review_render_processing_key_for_input_with_options(
+        input,
+        profile_index,
+        normalize_grain_mpix,
+        export,
+    );
+    if profile_index == SOOC_PROFILE_INDEX || !diffusion.is_enabled() {
+        return base;
+    }
+    format!(
+        "{base}:diffusion-v1={}/{}/{}",
+        diffusion.method.as_str(),
+        diffusion.softness,
+        diffusion.highlight_glow,
     )
 }
 

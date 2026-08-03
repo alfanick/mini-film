@@ -1,6 +1,7 @@
 use super::{
     handle::{
-        profile_render_key_value, queue_profile_retouch_render, retouch_white_balance_for_image,
+        profile_render_key_value_with_diffusion, queue_profile_retouch_render,
+        retouch_white_balance_for_image,
     },
     model::*,
     prelude::*,
@@ -496,20 +497,22 @@ impl ReviewHandle {
                                 &profile.stem,
                             )?);
                     }
-                    let processing_key = review_render_processing_key_for_input_with_options(
+                    let processing_key = review_render_processing_key_for_input_with_diffusion(
                         &image.raw_path,
                         profile_index,
                         self.normalize_grain_mpix,
                         &self.export,
+                        self.diffusion,
                     );
                     image.profiles[render_index].processing_key = Some(processing_key.clone());
                     let bw_filter = effective_bw_filter_for_profile(image, &profile);
-                    let render_key = profile_render_key_value(
+                    let render_key = profile_render_key_value_with_diffusion(
                         &image.retouch,
                         retouch_white_balance_for_image(image),
                         bw_filter,
                         self.normalize_grain_mpix,
                         &processing_key,
+                        self.diffusion,
                     );
                     queue_profile_retouch_render(
                         image,
@@ -749,6 +752,7 @@ impl ReviewHandle {
                     no_grain: self.no_grain,
                     normalize_grain_mpix: self.normalize_grain_mpix,
                     grain_engine: self.grain_engine,
+                    diffusion: self.diffusion,
                     color_noise_iso_threshold: 0,
                     lens_corrections: LensCorrections::default(),
                     lcp_root: None,

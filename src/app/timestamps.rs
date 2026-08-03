@@ -12,7 +12,10 @@ use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Local, NaiveDateTime, TimeZone, Utc};
 use exif::{Reader, Tag};
 use filetime::{FileTime, set_file_atime, set_file_mtime};
-use mini_film::{GrainEngine, GrainSettings, ProfileAdjustments, SharpeningSettings, ToneCurves};
+use mini_film::{
+    DiffusionMethod, DiffusionSettings, GrainEngine, GrainSettings, ProfileAdjustments,
+    SharpeningSettings, ToneCurves,
+};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -27,6 +30,7 @@ pub(crate) struct OutputEditMetadata<'a> {
     pub(crate) grain_seed: Option<u64>,
     pub(crate) grain_engine: Option<GrainEngine>,
     pub(crate) normalize_grain_mpix: Option<f64>,
+    pub(crate) diffusion: DiffusionSettings,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
@@ -265,15 +269,22 @@ pub(crate) fn sync_output_metadata_from_image_with_color_profile(
     Ok(())
 }
 
-fn restore_output_color_profile(color_profile_source: Option<&Path>, output: &Path) -> Result<()> {
+pub(crate) fn restore_output_color_profile(
+    color_profile_source: Option<&Path>,
+    output: &Path,
+) -> Result<()> {
     let Some(color_profile_source) = color_profile_source else {
         return Ok(());
     };
-    let is_jpeg = matches!(
+    let supports_icc_restore = matches!(
         output.extension().and_then(|ext| ext.to_str()),
-        Some(ext) if ext.eq_ignore_ascii_case("jpg") || ext.eq_ignore_ascii_case("jpeg")
+        Some(ext)
+            if ext.eq_ignore_ascii_case("jpg")
+                || ext.eq_ignore_ascii_case("jpeg")
+                || ext.eq_ignore_ascii_case("tif")
+                || ext.eq_ignore_ascii_case("tiff")
     );
-    if !is_jpeg {
+    if !supports_icc_restore {
         return Ok(());
     }
 
@@ -553,6 +564,18 @@ fn history_parameters(raw: &Path, edit: &OutputEditMetadata<'_>) -> String {
     }
     if let Some(seed) = edit.grain_seed {
         parts.push(format!("grain_seed={seed}"));
+    }
+    if edit.diffusion.is_enabled() {
+        let method = match edit.diffusion.method {
+            DiffusionMethod::MultiScaleMist => "multi-scale-mist",
+            DiffusionMethod::EdgeAwareGlow => "edge-aware-glow",
+        };
+        parts.push(format!(
+            "diffusion={method},{},{}; diffusion_version=1",
+            edit.diffusion.softness, edit.diffusion.highlight_glow
+        ));
+    } else {
+        parts.push("diffusion=off".to_string());
     }
     if let Some(name) = raw.file_name().and_then(|name| name.to_str()) {
         parts.push(format!("raw={name}"));
@@ -1833,7 +1856,7 @@ mod tests {
     use crate::app::profile::ResolvedProfileMetadata;
     use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
     use filetime::{FileTime, set_file_atime, set_file_mtime};
-    use mini_film::{GrainSettings, SharpeningSettings};
+    use mini_film::{DiffusionSettings, GrainSettings, SharpeningSettings};
     use std::time::{Duration, UNIX_EPOCH};
     use std::{fs, path::Path, process::Command};
     use tempfile::tempdir;
@@ -1885,6 +1908,7 @@ mod tests {
                 grain_seed: None,
                 grain_engine: None,
                 normalize_grain_mpix: None,
+                diffusion: DiffusionSettings::default(),
             };
             let mut command = Command::new("exiftool");
             add_edit_metadata_args(&mut command, Path::new("frame.jpg"), &edit);

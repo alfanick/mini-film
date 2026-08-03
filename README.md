@@ -78,7 +78,8 @@ Available shortcuts:
   sampler sheets, and generate modern static HTML galleries.
 - **RAW pipeline extras**: automatic Adobe Standard DCP matching with
   RawTherapee histogram-matched tone fallback, deterministic film grain,
-  optional high-ISO color denoise, optional RawTherapee lens corrections,
+  optional neutral film diffusion and highlight glow, optional high-ISO color
+  denoise, optional RawTherapee lens corrections,
   metadata copyback with `exiftool`, 8-bit JPEG output, and 16-bit
   Zip-compressed TIFF output.
 
@@ -404,7 +405,7 @@ Output metadata behavior for `apply`, `batch`, `daemon`, and `sampler`:
 - the XMP packet also records mini-film as the creator/converter and adds a
   high-level `xmpMM` history entry with the raw file, profile, linked profile,
   Hald or PP3 source, grain state, grain engine, grain seed, and
-  grain-normalization reference
+  grain-normalization reference, plus diffusion method/strength when enabled
 - an EXIF comment is written as  
   `mini-film <version> usage=<command> profile=<profile-or-emulation>`
   or `profile=none` when no profile was configured
@@ -1116,12 +1117,59 @@ mini-film internally handles:
 
 - resolving emulation XMPs to internal RGBTable XMPs under `profiles/`
 - decoding RGBTable payloads and generating RGBTable-only Hald PNGs
+- optional film-like diffusion after simulation and before grain
 - procedural grain from Lightroom grain fields
 
 ImageMagick/GraphicsMagick `convert` handles:
 
 - final resize, bit depth, metadata stripping, JPEG quality/subsampling, progressive JPEG, TIFF Zip compression, and TIFF/JPEG encoding
 - structured sampler contact sheet rendering from mini-film's generated SVG layout
+
+## Film Diffusion
+
+Film-like diffusion is an optional mini-film stage after the RawTherapee/profile
+simulation and before grain. It is off by default and uses a 16-bit TIFF
+intermediate when enabled, including for final JPEG output. The look is neutral:
+it does not add colored or warm halation. Enabled renders explicitly request
+RawTherapee's `RTv4_sRGB` output profile, decode that transfer curve to linear
+sRGB for diffusion, then restore the output ICC profile after export.
+
+Choose one of two renderers:
+
+- `multi-scale-mist` is the default and blends six resolution-normalized blur
+  scales for gentle global softness and broad highlight spread.
+- `edge-aware-glow` reduces fine luminance detail while preserving major edges,
+  then redistributes bright highlight energy through a neutral veiling-glare
+  point-spread function.
+
+The implementation is independently calibrated from the published descriptions
+in [ProMist-5K](https://arxiv.org/abs/2601.19295),
+[Local Laplacian Filters](https://people.csail.mit.edu/hasinoff/pubs/ParisEtAl11-lapfilters-lowres.pdf),
+the [fast local-Laplacian approximation](https://people.csail.mit.edu/hasinoff/pubs/AubryEtAl14-lapfilters.pdf),
+and [Spencer et al.'s glare model](https://doi.org/10.1145/218380.218466).
+No paper code or training/dataset material is bundled.
+
+Use a preset or override its two components independently:
+
+```sh
+--diffusion subtle
+--diffusion medium --diffusion-method edge-aware-glow
+--diffusion strong --diffusion-softness 60 --diffusion-glow 35
+```
+
+Presets are `off`, `subtle`, `medium`, and `strong`. `--diffusion-softness` and
+`--diffusion-glow` accept `0..100`; an explicit value overrides that component
+of the preset. Spatial radii use the same 12 MP reference principle as normalized
+grain, so a 48 MP intermediate uses twice the radius of a 12 MP intermediate.
+
+In daemon review, the Diffusion wizard previews both methods and offers two
+sampler-style scopes. **Apply to current** changes only the current
+picture/profile pair. **Apply to all** makes the setting the current profile's
+default for every existing and future picture, replacing prior per-picture
+diffusion overrides for that profile. Current and all-profile settings can be
+reset independently; otherwise the daemon command-line default is inherited.
+Before/after previews reuse a cached, 2048-pixel, pre-grain profile render, so
+changing diffusion controls never compounds or previews grain twice.
 
 ## RAW Development
 

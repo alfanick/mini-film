@@ -1,4 +1,5 @@
 use super::{entities::*, *};
+use mini_film::{DiffusionMethod, DiffusionSettings};
 use sea_orm::{ConnectionTrait, EntityTrait, QueryOrder};
 use serde::de::DeserializeOwned;
 
@@ -21,6 +22,8 @@ where
         next_id: i64_to_u64(settings.next_id, "review next_id")?,
         profiles: load_profiles(connection).await?,
         images: load_images(connection, roots).await?,
+        profile_diffusion_settings: load_profile_diffusion_settings(connection).await?,
+        image_profile_diffusion_settings: load_image_profile_diffusion_settings(connection).await?,
         ui: ReviewUiState {
             current_image_id: settings
                 .current_image_id
@@ -31,7 +34,80 @@ where
         exif_schema_version: i64_to_u32(settings.exif_schema_version, "EXIF schema version")?,
         normalize_grain_mpix: default_review_normalize_grain_mpix(),
         render_export: ExportOptions::default(),
+        render_diffusion: DiffusionSettings::default(),
     }))
+}
+
+async fn load_profile_diffusion_settings<C>(
+    connection: &C,
+) -> Result<Vec<ReviewProfileDiffusionSetting>>
+where
+    C: ConnectionTrait,
+{
+    let rows = profile_diffusion_settings::Entity::find()
+        .order_by_asc(profile_diffusion_settings::Column::ProfileIndex)
+        .all(connection)
+        .await
+        .context("reading profile diffusion settings")?;
+    rows.into_iter()
+        .map(|row| {
+            let settings = diffusion_settings_from_row(
+                &row.method,
+                row.softness,
+                row.highlight_glow,
+                "profile diffusion settings",
+            )?;
+            Ok(ReviewProfileDiffusionSetting {
+                profile_index: i64_to_usize(row.profile_index, "diffusion profile index")?,
+                settings,
+            })
+        })
+        .collect()
+}
+
+async fn load_image_profile_diffusion_settings<C>(
+    connection: &C,
+) -> Result<Vec<ReviewImageProfileDiffusionSetting>>
+where
+    C: ConnectionTrait,
+{
+    let rows = image_profile_diffusion_settings::Entity::find()
+        .order_by_asc(image_profile_diffusion_settings::Column::ImageId)
+        .order_by_asc(image_profile_diffusion_settings::Column::ProfileIndex)
+        .all(connection)
+        .await
+        .context("reading image profile diffusion settings")?;
+    rows.into_iter()
+        .map(|row| {
+            let settings = diffusion_settings_from_row(
+                &row.method,
+                row.softness,
+                row.highlight_glow,
+                "image profile diffusion settings",
+            )?;
+            Ok(ReviewImageProfileDiffusionSetting {
+                image_id: i64_to_u64(row.image_id, "diffusion image id")?,
+                profile_index: i64_to_usize(row.profile_index, "diffusion profile index")?,
+                settings,
+            })
+        })
+        .collect()
+}
+
+fn diffusion_settings_from_row(
+    method: &str,
+    softness: i64,
+    highlight_glow: i64,
+    context: &str,
+) -> Result<DiffusionSettings> {
+    let settings = DiffusionSettings {
+        method: parse_enum::<DiffusionMethod>(method, "diffusion method")?,
+        softness: i64_to_u8(softness, "diffusion softness")?,
+        highlight_glow: i64_to_u8(highlight_glow, "diffusion highlight glow")?,
+    };
+    crate::app::review::store::validate_diffusion_settings(&settings)
+        .with_context(|| context.to_string())?;
+    Ok(settings)
 }
 
 async fn load_profiles<C>(connection: &C) -> Result<Vec<ReviewProfile>>
