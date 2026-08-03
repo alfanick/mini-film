@@ -1,4 +1,5 @@
 mod db;
+mod diffusion_preview;
 mod gallery_download;
 mod handle;
 mod history;

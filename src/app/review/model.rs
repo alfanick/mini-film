@@ -752,6 +752,30 @@ pub(super) enum ReviewDiffusionJobStatus {
     Cancelled,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(super) enum ReviewDiffusionFocusSource {
+    CameraFocus,
+    CenterFallback,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(super) enum ReviewDiffusionDetailAreaKind {
+    Focus,
+    HighContrastHighlight,
+    BroadHighlight,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct ReviewDiffusionDetailArea {
+    pub(super) kind: ReviewDiffusionDetailAreaKind,
+    pub(super) x: u32,
+    pub(super) y: u32,
+    pub(super) width: u32,
+    pub(super) height: u32,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(super) struct ReviewDiffusionJob {
     pub(super) id: u64,
@@ -761,6 +785,11 @@ pub(super) struct ReviewDiffusionJob {
     pub(super) settings: DiffusionSettings,
     pub(super) before_url: Option<String>,
     pub(super) after_url: Option<String>,
+    pub(super) preview_width: Option<u32>,
+    pub(super) preview_height: Option<u32>,
+    pub(super) focus_source: Option<ReviewDiffusionFocusSource>,
+    #[serde(default)]
+    pub(super) detail_areas: Vec<ReviewDiffusionDetailArea>,
     pub(super) error: Option<String>,
     #[serde(skip)]
     pub(super) before_path: Option<PathBuf>,

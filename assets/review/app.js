@@ -81,6 +81,7 @@ const state = {
   diffusionMessage: "",
   diffusionJob: null,
   diffusionBefore: null,
+  diffusionPreviewContext: null,
   diffusionImageId: null,
   diffusionProfileIndex: null,
   diffusionSettings: null,
@@ -179,6 +180,11 @@ const DIFFUSION_PRESETS = [
   { id: "subtle", label: "Subtle", softness: 25, highlight_glow: 25 },
   { id: "medium", label: "Medium", softness: 50, highlight_glow: 50 },
   { id: "strong", label: "Strong", softness: 75, highlight_glow: 75 },
+];
+const DIFFUSION_DETAIL_AREAS = [
+  { kind: "focus", label: "Focus area" },
+  { kind: "high-contrast-highlight", label: "High-contrast highlight" },
+  { kind: "broad-highlight", label: "Broad highlight" },
 ];
 
 let wheelNavigation = {
@@ -1688,6 +1694,7 @@ function DiffusionOverlay() {
   const before = diffusionBeforeSource(job);
   const after = diffusionAfterSource(job);
   const mediaStyle = diffusionMediaStyle(job, image, profile);
+  const previewContext = diffusionPreviewContext(job);
   const controlsDisabled = state.diffusionSaving;
   const sourceLabel = diffusionSourceLabel(state.diffusionSource);
   return h(
@@ -1726,185 +1733,287 @@ function DiffusionOverlay() {
       ),
     ),
     h(
-      "section",
-      { class: "diffusion-comparison", "aria-label": "Diffusion before and after preview" },
+      "main",
+      { class: "diffusion-body" },
       h(
-        "figure",
-        null,
-        before.url
-          ? h("img", {
-              src: versionedUrl(reviewUrl(before.url), before.updatedAt),
-              alt: "Before diffusion",
-              style: mediaStyle,
-              decoding: "async",
-            })
-          : h("div", { class: "diffusion-preview-placeholder", style: mediaStyle }, "Preparing source"),
-        h("figcaption", null, "Before"),
+        "div",
+        { class: "diffusion-workspace" },
+        h(DiffusionFullComparison, { before, after, mediaStyle, job }),
+        h(DiffusionDetailComparisons, { before, after, previewContext, job }),
       ),
       h(
-        "figure",
-        null,
-        after.url
-          ? h("img", {
-              src: versionedUrl(reviewUrl(after.url), after.updatedAt),
-              alt: "After diffusion",
-              style: mediaStyle,
-              decoding: "async",
-            })
-          : h(
-              "div",
-              { class: "diffusion-preview-placeholder", style: mediaStyle },
-              state.diffusionError || diffusionStatusText(job),
-            ),
-        h("figcaption", null, "After"),
-      ),
-    ),
-    h(
-      "div",
-      { class: "diffusion-controls" },
-      h(
-        "section",
-        { class: "diffusion-control-section", "aria-labelledby": "diffusion-method-title" },
-        h("h3", { id: "diffusion-method-title" }, "Method"),
+        "aside",
+        { class: "diffusion-control-rail", "aria-label": "Diffusion controls" },
+        h(DiffusionControls, { settings, controlsDisabled }),
         h(
           "div",
-          { class: "diffusion-method-grid", role: "group", "aria-label": "Diffusion method" },
-          DIFFUSION_METHODS.map((method) =>
+          {
+            class: `diffusion-status ${state.diffusionError ? "error" : ""}`,
+            role: "status",
+            "aria-live": "polite",
+          },
+          h("span", null, state.diffusionError || state.diffusionMessage || diffusionStatusText(job)),
+          state.diffusionError && state.diffusionErrorKind === "preview" && !state.diffusionSaving
+            ? h("button", { type: "button", onClick: requestDiffusionPreview }, "Retry preview")
+            : state.diffusionLoading
+              ? h("progress", { max: 1 })
+              : null,
+        ),
+        h(
+          "p",
+          { class: "diffusion-scope-note" },
+          "All applies this diffusion setting to the current profile for every existing and future picture.",
+        ),
+        h(
+          "footer",
+          { class: "diffusion-footer" },
+          h(
+            "div",
+            { class: "diffusion-reset-actions" },
             h(
               "button",
               {
-                key: method.id,
                 type: "button",
-                class: `diffusion-method-tile ${settings.method === method.id ? "active" : ""}`,
-                "aria-pressed": String(settings.method === method.id),
                 disabled: controlsDisabled,
-                onClick: () => setDiffusionSettings({ method: method.id }),
+                title: "Remove the current picture override and inherit this profile's all-picture setting",
+                onClick: () => resetDiffusion("current"),
               },
-              h("span", { class: "diffusion-tile-title" }, method.label),
-              h("span", { class: "diffusion-tile-description" }, method.description),
+              "Reset current",
+            ),
+            h(
+              "button",
+              {
+                type: "button",
+                disabled: controlsDisabled,
+                title: "Remove this profile's setting for all existing and future pictures",
+                onClick: () => resetDiffusion("all"),
+              },
+              "Reset all",
+            ),
+          ),
+          h(
+            "div",
+            { class: "diffusion-apply-actions" },
+            h("button", { type: "button", disabled: controlsDisabled, onClick: closeDiffusion }, "Cancel"),
+            h(
+              "button",
+              {
+                type: "button",
+                class: "diffusion-apply",
+                disabled: controlsDisabled || state.diffusionLoading,
+                title: "Apply these settings only to the current picture and profile",
+                onClick: () => applyDiffusion("current"),
+              },
+              "Apply to current",
+            ),
+            h(
+              "button",
+              {
+                type: "button",
+                class: "diffusion-apply",
+                disabled: controlsDisabled || state.diffusionLoading,
+                title: "Apply to this profile across all existing and future pictures",
+                onClick: () => applyDiffusion("all"),
+              },
+              "Apply to all",
             ),
           ),
         ),
       ),
-      h(
-        "section",
-        { class: "diffusion-control-section", "aria-labelledby": "diffusion-preset-title" },
-        h("h3", { id: "diffusion-preset-title" }, "Strength"),
-        h(
-          "div",
-          { class: "diffusion-preset-grid", role: "group", "aria-label": "Diffusion strength preset" },
-          DIFFUSION_PRESETS.map((preset) => {
-            const active = diffusionPresetIsActive(preset, settings);
-            return h(
-              "button",
-              {
-                key: preset.id,
-                type: "button",
-                class: `diffusion-preset-tile ${active ? "active" : ""}`,
-                "aria-pressed": String(active),
-                disabled: controlsDisabled,
-                onClick: () =>
-                  setDiffusionSettings({
-                    softness: preset.softness,
-                    highlight_glow: preset.highlight_glow,
-                  }),
-              },
-              h("span", { class: "diffusion-tile-title" }, preset.label),
-              h(
-                "span",
-                { class: "diffusion-tile-description" },
-                preset.id === "off" ? "No diffusion" : `${preset.softness}% softness and glow`,
-              ),
-            );
-          }),
-        ),
-      ),
-      h(
-        "section",
-        { class: "diffusion-control-section diffusion-sliders", "aria-label": "Fine diffusion controls" },
-        h(DiffusionSlider, {
-          label: "Softness",
-          value: settings.softness,
-          disabled: controlsDisabled,
-          onInput: (value) => setDiffusionSettings({ softness: value }),
-        }),
-        h(DiffusionSlider, {
-          label: "Highlight glow",
-          value: settings.highlight_glow,
-          disabled: controlsDisabled,
-          onInput: (value) => setDiffusionSettings({ highlight_glow: value }),
-        }),
-      ),
+    ),
+  );
+}
+
+function DiffusionFullComparison({ before, after, mediaStyle, job }) {
+  return h(
+    "section",
+    { class: "diffusion-comparison", "aria-label": "Diffusion before and after preview" },
+    h(
+      "figure",
+      null,
+      before.url
+        ? h("img", {
+            src: versionedUrl(reviewUrl(before.url), before.updatedAt),
+            alt: "Before diffusion",
+            style: mediaStyle,
+            decoding: "async",
+          })
+        : h("div", { class: "diffusion-preview-placeholder", style: mediaStyle }, "Preparing source"),
+      h("figcaption", null, "Before"),
+    ),
+    h(
+      "figure",
+      null,
+      after.url
+        ? h("img", {
+            src: versionedUrl(reviewUrl(after.url), after.updatedAt),
+            alt: "After diffusion",
+            style: mediaStyle,
+            decoding: "async",
+          })
+        : h(
+            "div",
+            { class: "diffusion-preview-placeholder", style: mediaStyle },
+            state.diffusionError || diffusionStatusText(job),
+          ),
+      h("figcaption", null, "After"),
+    ),
+  );
+}
+
+function DiffusionDetailComparisons({ before, after, previewContext, job }) {
+  return h(
+    "section",
+    { class: "diffusion-details", "aria-labelledby": "diffusion-details-title" },
+    h(
+      "header",
+      { class: "diffusion-details-header" },
+      h("h3", { id: "diffusion-details-title" }, "Detail comparisons"),
+      h("p", null, "Automatically selected from the source preview"),
     ),
     h(
       "div",
-      { class: `diffusion-status ${state.diffusionError ? "error" : ""}`, role: "status", "aria-live": "polite" },
-      h("span", null, state.diffusionError || state.diffusionMessage || diffusionStatusText(job)),
-      state.diffusionError && state.diffusionErrorKind === "preview" && !state.diffusionSaving
-        ? h("button", { type: "button", onClick: requestDiffusionPreview }, "Retry preview")
-        : state.diffusionLoading
-          ? h("progress", { max: 1 })
-          : null,
+      {
+        class: "diffusion-detail-strip",
+        tabIndex: 0,
+        "aria-label": "Automatically selected diffusion detail comparisons",
+      },
+      DIFFUSION_DETAIL_AREAS.map((definition) => {
+        const area = previewContext?.areas.find((candidate) => candidate.kind === definition.kind) || null;
+        const note =
+          definition.kind === "focus" && area
+            ? previewContext.focusSource === "center-fallback"
+              ? "Center fallback"
+              : previewContext.focusSource === "camera-focus"
+                ? "Camera focus"
+                : ""
+            : "";
+        return h(
+          "article",
+          { key: definition.kind, class: "diffusion-detail-card" },
+          h("header", null, h("h4", null, definition.label), note ? h("span", null, note) : null),
+          h(
+            "div",
+            { class: "diffusion-detail-pair" },
+            h(DiffusionDetailFigure, {
+              label: "Before",
+              source: before,
+              area,
+              previewContext,
+              placeholder: area ? "Preparing source" : "Detecting area",
+              alt: `${definition.label} before diffusion`,
+            }),
+            h(DiffusionDetailFigure, {
+              label: "After",
+              source: after,
+              area,
+              previewContext,
+              placeholder: area ? state.diffusionError || diffusionStatusText(job) : "Detecting area",
+              alt: `${definition.label} after diffusion`,
+            }),
+          ),
+        );
+      }),
     ),
+  );
+}
+
+function DiffusionDetailFigure({ label, source, area, previewContext, placeholder, alt }) {
+  return h(
+    "figure",
+    null,
     h(
-      "p",
-      { class: "diffusion-scope-note" },
-      "All applies this diffusion setting to the current profile for every existing and future picture.",
+      "div",
+      { class: "diffusion-detail-media", style: diffusionDetailFrameStyle(area) },
+      source.url && area && previewContext
+        ? h("img", {
+            src: versionedUrl(reviewUrl(source.url), source.updatedAt),
+            alt,
+            style: diffusionDetailMediaStyle(area, previewContext),
+            decoding: "async",
+          })
+        : h("span", { class: "diffusion-detail-placeholder" }, placeholder),
     ),
+    h("figcaption", null, label),
+  );
+}
+
+function DiffusionControls({ settings, controlsDisabled }) {
+  return h(
+    "div",
+    { class: "diffusion-controls" },
     h(
-      "footer",
-      { class: "diffusion-footer" },
+      "section",
+      { class: "diffusion-control-section", "aria-labelledby": "diffusion-method-title" },
+      h("h3", { id: "diffusion-method-title" }, "Method"),
       h(
         "div",
-        { class: "diffusion-reset-actions" },
-        h(
-          "button",
-          {
-            type: "button",
-            disabled: controlsDisabled,
-            title: "Remove the current picture override and inherit this profile's all-picture setting",
-            onClick: () => resetDiffusion("current"),
-          },
-          "Reset current",
-        ),
-        h(
-          "button",
-          {
-            type: "button",
-            disabled: controlsDisabled,
-            title: "Remove this profile's setting for all existing and future pictures",
-            onClick: () => resetDiffusion("all"),
-          },
-          "Reset all",
+        { class: "diffusion-method-grid", role: "group", "aria-label": "Diffusion method" },
+        DIFFUSION_METHODS.map((method) =>
+          h(
+            "button",
+            {
+              key: method.id,
+              type: "button",
+              class: `diffusion-method-tile ${settings.method === method.id ? "active" : ""}`,
+              "aria-pressed": String(settings.method === method.id),
+              disabled: controlsDisabled,
+              onClick: () => setDiffusionSettings({ method: method.id }),
+            },
+            h("span", { class: "diffusion-tile-title" }, method.label),
+            h("span", { class: "diffusion-tile-description" }, method.description),
+          ),
         ),
       ),
+    ),
+    h(
+      "section",
+      { class: "diffusion-control-section", "aria-labelledby": "diffusion-preset-title" },
+      h("h3", { id: "diffusion-preset-title" }, "Strength"),
       h(
         "div",
-        { class: "diffusion-apply-actions" },
-        h("button", { type: "button", disabled: controlsDisabled, onClick: closeDiffusion }, "Cancel"),
-        h(
-          "button",
-          {
-            type: "button",
-            class: "diffusion-apply",
-            disabled: controlsDisabled || state.diffusionLoading,
-            title: "Apply these settings only to the current picture and profile",
-            onClick: () => applyDiffusion("current"),
-          },
-          "Apply to current",
-        ),
-        h(
-          "button",
-          {
-            type: "button",
-            class: "diffusion-apply",
-            disabled: controlsDisabled || state.diffusionLoading,
-            title: "Apply to this profile across all existing and future pictures",
-            onClick: () => applyDiffusion("all"),
-          },
-          "Apply to all",
-        ),
+        { class: "diffusion-preset-grid", role: "group", "aria-label": "Diffusion strength preset" },
+        DIFFUSION_PRESETS.map((preset) => {
+          const active = diffusionPresetIsActive(preset, settings);
+          return h(
+            "button",
+            {
+              key: preset.id,
+              type: "button",
+              class: `diffusion-preset-tile ${active ? "active" : ""}`,
+              "aria-pressed": String(active),
+              disabled: controlsDisabled,
+              onClick: () =>
+                setDiffusionSettings({
+                  softness: preset.softness,
+                  highlight_glow: preset.highlight_glow,
+                }),
+            },
+            h("span", { class: "diffusion-tile-title" }, preset.label),
+            h(
+              "span",
+              { class: "diffusion-tile-description" },
+              preset.id === "off" ? "No diffusion" : `${preset.softness}% softness and glow`,
+            ),
+          );
+        }),
       ),
+    ),
+    h(
+      "section",
+      { class: "diffusion-control-section diffusion-sliders", "aria-label": "Fine diffusion controls" },
+      h(DiffusionSlider, {
+        label: "Softness",
+        value: settings.softness,
+        disabled: controlsDisabled,
+        onInput: (value) => setDiffusionSettings({ softness: value }),
+      }),
+      h(DiffusionSlider, {
+        label: "Highlight glow",
+        value: settings.highlight_glow,
+        disabled: controlsDisabled,
+        onInput: (value) => setDiffusionSettings({ highlight_glow: value }),
+      }),
     ),
   );
 }
@@ -4146,6 +4255,7 @@ function diffusionSourceLabel(source) {
 }
 
 function diffusionBeforeSource(job) {
+  if (state.diffusionBefore?.url && job?.status !== "done") return state.diffusionBefore;
   const url = job?.before_url || job?.source_url;
   return url
     ? { url, updatedAt: job?.before_updated_at || job?.updated_at }
@@ -4159,9 +4269,67 @@ function diffusionAfterSource(job) {
   };
 }
 
+function diffusionPreviewContext(job) {
+  const remembered = state.diffusionPreviewContext;
+  const jobWidth = Number(job?.preview_width);
+  const jobHeight = Number(job?.preview_height);
+  const width = Number.isFinite(jobWidth) && jobWidth > 0 ? Math.round(jobWidth) : remembered?.width;
+  const height = Number.isFinite(jobHeight) && jobHeight > 0 ? Math.round(jobHeight) : remembered?.height;
+  if (!width || !height) return remembered;
+
+  const sameDimensions = remembered?.width === width && remembered?.height === height;
+  let areas = sameDimensions ? remembered.areas : [];
+  if (Array.isArray(job?.detail_areas) && job.detail_areas.length > 0) {
+    const normalizedAreas = job.detail_areas
+      .map((area) => normalizeDiffusionDetailArea(area, width, height))
+      .filter(Boolean);
+    if (normalizedAreas.length > 0) areas = normalizedAreas;
+  }
+
+  const focusSource = ["camera-focus", "center-fallback"].includes(job?.focus_source)
+    ? job.focus_source
+    : sameDimensions
+      ? remembered.focusSource
+      : null;
+  return { width, height, focusSource, areas };
+}
+
+function normalizeDiffusionDetailArea(area, previewWidth, previewHeight) {
+  if (!DIFFUSION_DETAIL_AREAS.some((definition) => definition.kind === area?.kind)) return null;
+  const rawX = Number(area.x);
+  const rawY = Number(area.y);
+  const rawWidth = Number(area.width);
+  const rawHeight = Number(area.height);
+  if (![rawX, rawY, rawWidth, rawHeight].every(Number.isFinite) || rawWidth <= 0 || rawHeight <= 0) return null;
+  const x = clamp(Math.round(rawX), 0, previewWidth - 1);
+  const y = clamp(Math.round(rawY), 0, previewHeight - 1);
+  const width = clamp(Math.round(rawWidth), 1, previewWidth - x);
+  const height = clamp(Math.round(rawHeight), 1, previewHeight - y);
+  return { kind: area.kind, x, y, width, height };
+}
+
+function rememberDiffusionPreviewContext(job) {
+  const context = diffusionPreviewContext(job);
+  if (context) state.diffusionPreviewContext = context;
+}
+
+function diffusionDetailFrameStyle(area) {
+  return area ? { aspectRatio: `${area.width} / ${area.height}` } : { aspectRatio: "1 / 1" };
+}
+
+function diffusionDetailMediaStyle(area, previewContext) {
+  return {
+    width: `${((previewContext.width / area.width) * 100).toFixed(6)}%`,
+    height: `${((previewContext.height / area.height) * 100).toFixed(6)}%`,
+    left: `${((-area.x / area.width) * 100).toFixed(6)}%`,
+    top: `${((-area.y / area.height) * 100).toFixed(6)}%`,
+  };
+}
+
 function diffusionMediaStyle(job, image, profile) {
-  const width = Number(job?.source_width || profile?.width || image?.source_width);
-  const height = Number(job?.source_height || profile?.height || image?.source_height);
+  const previewContext = diffusionPreviewContext(job);
+  const width = Number(previewContext?.width || job?.source_width || profile?.width || image?.source_width);
+  const height = Number(previewContext?.height || job?.source_height || profile?.height || image?.source_height);
   return Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0
     ? { aspectRatio: `${width} / ${height}` }
     : undefined;
@@ -4202,6 +4370,7 @@ function openDiffusion() {
   state.diffusionMessage = "";
   state.diffusionJob = null;
   state.diffusionBefore = null;
+  state.diffusionPreviewContext = null;
   state.diffusionImageId = context.image.id;
   state.diffusionProfileIndex = context.profileIndex;
   state.diffusionSettings = normalizeDiffusionSettings(effective.settings);
@@ -4217,6 +4386,7 @@ function closeDiffusion() {
   cancelDiffusionPreviewRequests();
   state.diffusionJob = null;
   state.diffusionBefore = null;
+  state.diffusionPreviewContext = null;
   state.diffusionImageId = null;
   state.diffusionProfileIndex = null;
   state.diffusionSettings = null;
@@ -4318,6 +4488,7 @@ async function requestDiffusionPreview() {
     if (!state.diffusionOpen || state.diffusionPreviewRequestId !== requestId) return;
     if (!job) throw new Error("preview job returned no data");
     state.diffusionJob = job;
+    rememberDiffusionPreviewContext(job);
     if (job.before_url || job.source_url) state.diffusionBefore = diffusionBeforeSource(job);
     if (job.settings) state.diffusionSettings = normalizeDiffusionSettings(job.settings);
     state.diffusionLoading = !diffusionJobIsTerminal(job);
@@ -4364,6 +4535,7 @@ async function pollDiffusionJob(requestId, jobId) {
     if (!state.diffusionOpen || state.diffusionPreviewRequestId !== requestId || state.diffusionJob?.id !== jobId)
       return;
     state.diffusionJob = job;
+    rememberDiffusionPreviewContext(job);
     if (job?.before_url || job?.source_url) state.diffusionBefore = diffusionBeforeSource(job);
     if (job?.settings) state.diffusionSettings = normalizeDiffusionSettings(job.settings);
     state.diffusionLoading = !diffusionJobIsTerminal(job);

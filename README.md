@@ -1162,14 +1162,22 @@ Presets are `off`, `subtle`, `medium`, and `strong`. `--diffusion-softness` and
 of the preset. Spatial radii use the same 12 MP reference principle as normalized
 grain, so a 48 MP intermediate uses twice the radius of a 12 MP intermediate.
 
-In daemon review, the Diffusion wizard previews both methods and offers two
-sampler-style scopes. **Apply to current** changes only the current
-picture/profile pair. **Apply to all** makes the setting the current profile's
-default for every existing and future picture, replacing prior per-picture
-diffusion overrides for that profile. Current and all-profile settings can be
-reset independently; otherwise the daemon command-line default is inherited.
-Before/after previews reuse a cached, 2048-pixel, pre-grain profile render, so
-changing diffusion controls never compounds or previews grain twice.
+In daemon review, the near-fullscreen Diffusion wizard previews both methods
+with a full-frame before/after view and three paired detail views: the recorded
+camera focus area, a high-contrast highlight, and a broad highlight. The focus
+view uses the camera AF region after crop and rotation, falling back to the
+picture center when no recorded AF region remains visible. Highlight views are
+selected automatically and kept fixed while diffusion controls change, making
+softness and glow easier to compare.
+
+The wizard offers two sampler-style scopes. **Apply to current** changes only
+the current picture/profile pair. **Apply to all** makes the setting the current
+profile's default for every existing and future picture, replacing prior
+per-picture diffusion overrides for that profile. Current and all-profile
+settings can be reset independently; otherwise the daemon command-line default
+is inherited. Before/after previews and detail views reuse a cached,
+2048-pixel, pre-grain profile render, so changing diffusion controls never
+compounds or previews grain twice.
 
 ## RAW Development
 

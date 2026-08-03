@@ -1,6 +1,6 @@
 use super::{
-    db::*, gallery_download::*, history::*, model::*, prelude::*, preview::*, publish::*,
-    sampler::*, scheduler::*, server::*, store::*,
+    db::*, diffusion_preview::*, gallery_download::*, history::*, model::*, prelude::*, preview::*,
+    publish::*, sampler::*, scheduler::*, server::*, store::*,
 };
 use crate::app::cache::{
     DIFFUSION_PREVIEWS_CACHE_DIR, PANORAMA_CACHE_DIR, PROFILE_DETAILS_CACHE_DIR, RETOUCH_CACHE_DIR,
@@ -3169,6 +3169,10 @@ impl ReviewHandle {
             settings: request.settings,
             before_url: None,
             after_url: None,
+            preview_width: None,
+            preview_height: None,
+            focus_source: None,
+            detail_areas: Vec::new(),
             error: None,
             before_path: None,
             after_path: None,
@@ -3407,9 +3411,20 @@ impl ReviewHandle {
             }
         }
 
+        let preview_details = load_or_analyze_diffusion_preview_details(
+            &before,
+            &base,
+            &cache_dir,
+            &image.exif.focus_regions,
+            &image.retouch,
+        )?;
         self.update_diffusion_job(job_id, |job| {
             job.before_url = Some(format!("diffusion-preview/{job_id}/before"));
             job.before_path = Some(before.clone());
+            job.preview_width = Some(preview_details.width);
+            job.preview_height = Some(preview_details.height);
+            job.focus_source = Some(preview_details.focus_source);
+            job.detail_areas = preview_details.detail_areas;
         })?;
         if self.latest_diffusion_job_id.load(Ordering::Acquire) != job_id {
             return Ok(None);
