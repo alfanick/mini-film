@@ -3126,6 +3126,7 @@ function codexProgressState(image) {
 }
 
 function renderCurrent(image) {
+  updateDiffusionButton(image);
   if (!image) {
     stopZoom();
     clearCropDraftState();
@@ -4385,6 +4386,21 @@ function effectiveDiffusion(profile) {
     settings: nested?.settings || profile?.diffusion_settings || null,
     source: nested?.source ?? profile?.diffusion_source ?? null,
   };
+}
+
+function updateDiffusionButton(image) {
+  const profile = selectedProfile(image);
+  const settings = normalizeDiffusionSettings(effectiveDiffusion(profile).settings);
+  const active = Boolean(
+    image &&
+    profile &&
+    !isDirectCompressedImage(image) &&
+    !isSoocProfile(profile) &&
+    (settings.softness > 0 || settings.highlight_glow > 0),
+  );
+  els.diffusion.classList.toggle("active", active);
+  els.diffusion.title = active ? "Diffusion applied" : "Open diffusion tools";
+  els.diffusion.setAttribute("aria-label", active ? "Open diffusion tools, diffusion applied" : "Open diffusion tools");
 }
 
 function diffusionSourceLabel(source) {

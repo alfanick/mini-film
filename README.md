@@ -1191,6 +1191,9 @@ softness, radius, intensity, and glow easier to compare. The wizard groups the
 sliders into Softening, Highlights, and Overall controls; Highlight reach is
 shown only for the edge-aware renderer.
 
+The Diffusion tool button is dark when effective diffusion is enabled for the
+selected picture/profile.
+
 The wizard offers two sampler-style scopes. **Apply to current** changes only
 the current picture/profile pair. **Apply to all** makes the setting the current
 profile's default for every existing and future picture, replacing prior
