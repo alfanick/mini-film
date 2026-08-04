@@ -429,10 +429,9 @@ impl ThumbnailCache {
                 .unwrap_or_else(|| "norm-off".to_string());
             format!("grain-{}-{normalization}", args.grain_engine)
         };
-        let diffusion_mode = format!(
-            "diffusion-v1-{:?}-{}-{}",
-            args.diffusion.method, args.diffusion.softness, args.diffusion.highlight_glow
-        );
+        let diffusion = args.diffusion.canonical_render_settings();
+        let advanced_diffusion = !diffusion.has_neutral_advanced_controls();
+        let diffusion_mode = sampler_diffusion_cache_mode(diffusion);
         let subsampling = format!("{:?}", args.jpeg_subsampling).to_ascii_lowercase();
         let lens_corrections = if args.lens_corrections == LensCorrections::default() {
             "none".to_string()
@@ -452,10 +451,8 @@ impl ThumbnailCache {
                 }
             )
         };
-        Ok(self.dir.join(format!(
-            "{}-{}-{}-{}-l{}-{}px-lc{}-q{}-{}-{}-{}-sg3-strip{}-prog{}.jpg",
-            self.raw_sha1,
-            xmp_sha1,
+        let render_options = format!(
+            "{}-{}-l{}-{}px-lc{}-q{}-{}-{}-{}-sg3-strip{}-prog{}",
             RAW_RENDER_PIPELINE_KEY,
             self.dcp_identity,
             args.hald_level,
@@ -467,8 +464,41 @@ impl ThumbnailCache {
             diffusion_mode,
             args.strip_metadata as u8,
             args.progressive_jpeg as u8,
-        )))
+        );
+        let legacy_file_name = format!("{}-{xmp_sha1}-{render_options}.jpg", self.raw_sha1);
+        let file_name = if !advanced_diffusion && legacy_file_name.len() <= 255 {
+            legacy_file_name
+        } else {
+            let mut hasher = Sha1::new();
+            hasher.update(render_options);
+            let digest = hasher
+                .finalize()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            let cache_version = if advanced_diffusion {
+                "diffusion-v2"
+            } else {
+                "cache-v1"
+            };
+            format!("{}-{xmp_sha1}-{cache_version}-{digest}.jpg", self.raw_sha1)
+        };
+        Ok(self.dir.join(file_name))
     }
+}
+
+fn sampler_diffusion_cache_mode(diffusion: DiffusionSettings) -> String {
+    let diffusion = diffusion.canonical_render_settings();
+    if diffusion.has_neutral_advanced_controls() {
+        return format!(
+            "diffusion-v1-{:?}-{}-{}",
+            diffusion.method, diffusion.softness, diffusion.highlight_glow
+        );
+    }
+
+    diffusion
+        .render_identity()
+        .expect("enabled advanced diffusion has a render identity")
 }
 
 fn sha1_file(path: &Path) -> Result<String> {
@@ -2201,6 +2231,7 @@ mod tests {
             method: mini_film::DiffusionMethod::MultiScaleMist,
             softness: 25,
             highlight_glow: 0,
+            ..DiffusionSettings::default()
         };
         assert_eq!(
             SamplerIntermediateKind::for_diffusion(enabled),
@@ -2621,6 +2652,7 @@ mod tests {
             method: mini_film::DiffusionMethod::MultiScaleMist,
             softness: 50,
             highlight_glow: 50,
+            ..DiffusionSettings::default()
         };
         let mist_diffusion = cache.path_for(&xmp, &args).unwrap();
         assert_ne!(with_noise, mist_diffusion);
@@ -2632,6 +2664,55 @@ mod tests {
                 .contains("diffusion-v1-MultiScaleMist-50-50")
         );
 
+        args.diffusion.intensity_percent = 150;
+        let advanced_mist_diffusion = cache.path_for(&xmp, &args).unwrap();
+        assert_ne!(mist_diffusion, advanced_mist_diffusion);
+        assert!(
+            advanced_mist_diffusion
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains("diffusion-v2-")
+        );
+
+        args.diffusion.highlight_reach = 100;
+        assert_eq!(
+            advanced_mist_diffusion,
+            cache.path_for(&xmp, &args).unwrap(),
+            "highlight reach cannot affect the multi-scale mist cache identity"
+        );
+        args.diffusion.glow_radius_percent = 150;
+        assert_ne!(
+            advanced_mist_diffusion,
+            cache.path_for(&xmp, &args).unwrap(),
+            "effective advanced controls must change the sampler cache identity"
+        );
+        args.diffusion.glow_radius_percent = 100;
+
+        let dcp_cache = ThumbnailCache {
+            dir: cache.dir.clone(),
+            raw_sha1: cache.raw_sha1.clone(),
+            dcp_identity: format!("dcp-{}", "f".repeat(40)),
+        };
+        args.normalize_grain_mpix = Some(mini_film::DEFAULT_GRAIN_REFERENCE_MPIX);
+        let dcp_advanced = dcp_cache.path_for(&xmp, &args).unwrap();
+        assert!(
+            dcp_advanced.file_name().unwrap().to_string_lossy().len() <= 255,
+            "advanced diffusion cache names must fit Linux NAME_MAX"
+        );
+
+        args.diffusion = DiffusionSettings {
+            method: mini_film::DiffusionMethod::MultiScaleMist,
+            softness: 50,
+            highlight_glow: 50,
+            ..DiffusionSettings::default()
+        };
+        let dcp_neutral = dcp_cache.path_for(&xmp, &args).unwrap();
+        let dcp_neutral_name = dcp_neutral.file_name().unwrap().to_string_lossy();
+        assert!(dcp_neutral_name.len() <= 255);
+        assert!(dcp_neutral_name.contains("cache-v1-"));
+
+        args.diffusion.intensity_percent = 100;
         args.diffusion.method = mini_film::DiffusionMethod::EdgeAwareGlow;
         let edge_aware_diffusion = cache.path_for(&xmp, &args).unwrap();
         assert_ne!(mist_diffusion, edge_aware_diffusion);

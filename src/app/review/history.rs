@@ -289,8 +289,14 @@ pub(super) fn history_diffusion_settings_changed(
     }
     if let Some(settings) = settings {
         entry.line(format!(
-            "settings: method={} softness={} glow={}",
-            settings.method, settings.softness, settings.highlight_glow
+            "settings: method={} softness={} softness_radius={} glow={} glow_radius={} intensity={} highlight_reach={}",
+            settings.method,
+            settings.softness,
+            settings.softness_radius_percent,
+            settings.highlight_glow,
+            settings.glow_radius_percent,
+            settings.intensity_percent,
+            settings.highlight_reach,
         ));
     } else {
         entry.line("settings: inherited");

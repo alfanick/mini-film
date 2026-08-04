@@ -13,8 +13,8 @@ use chrono::{DateTime, Local, NaiveDateTime, TimeZone, Utc};
 use exif::{Reader, Tag};
 use filetime::{FileTime, set_file_atime, set_file_mtime};
 use mini_film::{
-    DiffusionMethod, DiffusionSettings, GrainEngine, GrainSettings, ProfileAdjustments,
-    SharpeningSettings, ToneCurves,
+    DiffusionSettings, GrainEngine, GrainSettings, ProfileAdjustments, SharpeningSettings,
+    ToneCurves,
 };
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -566,14 +566,26 @@ fn history_parameters(raw: &Path, edit: &OutputEditMetadata<'_>) -> String {
         parts.push(format!("grain_seed={seed}"));
     }
     if edit.diffusion.is_enabled() {
-        let method = match edit.diffusion.method {
-            DiffusionMethod::MultiScaleMist => "multi-scale-mist",
-            DiffusionMethod::EdgeAwareGlow => "edge-aware-glow",
-        };
-        parts.push(format!(
-            "diffusion={method},{},{}; diffusion_version=1",
-            edit.diffusion.softness, edit.diffusion.highlight_glow
-        ));
+        let diffusion = edit.diffusion.canonical_render_settings();
+        if diffusion.has_neutral_advanced_controls() {
+            parts.push(format!(
+                "diffusion={},{},{}; diffusion_version=1",
+                diffusion.method.as_str(),
+                diffusion.softness,
+                diffusion.highlight_glow
+            ));
+        } else {
+            parts.push(format!(
+                "diffusion={},softness={},softness_radius_percent={},glow={},glow_radius_percent={},intensity_percent={},highlight_reach={}; diffusion_version=2",
+                diffusion.method.as_str(),
+                diffusion.softness,
+                diffusion.softness_radius_percent,
+                diffusion.highlight_glow,
+                diffusion.glow_radius_percent,
+                diffusion.intensity_percent,
+                diffusion.highlight_reach,
+            ));
+        }
     } else {
         parts.push("diffusion=off".to_string());
     }
@@ -1848,15 +1860,15 @@ fn system_time_to_unix_seconds(timestamp: SystemTime) -> Option<i64> {
 mod tests {
     use super::{
         OutputEditMetadata, add_edit_metadata_args, clean_exif_display_text, extract_gallery_exif,
-        format_exif_aperture, gallery_exif_cache_key, json_bool_value, json_nikon_focus_regions,
-        json_nikon_white_balance_offset, json_u32_value, json_u64_value,
+        format_exif_aperture, gallery_exif_cache_key, history_parameters, json_bool_value,
+        json_nikon_focus_regions, json_nikon_white_balance_offset, json_u32_value, json_u64_value,
         nikon_shooting_mode_uses_auto_iso, parse_exif_datetime, parse_exif_datetime_with_offset,
         parse_iso_value, sync_output_timestamps_from_exif,
     };
     use crate::app::profile::ResolvedProfileMetadata;
     use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
     use filetime::{FileTime, set_file_atime, set_file_mtime};
-    use mini_film::{DiffusionSettings, GrainSettings, SharpeningSettings};
+    use mini_film::{DiffusionMethod, DiffusionSettings, GrainSettings, SharpeningSettings};
     use std::time::{Duration, UNIX_EPOCH};
     use std::{fs, path::Path, process::Command};
     use tempfile::tempdir;
@@ -1932,6 +1944,63 @@ mod tests {
                 .iter()
                 .any(|arg| arg == "-XMP-crs:SharpenRadius=0.80")
         );
+    }
+
+    #[test]
+    fn edit_metadata_keeps_legacy_diffusion_history_and_records_advanced_parameters() {
+        let profile = ResolvedProfileMetadata {
+            profile_name: "Profile".to_string(),
+            profile_uuid: None,
+            look_name: None,
+            look_uuid: None,
+            source_profile_name: None,
+            source_profile_uuid: None,
+            hald_path: None,
+            pp3_path: None,
+            pp3_adjustments: Vec::new(),
+            grain: GrainSettings::default(),
+            source_adjustments: Default::default(),
+            source_sharpening: Default::default(),
+            emulation_adjustments: Default::default(),
+            emulation_sharpening: Default::default(),
+            has_camera_raw_settings: true,
+        };
+        let parameters = |diffusion| {
+            history_parameters(
+                Path::new("frame.nef"),
+                &OutputEditMetadata {
+                    comment: None,
+                    profile: &profile,
+                    profile_sharpening_applied: false,
+                    grain: GrainSettings::default(),
+                    grain_seed: None,
+                    grain_engine: None,
+                    normalize_grain_mpix: None,
+                    diffusion,
+                },
+            )
+        };
+
+        let legacy = parameters(DiffusionSettings {
+            method: DiffusionMethod::EdgeAwareGlow,
+            softness: 40,
+            highlight_glow: 30,
+            ..DiffusionSettings::default()
+        });
+        assert!(legacy.contains("diffusion=edge-aware-glow,40,30; diffusion_version=1"));
+
+        let advanced = parameters(DiffusionSettings {
+            method: DiffusionMethod::EdgeAwareGlow,
+            softness: 40,
+            highlight_glow: 30,
+            softness_radius_percent: 175,
+            glow_radius_percent: 250,
+            intensity_percent: 225,
+            highlight_reach: 75,
+        });
+        assert!(advanced.contains(
+            "diffusion=edge-aware-glow,softness=40,softness_radius_percent=175,glow=30,glow_radius_percent=250,intensity_percent=225,highlight_reach=75; diffusion_version=2"
+        ));
     }
 
     #[test]

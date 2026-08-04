@@ -176,10 +176,50 @@ const DIFFUSION_METHODS = [
   },
 ];
 const DIFFUSION_PRESETS = [
-  { id: "off", label: "Off", softness: 0, highlight_glow: 0 },
-  { id: "subtle", label: "Subtle", softness: 25, highlight_glow: 25 },
-  { id: "medium", label: "Medium", softness: 50, highlight_glow: 50 },
-  { id: "strong", label: "Strong", softness: 75, highlight_glow: 75 },
+  {
+    id: "off",
+    label: "Off",
+    description: "No diffusion",
+    softness: 0,
+    highlight_glow: 0,
+    softness_radius_percent: 100,
+    glow_radius_percent: 100,
+    intensity_percent: 100,
+    highlight_reach: 50,
+  },
+  {
+    id: "subtle",
+    label: "Subtle",
+    description: "Visible, gentle diffusion",
+    softness: 25,
+    highlight_glow: 25,
+    softness_radius_percent: 100,
+    glow_radius_percent: 150,
+    intensity_percent: 150,
+    highlight_reach: 50,
+  },
+  {
+    id: "medium",
+    label: "Medium",
+    description: "Clear film-diffusion character",
+    softness: 50,
+    highlight_glow: 50,
+    softness_radius_percent: 150,
+    glow_radius_percent: 225,
+    intensity_percent: 225,
+    highlight_reach: 60,
+  },
+  {
+    id: "strong",
+    label: "Strong",
+    description: "Bold softness and bloom",
+    softness: 75,
+    highlight_glow: 75,
+    softness_radius_percent: 200,
+    glow_radius_percent: 300,
+    intensity_percent: 300,
+    highlight_reach: 70,
+  },
 ];
 const DIFFUSION_DETAIL_AREAS = [
   { kind: "focus", label: "Focus area" },
@@ -1975,6 +2015,7 @@ function DiffusionControls({ settings, controlsDisabled }) {
         { class: "diffusion-preset-grid", role: "group", "aria-label": "Diffusion strength preset" },
         DIFFUSION_PRESETS.map((preset) => {
           const active = diffusionPresetIsActive(preset, settings);
+          const presetSettings = diffusionPresetSettings(preset, settings.method);
           return h(
             "button",
             {
@@ -1983,43 +2024,117 @@ function DiffusionControls({ settings, controlsDisabled }) {
               class: `diffusion-preset-tile ${active ? "active" : ""}`,
               "aria-pressed": String(active),
               disabled: controlsDisabled,
-              onClick: () =>
-                setDiffusionSettings({
-                  softness: preset.softness,
-                  highlight_glow: preset.highlight_glow,
-                }),
+              onClick: () => setDiffusionSettings(presetSettings),
             },
             h("span", { class: "diffusion-tile-title" }, preset.label),
-            h(
-              "span",
-              { class: "diffusion-tile-description" },
-              preset.id === "off" ? "No diffusion" : `${preset.softness}% softness and glow`,
-            ),
+            h("span", { class: "diffusion-tile-description" }, preset.description),
           );
         }),
       ),
     ),
     h(
       "section",
-      { class: "diffusion-control-section diffusion-sliders", "aria-label": "Fine diffusion controls" },
-      h(DiffusionSlider, {
-        label: "Softness",
-        value: settings.softness,
-        disabled: controlsDisabled,
-        onInput: (value) => setDiffusionSettings({ softness: value }),
-      }),
-      h(DiffusionSlider, {
-        label: "Highlight glow",
-        value: settings.highlight_glow,
-        disabled: controlsDisabled,
-        onInput: (value) => setDiffusionSettings({ highlight_glow: value }),
-      }),
+      {
+        class: "diffusion-control-section diffusion-parameter-group",
+        "aria-labelledby": "diffusion-softening-title",
+      },
+      h("h3", { id: "diffusion-softening-title" }, "Softening"),
+      h(
+        "div",
+        { class: "diffusion-sliders" },
+        h(DiffusionSlider, {
+          id: "diffusion-softness",
+          label: "Amount",
+          value: settings.softness,
+          min: 0,
+          max: 100,
+          step: 1,
+          disabled: controlsDisabled,
+          onInput: (value) => setDiffusionSettings({ softness: value }),
+        }),
+        h(DiffusionSlider, {
+          id: "diffusion-softness-radius",
+          label: "Radius",
+          value: settings.softness_radius_percent,
+          min: 50,
+          max: 400,
+          step: 5,
+          disabled: controlsDisabled,
+          onInput: (value) => setDiffusionSettings({ softness_radius_percent: value }),
+        }),
+      ),
+    ),
+    h(
+      "section",
+      {
+        class: "diffusion-control-section diffusion-parameter-group",
+        "aria-labelledby": "diffusion-highlights-title",
+      },
+      h("h3", { id: "diffusion-highlights-title" }, "Highlights"),
+      h(
+        "div",
+        { class: "diffusion-sliders" },
+        h(DiffusionSlider, {
+          id: "diffusion-highlight-glow",
+          label: "Glow",
+          value: settings.highlight_glow,
+          min: 0,
+          max: 100,
+          step: 1,
+          disabled: controlsDisabled,
+          onInput: (value) => setDiffusionSettings({ highlight_glow: value }),
+        }),
+        h(DiffusionSlider, {
+          id: "diffusion-glow-radius",
+          label: "Radius",
+          value: settings.glow_radius_percent,
+          min: 50,
+          max: 400,
+          step: 5,
+          disabled: controlsDisabled,
+          onInput: (value) => setDiffusionSettings({ glow_radius_percent: value }),
+        }),
+        settings.method === "edge-aware-glow"
+          ? h(DiffusionSlider, {
+              id: "diffusion-highlight-reach",
+              label: "Reach",
+              value: settings.highlight_reach,
+              min: 0,
+              max: 100,
+              step: 1,
+              disabled: controlsDisabled,
+              onInput: (value) => setDiffusionSettings({ highlight_reach: value }),
+            })
+          : null,
+      ),
+    ),
+    h(
+      "section",
+      {
+        class: "diffusion-control-section diffusion-parameter-group diffusion-overall-controls",
+        "aria-labelledby": "diffusion-overall-title",
+      },
+      h("h3", { id: "diffusion-overall-title" }, "Overall"),
+      h(
+        "div",
+        { class: "diffusion-sliders" },
+        h(DiffusionSlider, {
+          id: "diffusion-intensity",
+          label: "Intensity",
+          value: settings.intensity_percent,
+          min: 25,
+          max: 300,
+          step: 5,
+          disabled: controlsDisabled,
+          onInput: (value) => setDiffusionSettings({ intensity_percent: value }),
+        }),
+      ),
     ),
   );
 }
 
-function DiffusionSlider({ label, value, disabled, onInput }) {
-  const id = `diffusion-${label.toLowerCase().replace(/\s+/g, "-")}`;
+function DiffusionSlider({ id, label, value, min, max, step, disabled, onInput, formatValue = formatPercent }) {
+  const formattedValue = formatValue(value);
   return h(
     "label",
     { class: "diffusion-slider", for: id },
@@ -2027,15 +2142,20 @@ function DiffusionSlider({ label, value, disabled, onInput }) {
     h("input", {
       id,
       type: "range",
-      min: "0",
-      max: "100",
-      step: "1",
+      min: String(min),
+      max: String(max),
+      step: String(step),
       value: String(value),
+      "aria-valuetext": formattedValue,
       disabled,
       onInput: (event) => onInput(Number(event.currentTarget.value)),
     }),
-    h("output", { for: id }, `${value}%`),
+    h("output", { for: id }, formattedValue),
   );
+}
+
+function formatPercent(value) {
+  return `${value}%`;
 }
 
 function SamplerOverlay() {
@@ -4203,23 +4323,48 @@ function normalizeDiffusionSettings(settings) {
     : DIFFUSION_METHODS[0].id;
   return {
     method,
-    softness: normalizeDiffusionAmount(settings?.softness),
-    highlight_glow: normalizeDiffusionAmount(settings?.highlight_glow),
+    softness: normalizeDiffusionAmount(settings?.softness, 0, 100, 0),
+    highlight_glow: normalizeDiffusionAmount(settings?.highlight_glow, 0, 100, 0),
+    softness_radius_percent: normalizeDiffusionAmount(settings?.softness_radius_percent, 50, 400, 100),
+    glow_radius_percent: normalizeDiffusionAmount(settings?.glow_radius_percent, 50, 400, 100),
+    intensity_percent: normalizeDiffusionAmount(settings?.intensity_percent, 25, 300, 100),
+    highlight_reach: normalizeDiffusionAmount(settings?.highlight_reach, 0, 100, 50),
   };
 }
 
-function normalizeDiffusionAmount(value) {
+function normalizeDiffusionAmount(value, min, max, fallback) {
   const number = Number(value);
-  return Number.isFinite(number) ? Math.round(clamp(number, 0, 100)) : 0;
+  return Number.isFinite(number) ? Math.round(clamp(number, min, max)) : fallback;
 }
 
 function diffusionSettingsSignature(settings) {
   const normalized = normalizeDiffusionSettings(settings);
-  return `${normalized.method}:${normalized.softness}:${normalized.highlight_glow}`;
+  return [
+    normalized.method,
+    normalized.softness,
+    normalized.highlight_glow,
+    normalized.softness_radius_percent,
+    normalized.glow_radius_percent,
+    normalized.intensity_percent,
+    normalized.highlight_reach,
+  ].join(":");
+}
+
+function diffusionPresetSettings(preset, method) {
+  return {
+    softness: preset.softness,
+    highlight_glow: preset.highlight_glow,
+    softness_radius_percent: preset.softness_radius_percent,
+    glow_radius_percent: preset.glow_radius_percent,
+    intensity_percent: preset.intensity_percent,
+    highlight_reach: method === "edge-aware-glow" ? preset.highlight_reach : 50,
+  };
 }
 
 function diffusionPresetIsActive(preset, settings) {
-  return preset.softness === settings.softness && preset.highlight_glow === settings.highlight_glow;
+  if (preset.id === "off") return settings.softness === 0 && settings.highlight_glow === 0;
+  const expected = diffusionPresetSettings(preset, settings.method);
+  return Object.entries(expected).every(([key, value]) => settings[key] === value);
 }
 
 function diffusionProfile(image, profileIndex) {

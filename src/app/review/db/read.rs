@@ -55,6 +55,10 @@ where
                 &row.method,
                 row.softness,
                 row.highlight_glow,
+                row.softness_radius_percent,
+                row.glow_radius_percent,
+                row.intensity_percent,
+                row.highlight_reach,
                 "profile diffusion settings",
             )?;
             Ok(ReviewProfileDiffusionSetting {
@@ -83,6 +87,10 @@ where
                 &row.method,
                 row.softness,
                 row.highlight_glow,
+                row.softness_radius_percent,
+                row.glow_radius_percent,
+                row.intensity_percent,
+                row.highlight_reach,
                 "image profile diffusion settings",
             )?;
             Ok(ReviewImageProfileDiffusionSetting {
@@ -94,16 +102,28 @@ where
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn diffusion_settings_from_row(
     method: &str,
     softness: i64,
     highlight_glow: i64,
+    softness_radius_percent: i64,
+    glow_radius_percent: i64,
+    intensity_percent: i64,
+    highlight_reach: i64,
     context: &str,
 ) -> Result<DiffusionSettings> {
     let settings = DiffusionSettings {
         method: parse_enum::<DiffusionMethod>(method, "diffusion method")?,
         softness: i64_to_u8(softness, "diffusion softness")?,
         highlight_glow: i64_to_u8(highlight_glow, "diffusion highlight glow")?,
+        softness_radius_percent: i64_to_u16(
+            softness_radius_percent,
+            "diffusion softness radius percent",
+        )?,
+        glow_radius_percent: i64_to_u16(glow_radius_percent, "diffusion glow radius percent")?,
+        intensity_percent: i64_to_u16(intensity_percent, "diffusion intensity percent")?,
+        highlight_reach: i64_to_u8(highlight_reach, "diffusion highlight reach")?,
     };
     crate::app::review::store::validate_diffusion_settings(&settings)
         .with_context(|| context.to_string())?;
@@ -941,6 +961,10 @@ pub(super) fn i64_to_bool(value: i64, name: &str) -> Result<bool> {
 
 fn i64_to_u8(value: i64, name: &str) -> Result<u8> {
     u8::try_from(value).with_context(|| format!("{name} {value} does not fit u8"))
+}
+
+fn i64_to_u16(value: i64, name: &str) -> Result<u16> {
+    u16::try_from(value).with_context(|| format!("{name} {value} does not fit u16"))
 }
 
 fn i64_to_u32(value: i64, name: &str) -> Result<u32> {

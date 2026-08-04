@@ -3312,12 +3312,7 @@ impl ReviewHandle {
             .with_context(|| format!("creating {}", cache_dir.display()))?;
         let base = cache_dir.join("base.tif");
         let before = cache_dir.join("before.jpg");
-        let after = cache_dir.join(format!(
-            "{}-{}-{}.jpg",
-            job.settings.method.as_str(),
-            job.settings.softness,
-            job.settings.highlight_glow,
-        ));
+        let after = cache_dir.join(diffusion_preview_after_filename(job.settings));
         let export = diffusion_preview_export_options(&self.export);
 
         if !base.is_file() || !before.is_file() {
@@ -4820,17 +4815,13 @@ pub(super) fn profile_render_key_value_with_diffusion(
         normalize_grain_mpix,
         processing_key,
     );
-    if !diffusion.is_enabled() {
+    let Some(identity) = diffusion.render_identity() else {
         return base;
-    }
+    };
     let mut hasher = Sha1::new();
     hasher.update(base);
-    hasher.update("|diffusion-v1=");
-    hasher.update(diffusion.method.as_str());
-    hasher.update("/");
-    hasher.update(diffusion.softness.to_string());
-    hasher.update("/");
-    hasher.update(diffusion.highlight_glow.to_string());
+    hasher.update("|");
+    hasher.update(identity);
     short_render_digest(hasher)
 }
 
@@ -4841,6 +4832,25 @@ fn short_render_digest(hasher: Sha1) -> String {
         .take(8)
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+pub(super) fn diffusion_preview_after_filename(settings: DiffusionSettings) -> String {
+    let settings = settings.canonical_render_settings();
+    if settings.has_neutral_advanced_controls() {
+        return format!(
+            "{}-{}-{}.jpg",
+            settings.method.as_str(),
+            settings.softness,
+            settings.highlight_glow,
+        );
+    }
+    let mut hasher = Sha1::new();
+    hasher.update(
+        settings
+            .render_identity()
+            .unwrap_or_else(|| "diffusion-off".to_string()),
+    );
+    format!("v2-{}.jpg", short_render_digest(hasher))
 }
 
 fn diffusion_preview_cache_key(
@@ -5084,7 +5094,7 @@ fn changed_diffusion_target_ids(
 }
 
 fn diffusion_settings_render_equivalent(left: DiffusionSettings, right: DiffusionSettings) -> bool {
-    left == right || (!left.is_enabled() && !right.is_enabled())
+    left.render_equivalent(right)
 }
 
 #[allow(clippy::too_many_arguments)]

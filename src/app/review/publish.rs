@@ -251,7 +251,15 @@ where
         .arg("--diffusion-softness")
         .arg(args.diffusion.softness.to_string())
         .arg("--diffusion-glow")
-        .arg(args.diffusion.highlight_glow.to_string());
+        .arg(args.diffusion.highlight_glow.to_string())
+        .arg("--diffusion-softness-radius")
+        .arg(args.diffusion.softness_radius_percent.to_string())
+        .arg("--diffusion-glow-radius")
+        .arg(args.diffusion.glow_radius_percent.to_string())
+        .arg("--diffusion-intensity")
+        .arg(args.diffusion.intensity_percent.to_string())
+        .arg("--diffusion-highlight-reach")
+        .arg(args.diffusion.highlight_reach.to_string());
 
     let mut child = command
         .spawn()

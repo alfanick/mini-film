@@ -12,6 +12,14 @@ pub struct Model {
     pub method: String,
     pub softness: i64,
     pub highlight_glow: i64,
+    #[sea_orm(default_value = 100)]
+    pub softness_radius_percent: i64,
+    #[sea_orm(default_value = 100)]
+    pub glow_radius_percent: i64,
+    #[sea_orm(default_value = 100)]
+    pub intensity_percent: i64,
+    #[sea_orm(default_value = 50)]
+    pub highlight_reach: i64,
     #[sea_orm(
         belongs_to,
         from = "profile_index",

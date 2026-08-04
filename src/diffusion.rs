@@ -84,21 +84,69 @@ impl DiffusionPreset {
 
     pub const fn settings(self, method: DiffusionMethod) -> DiffusionSettings {
         let (softness, highlight_glow) = self.amounts();
+        let (softness_radius_percent, glow_radius_percent, intensity_percent, highlight_reach) =
+            match self {
+                Self::Off => (100, 100, 100, 50),
+                Self::Subtle => (100, 150, 150, 50),
+                Self::Medium => (
+                    150,
+                    225,
+                    225,
+                    if matches!(method, DiffusionMethod::EdgeAwareGlow) {
+                        60
+                    } else {
+                        50
+                    },
+                ),
+                Self::Strong => (
+                    200,
+                    300,
+                    300,
+                    if matches!(method, DiffusionMethod::EdgeAwareGlow) {
+                        70
+                    } else {
+                        50
+                    },
+                ),
+            };
         DiffusionSettings {
             method,
             softness,
             highlight_glow,
+            softness_radius_percent,
+            glow_radius_percent,
+            intensity_percent,
+            highlight_reach,
         }
     }
 }
 
-/// Independent diffusion controls. Both strengths use the inclusive range
-/// `0..=100`; the all-zero setting is a strict no-op.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Independent diffusion controls. The all-zero strength setting is a strict
+/// no-op; neutral advanced controls reproduce the original diffusion renderer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct DiffusionSettings {
     pub method: DiffusionMethod,
     pub softness: u8,
     pub highlight_glow: u8,
+    pub softness_radius_percent: u16,
+    pub glow_radius_percent: u16,
+    pub intensity_percent: u16,
+    pub highlight_reach: u8,
+}
+
+impl Default for DiffusionSettings {
+    fn default() -> Self {
+        Self {
+            method: DiffusionMethod::default(),
+            softness: 0,
+            highlight_glow: 0,
+            softness_radius_percent: 100,
+            glow_radius_percent: 100,
+            intensity_percent: 100,
+            highlight_reach: 50,
+        }
+    }
 }
 
 impl DiffusionSettings {
@@ -110,9 +158,82 @@ impl DiffusionSettings {
         self.softness > 0 || self.highlight_glow > 0
     }
 
+    pub const fn has_neutral_advanced_controls(self) -> bool {
+        self.softness_radius_percent == 100
+            && self.glow_radius_percent == 100
+            && self.intensity_percent == 100
+            && self.highlight_reach == 50
+    }
+
+    /// Normalize settings that cannot affect pixels so render identities and
+    /// equality checks do not invalidate otherwise reusable output.
+    pub const fn canonical_render_settings(mut self) -> Self {
+        if !self.is_enabled() {
+            return Self {
+                method: DiffusionMethod::MultiScaleMist,
+                softness: 0,
+                highlight_glow: 0,
+                softness_radius_percent: 100,
+                glow_radius_percent: 100,
+                intensity_percent: 100,
+                highlight_reach: 50,
+            };
+        }
+        if self.softness == 0 {
+            self.softness_radius_percent = 100;
+        }
+        if self.highlight_glow == 0 {
+            self.glow_radius_percent = 100;
+            self.highlight_reach = 50;
+        } else if matches!(self.method, DiffusionMethod::MultiScaleMist) {
+            self.highlight_reach = 50;
+        }
+        self
+    }
+
+    pub fn render_equivalent(self, other: Self) -> bool {
+        self.canonical_render_settings() == other.canonical_render_settings()
+    }
+
+    pub fn render_identity(self) -> Option<String> {
+        let settings = self.canonical_render_settings();
+        if !settings.is_enabled() {
+            return None;
+        }
+        if settings.has_neutral_advanced_controls() {
+            return Some(format!(
+                "diffusion-v1={}/{}/{}",
+                settings.method.as_str(),
+                settings.softness,
+                settings.highlight_glow,
+            ));
+        }
+        Some(format!(
+            "diffusion-v2={}/{}/{}/{}/{}/{}/{}",
+            settings.method.as_str(),
+            settings.softness,
+            settings.highlight_glow,
+            settings.softness_radius_percent,
+            settings.glow_radius_percent,
+            settings.intensity_percent,
+            settings.highlight_reach,
+        ))
+    }
+
     pub fn validate(self) -> Result<()> {
         if self.softness > 100 || self.highlight_glow > 100 {
             bail!("diffusion softness and highlight glow must be between 0 and 100");
+        }
+        if !(50..=400).contains(&self.softness_radius_percent)
+            || !(50..=400).contains(&self.glow_radius_percent)
+        {
+            bail!("diffusion softness and glow radii must be between 50 and 400 percent");
+        }
+        if !(25..=300).contains(&self.intensity_percent) {
+            bail!("diffusion intensity must be between 25 and 300 percent");
+        }
+        if self.highlight_reach > 100 {
+            bail!("diffusion highlight reach must be between 0 and 100");
         }
         Ok(())
     }
@@ -292,6 +413,7 @@ fn render_interleaved_16(
             raw.len()
         );
     }
+    let settings = settings.canonical_render_settings();
 
     match settings.method {
         DiffusionMethod::MultiScaleMist => {
@@ -313,18 +435,36 @@ fn render_multi_scale_mist(
 ) -> Result<()> {
     let softness = settings.softness as f32 / 100.0;
     let glow = settings.highlight_glow as f32 / 100.0;
-    let core_mix = 0.10 * softness;
-    let wing_mix = 0.12 * glow;
+    let intensity = settings.intensity_percent as f32 / 100.0;
+    let mut core_mix = 0.10 * softness * intensity;
+    let mut wing_mix = 0.12 * glow * intensity;
     if core_mix == 0.0 && wing_mix == 0.0 {
         return Ok(());
     }
-
-    let targets = MIST_SIGMAS.map(|sigma| sigma * scale);
-    let mut weights = [0.0; 6];
-    for index in 0..3 {
-        weights[index] = core_mix * MIST_CORE_WEIGHTS[index];
-        weights[index + 3] = wing_mix * MIST_WING_WEIGHTS[index];
+    const MAX_COMBINED_MIX: f32 = 0.85;
+    let combined_mix = core_mix + wing_mix;
+    if combined_mix > MAX_COMBINED_MIX {
+        let normalization = MAX_COMBINED_MIX / combined_mix;
+        core_mix *= normalization;
+        wing_mix *= normalization;
     }
+
+    let softness_radius = settings.softness_radius_percent as f32 / 100.0;
+    let glow_radius = settings.glow_radius_percent as f32 / 100.0;
+    let mut scales = [(0.0, 0.0); 6];
+    for index in 0..3 {
+        scales[index] = (
+            MIST_SIGMAS[index] * scale * softness_radius,
+            core_mix * MIST_CORE_WEIGHTS[index],
+        );
+        scales[index + 3] = (
+            MIST_SIGMAS[index + 3] * scale * glow_radius,
+            wing_mix * MIST_WING_WEIGHTS[index],
+        );
+    }
+    scales.sort_by(|left, right| left.0.total_cmp(&right.0));
+    let targets = scales.map(|(target, _)| target);
+    let weights = scales.map(|(_, weight)| weight);
     let base_mix = 1.0 - core_mix - wing_mix;
 
     for &channel in layout.color_offsets() {
@@ -347,11 +487,27 @@ fn render_edge_aware_glow(
     settings: DiffusionSettings,
     scale: f32,
 ) -> Result<()> {
+    let intensity = settings.intensity_percent as f32 / 100.0;
     if settings.softness > 0 {
-        apply_edge_aware_softness(raw, width, height, layout, settings.softness, scale)?;
+        apply_edge_aware_softness(
+            raw,
+            width,
+            height,
+            layout,
+            settings.softness,
+            intensity,
+            scale * settings.softness_radius_percent as f32 / 100.0,
+        )?;
     }
     if settings.highlight_glow > 0 {
-        apply_neutral_highlight_glow(raw, width, height, layout, settings.highlight_glow, scale)?;
+        apply_neutral_highlight_glow(
+            raw,
+            width,
+            height,
+            layout,
+            adjusted_glow_parameters(settings.highlight_glow, intensity, settings.highlight_reach),
+            scale * settings.glow_radius_percent as f32 / 100.0,
+        )?;
     }
     Ok(())
 }
@@ -362,17 +518,23 @@ fn apply_edge_aware_softness(
     height: usize,
     layout: PixelLayout,
     amount: u8,
+    intensity: f32,
     scale: f32,
 ) -> Result<()> {
+    let strength = edge_softness_strength(amount, intensity);
     apply_edge_aware_softness_with_limit(
         raw,
         width,
         height,
         layout,
-        amount,
+        strength,
         scale,
         LLF_MAX_WORKING_PIXELS,
     )
+}
+
+fn edge_softness_strength(amount: u8, intensity: f32) -> f32 {
+    (0.55 * amount as f32 / 100.0 * intensity).min(1.0)
 }
 
 fn apply_edge_aware_softness_with_limit(
@@ -380,11 +542,10 @@ fn apply_edge_aware_softness_with_limit(
     width: usize,
     height: usize,
     layout: PixelLayout,
-    amount: u8,
+    strength: f32,
     scale: f32,
     max_working_pixels: usize,
 ) -> Result<()> {
-    let strength = 0.55 * amount as f32 / 100.0;
     let working =
         llf_working_luma_with_limit(raw, width, height, layout, scale, max_working_pixels)?;
     let mut delta = local_laplacian_soften(
@@ -626,10 +787,9 @@ fn apply_neutral_highlight_glow(
     width: usize,
     height: usize,
     layout: PixelLayout,
-    amount: u8,
+    parameters: GlowParameters,
     scale: f32,
 ) -> Result<()> {
-    let parameters = glow_parameters(amount);
     if parameters.strength == 0.0 {
         return Ok(());
     }
@@ -859,6 +1019,18 @@ fn glow_parameters(amount: u8) -> GlowParameters {
         }
     }
     ANCHORS[ANCHORS.len() - 1].1
+}
+
+fn adjusted_glow_parameters(amount: u8, intensity: f32, highlight_reach: u8) -> GlowParameters {
+    let mut parameters = glow_parameters(amount);
+    parameters.strength = (parameters.strength * intensity).min(0.5);
+    parameters.threshold = adjusted_highlight_threshold(parameters.threshold, highlight_reach);
+    parameters
+}
+
+fn adjusted_highlight_threshold(threshold: f32, highlight_reach: u8) -> f32 {
+    let reach_offset = (50_i16 - i16::from(highlight_reach)) as f32 * 0.005;
+    (threshold + reach_offset).clamp(0.30, 0.98)
 }
 
 fn accumulate_scale_space(
@@ -1283,6 +1455,7 @@ mod tests {
             method,
             softness,
             highlight_glow,
+            ..DiffusionSettings::default()
         }
     }
 
@@ -1314,6 +1487,179 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<DiffusionMethod>("\"edge-aware-glow\"").unwrap(),
             DiffusionMethod::EdgeAwareGlow
+        );
+
+        assert_eq!(
+            DiffusionPreset::Subtle.settings(DiffusionMethod::MultiScaleMist),
+            DiffusionSettings {
+                method: DiffusionMethod::MultiScaleMist,
+                softness: 25,
+                highlight_glow: 25,
+                softness_radius_percent: 100,
+                glow_radius_percent: 150,
+                intensity_percent: 150,
+                highlight_reach: 50,
+            }
+        );
+        assert_eq!(
+            DiffusionPreset::Medium.settings(DiffusionMethod::EdgeAwareGlow),
+            DiffusionSettings {
+                method: DiffusionMethod::EdgeAwareGlow,
+                softness: 50,
+                highlight_glow: 50,
+                softness_radius_percent: 150,
+                glow_radius_percent: 225,
+                intensity_percent: 225,
+                highlight_reach: 60,
+            }
+        );
+        assert_eq!(
+            DiffusionPreset::Strong.settings(DiffusionMethod::EdgeAwareGlow),
+            DiffusionSettings {
+                method: DiffusionMethod::EdgeAwareGlow,
+                softness: 75,
+                highlight_glow: 75,
+                softness_radius_percent: 200,
+                glow_radius_percent: 300,
+                intensity_percent: 300,
+                highlight_reach: 70,
+            }
+        );
+    }
+
+    #[test]
+    fn old_serialized_settings_receive_neutral_advanced_controls() {
+        let settings: DiffusionSettings = serde_json::from_str(
+            r#"{"method":"edge-aware-glow","softness":40,"highlight_glow":30}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            settings,
+            DiffusionSettings {
+                method: DiffusionMethod::EdgeAwareGlow,
+                softness: 40,
+                highlight_glow: 30,
+                ..DiffusionSettings::default()
+            }
+        );
+        assert!(settings.has_neutral_advanced_controls());
+    }
+
+    #[test]
+    fn neutral_advanced_controls_preserve_legacy_pixels() {
+        let width = 96usize;
+        let height = 64usize;
+        let scale = spatial_scale(width as u32, height as u32).unwrap();
+
+        let mut expected_mist = patterned_image(width as u32, height as u32);
+        let mut actual_mist = expected_mist.clone();
+        let core_mix = 0.10 * 0.75;
+        let wing_mix = 0.12 * 0.75;
+        let targets = MIST_SIGMAS.map(|sigma| sigma * scale);
+        let mut weights = [0.0; 6];
+        for index in 0..3 {
+            weights[index] = core_mix * MIST_CORE_WEIGHTS[index];
+            weights[index + 3] = wing_mix * MIST_WING_WEIGHTS[index];
+        }
+        for &channel in PixelLayout::Rgb.color_offsets() {
+            let source = decode_channel(expected_mist.as_raw(), PixelLayout::Rgb.stride(), channel);
+            let mut accumulated = source
+                .iter()
+                .map(|value| value * (1.0 - core_mix - wing_mix))
+                .collect::<Vec<_>>();
+            accumulate_scale_space(source, width, height, &targets, &weights, &mut accumulated);
+            encode_channel(
+                expected_mist.as_mut(),
+                PixelLayout::Rgb.stride(),
+                channel,
+                &accumulated,
+            );
+        }
+        render_interleaved_16(
+            actual_mist.as_mut(),
+            width,
+            height,
+            PixelLayout::Rgb,
+            settings(DiffusionMethod::MultiScaleMist, 75, 75),
+            scale,
+        )
+        .unwrap();
+        assert_eq!(actual_mist.as_raw(), expected_mist.as_raw());
+
+        let mut expected_edge = patterned_image(width as u32, height as u32);
+        let mut actual_edge = expected_edge.clone();
+        apply_edge_aware_softness(
+            expected_edge.as_mut(),
+            width,
+            height,
+            PixelLayout::Rgb,
+            75,
+            1.0,
+            scale,
+        )
+        .unwrap();
+        apply_neutral_highlight_glow(
+            expected_edge.as_mut(),
+            width,
+            height,
+            PixelLayout::Rgb,
+            glow_parameters(75),
+            scale,
+        )
+        .unwrap();
+        render_interleaved_16(
+            actual_edge.as_mut(),
+            width,
+            height,
+            PixelLayout::Rgb,
+            settings(DiffusionMethod::EdgeAwareGlow, 75, 75),
+            scale,
+        )
+        .unwrap();
+        assert_eq!(actual_edge.as_raw(), expected_edge.as_raw());
+    }
+
+    #[test]
+    fn render_identity_ignores_parameters_that_cannot_affect_pixels() {
+        let disabled = DiffusionSettings {
+            method: DiffusionMethod::EdgeAwareGlow,
+            softness_radius_percent: 400,
+            glow_radius_percent: 50,
+            intensity_percent: 300,
+            highlight_reach: 100,
+            ..DiffusionSettings::default()
+        };
+        assert!(disabled.render_equivalent(DiffusionSettings::default()));
+        assert_eq!(disabled.render_identity(), None);
+
+        let neutral = settings(DiffusionMethod::EdgeAwareGlow, 25, 30);
+        assert_eq!(
+            neutral.render_identity().as_deref(),
+            Some("diffusion-v1=edge-aware-glow/25/30")
+        );
+
+        let mist = DiffusionSettings {
+            method: DiffusionMethod::MultiScaleMist,
+            softness: 50,
+            highlight_reach: 100,
+            ..DiffusionSettings::default()
+        };
+        assert_eq!(
+            mist.render_identity().as_deref(),
+            Some("diffusion-v1=multi-scale-mist/50/0")
+        );
+
+        let advanced = DiffusionSettings {
+            method: DiffusionMethod::EdgeAwareGlow,
+            highlight_glow: 50,
+            glow_radius_percent: 225,
+            intensity_percent: 150,
+            highlight_reach: 70,
+            ..DiffusionSettings::default()
+        };
+        assert_eq!(
+            advanced.render_identity().as_deref(),
+            Some("diffusion-v2=edge-aware-glow/0/50/100/225/150/70")
         );
     }
 
@@ -1480,7 +1826,7 @@ mod tests {
             low_width,
             low_height,
             PixelLayout::Rgb,
-            80,
+            edge_softness_strength(80, 1.0),
             1.0,
             1_200,
         )
@@ -1490,7 +1836,7 @@ mod tests {
             low_width * 2,
             low_height * 2,
             PixelLayout::Rgb,
-            80,
+            edge_softness_strength(80, 1.0),
             2.0,
             1_200,
         )
@@ -1571,6 +1917,125 @@ mod tests {
     }
 
     #[test]
+    fn highlight_reach_only_changes_the_edge_aware_threshold() {
+        let legacy = glow_parameters(75);
+        let neutral = adjusted_glow_parameters(75, 1.0, 50);
+        let narrow = adjusted_glow_parameters(75, 1.0, 0);
+        let broad = adjusted_glow_parameters(75, 1.0, 100);
+        assert_eq!(neutral.strength, legacy.strength);
+        assert_eq!(neutral.threshold, legacy.threshold);
+        assert_eq!(neutral.knee, legacy.knee);
+        assert!(narrow.threshold > neutral.threshold);
+        assert!(broad.threshold < neutral.threshold);
+        assert_eq!(narrow.strength, broad.strength);
+        assert_eq!(narrow.knee, broad.knee);
+        assert_eq!(adjusted_glow_parameters(100, 10.0, 50).strength, 0.5);
+        assert_eq!(adjusted_highlight_threshold(0.95, 0), 0.98);
+        assert_eq!(adjusted_highlight_threshold(0.10, 100), 0.30);
+    }
+
+    #[test]
+    fn stronger_intensity_and_separate_radii_change_mist_output() {
+        let source = patterned_image(96, 64);
+        let mut neutral = source.clone();
+        let mut strong = source.clone();
+        let mut crossed_radii = source.clone();
+        render_diffusion_rgb16(
+            &mut neutral,
+            DiffusionSettings {
+                softness: 75,
+                highlight_glow: 75,
+                ..DiffusionSettings::default()
+            },
+        )
+        .unwrap();
+        render_diffusion_rgb16(
+            &mut strong,
+            DiffusionSettings {
+                softness: 75,
+                highlight_glow: 75,
+                intensity_percent: 300,
+                ..DiffusionSettings::default()
+            },
+        )
+        .unwrap();
+        render_diffusion_rgb16(
+            &mut crossed_radii,
+            DiffusionSettings {
+                softness: 75,
+                highlight_glow: 75,
+                softness_radius_percent: 400,
+                glow_radius_percent: 50,
+                ..DiffusionSettings::default()
+            },
+        )
+        .unwrap();
+
+        let difference = |image: &ImageBuffer<Rgb<u16>, Vec<u16>>| {
+            image
+                .as_raw()
+                .iter()
+                .zip(source.as_raw())
+                .map(|(rendered, original)| u64::from(rendered.abs_diff(*original)))
+                .sum::<u64>()
+        };
+        assert!(difference(&strong) > difference(&neutral));
+        assert_ne!(crossed_radii.as_raw(), neutral.as_raw());
+    }
+
+    #[test]
+    fn inactive_advanced_controls_do_not_change_pixels() {
+        let source = patterned_image(64, 48);
+        let mut first = source.clone();
+        let mut second = source.clone();
+        render_diffusion_rgb16(
+            &mut first,
+            DiffusionSettings {
+                softness: 60,
+                glow_radius_percent: 50,
+                highlight_reach: 0,
+                ..DiffusionSettings::default()
+            },
+        )
+        .unwrap();
+        render_diffusion_rgb16(
+            &mut second,
+            DiffusionSettings {
+                softness: 60,
+                glow_radius_percent: 400,
+                highlight_reach: 100,
+                ..DiffusionSettings::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(first, second);
+
+        first = source.clone();
+        second = source;
+        render_diffusion_rgb16(
+            &mut first,
+            DiffusionSettings {
+                method: DiffusionMethod::EdgeAwareGlow,
+                highlight_glow: 60,
+                softness_radius_percent: 50,
+                ..DiffusionSettings::default()
+            },
+        )
+        .unwrap();
+        render_diffusion_rgb16(
+            &mut second,
+            DiffusionSettings {
+                method: DiffusionMethod::EdgeAwareGlow,
+                highlight_glow: 60,
+                softness_radius_percent: 400,
+                ..DiffusionSettings::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(first, second);
+    }
+
+    #[test]
     fn edge_aware_softness_preserves_hue() {
         let width = 96usize;
         let height = 64usize;
@@ -1585,8 +2050,16 @@ mod tests {
         });
         let original = image.clone();
 
-        apply_edge_aware_softness(image.as_mut(), width, height, PixelLayout::Rgb, 100, 1.0)
-            .unwrap();
+        apply_edge_aware_softness(
+            image.as_mut(),
+            width,
+            height,
+            PixelLayout::Rgb,
+            100,
+            1.0,
+            1.0,
+        )
+        .unwrap();
 
         assert_ne!(image.as_raw(), original.as_raw());
         for (before, after) in original.pixels().zip(image.pixels()) {
@@ -1677,6 +2150,42 @@ mod tests {
             settings(DiffusionMethod::EdgeAwareGlow, 0, 101)
                 .validate()
                 .is_err()
+        );
+        for invalid in [49, 401] {
+            assert!(
+                DiffusionSettings {
+                    softness_radius_percent: invalid,
+                    ..DiffusionSettings::default()
+                }
+                .validate()
+                .is_err()
+            );
+            assert!(
+                DiffusionSettings {
+                    glow_radius_percent: invalid,
+                    ..DiffusionSettings::default()
+                }
+                .validate()
+                .is_err()
+            );
+        }
+        for invalid in [24, 301] {
+            assert!(
+                DiffusionSettings {
+                    intensity_percent: invalid,
+                    ..DiffusionSettings::default()
+                }
+                .validate()
+                .is_err()
+            );
+        }
+        assert!(
+            DiffusionSettings {
+                highlight_reach: 101,
+                ..DiffusionSettings::default()
+            }
+            .validate()
+            .is_err()
         );
     }
 

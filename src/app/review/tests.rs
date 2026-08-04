@@ -327,6 +327,10 @@ fn fully_populated_review_store() -> ReviewStore {
             method: DiffusionMethod::MultiScaleMist,
             softness: 42,
             highlight_glow: 56,
+            softness_radius_percent: 135,
+            glow_radius_percent: 170,
+            intensity_percent: 125,
+            highlight_reach: 65,
         },
     }];
     store.image_profile_diffusion_settings = vec![ReviewImageProfileDiffusionSetting {
@@ -336,6 +340,10 @@ fn fully_populated_review_store() -> ReviewStore {
             method: DiffusionMethod::EdgeAwareGlow,
             softness: 0,
             highlight_glow: 0,
+            softness_radius_percent: 220,
+            glow_radius_percent: 240,
+            intensity_percent: 80,
+            highlight_reach: 75,
         },
     }];
     store
@@ -358,6 +366,26 @@ fn migrated_pre_contrast_store(mut store: ReviewStore) -> ReviewStore {
 fn migrated_pre_diffusion_store(mut store: ReviewStore) -> ReviewStore {
     store.profile_diffusion_settings.clear();
     store.image_profile_diffusion_settings.clear();
+    store
+}
+
+fn migrated_pre_diffusion_parameters_store(mut store: ReviewStore) -> ReviewStore {
+    for settings in store
+        .profile_diffusion_settings
+        .iter_mut()
+        .map(|entry| &mut entry.settings)
+        .chain(
+            store
+                .image_profile_diffusion_settings
+                .iter_mut()
+                .map(|entry| &mut entry.settings),
+        )
+    {
+        settings.softness_radius_percent = 100;
+        settings.glow_radius_percent = 100;
+        settings.intensity_percent = 100;
+        settings.highlight_reach = 50;
+    }
     store
 }
 
@@ -988,16 +1016,19 @@ fn diffusion_settings_preserve_explicit_off_and_follow_scope_precedence() {
         method: DiffusionMethod::MultiScaleMist,
         softness: 25,
         highlight_glow: 30,
+        ..DiffusionSettings::default()
     };
     let profile_default = DiffusionSettings {
         method: DiffusionMethod::EdgeAwareGlow,
         softness: 45,
         highlight_glow: 50,
+        ..DiffusionSettings::default()
     };
     let explicit_off = DiffusionSettings {
         method: DiffusionMethod::EdgeAwareGlow,
         softness: 0,
         highlight_glow: 0,
+        ..DiffusionSettings::default()
     };
 
     assert_eq!(
@@ -1101,16 +1132,19 @@ fn diffusion_scope_changes_queue_only_affected_enabled_profile_renders() {
         method: DiffusionMethod::MultiScaleMist,
         softness: 25,
         highlight_glow: 30,
+        ..DiffusionSettings::default()
     };
     let all = DiffusionSettings {
         method: DiffusionMethod::EdgeAwareGlow,
         softness: 55,
         highlight_glow: 60,
+        ..DiffusionSettings::default()
     };
     let explicit_off = DiffusionSettings {
         method: DiffusionMethod::EdgeAwareGlow,
         softness: 0,
         highlight_glow: 0,
+        ..DiffusionSettings::default()
     };
 
     handle
@@ -1252,6 +1286,7 @@ fn diffusion_preview_jobs_expose_state_and_only_ready_media_paths() {
         method: DiffusionMethod::MultiScaleMist,
         softness: 40,
         highlight_glow: 45,
+        ..DiffusionSettings::default()
     };
 
     let queued = handle
@@ -2109,6 +2144,7 @@ fn rendered_profile_processing_keys_track_daemon_diffusion_without_changing_off_
         method: DiffusionMethod::EdgeAwareGlow,
         softness: 0,
         highlight_glow: 0,
+        ..DiffusionSettings::default()
     };
     assert_eq!(
         review_render_processing_key_for_input_with_diffusion(
@@ -2135,6 +2171,7 @@ fn rendered_profile_processing_keys_track_daemon_diffusion_without_changing_off_
         method: DiffusionMethod::MultiScaleMist,
         softness: 25,
         highlight_glow: 30,
+        ..DiffusionSettings::default()
     };
     let stronger_mist = DiffusionSettings {
         softness: 50,
@@ -2172,6 +2209,139 @@ fn rendered_profile_processing_keys_track_daemon_diffusion_without_changing_off_
         ),
         sooc_legacy
     );
+}
+
+#[test]
+fn diffusion_advanced_controls_use_canonical_review_cache_identities() {
+    let input = Path::new("frame.NEF");
+    let export = ExportOptions::default();
+    let normalization = Some(mini_film::DEFAULT_GRAIN_REFERENCE_MPIX);
+    let base_processing =
+        review_render_processing_key_for_input_with_options(input, 0, normalization, &export);
+    let processing_key = |settings| {
+        review_render_processing_key_for_input_with_diffusion(
+            input,
+            0,
+            normalization,
+            &export,
+            settings,
+        )
+    };
+    let profile_key = |settings| {
+        profile_render_key_value_with_diffusion(
+            &RetouchSettings::default(),
+            RetouchWhiteBalance::default(),
+            BwFilter::None,
+            normalization,
+            &base_processing,
+            settings,
+        )
+    };
+
+    let neutral = DiffusionSettings {
+        method: DiffusionMethod::EdgeAwareGlow,
+        softness: 25,
+        highlight_glow: 30,
+        ..DiffusionSettings::default()
+    };
+    assert_eq!(
+        processing_key(neutral),
+        format!("{base_processing}:diffusion-v1=edge-aware-glow/25/30")
+    );
+    assert_eq!(
+        diffusion_preview_after_filename(neutral),
+        "edge-aware-glow-25-30.jpg"
+    );
+
+    let effective_variants = [
+        DiffusionSettings {
+            softness_radius_percent: 150,
+            ..neutral
+        },
+        DiffusionSettings {
+            glow_radius_percent: 175,
+            ..neutral
+        },
+        DiffusionSettings {
+            intensity_percent: 125,
+            ..neutral
+        },
+        DiffusionSettings {
+            highlight_reach: 75,
+            ..neutral
+        },
+    ];
+    let processing_keys = effective_variants.map(processing_key);
+    assert!(
+        processing_keys
+            .iter()
+            .all(|key| key != &processing_key(neutral))
+    );
+    assert_eq!(
+        processing_keys.iter().collect::<HashSet<_>>().len(),
+        processing_keys.len()
+    );
+    let profile_keys = effective_variants.map(profile_key);
+    assert!(profile_keys.iter().all(|key| key != &profile_key(neutral)));
+    assert_eq!(
+        profile_keys.iter().collect::<HashSet<_>>().len(),
+        profile_keys.len()
+    );
+    let preview_files = effective_variants.map(diffusion_preview_after_filename);
+    assert!(preview_files.iter().all(|file| file.starts_with("v2-")));
+    assert_eq!(
+        preview_files.iter().collect::<HashSet<_>>().len(),
+        preview_files.len()
+    );
+
+    let softness_disabled = DiffusionSettings {
+        method: DiffusionMethod::EdgeAwareGlow,
+        softness: 0,
+        highlight_glow: 30,
+        ..DiffusionSettings::default()
+    };
+    let softness_radius_ignored = DiffusionSettings {
+        softness_radius_percent: 250,
+        ..softness_disabled
+    };
+    let glow_disabled = DiffusionSettings {
+        method: DiffusionMethod::EdgeAwareGlow,
+        softness: 25,
+        highlight_glow: 0,
+        ..DiffusionSettings::default()
+    };
+    let glow_radius_ignored = DiffusionSettings {
+        glow_radius_percent: 250,
+        ..glow_disabled
+    };
+    let highlight_reach_ignored_without_glow = DiffusionSettings {
+        highlight_reach: 90,
+        ..glow_disabled
+    };
+    let mist = DiffusionSettings {
+        method: DiffusionMethod::MultiScaleMist,
+        softness: 25,
+        highlight_glow: 30,
+        ..DiffusionSettings::default()
+    };
+    let highlight_reach_ignored_for_mist = DiffusionSettings {
+        highlight_reach: 90,
+        ..mist
+    };
+    for (base, ignored) in [
+        (softness_disabled, softness_radius_ignored),
+        (glow_disabled, glow_radius_ignored),
+        (glow_disabled, highlight_reach_ignored_without_glow),
+        (mist, highlight_reach_ignored_for_mist),
+    ] {
+        assert!(base.render_equivalent(ignored));
+        assert_eq!(processing_key(base), processing_key(ignored));
+        assert_eq!(profile_key(base), profile_key(ignored));
+        assert_eq!(
+            diffusion_preview_after_filename(base),
+            diffusion_preview_after_filename(ignored)
+        );
+    }
 }
 
 #[test]
@@ -2624,9 +2794,9 @@ fn review_state_seaorm_round_trips_every_normalized_collection() {
         serde_json::to_value(persisted_store(store)).unwrap()
     );
     let facts = database_facts(&state_path).unwrap();
-    assert_eq!(facts.schema_version, 21);
+    assert_eq!(facts.schema_version, 22);
     assert!(facts.has_seaql_ledger);
-    assert_eq!(facts.seaql_migration_count, 10);
+    assert_eq!(facts.seaql_migration_count, 11);
     assert_eq!(
         facts.seaql_migrations,
         [
@@ -2640,11 +2810,13 @@ fn review_state_seaorm_round_trips_every_normalized_collection() {
             "m20260727_000008_retouch_contrast",
             "m20260729_000009_dcp_provenance",
             "m20260803_000010_diffusion_settings",
+            "m20260804_000011_diffusion_parameters",
         ]
     );
     assert!(!facts.has_legacy_ledger);
     assert!(!facts.has_review_state);
     assert!(!facts.has_json_storage_columns);
+    assert!(facts.has_diffusion_parameter_columns);
     assert_eq!(facts.counts["review_settings"], 1);
     assert_eq!(facts.counts["profiles"], 2);
     assert_eq!(facts.counts["images"], 3);
@@ -2708,10 +2880,10 @@ fn normalized_v11_database_is_backed_up_and_adopted_losslessly_once() {
     let backup_bytes = fs::read(&backup_path).unwrap();
 
     let after_facts = database_facts(&state_path).unwrap();
-    assert_eq!(after_facts.schema_version, 21);
+    assert_eq!(after_facts.schema_version, 22);
     assert!(!after_facts.has_legacy_ledger);
     assert!(after_facts.has_seaql_ledger);
-    assert_eq!(after_facts.seaql_migration_count, 10);
+    assert_eq!(after_facts.seaql_migration_count, 11);
     assert_eq!(
         after_facts.seaql_migrations,
         [
@@ -2725,6 +2897,7 @@ fn normalized_v11_database_is_backed_up_and_adopted_losslessly_once() {
             "m20260727_000008_retouch_contrast",
             "m20260729_000009_dcp_provenance",
             "m20260803_000010_diffusion_settings",
+            "m20260804_000011_diffusion_parameters",
         ]
     );
     assert!(!after_facts.has_json_storage_columns);
@@ -2763,7 +2936,7 @@ fn pre_release_two_entry_seaorm_ledger_is_collapsed_without_data_loss() {
         serde_json::to_value(migrated_pre_contrast_store(persisted_store(store))).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.seaql_migration_count, 10);
+    assert_eq!(after.seaql_migration_count, 11);
     assert_eq!(
         after.seaql_migrations,
         [
@@ -2777,6 +2950,7 @@ fn pre_release_two_entry_seaorm_ledger_is_collapsed_without_data_loss() {
             "m20260727_000008_retouch_contrast",
             "m20260729_000009_dcp_provenance",
             "m20260803_000010_diffusion_settings",
+            "m20260804_000011_diffusion_parameters",
         ]
     );
 }
@@ -2794,8 +2968,8 @@ fn schema_v12_migrates_to_panorama_schema_without_review_data_loss() {
         serde_json::to_value(migrated_pre_sampler_store(store)).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 21);
-    assert_eq!(after.seaql_migration_count, 10);
+    assert_eq!(after.schema_version, 22);
+    assert_eq!(after.seaql_migration_count, 11);
     assert_eq!(after.counts["panorama_projects"], 0);
     assert_eq!(after.counts["panorama_project_images"], 0);
     assert_eq!(after.counts["panorama_previews"], 0);
@@ -2824,8 +2998,8 @@ fn schema_v13_migrates_sampler_state_without_review_data_loss() {
             && profile.identity.starts_with("legacy:")
     }));
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 21);
-    assert_eq!(after.seaql_migration_count, 10);
+    assert_eq!(after.schema_version, 22);
+    assert_eq!(after.seaql_migration_count, 11);
     assert_eq!(after.indexes.len(), 29);
 }
 
@@ -2851,8 +3025,8 @@ fn schema_v14_adds_focus_region_storage_without_review_data_loss() {
         .unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 21);
-    assert_eq!(after.seaql_migration_count, 10);
+    assert_eq!(after.schema_version, 22);
+    assert_eq!(after.seaql_migration_count, 11);
     assert_eq!(after.counts["image_focus_regions"], 0);
     assert_eq!(after.indexes.len(), 29);
 }
@@ -2891,8 +3065,8 @@ fn schema_v15_paths_migrate_and_rebase_after_input_and_output_move() {
     );
 
     let facts = database_facts(&new_state).unwrap();
-    assert_eq!(facts.schema_version, 21);
-    assert_eq!(facts.seaql_migration_count, 10);
+    assert_eq!(facts.schema_version, 22);
+    assert_eq!(facts.seaql_migration_count, 11);
     assert_eq!(paths.input_root, new_input.to_string_lossy());
     assert_eq!(paths.output_root, new_output.to_string_lossy());
     assert!(
@@ -2964,8 +3138,8 @@ fn schema_v17_adds_normalized_auto_import_tables_without_review_data_loss() {
         .unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 21);
-    assert_eq!(after.seaql_migration_count, 10);
+    assert_eq!(after.schema_version, 22);
+    assert_eq!(after.seaql_migration_count, 11);
     assert_eq!(after.counts["auto_import_devices"], 0);
     assert_eq!(after.counts["auto_import_storages"], 0);
     assert_eq!(after.counts["auto_import_groups"], 0);
@@ -3004,8 +3178,8 @@ fn schema_v18_splits_contrast_from_clarity_without_losing_old_edits() {
     assert_eq!(detailed.retouch_base.clarity, 15.0);
 
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 21);
-    assert_eq!(after.seaql_migration_count, 10);
+    assert_eq!(after.schema_version, 22);
+    assert_eq!(after.seaql_migration_count, 11);
 }
 
 #[test]
@@ -3027,10 +3201,39 @@ fn schema_v20_adds_diffusion_settings_without_losing_review_data() {
         serde_json::to_value(migrated_pre_diffusion_store(persisted_store(store))).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 21);
-    assert_eq!(after.seaql_migration_count, 10);
+    assert_eq!(after.schema_version, 22);
+    assert_eq!(after.seaql_migration_count, 11);
     assert_eq!(after.counts["profile_diffusion_settings"], 0);
     assert_eq!(after.counts["image_profile_diffusion_settings"], 0);
+    assert_eq!(after.indexes.len(), 29);
+}
+
+#[test]
+fn schema_v21_adds_neutral_diffusion_parameters_without_losing_settings() {
+    let temp = tempfile::tempdir().unwrap();
+    let state_path = temp.path().join(SQLITE_STATE_FILE);
+    let store = fully_populated_review_store();
+    let expected = migrated_pre_diffusion_parameters_store(persisted_store(store.clone()));
+    make_schema_v21_database(&state_path, &store).unwrap();
+
+    let before = database_facts(&state_path).unwrap();
+    assert_eq!(before.schema_version, 21);
+    assert_eq!(before.seaql_migration_count, 10);
+    assert!(!before.has_diffusion_parameter_columns);
+    assert_eq!(before.counts["profile_diffusion_settings"], 1);
+    assert_eq!(before.counts["image_profile_diffusion_settings"], 1);
+
+    let loaded = load_store(&state_path).unwrap().unwrap();
+    assert_eq!(
+        serde_json::to_value(loaded).unwrap(),
+        serde_json::to_value(expected).unwrap()
+    );
+    let after = database_facts(&state_path).unwrap();
+    assert_eq!(after.schema_version, 22);
+    assert_eq!(after.seaql_migration_count, 11);
+    assert!(after.has_diffusion_parameter_columns);
+    assert_eq!(after.counts["profile_diffusion_settings"], 1);
+    assert_eq!(after.counts["image_profile_diffusion_settings"], 1);
     assert_eq!(after.indexes.len(), 29);
 }
 
@@ -5486,26 +5689,31 @@ fn publish_rerender_uses_effective_diffusion_and_skips_pending_profile_renders()
         method: DiffusionMethod::MultiScaleMist,
         softness: 20,
         highlight_glow: 25,
+        ..DiffusionSettings::default()
     };
     let profile_default = DiffusionSettings {
         method: DiffusionMethod::EdgeAwareGlow,
         softness: 30,
         highlight_glow: 35,
+        ..DiffusionSettings::default()
     };
     let overridden_profile_default = DiffusionSettings {
         method: DiffusionMethod::EdgeAwareGlow,
         softness: 15,
         highlight_glow: 20,
+        ..DiffusionSettings::default()
     };
     let current = DiffusionSettings {
         method: DiffusionMethod::MultiScaleMist,
         softness: 55,
         highlight_glow: 60,
+        ..DiffusionSettings::default()
     };
     let explicit_off = DiffusionSettings {
         method: DiffusionMethod::EdgeAwareGlow,
         softness: 0,
         highlight_glow: 0,
+        ..DiffusionSettings::default()
     };
     store.profile_diffusion_settings = vec![
         ReviewProfileDiffusionSetting {

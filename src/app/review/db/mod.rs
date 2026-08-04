@@ -19,12 +19,12 @@ use migrations::{
     PRE_RELEASE_SEAORM_LEDGER, V11_LEDGER, V18_BASELINE_MIGRATION, ensure_retouch_contrast_columns,
 };
 use paths::ReviewPathRoots;
+#[cfg(test)]
+use sea_orm::{ConnectionTrait, IntoActiveModel, PaginatorTrait, QuerySelect, Schema};
 use sea_orm::{
     DatabaseConnection, EntityTrait, QueryOrder, SqlxSqliteConnector, TransactionTrait,
     sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions},
 };
-#[cfg(test)]
-use sea_orm::{IntoActiveModel, PaginatorTrait, QuerySelect, Schema};
 use sea_orm_migration::{MigratorTrait, SchemaManager};
 use tokio::sync::Mutex;
 
@@ -422,6 +422,15 @@ async fn verify_seaorm_database(connection: &DatabaseConnection) -> Result<()> {
             bail!("SeaORM review database is missing required table {table}");
         }
     }
+    for (table, column) in required_diffusion_parameter_columns() {
+        if !manager
+            .has_column(table, column)
+            .await
+            .with_context(|| format!("checking review column {table}.{column}"))?
+        {
+            bail!("SeaORM review database is missing required column {table}.{column}");
+        }
+    }
     sqlite_compat::verify_integrity(connection)
         .await
         .context("validating SeaORM review database")
@@ -584,6 +593,23 @@ fn required_diffusion_tables() -> impl Iterator<Item = &'static str> {
     .into_iter()
 }
 
+fn required_diffusion_parameter_columns() -> impl Iterator<Item = (&'static str, &'static str)> {
+    [
+        ("profile_diffusion_settings", "softness_radius_percent"),
+        ("profile_diffusion_settings", "glow_radius_percent"),
+        ("profile_diffusion_settings", "intensity_percent"),
+        ("profile_diffusion_settings", "highlight_reach"),
+        (
+            "image_profile_diffusion_settings",
+            "softness_radius_percent",
+        ),
+        ("image_profile_diffusion_settings", "glow_radius_percent"),
+        ("image_profile_diffusion_settings", "intensity_percent"),
+        ("image_profile_diffusion_settings", "highlight_reach"),
+    ]
+    .into_iter()
+}
+
 #[cfg(test)]
 pub(super) fn load_store(path: &Path) -> Result<Option<ReviewStore>> {
     load_store_with_roots(path, Path::new("/in"), Path::new("/out"))
@@ -633,6 +659,7 @@ pub(super) struct TestDatabaseFacts {
     pub(super) seaql_migrations: Vec<String>,
     pub(super) has_review_state: bool,
     pub(super) has_json_storage_columns: bool,
+    pub(super) has_diffusion_parameter_columns: bool,
     pub(super) counts: HashMap<&'static str, u64>,
     pub(super) indexes: HashSet<&'static str>,
 }
@@ -722,6 +749,10 @@ pub(super) fn database_facts(path: &Path) -> Result<TestDatabaseFacts> {
             || manager
                 .has_column("image_profile_renders", "render_json")
                 .await?;
+        let mut has_diffusion_parameter_columns = true;
+        for (table, column) in required_diffusion_parameter_columns() {
+            has_diffusion_parameter_columns &= manager.has_column(table, column).await?;
+        }
         let mut counts = HashMap::new();
         counts.insert(
             "review_settings",
@@ -771,6 +802,8 @@ pub(super) fn database_facts(path: &Path) -> Result<TestDatabaseFacts> {
             "profile_diffusion_settings",
             if manager.has_table("profile_diffusion_settings").await? {
                 entities::profile_diffusion_settings::Entity::find()
+                    .select_only()
+                    .column(entities::profile_diffusion_settings::Column::ProfileIndex)
                     .count(&connection)
                     .await?
             } else {
@@ -784,6 +817,8 @@ pub(super) fn database_facts(path: &Path) -> Result<TestDatabaseFacts> {
                 .await?
             {
                 entities::image_profile_diffusion_settings::Entity::find()
+                    .select_only()
+                    .column(entities::image_profile_diffusion_settings::Column::ImageId)
                     .count(&connection)
                     .await?
             } else {
@@ -921,6 +956,7 @@ pub(super) fn database_facts(path: &Path) -> Result<TestDatabaseFacts> {
             seaql_migrations,
             has_review_state,
             has_json_storage_columns,
+            has_diffusion_parameter_columns,
             counts,
             indexes,
         };
@@ -1031,6 +1067,55 @@ pub(super) fn assert_domain_constraints(path: &Path) -> Result<()> {
             "review settings singleton constraint accepted a second row"
         );
 
+        connection
+            .execute_unprepared(
+                r#"INSERT INTO "profile_diffusion_settings"
+                    ("profile_index", "method", "softness", "highlight_glow")
+                    VALUES (9, 'multi-scale-mist', 1, 2)"#,
+            )
+            .await?;
+        let defaulted_profile = entities::profile_diffusion_settings::Entity::find_by_id(9)
+            .one(&connection)
+            .await?
+            .context("missing defaulted profile diffusion fixture")?;
+        ensure!(
+            (
+                defaulted_profile.softness_radius_percent,
+                defaulted_profile.glow_radius_percent,
+                defaulted_profile.intensity_percent,
+                defaulted_profile.highlight_reach,
+            ) == (100, 100, 100, 50),
+            "profile diffusion SQL defaults did not preserve neutral parameters"
+        );
+        entities::profile_diffusion_settings::Entity::delete_by_id(9)
+            .exec(&connection)
+            .await?;
+
+        connection
+            .execute_unprepared(
+                r#"INSERT INTO "image_profile_diffusion_settings"
+                    ("image_id", "profile_index", "method", "softness", "highlight_glow")
+                    VALUES (1, 9, 'multi-scale-mist', 1, 2)"#,
+            )
+            .await?;
+        let defaulted_image =
+            entities::image_profile_diffusion_settings::Entity::find_by_id((1, 9))
+                .one(&connection)
+                .await?
+                .context("missing defaulted image diffusion fixture")?;
+        ensure!(
+            (
+                defaulted_image.softness_radius_percent,
+                defaulted_image.glow_radius_percent,
+                defaulted_image.intensity_percent,
+                defaulted_image.highlight_reach,
+            ) == (100, 100, 100, 50),
+            "image diffusion SQL defaults did not preserve neutral parameters"
+        );
+        entities::image_profile_diffusion_settings::Entity::delete_by_id((1, 9))
+            .exec(&connection)
+            .await?;
+
         let mut diffusion = entities::profile_diffusion_settings::Entity::find()
             .one(&connection)
             .await?
@@ -1049,11 +1134,55 @@ pub(super) fn assert_domain_constraints(path: &Path) -> Result<()> {
         diffusion.method = "multi-scale-mist".to_string();
         diffusion.softness = 101;
         ensure!(
+            entities::profile_diffusion_settings::Entity::insert(
+                diffusion.clone().into_active_model()
+            )
+            .exec(&connection)
+            .await
+            .is_err(),
+            "profile diffusion strength constraint accepted invalid data"
+        );
+        diffusion.softness = 42;
+        diffusion.softness_radius_percent = 49;
+        ensure!(
+            entities::profile_diffusion_settings::Entity::insert(
+                diffusion.clone().into_active_model()
+            )
+            .exec(&connection)
+            .await
+            .is_err(),
+            "profile diffusion softness radius constraint accepted invalid data"
+        );
+        diffusion.softness_radius_percent = 100;
+        diffusion.glow_radius_percent = 401;
+        ensure!(
+            entities::profile_diffusion_settings::Entity::insert(
+                diffusion.clone().into_active_model()
+            )
+            .exec(&connection)
+            .await
+            .is_err(),
+            "profile diffusion glow radius constraint accepted invalid data"
+        );
+        diffusion.glow_radius_percent = 100;
+        diffusion.intensity_percent = 24;
+        ensure!(
+            entities::profile_diffusion_settings::Entity::insert(
+                diffusion.clone().into_active_model()
+            )
+            .exec(&connection)
+            .await
+            .is_err(),
+            "profile diffusion intensity constraint accepted invalid data"
+        );
+        diffusion.intensity_percent = 100;
+        diffusion.highlight_reach = 101;
+        ensure!(
             entities::profile_diffusion_settings::Entity::insert(diffusion.into_active_model())
                 .exec(&connection)
                 .await
                 .is_err(),
-            "profile diffusion strength constraint accepted invalid data"
+            "profile diffusion highlight reach constraint accepted invalid data"
         );
 
         let mut image_diffusion = entities::image_profile_diffusion_settings::Entity::find()
@@ -1064,12 +1193,56 @@ pub(super) fn assert_domain_constraints(path: &Path) -> Result<()> {
         image_diffusion.highlight_glow = -1;
         ensure!(
             entities::image_profile_diffusion_settings::Entity::insert(
-                image_diffusion.into_active_model()
+                image_diffusion.clone().into_active_model()
             )
             .exec(&connection)
             .await
             .is_err(),
             "image diffusion strength constraint accepted invalid data"
+        );
+        image_diffusion.highlight_glow = 56;
+        image_diffusion.softness_radius_percent = 401;
+        ensure!(
+            entities::image_profile_diffusion_settings::Entity::insert(
+                image_diffusion.clone().into_active_model()
+            )
+            .exec(&connection)
+            .await
+            .is_err(),
+            "image diffusion softness radius constraint accepted invalid data"
+        );
+        image_diffusion.softness_radius_percent = 100;
+        image_diffusion.glow_radius_percent = 49;
+        ensure!(
+            entities::image_profile_diffusion_settings::Entity::insert(
+                image_diffusion.clone().into_active_model()
+            )
+            .exec(&connection)
+            .await
+            .is_err(),
+            "image diffusion glow radius constraint accepted invalid data"
+        );
+        image_diffusion.glow_radius_percent = 100;
+        image_diffusion.intensity_percent = 301;
+        ensure!(
+            entities::image_profile_diffusion_settings::Entity::insert(
+                image_diffusion.clone().into_active_model()
+            )
+            .exec(&connection)
+            .await
+            .is_err(),
+            "image diffusion intensity constraint accepted invalid data"
+        );
+        image_diffusion.intensity_percent = 100;
+        image_diffusion.highlight_reach = -1;
+        ensure!(
+            entities::image_profile_diffusion_settings::Entity::insert(
+                image_diffusion.into_active_model()
+            )
+            .exec(&connection)
+            .await
+            .is_err(),
+            "image diffusion highlight reach constraint accepted invalid data"
         );
 
         connection.close().await?;
@@ -1154,7 +1327,7 @@ pub(super) fn make_schema_v12_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(9)).await?;
+        Migrator::down(&connection, Some(10)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1170,7 +1343,7 @@ pub(super) fn make_schema_v13_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(8)).await?;
+        Migrator::down(&connection, Some(9)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1186,7 +1359,7 @@ pub(super) fn make_schema_v14_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(7)).await?;
+        Migrator::down(&connection, Some(8)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1202,7 +1375,7 @@ pub(super) fn make_schema_v15_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(6)).await?;
+        Migrator::down(&connection, Some(7)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1218,7 +1391,7 @@ pub(super) fn make_schema_v17_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(4)).await?;
+        Migrator::down(&connection, Some(5)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1234,7 +1407,7 @@ pub(super) fn make_schema_v18_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(3)).await?;
+        Migrator::down(&connection, Some(4)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1250,7 +1423,99 @@ pub(super) fn make_schema_v20_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
+        Migrator::down(&connection, Some(2)).await?;
+        sqlite_compat::verify_integrity(&connection).await?;
+        connection.close().await?;
+        Ok(())
+    })
+}
+
+#[cfg(test)]
+pub(super) fn make_schema_v21_database(path: &Path, store: &ReviewStore) -> Result<()> {
+    save_store(path, store)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("building review database runtime")?;
+    runtime.block_on(async {
+        let connection = connect_database(path, false).await?;
         Migrator::down(&connection, Some(1)).await?;
+
+        // The v22 down migration intentionally leaves compatible columns in
+        // place. Rebuild the two tables with their historical v21 shape so
+        // migration tests exercise the guarded ALTER TABLE path.
+        let transaction = connection.begin().await?;
+        transaction
+            .execute_unprepared(
+                r#"CREATE TABLE "profile_diffusion_settings_v21" (
+                    "profile_index" INTEGER NOT NULL PRIMARY KEY,
+                    "method" TEXT NOT NULL,
+                    "softness" INTEGER NOT NULL,
+                    "highlight_glow" INTEGER NOT NULL,
+                    FOREIGN KEY ("profile_index") REFERENCES "profiles" ("profile_index") ON DELETE CASCADE ON UPDATE NO ACTION,
+                    CHECK ("method" IN ('multi-scale-mist', 'edge-aware-glow')),
+                    CHECK ("softness" BETWEEN 0 AND 100),
+                    CHECK ("highlight_glow" BETWEEN 0 AND 100)
+                )"#,
+            )
+            .await?;
+        transaction
+            .execute_unprepared(
+                r#"INSERT INTO "profile_diffusion_settings_v21"
+                    ("profile_index", "method", "softness", "highlight_glow")
+                    SELECT "profile_index", "method", "softness", "highlight_glow"
+                    FROM "profile_diffusion_settings""#,
+            )
+            .await?;
+        transaction
+            .execute_unprepared(r#"DROP TABLE "profile_diffusion_settings""#)
+            .await?;
+        transaction
+            .execute_unprepared(
+                r#"ALTER TABLE "profile_diffusion_settings_v21" RENAME TO "profile_diffusion_settings""#,
+            )
+            .await?;
+
+        transaction
+            .execute_unprepared(
+                r#"CREATE TABLE "image_profile_diffusion_settings_v21" (
+                    "image_id" INTEGER NOT NULL,
+                    "profile_index" INTEGER NOT NULL,
+                    "method" TEXT NOT NULL,
+                    "softness" INTEGER NOT NULL,
+                    "highlight_glow" INTEGER NOT NULL,
+                    PRIMARY KEY ("image_id", "profile_index"),
+                    FOREIGN KEY ("image_id") REFERENCES "images" ("image_id") ON DELETE CASCADE ON UPDATE NO ACTION,
+                    CHECK ("method" IN ('multi-scale-mist', 'edge-aware-glow')),
+                    CHECK ("softness" BETWEEN 0 AND 100),
+                    CHECK ("highlight_glow" BETWEEN 0 AND 100)
+                )"#,
+            )
+            .await?;
+        transaction
+            .execute_unprepared(
+                r#"INSERT INTO "image_profile_diffusion_settings_v21"
+                    ("image_id", "profile_index", "method", "softness", "highlight_glow")
+                    SELECT "image_id", "profile_index", "method", "softness", "highlight_glow"
+                    FROM "image_profile_diffusion_settings""#,
+            )
+            .await?;
+        transaction
+            .execute_unprepared(r#"DROP TABLE "image_profile_diffusion_settings""#)
+            .await?;
+        transaction
+            .execute_unprepared(
+                r#"ALTER TABLE "image_profile_diffusion_settings_v21" RENAME TO "image_profile_diffusion_settings""#,
+            )
+            .await?;
+        transaction
+            .execute_unprepared(
+                r#"CREATE INDEX "idx_image_profile_diffusion_profile"
+                    ON "image_profile_diffusion_settings" ("profile_index")"#,
+            )
+            .await?;
+        transaction.commit().await?;
+
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())

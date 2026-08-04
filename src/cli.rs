@@ -48,21 +48,46 @@ pub(crate) struct DiffusionCliArgs {
     /// Override highlight glow, from 0 to 100.
     #[arg(long, value_name = "0..100", value_parser = parse_diffusion_strength)]
     diffusion_glow: Option<u8>,
+
+    /// Override the softness radius, as a percentage of the 12 MP-normalized radius.
+    #[arg(long, value_name = "50..400", value_parser = parse_diffusion_radius)]
+    diffusion_softness_radius: Option<u16>,
+
+    /// Override the glow radius, as a percentage of the 12 MP-normalized radius.
+    #[arg(long, value_name = "50..400", value_parser = parse_diffusion_radius)]
+    diffusion_glow_radius: Option<u16>,
+
+    /// Override diffusion intensity, from 25 to 300 percent.
+    #[arg(long, value_name = "25..300", value_parser = parse_diffusion_intensity)]
+    diffusion_intensity: Option<u16>,
+
+    /// Override highlight reach, from brightest-only at 0 to broad at 100.
+    #[arg(long, value_name = "0..100", value_parser = parse_diffusion_highlight_reach)]
+    diffusion_highlight_reach: Option<u8>,
 }
 
 impl DiffusionCliArgs {
     pub(crate) fn resolve(self) -> DiffusionSettings {
-        let (preset_softness, preset_glow) = match self.diffusion {
-            DiffusionPreset::Off => (0, 0),
-            DiffusionPreset::Subtle => (25, 25),
-            DiffusionPreset::Medium => (50, 50),
-            DiffusionPreset::Strong => (75, 75),
-        };
-        DiffusionSettings {
-            method: self.diffusion_method,
-            softness: self.diffusion_softness.unwrap_or(preset_softness),
-            highlight_glow: self.diffusion_glow.unwrap_or(preset_glow),
+        let mut settings = self.diffusion.settings(self.diffusion_method);
+        if let Some(softness) = self.diffusion_softness {
+            settings.softness = softness;
         }
+        if let Some(highlight_glow) = self.diffusion_glow {
+            settings.highlight_glow = highlight_glow;
+        }
+        if let Some(radius) = self.diffusion_softness_radius {
+            settings.softness_radius_percent = radius;
+        }
+        if let Some(radius) = self.diffusion_glow_radius {
+            settings.glow_radius_percent = radius;
+        }
+        if let Some(intensity) = self.diffusion_intensity {
+            settings.intensity_percent = intensity;
+        }
+        if let Some(reach) = self.diffusion_highlight_reach {
+            settings.highlight_reach = reach;
+        }
+        settings
     }
 }
 
@@ -1287,6 +1312,36 @@ fn parse_diffusion_strength(raw: &str) -> Result<u8, String> {
     Ok(value)
 }
 
+fn parse_diffusion_radius(raw: &str) -> Result<u16, String> {
+    let value = raw
+        .parse::<u16>()
+        .map_err(|_| format!("invalid diffusion radius {raw:?}"))?;
+    if !(50..=400).contains(&value) {
+        return Err("diffusion radius must be between 50 and 400 percent".to_string());
+    }
+    Ok(value)
+}
+
+fn parse_diffusion_intensity(raw: &str) -> Result<u16, String> {
+    let value = raw
+        .parse::<u16>()
+        .map_err(|_| format!("invalid diffusion intensity {raw:?}"))?;
+    if !(25..=300).contains(&value) {
+        return Err("diffusion intensity must be between 25 and 300 percent".to_string());
+    }
+    Ok(value)
+}
+
+fn parse_diffusion_highlight_reach(raw: &str) -> Result<u8, String> {
+    let value = raw
+        .parse::<u8>()
+        .map_err(|_| format!("invalid diffusion highlight reach {raw:?}"))?;
+    if value > 100 {
+        return Err("diffusion highlight reach must be between 0 and 100".to_string());
+    }
+    Ok(value)
+}
+
 fn parse_lens_corrections(raw: &str) -> Result<LensCorrections, String> {
     let mut correction = LensCorrections::none();
     if raw.trim().is_empty() {
@@ -2134,6 +2189,10 @@ mod tests {
                 method: DiffusionMethod::EdgeAwareGlow,
                 softness: 60,
                 highlight_glow: 50,
+                softness_radius_percent: 150,
+                glow_radius_percent: 225,
+                intensity_percent: 225,
+                highlight_reach: 60,
             }
         );
     }
@@ -2151,6 +2210,58 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(error.contains("between 0 and 100"));
+    }
+
+    #[test]
+    fn cli_diffusion_advanced_controls_override_presets_and_validate_ranges() {
+        let parsed = Cli::parse_from([
+            "mini-film",
+            "apply",
+            "input.dng",
+            "--output",
+            "out.jpg",
+            "--diffusion",
+            "strong",
+            "--diffusion-method",
+            "edge-aware-glow",
+            "--diffusion-softness-radius",
+            "175",
+            "--diffusion-glow-radius",
+            "250",
+            "--diffusion-intensity",
+            "275",
+            "--diffusion-highlight-reach",
+            "85",
+        ]);
+        let CommandKind::Apply { diffusion, .. } = parsed.command else {
+            panic!("expected apply command");
+        };
+        assert_eq!(
+            diffusion.resolve(),
+            DiffusionSettings {
+                method: DiffusionMethod::EdgeAwareGlow,
+                softness: 75,
+                highlight_glow: 75,
+                softness_radius_percent: 175,
+                glow_radius_percent: 250,
+                intensity_percent: 275,
+                highlight_reach: 85,
+            }
+        );
+
+        for (option, value, message) in [
+            ("--diffusion-softness-radius", "49", "between 50 and 400"),
+            ("--diffusion-glow-radius", "401", "between 50 and 400"),
+            ("--diffusion-intensity", "24", "between 25 and 300"),
+            ("--diffusion-intensity", "301", "between 25 and 300"),
+            ("--diffusion-highlight-reach", "101", "between 0 and 100"),
+        ] {
+            let error =
+                Cli::try_parse_from(["mini-film", "daemon", "input", "output", option, value])
+                    .unwrap_err()
+                    .to_string();
+            assert!(error.contains(message), "{error}");
+        }
     }
 
     #[test]
@@ -2175,6 +2286,10 @@ mod tests {
                 method: DiffusionMethod::MultiScaleMist,
                 softness: 75,
                 highlight_glow: 40,
+                softness_radius_percent: 200,
+                glow_radius_percent: 300,
+                intensity_percent: 300,
+                highlight_reach: 50,
             }
         );
 
@@ -2203,6 +2318,10 @@ mod tests {
                 method: DiffusionMethod::EdgeAwareGlow,
                 softness: 25,
                 highlight_glow: 25,
+                softness_radius_percent: 100,
+                glow_radius_percent: 150,
+                intensity_percent: 150,
+                highlight_reach: 50,
             }
         );
     }

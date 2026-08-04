@@ -394,6 +394,10 @@ fn profile_diffusion_rows(store: &ReviewStore) -> Result<Vec<profile_diffusion_s
                 method: enum_text(&entry.settings.method)?,
                 softness: i64::from(entry.settings.softness),
                 highlight_glow: i64::from(entry.settings.highlight_glow),
+                softness_radius_percent: i64::from(entry.settings.softness_radius_percent),
+                glow_radius_percent: i64::from(entry.settings.glow_radius_percent),
+                intensity_percent: i64::from(entry.settings.intensity_percent),
+                highlight_reach: i64::from(entry.settings.highlight_reach),
             })
         })
         .collect()
@@ -413,6 +417,10 @@ fn image_profile_diffusion_rows(
                 method: enum_text(&entry.settings.method)?,
                 softness: i64::from(entry.settings.softness),
                 highlight_glow: i64::from(entry.settings.highlight_glow),
+                softness_radius_percent: i64::from(entry.settings.softness_radius_percent),
+                glow_radius_percent: i64::from(entry.settings.glow_radius_percent),
+                intensity_percent: i64::from(entry.settings.intensity_percent),
+                highlight_reach: i64::from(entry.settings.highlight_reach),
             })
         })
         .collect()

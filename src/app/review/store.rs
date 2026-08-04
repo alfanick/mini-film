@@ -843,10 +843,7 @@ fn review_profiles_match(left: &ReviewProfile, right: &ReviewProfile) -> bool {
 }
 
 pub(super) fn validate_diffusion_settings(settings: &DiffusionSettings) -> Result<()> {
-    if settings.softness > 100 || settings.highlight_glow > 100 {
-        bail!("diffusion softness and highlight_glow must be in 0..100");
-    }
-    Ok(())
+    settings.validate()
 }
 
 fn unique_sampler_profile_stem(
@@ -1423,15 +1420,12 @@ pub(super) fn review_render_processing_key_for_input_with_diffusion(
         normalize_grain_mpix,
         export,
     );
-    if profile_index == SOOC_PROFILE_INDEX || !diffusion.is_enabled() {
+    if profile_index == SOOC_PROFILE_INDEX {
         return base;
     }
-    format!(
-        "{base}:diffusion-v1={}/{}/{}",
-        diffusion.method.as_str(),
-        diffusion.softness,
-        diffusion.highlight_glow,
-    )
+    diffusion
+        .render_identity()
+        .map_or(base.clone(), |identity| format!("{base}:{identity}"))
 }
 
 pub(super) fn review_export_processing_identity(export: &ExportOptions) -> String {

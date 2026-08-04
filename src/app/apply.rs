@@ -1563,6 +1563,7 @@ cp "$first_input" "$last_argument"
                     method: mini_film::DiffusionMethod::MultiScaleMist,
                     softness: 60,
                     highlight_glow: 60,
+                    ..DiffusionSettings::default()
                 },
                 color_noise_iso_threshold: 0,
                 lens_corrections: LensCorrections::default(),
@@ -1616,6 +1617,7 @@ cp "$first_input" "$last_argument"
             method: mini_film::DiffusionMethod::MultiScaleMist,
             softness: 70,
             highlight_glow: 65,
+            ..DiffusionSettings::default()
         };
         let seed = 7;
         let grain_options = GrainRenderOptions {

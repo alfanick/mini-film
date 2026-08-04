@@ -405,7 +405,8 @@ Output metadata behavior for `apply`, `batch`, `daemon`, and `sampler`:
 - the XMP packet also records mini-film as the creator/converter and adds a
   high-level `xmpMM` history entry with the raw file, profile, linked profile,
   Hald or PP3 source, grain state, grain engine, grain seed, and
-  grain-normalization reference, plus diffusion method/strength when enabled
+  grain-normalization reference, plus the effective diffusion method and
+  parameters when enabled
 - an EXIF comment is written as  
   `mini-film <version> usage=<command> profile=<profile-or-emulation>`
   or `profile=none` when no profile was configured
@@ -1149,18 +1150,36 @@ the [fast local-Laplacian approximation](https://people.csail.mit.edu/hasinoff/p
 and [Spencer et al.'s glare model](https://doi.org/10.1145/218380.218466).
 No paper code or training/dataset material is bundled.
 
-Use a preset or override its two components independently:
+Use a preset or override its parameters independently:
 
 ```sh
 --diffusion subtle
 --diffusion medium --diffusion-method edge-aware-glow
---diffusion strong --diffusion-softness 60 --diffusion-glow 35
+--diffusion strong --diffusion-softness 60 --diffusion-glow 35 --diffusion-intensity 250
+--diffusion medium --diffusion-softness-radius 175 --diffusion-glow-radius 275
+--diffusion medium --diffusion-method edge-aware-glow --diffusion-highlight-reach 75
 ```
 
-Presets are `off`, `subtle`, `medium`, and `strong`. `--diffusion-softness` and
-`--diffusion-glow` accept `0..100`; an explicit value overrides that component
-of the preset. Spatial radii use the same 12 MP reference principle as normalized
-grain, so a 48 MP intermediate uses twice the radius of a 12 MP intermediate.
+Presets are `off`, `subtle`, `medium`, and `strong`. They retain the selected
+renderer and set all diffusion parameters:
+
+| Preset | Softness | Glow | Softness radius | Glow radius | Intensity | Edge-aware reach |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `off` | 0 | 0 | 100% | 100% | 100% | 50 |
+| `subtle` | 25 | 25 | 100% | 150% | 150% | 50 |
+| `medium` | 50 | 50 | 150% | 225% | 225% | 60 |
+| `strong` | 75 | 75 | 200% | 300% | 300% | 70 |
+
+`--diffusion-softness` and `--diffusion-glow` accept `0..100`.
+`--diffusion-softness-radius` and `--diffusion-glow-radius` accept `50..400`,
+and `--diffusion-intensity` accepts `25..300`; these three values are
+percentages of the renderer's calibrated radius or strength. Spatial radii use
+the same 12 MP reference principle as normalized grain, so a 48 MP intermediate
+uses twice the radius of a 12 MP intermediate before the radius percentage is
+applied. `--diffusion-highlight-reach` accepts `0..100` and only affects
+`edge-aware-glow`; higher values bloom a wider range of highlights. The review
+wizard hides this control for `multi-scale-mist`. Every explicit flag overrides
+the corresponding preset value.
 
 In daemon review, the near-fullscreen Diffusion wizard previews both methods
 with a full-frame before/after view and three paired detail views: the recorded
@@ -1168,7 +1187,9 @@ camera focus area, a high-contrast highlight, and a broad highlight. The focus
 view uses the camera AF region after crop and rotation, falling back to the
 picture center when no recorded AF region remains visible. Highlight views are
 selected automatically and kept fixed while diffusion controls change, making
-softness and glow easier to compare.
+softness, radius, intensity, and glow easier to compare. The wizard groups the
+sliders into Softening, Highlights, and Overall controls; Highlight reach is
+shown only for the edge-aware renderer.
 
 The wizard offers two sampler-style scopes. **Apply to current** changes only
 the current picture/profile pair. **Apply to all** makes the setting the current
