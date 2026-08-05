@@ -269,6 +269,7 @@ impl ReviewDatabase {
         display_name: &str,
         serial: Option<&str>,
     ) -> Result<AutoImportDevice> {
+        let _write_guard = self.write_lock.lock().await;
         let now = now_text();
         let row = auto_import_devices::Entity::find()
             .filter(auto_import_devices::Column::DeviceKey.eq(key))
@@ -306,6 +307,7 @@ impl ReviewDatabase {
         key: &str,
         display_name: &str,
     ) -> Result<AutoImportStorage> {
+        let _write_guard = self.write_lock.lock().await;
         let row = auto_import_storages::Entity::find()
             .filter(auto_import_storages::Column::DeviceId.eq(device_id))
             .filter(auto_import_storages::Column::StorageKey.eq(key))
@@ -439,6 +441,7 @@ impl ReviewDatabase {
     }
 
     async fn record_auto_import(&self, record: AutoImportRecord) -> Result<AutoImportAsset> {
+        let _write_guard = self.write_lock.lock().await;
         let transaction = self
             .connection
             .begin()
@@ -461,6 +464,7 @@ impl ReviewDatabase {
     }
 
     async fn record_auto_import_source(&self, record: AutoImportSourceRecord) -> Result<()> {
+        let _write_guard = self.write_lock.lock().await;
         upsert_source(&self.connection, &record).await
     }
 
@@ -469,6 +473,7 @@ impl ReviewDatabase {
         asset_id: i64,
         active_filename: &str,
     ) -> Result<()> {
+        let _write_guard = self.write_lock.lock().await;
         let row = auto_import_assets::Entity::find_by_id(asset_id)
             .one(&self.connection)
             .await
@@ -489,6 +494,7 @@ impl ReviewDatabase {
         asset_id: i64,
         identity: &AutoImportIdentity,
     ) -> Result<()> {
+        let _write_guard = self.write_lock.lock().await;
         let row = auto_import_assets::Entity::find_by_id(asset_id)
             .one(&self.connection)
             .await
@@ -757,4 +763,141 @@ fn asset_from_rows(
 
 fn now_text() -> String {
     chrono::Utc::now().to_rfc3339()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        sync::mpsc::{self, RecvTimeoutError},
+        thread,
+        time::Duration,
+    };
+
+    use super::*;
+
+    #[test]
+    fn auto_import_mutations_share_the_review_write_lock() {
+        let root = tempfile::tempdir().unwrap();
+        let input = root.path().join("input");
+        let output = root.path().join("output");
+        fs::create_dir_all(&input).unwrap();
+        fs::create_dir_all(&output).unwrap();
+
+        let catalog = AutoImportCatalog::open(&input, &output).unwrap();
+        let device = catalog
+            .register_device("camera-1", "Camera 1", Some("serial-1"))
+            .unwrap();
+        let primary_storage = catalog
+            .register_storage(device.id, "card-1", "Card 1")
+            .unwrap();
+        let secondary_storage = catalog
+            .register_storage(device.id, "card-2", "Card 2")
+            .unwrap();
+        let asset = catalog
+            .record_import(import_record(device.id, primary_storage.id, "frame-1", 1))
+            .unwrap();
+
+        assert_catalog_mutation_waits(&catalog, "register device", |catalog| {
+            catalog
+                .register_device("camera-2", "Camera 2", Some("serial-2"))
+                .map(|_| ())
+        });
+        let device_id = device.id;
+        assert_catalog_mutation_waits(&catalog, "register storage", move |catalog| {
+            catalog
+                .register_storage(device_id, "card-3", "Card 3")
+                .map(|_| ())
+        });
+        let record = import_record(device.id, primary_storage.id, "frame-2", 2);
+        assert_catalog_mutation_waits(&catalog, "record import", move |catalog| {
+            catalog.record_import(record).map(|_| ())
+        });
+        let source = AutoImportSourceRecord {
+            asset_id: asset.id,
+            storage_id: secondary_storage.id,
+            relative_path: "DCIM/frame-1.NEF".to_string(),
+            relative_path_key: "dcim/frame-1.nef".to_string(),
+            source_filename: "frame-1.NEF".to_string(),
+            source_modified_ns: 1,
+            source_size_bytes: 42,
+        };
+        assert_catalog_mutation_waits(&catalog, "record source", move |catalog| {
+            catalog.record_source(source)
+        });
+        let asset_id = asset.id;
+        assert_catalog_mutation_waits(&catalog, "update active filename", move |catalog| {
+            catalog.update_active_filename(asset_id, "frame-1.dng")
+        });
+        let asset_id = asset.id;
+        let identity = AutoImportIdentity {
+            image_unique_id: Some("image-1".to_string()),
+            ..AutoImportIdentity::default()
+        };
+        assert_catalog_mutation_waits(&catalog, "update identity", move |catalog| {
+            catalog.update_identity(asset_id, &identity)
+        });
+    }
+
+    fn assert_catalog_mutation_waits<F>(catalog: &AutoImportCatalog, operation: &str, mutation: F)
+    where
+        F: FnOnce(&AutoImportCatalog) -> Result<()> + Send + 'static,
+    {
+        let guard = catalog
+            .runtime
+            .block_on(catalog.database.write_lock.clone().lock_owned());
+        let worker_catalog = catalog.clone();
+        let (started_sender, started_receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            started_sender.send(()).unwrap();
+            sender.send(mutation(&worker_catalog)).unwrap();
+        });
+
+        started_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap_or_else(|error| panic!("{operation} worker did not start: {error}"));
+        let before_release = receiver.recv_timeout(Duration::from_millis(100));
+        let blocked = matches!(before_release, Err(RecvTimeoutError::Timeout));
+        drop(guard);
+        let result = match before_release {
+            Ok(result) => result,
+            Err(RecvTimeoutError::Timeout) => receiver
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap_or_else(|error| panic!("{operation} did not finish after unlock: {error}")),
+            Err(RecvTimeoutError::Disconnected) => {
+                panic!("{operation} worker disconnected before returning")
+            }
+        };
+        worker.join().unwrap();
+
+        assert!(blocked, "{operation} bypassed the review write lock");
+        result.unwrap_or_else(|error| panic!("{operation} failed after unlock: {error:#}"));
+    }
+
+    fn import_record(
+        device_id: i64,
+        storage_id: i64,
+        stem: &str,
+        modified_ns: i64,
+    ) -> AutoImportRecord {
+        let source_filename = format!("{stem}.NEF");
+        AutoImportRecord {
+            device_id,
+            storage_id,
+            source_stem: stem.to_string(),
+            source_stem_key: stem.to_lowercase(),
+            source_modified_ns: modified_ns,
+            destination_stem: stem.to_string(),
+            media_kind: AutoImportMediaKind::Raw,
+            source_filename: source_filename.clone(),
+            source_filename_key: source_filename.to_lowercase(),
+            source_size_bytes: 42,
+            relative_path: format!("DCIM/{source_filename}"),
+            relative_path_key: format!("dcim/{}", source_filename.to_lowercase()),
+            destination_filename: source_filename.clone(),
+            active_filename: source_filename,
+            identity: AutoImportIdentity::default(),
+        }
+    }
 }

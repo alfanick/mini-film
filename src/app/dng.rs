@@ -5,8 +5,6 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::{Mutex, OnceLock},
-    thread,
-    time::Duration,
 };
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -22,7 +20,6 @@ const ADOBE_DNG_CONVERTER_RELATIVE_PATHS: &[&str] = &[
 ];
 const ADOBE_STANDARD_DCP_RELATIVE_PATH: &str =
     "drive_c/ProgramData/Adobe/CameraRaw/CameraProfiles/Adobe Standard";
-const DNG_LOCK_STALE_AFTER: Duration = Duration::from_secs(30 * 60);
 static GENERATED_DNGS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
 
 #[derive(Clone, Debug)]
@@ -105,14 +102,6 @@ where
         Some(value) => Err(serde::de::Error::custom(format!(
             "expected capture subsecond as digits or a non-negative integer, got {value}"
         ))),
-    }
-}
-
-struct DngConversionLock(PathBuf);
-
-impl Drop for DngConversionLock {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
     }
 }
 
@@ -669,50 +658,39 @@ fn is_nikon_raw(path: &Path) -> bool {
         })
 }
 
-fn acquire_conversion_lock(target: &Path) -> Result<DngConversionLock> {
+fn conversion_lock_path(target: &Path) -> Result<PathBuf> {
     let file_name = target
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| anyhow!("DNG target name is not valid UTF-8: {}", target.display()))?;
-    let lock_path = target.with_file_name(format!(".{file_name}.mini-film-dng.lock"));
+    Ok(target.with_file_name(format!(".{file_name}.mini-film-dng.lock")))
+}
+
+fn acquire_conversion_lock(target: &Path) -> Result<File> {
+    let lock_path = conversion_lock_path(target)?;
+    // Keep the rendezvous path in place permanently. Removing a locked path can
+    // let another worker open a different inode and bypass the active lock.
+    // The kernel releases this advisory lock when the descriptor closes,
+    // including when a conversion process is interrupted or exits unexpectedly.
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .with_context(|| format!("opening DNG conversion lock {}", lock_path.display()))?;
     loop {
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&lock_path)
-        {
-            Ok(file) => {
-                file.sync_all()
-                    .with_context(|| format!("syncing DNG lock {}", lock_path.display()))?;
-                return Ok(DngConversionLock(lock_path));
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                if lock_is_stale(&lock_path) {
-                    match fs::remove_file(&lock_path) {
-                        Ok(()) => continue,
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                        Err(error) => {
-                            return Err(error).with_context(|| {
-                                format!("removing stale DNG lock {}", lock_path.display())
-                            });
-                        }
-                    }
-                }
-                thread::sleep(Duration::from_millis(50));
-            }
+        match file.lock() {
+            Ok(()) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("creating DNG lock {}", lock_path.display()));
+                return Err(error).with_context(|| {
+                    format!("locking DNG conversion target {}", target.display())
+                });
             }
         }
     }
-}
-
-fn lock_is_stale(path: &Path) -> bool {
-    fs::metadata(path)
-        .and_then(|metadata| metadata.modified())
-        .and_then(|modified| modified.elapsed().map_err(std::io::Error::other))
-        .is_ok_and(|age| age > DNG_LOCK_STALE_AFTER)
+    Ok(file)
 }
 
 fn preserve_source_filesystem_metadata(source: &Path, output: &Path) -> Result<()> {
@@ -833,7 +811,18 @@ fn find_in_path(name: &str) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use filetime::set_file_mtime;
-    use std::{io::Write as _, os::unix::fs::PermissionsExt as _};
+    use std::{
+        io::Write as _,
+        os::unix::fs::PermissionsExt as _,
+        process::Stdio,
+        sync::mpsc,
+        thread,
+        time::{Duration, Instant},
+    };
+
+    const LOCK_HOLDER_TARGET_ENV: &str = "MINI_FILM_DNG_LOCK_HOLDER_TARGET";
+    const LOCK_HOLDER_READY_ENV: &str = "MINI_FILM_DNG_LOCK_HOLDER_READY";
+    const LOCK_HOLDER_TEST_NAME: &str = "app::dng::tests::conversion_lock_holder_process";
 
     fn write_executable(path: &Path, text: &str) {
         let mut file = File::create(path).unwrap();
@@ -842,6 +831,97 @@ mod tests {
         let mut permissions = file.metadata().unwrap().permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(path, permissions).unwrap();
+    }
+
+    #[test]
+    fn conversion_lock_serializes_workers_and_keeps_rendezvous_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("frame.dng");
+        let lock_path = conversion_lock_path(&target).unwrap();
+        fs::write(&lock_path, b"orphaned legacy marker").unwrap();
+
+        let first = acquire_conversion_lock(&target).unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (acquired_tx, acquired_rx) = mpsc::channel();
+        let contender_target = target.clone();
+        let contender = thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let lock = acquire_conversion_lock(&contender_target).unwrap();
+            acquired_tx.send(()).unwrap();
+            lock
+        });
+
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(matches!(
+            acquired_rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        drop(first);
+        acquired_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        drop(contender.join().unwrap());
+
+        assert!(lock_path.is_file());
+        drop(acquire_conversion_lock(&target).unwrap());
+        assert!(lock_path.is_file());
+    }
+
+    #[test]
+    fn conversion_lock_holder_process() {
+        let Some(target) = env::var_os(LOCK_HOLDER_TARGET_ENV) else {
+            return;
+        };
+        let ready = env::var_os(LOCK_HOLDER_READY_ENV).expect("lock holder ready path");
+        let _lock = acquire_conversion_lock(Path::new(&target)).unwrap();
+        fs::write(ready, b"ready").unwrap();
+        loop {
+            thread::sleep(Duration::from_secs(60));
+        }
+    }
+
+    #[test]
+    fn conversion_lock_is_released_when_holder_process_dies() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("frame.dng");
+        let ready = temp.path().join("holder-ready");
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .arg(LOCK_HOLDER_TEST_NAME)
+            .arg("--exact")
+            .arg("--nocapture")
+            .env(LOCK_HOLDER_TARGET_ENV, &target)
+            .env(LOCK_HOLDER_READY_ENV, &ready)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !ready.is_file() {
+            assert!(
+                child.try_wait().unwrap().is_none(),
+                "lock holder exited before acquiring the lock"
+            );
+            assert!(
+                Instant::now() < deadline,
+                "lock holder did not acquire the lock in time"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        let contender = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(conversion_lock_path(&target).unwrap())
+            .unwrap();
+        assert!(matches!(
+            contender.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+
+        child.kill().unwrap();
+        child.wait().unwrap();
+        drop(acquire_conversion_lock(&target).unwrap());
+        assert!(conversion_lock_path(&target).unwrap().is_file());
     }
 
     #[test]
