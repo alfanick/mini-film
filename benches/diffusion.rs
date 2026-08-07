@@ -2,7 +2,7 @@ use std::{env, hint::black_box, sync::Once, time::Duration};
 
 use criterion::{
     BatchSize, BenchmarkGroup, BenchmarkId, Criterion, SamplingMode, Throughput, criterion_group,
-    criterion_main, measurement::WallTime,
+    measurement::WallTime,
 };
 use image::{ImageBuffer, Rgb};
 use mini_film::{DiffusionMethod, DiffusionPreset, DiffusionSettings, render_diffusion_rgb16};
@@ -316,4 +316,15 @@ criterion_group! {
     config = benchmark_config();
     targets = benchmark_diffusion
 }
-criterion_main!(diffusion_benches);
+
+fn main() {
+    // `cargo test --all-targets` executes harness-free benchmark binaries with
+    // libtest arguments. Criterion does not accept those arguments, and test
+    // runs should not execute the benchmark matrix.
+    if env::args_os().any(|argument| argument.to_string_lossy().starts_with("--test-threads")) {
+        return;
+    }
+
+    diffusion_benches();
+    Criterion::default().configure_from_args().final_summary();
+}
