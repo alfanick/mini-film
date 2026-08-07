@@ -196,6 +196,15 @@ To build the command-line binary without desktop GUI dependencies:
 cargo build --release --no-default-features
 ```
 
+Release builds stay portable across CPUs of the same architecture. Diffusion
+selects supported SIMD kernels at runtime and falls back to its scalar kernels
+when the required instruction set is unavailable. For a machine-local build,
+explicitly opt into all instructions supported by that machine:
+
+```sh
+RUSTFLAGS='-C target-cpu=native' cargo build --release --no-default-features
+```
+
 GitHub releases publish both CLI artifacts and GUI artifacts. GUI artifact names
 end in `-gui` before the platform extension, and GUI builds update from matching
 `-gui` release assets.
@@ -1205,6 +1214,65 @@ settings can be reset independently; otherwise the daemon command-line default
 is inherited. Before/after previews and detail views reuse a cached,
 2048-pixel, pre-grain profile render, so changing diffusion controls never
 compounds or previews grain twice.
+
+### Diffusion Benchmarks
+
+The Criterion diffusion benchmark uses deterministic 16-bit RGB gradients,
+fine checker texture, and a bright highlight. Image construction, cloning, and
+the reported full-buffer checksum are outside the timed render. The default run
+covers 2048x1365 review previews and the 4000x3000 12 MP reference with one
+thread and all available threads. It measures both medium renderers, the two
+edge-aware stages separately at 12 MP, and an `nproc/2` batch of concurrent
+previews. This comprehensive run can take several minutes:
+
+```sh
+cargo bench --bench diffusion --no-default-features
+```
+
+Use a Criterion filter for a quick preview smoke measurement:
+
+```sh
+cargo bench --bench diffusion --no-default-features -- \
+  'diffusion/preview-2048x1365/all-'
+```
+
+Enable the 8256x5504, 45.4 MP cases explicitly because they require much more
+time and memory:
+
+```sh
+MINI_FILM_DIFFUSION_BENCH_FULL=1 \
+  cargo bench --bench diffusion --no-default-features
+```
+
+Criterion prints pixels per second and a confidence interval around each time
+estimate. It also stores detailed reports under `target/criterion/`. Save and
+compare named baselines with:
+
+```sh
+cargo bench --bench diffusion --no-default-features -- \
+  --save-baseline portable-before
+cargo bench --bench diffusion --no-default-features -- \
+  --baseline portable-before
+```
+
+To compare a portable build with the former machine-native build policy, save a
+separate native baseline by setting `RUSTFLAGS` explicitly:
+
+```sh
+RUSTFLAGS='-C target-cpu=native' \
+  cargo bench --bench diffusion --no-default-features -- \
+  --save-baseline native-before
+```
+
+Build once before measuring peak resident memory, then wrap a filtered case
+with GNU `time` so its `Maximum resident set size` describes one renderer and
+size rather than the complete benchmark matrix:
+
+```sh
+cargo bench --bench diffusion --no-default-features --no-run
+/usr/bin/time -v cargo bench --bench diffusion --no-default-features -- \
+  'diffusion/reference-4000x3000/all-'
+```
 
 ## RAW Development
 

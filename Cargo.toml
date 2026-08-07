@@ -1,6 +1,6 @@
 [package]
 name = "mini-film"
-version = "22.5.2"
+version = "22.6.0"
 description = "Review and publish RAW, JPEG, and HEIC photos with optional Lightroom-style film emulation profiles."
 repository = "https://github.com/alfanick/mini-film"
 homepage = "https://github.com/alfanick/mini-film"
@@ -28,13 +28,14 @@ chrono = "0.4.42"
 exif = { package = "kamadak-exif", version = "0.6.1" }
 filetime = "0.2.29"
 anyhow = "1.0.103"
-clap = { version = "4.6.5", features = ["derive"] }
+clap = { version = "4.6.6", features = ["derive"] }
 flate2 = "1.1.9"
 handlebars = "6.4.3"
 image = "0.25.10"
 indicatif = "0.18.6"
 noise = "0.9.0"
 png = "0.18.1"
+pulp = "0.22.3"
 quick-xml = "0.41.0"
 rayon = "1.12.0"
 sea-orm = { version = "=2.0.1", default-features = false, features = ["macros", "runtime-tokio", "sqlx-sqlite"] }
@@ -65,3 +66,10 @@ zbus = { version = "5.18.0", default-features = false, features = ["async-io", "
 
 [build-dependencies]
 tauri-build = { version = "2.6.3", optional = true }
+
+[dev-dependencies]
+criterion = { version = "0.8.2", features = ["html_reports"] }
+
+[[bench]]
+name = "diffusion"
+harness = false
