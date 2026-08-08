@@ -4,6 +4,14 @@ const overlayCaption = document.getElementById("overlay-caption");
 const collapsedBranches = new Set(JSON.parse(localStorage.getItem("mini-film-collapsed-branches") || "[]"));
 const HOLD_DELAY_MS = 280;
 const HOLD_LONG_DELAY_MS = 240;
+const POST_HOLD_CLICK_DELAY_MS = 600;
+
+let overlayHoldTimer = null;
+let overlayHeld = false;
+let overlayPointerId = null;
+let suppressNextOverlayClick = false;
+let suppressOverlayClickTimer = null;
+let restoreFocusTo = null;
 
 function suppressContextMenu(event) {
   event.preventDefault();
@@ -27,26 +35,175 @@ function setBranchCollapsed(branch, collapsed) {
   }
 }
 
-function openOverlayImage(processedSource, originalSource, title) {
-  overlayImage.dataset.processed = processedSource;
-  overlayImage.dataset.original = originalSource || processedSource;
-  overlayImage.src = processedSource;
-  overlayImage.alt = title;
-  overlayCaption.textContent = title;
-  overlay.classList.add("open");
-  overlay.setAttribute("aria-hidden", "false");
+function comparisonAvailable() {
+  const profile = overlayImage.dataset.profile;
+  const diffusion = overlayImage.dataset.diffusion;
+  return Boolean(profile && diffusion && diffusion !== profile);
 }
 
-function openProcessedOverlay(button) {
-  openOverlayImage(button.dataset.full, button.dataset.original, button.dataset.title);
+function overlayMode() {
+  return overlayImage.dataset.mode === "diffusion" && comparisonAvailable() ? "diffusion" : "profile";
+}
+
+function overlaySourceForMode(mode) {
+  if (mode === "diffusion" && comparisonAvailable()) {
+    return overlayImage.dataset.diffusion;
+  }
+  return overlayImage.dataset.profile;
+}
+
+function setOverlayCaption(state) {
+  const title = overlayImage.dataset.title || "";
+  const labels = {
+    profile: "Profile only",
+    diffusion: "Diffusion",
+    original: "Neutral original",
+  };
+  const caption = title ? `${title} - ${labels[state]}` : labels[state];
+  overlayImage.alt = caption;
+  overlayCaption.textContent = caption;
+}
+
+function setOverlayMode(mode) {
+  const nextMode = mode === "diffusion" && comparisonAvailable() ? "diffusion" : "profile";
+  const source = overlaySourceForMode(nextMode);
+  overlayImage.dataset.mode = nextMode;
+  overlayImage.classList.remove("showing-original");
+  if (source) {
+    overlayImage.src = source;
+  }
+  overlayImage.setAttribute("aria-pressed", String(nextMode === "diffusion"));
+  overlayImage.setAttribute("aria-disabled", String(!comparisonAvailable()));
+  overlayImage.setAttribute(
+    "aria-label",
+    comparisonAvailable()
+      ? `${overlayImage.dataset.title}, ${nextMode === "diffusion" ? "diffusion" : "profile only"}. Activate to show ${nextMode === "diffusion" ? "profile only" : "diffusion"}.`
+      : `${overlayImage.dataset.title}, profile only.`,
+  );
+  setOverlayCaption(nextMode);
+}
+
+function showOverlayOriginal() {
+  const original = overlayImage.dataset.original;
+  const processed = overlaySourceForMode(overlayMode());
+  if (!original || original === processed) {
+    return false;
+  }
+  overlayImage.src = original;
+  overlayImage.classList.add("showing-original");
+  overlayImage.setAttribute(
+    "aria-label",
+    `${overlayImage.dataset.title}, neutral original. Release to return to ${overlayMode() === "diffusion" ? "diffusion" : "profile only"}.`,
+  );
+  setOverlayCaption("original");
+  return true;
+}
+
+function restoreOverlayMode() {
+  setOverlayMode(overlayMode());
+}
+
+function toggleOverlayMode() {
+  if (!comparisonAvailable()) {
+    return;
+  }
+  setOverlayMode(overlayMode() === "profile" ? "diffusion" : "profile");
+}
+
+function openProfileOverlay(button) {
+  const profile = button.dataset.profile;
+  if (!profile) {
+    return false;
+  }
+  restoreFocusTo = document.activeElement;
+  overlayImage.dataset.profile = profile;
+  overlayImage.dataset.diffusion = button.dataset.diffusion || profile;
+  overlayImage.dataset.original = button.dataset.original || profile;
+  overlayImage.dataset.title = button.dataset.title || "";
+  overlay.classList.add("open");
+  overlay.setAttribute("aria-hidden", "false");
+  setOverlayMode("profile");
+  overlayImage.focus({ preventScroll: true });
+  return true;
 }
 
 function openOriginalOverlay(button) {
-  openOverlayImage(
-    button.dataset.original || button.dataset.full,
-    button.dataset.original || button.dataset.full,
-    button.dataset.title,
-  );
+  return openProfileOverlay(button) && showOverlayOriginal();
+}
+
+function clearOverlayHold() {
+  if (overlayHoldTimer !== null) {
+    clearTimeout(overlayHoldTimer);
+    overlayHoldTimer = null;
+  }
+}
+
+function releaseOverlayPointer() {
+  if (overlayPointerId !== null && overlayImage.hasPointerCapture(overlayPointerId)) {
+    overlayImage.releasePointerCapture(overlayPointerId);
+  }
+  overlayPointerId = null;
+}
+
+function suppressUpcomingOverlayClick() {
+  suppressNextOverlayClick = true;
+  if (suppressOverlayClickTimer !== null) {
+    clearTimeout(suppressOverlayClickTimer);
+  }
+  suppressOverlayClickTimer = window.setTimeout(() => {
+    suppressNextOverlayClick = false;
+    suppressOverlayClickTimer = null;
+  }, POST_HOLD_CLICK_DELAY_MS);
+}
+
+function consumeOverlayClickSuppression() {
+  if (!suppressNextOverlayClick) {
+    return false;
+  }
+  suppressNextOverlayClick = false;
+  if (suppressOverlayClickTimer !== null) {
+    clearTimeout(suppressOverlayClickTimer);
+    suppressOverlayClickTimer = null;
+  }
+  return true;
+}
+
+function finishOverlayHold() {
+  const wasHeld = overlayHeld;
+  clearOverlayHold();
+  releaseOverlayPointer();
+  overlayHeld = false;
+  if (wasHeld) {
+    restoreOverlayMode();
+    suppressUpcomingOverlayClick();
+  }
+}
+
+function closeOverlay() {
+  clearOverlayHold();
+  releaseOverlayPointer();
+  overlayHeld = false;
+  overlay.classList.remove("open");
+  overlay.setAttribute("aria-hidden", "true");
+  overlayImage.removeAttribute("src");
+  overlayImage.removeAttribute("data-profile");
+  overlayImage.removeAttribute("data-diffusion");
+  overlayImage.removeAttribute("data-original");
+  overlayImage.removeAttribute("data-title");
+  overlayImage.removeAttribute("data-mode");
+  overlayImage.classList.remove("showing-original");
+  overlayImage.alt = "";
+  overlayImage.setAttribute("aria-pressed", "false");
+  overlayCaption.textContent = "";
+  suppressNextOverlayClick = false;
+  if (suppressOverlayClickTimer !== null) {
+    clearTimeout(suppressOverlayClickTimer);
+    suppressOverlayClickTimer = null;
+  }
+  if (restoreFocusTo && restoreFocusTo.isConnected) {
+    restoreFocusTo.focus({ preventScroll: true });
+  }
+  restoreFocusTo = null;
 }
 
 document.querySelectorAll(".branch").forEach((branch) => {
@@ -64,25 +221,11 @@ document.querySelectorAll(".branch").forEach((branch) => {
 });
 
 document.querySelectorAll(".thumb-button").forEach((button) => {
-  button.addEventListener("contextmenu", suppressContextMenu);
-  const image = button.querySelector("img");
-  if (image) {
-    image.addEventListener("contextmenu", suppressContextMenu);
-  }
-});
-overlayImage.addEventListener("contextmenu", suppressContextMenu);
-
-function closeOverlay() {
-  overlay.classList.remove("open");
-  overlay.setAttribute("aria-hidden", "true");
-  overlayImage.removeAttribute("src");
-  overlayImage.removeAttribute("data-processed");
-  overlayImage.removeAttribute("data-original");
-}
-
-document.querySelectorAll(".thumb-button").forEach((button) => {
   let holdTimer = null;
   let held = false;
+  let pointerId = null;
+  let suppressNextClick = false;
+  let suppressClickTimer = null;
 
   const clearHold = () => {
     if (holdTimer !== null) {
@@ -91,92 +234,106 @@ document.querySelectorAll(".thumb-button").forEach((button) => {
     }
   };
 
-  const onPointerDown = () => {
-    held = false;
-    clearHold();
-    holdTimer = window.setTimeout(() => {
-      held = true;
-      openOriginalOverlay(button);
-    }, HOLD_DELAY_MS);
+  const releasePointer = () => {
+    if (pointerId !== null && button.hasPointerCapture(pointerId)) {
+      button.releasePointerCapture(pointerId);
+    }
+    pointerId = null;
   };
 
-  const onPointerRelease = () => {
+  const suppressUpcomingClick = () => {
+    suppressNextClick = true;
+    if (suppressClickTimer !== null) {
+      clearTimeout(suppressClickTimer);
+    }
+    suppressClickTimer = window.setTimeout(() => {
+      suppressNextClick = false;
+      suppressClickTimer = null;
+    }, POST_HOLD_CLICK_DELAY_MS);
+  };
+
+  const finishHold = () => {
+    const wasHeld = held;
     clearHold();
-    if (held && overlay.getAttribute("aria-hidden") === "false") {
-      openProcessedOverlay(button);
+    releasePointer();
+    held = false;
+    if (wasHeld) {
+      restoreOverlayMode();
+      suppressUpcomingClick();
+    }
+  };
+
+  button.addEventListener("contextmenu", suppressContextMenu);
+  const image = button.querySelector("img");
+  if (image) {
+    image.addEventListener("contextmenu", suppressContextMenu);
+  }
+
+  button.addEventListener("pointerdown", (event) => {
+    if (!event.isPrimary || (event.pointerType === "mouse" && event.button !== 0)) {
+      return;
     }
     held = false;
-  };
-
-  button.addEventListener("pointerdown", onPointerDown);
-  button.addEventListener("pointerup", onPointerRelease);
-  button.addEventListener("pointerleave", clearHold);
-  button.addEventListener("pointercancel", clearHold);
+    clearHold();
+    pointerId = event.pointerId;
+    button.setPointerCapture(pointerId);
+    holdTimer = window.setTimeout(() => {
+      held = openOriginalOverlay(button);
+    }, HOLD_DELAY_MS);
+  });
+  button.addEventListener("pointerup", finishHold);
+  button.addEventListener("pointerleave", () => {
+    if (pointerId !== null && !button.hasPointerCapture(pointerId)) {
+      finishHold();
+    }
+  });
+  button.addEventListener("pointercancel", finishHold);
   button.addEventListener("click", (event) => {
-    if (held) {
+    if (suppressNextClick) {
+      suppressNextClick = false;
+      if (suppressClickTimer !== null) {
+        clearTimeout(suppressClickTimer);
+        suppressClickTimer = null;
+      }
       event.preventDefault();
       return;
     }
-    openProcessedOverlay(button);
+    openProfileOverlay(button);
   });
 });
 
-let overlayHoldTimer = null;
-let overlayHeld = false;
-
-const clearOverlayHold = () => {
-  if (overlayHoldTimer !== null) {
-    clearTimeout(overlayHoldTimer);
-    overlayHoldTimer = null;
-  }
-};
-
-const restoreOverlayToProcessed = () => {
-  const original = overlayImage.dataset.original;
-  const processed = overlayImage.dataset.processed;
-  if (original !== processed) {
-    overlayImage.src = processed || original;
-  }
-};
-
-const onOverlayPointerDown = () => {
-  overlayHeld = false;
-  clearOverlayHold();
-  const original = overlayImage.dataset.original;
-  const processed = overlayImage.dataset.processed;
-  if (original === undefined || original === null || original === processed) {
+overlayImage.addEventListener("contextmenu", suppressContextMenu);
+overlayImage.addEventListener("pointerdown", (event) => {
+  if (!event.isPrimary || (event.pointerType === "mouse" && event.button !== 0)) {
     return;
   }
+  overlayHeld = false;
+  clearOverlayHold();
+  overlayPointerId = event.pointerId;
+  overlayImage.setPointerCapture(overlayPointerId);
   overlayHoldTimer = window.setTimeout(() => {
-    overlayHeld = true;
-    overlayImage.src = original;
+    overlayHeld = showOverlayOriginal();
   }, HOLD_LONG_DELAY_MS);
-};
-
-const onOverlayPointerRelease = () => {
-  const wasHeld = overlayHeld;
-  clearOverlayHold();
-  overlayHeld = false;
-  if (wasHeld) {
-    restoreOverlayToProcessed();
-  }
-};
-
-overlayImage.addEventListener("pointerdown", onOverlayPointerDown);
-overlayImage.addEventListener("pointerup", onOverlayPointerRelease);
-overlayImage.addEventListener("pointerleave", () => {
-  clearOverlayHold();
-  if (overlayHeld) {
-    restoreOverlayToProcessed();
-  }
-  overlayHeld = false;
 });
-overlayImage.addEventListener("pointercancel", () => {
-  clearOverlayHold();
-  if (overlayHeld) {
-    restoreOverlayToProcessed();
+overlayImage.addEventListener("pointerup", finishOverlayHold);
+overlayImage.addEventListener("pointerleave", () => {
+  if (overlayPointerId !== null && !overlayImage.hasPointerCapture(overlayPointerId)) {
+    finishOverlayHold();
   }
-  overlayHeld = false;
+});
+overlayImage.addEventListener("pointercancel", finishOverlayHold);
+overlayImage.addEventListener("click", (event) => {
+  if (consumeOverlayClickSuppression()) {
+    event.preventDefault();
+    return;
+  }
+  toggleOverlayMode();
+});
+overlayImage.addEventListener("keydown", (event) => {
+  if ((event.key === "Enter" || event.key === " ") && !event.repeat) {
+    event.preventDefault();
+    toggleOverlayMode();
+  }
 });
 
 overlay.addEventListener("click", (event) => {

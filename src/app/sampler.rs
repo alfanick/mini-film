@@ -16,8 +16,9 @@ use anyhow::{Context, Result, bail};
 use handlebars::Handlebars;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use mini_film::{
-    DiffusionSettings, GrainEngine, GrainRenderOptions, GrainSettings, apply_diffusion,
-    apply_grain_8bit_with_options, write_rawtherapee_resize_profile,
+    DiffusionMethod, DiffusionPreset, DiffusionSettings, GrainEngine, GrainRenderOptions,
+    GrainSettings, apply_diffusion, apply_grain_8bit_with_options,
+    write_rawtherapee_resize_profile,
 };
 use rayon::prelude::*;
 use serde_json::json;
@@ -80,6 +81,7 @@ pub(crate) struct SamplerArgs {
 
 struct SampleThumb {
     image: PathBuf,
+    diffusion_image: Option<PathBuf>,
     original_image: Option<PathBuf>,
     profile: PathBuf,
     pp3: Option<PathBuf>,
@@ -139,6 +141,24 @@ impl SamplerIntermediateKind {
     }
 }
 
+fn sampler_intermediate_kind(
+    output_kind: SheetOutputKind,
+    diffusion: DiffusionSettings,
+) -> SamplerIntermediateKind {
+    match output_kind {
+        SheetOutputKind::Jpeg => SamplerIntermediateKind::for_diffusion(diffusion),
+        SheetOutputKind::Html => SamplerIntermediateKind::Tiff16,
+    }
+}
+
+fn html_sampler_diffusion_settings(configured: DiffusionSettings) -> DiffusionSettings {
+    if configured.is_enabled() {
+        configured.canonical_render_settings()
+    } else {
+        DiffusionPreset::Medium.settings(DiffusionMethod::MultiScaleMist)
+    }
+}
+
 struct SamplerProgress {
     profile: ProgressBar,
     started: Instant,
@@ -149,6 +169,36 @@ struct ThumbnailCache {
     dir: PathBuf,
     raw_sha1: String,
     dcp_identity: String,
+}
+
+struct HtmlPairCachePaths {
+    profile_image: PathBuf,
+    diffusion_image: PathBuf,
+    manifest: PathBuf,
+}
+
+impl HtmlPairCachePaths {
+    fn is_valid(&self) -> bool {
+        if !self.manifest.is_file() {
+            return false;
+        }
+        match (
+            decoded_sampler_image_dimensions(&self.profile_image),
+            decoded_sampler_image_dimensions(&self.diffusion_image),
+        ) {
+            (Some(profile), Some(diffusion)) if profile == diffusion => {
+                let Ok(profile_sha1) = sha1_file(&self.profile_image) else {
+                    return false;
+                };
+                let Ok(diffusion_sha1) = sha1_file(&self.diffusion_image) else {
+                    return false;
+                };
+                let expected = html_pair_manifest(profile, &profile_sha1, &diffusion_sha1);
+                fs::read_to_string(&self.manifest).is_ok_and(|manifest| manifest == expected)
+            }
+            _ => false,
+        }
+    }
 }
 
 struct ProfileRenderContext<'a> {
@@ -485,6 +535,61 @@ impl ThumbnailCache {
         };
         Ok(self.dir.join(file_name))
     }
+
+    fn html_pair_paths(
+        &self,
+        profile: &Path,
+        profile_index: usize,
+        args: &SamplerArgs,
+    ) -> Result<HtmlPairCachePaths> {
+        let xmp_sha1 =
+            sha1_file(profile).with_context(|| format!("hashing XMP {}", profile.display()))?;
+        let single_output_key = self.path_for(profile, args)?;
+        let diffusion = html_sampler_diffusion_settings(args.diffusion)
+            .render_identity()
+            .expect("the HTML sampler diffusion variant is enabled");
+        let mut hasher = Sha1::new();
+        hasher.update(b"html-sampler-diffusion-pair-v1\0");
+        hasher.update(single_output_key.as_os_str().as_encoded_bytes());
+        hasher.update(b"\0");
+        hasher.update(diffusion);
+        hasher.update(b"\0");
+        hasher.update(profile.as_os_str().as_encoded_bytes());
+        hasher.update(b"\0");
+        hasher.update(profile_index.to_le_bytes());
+        if let Some(grain_seed) = args.grain_seed {
+            hasher.update(b"\0seed=");
+            hasher.update(grain_seed.to_le_bytes());
+        }
+        let digest = hasher
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let stem = format!(
+            "{}-{xmp_sha1}-html-diffusion-pair-v1-{digest}",
+            self.raw_sha1
+        );
+        Ok(HtmlPairCachePaths {
+            profile_image: self.dir.join(format!("{stem}-profile.jpg")),
+            diffusion_image: self.dir.join(format!("{stem}-diffusion.jpg")),
+            manifest: self.dir.join(format!("{stem}.pair")),
+        })
+    }
+}
+
+fn decoded_sampler_image_dimensions(path: &Path) -> Option<(u32, u32)> {
+    image::open(path)
+        .ok()
+        .map(|image| (image.width(), image.height()))
+        .filter(|(width, height)| *width > 0 && *height > 0)
+}
+
+fn html_pair_manifest(dimensions: (u32, u32), profile_sha1: &str, diffusion_sha1: &str) -> String {
+    format!(
+        "html-sampler-pair-v1\n{}x{}\n{profile_sha1}\n{diffusion_sha1}\n",
+        dimensions.0, dimensions.1
+    )
 }
 
 fn sampler_diffusion_cache_mode(diffusion: DiffusionSettings) -> String {
@@ -534,6 +639,7 @@ fn sample_thumb_from_image(
     let parts = profile_name_parts(&name);
     Ok(SampleThumb {
         image,
+        diffusion_image: None,
         original_image: None,
         profile: profile.to_path_buf(),
         pp3: None,
@@ -544,6 +650,28 @@ fn sample_thumb_from_image(
         width,
         height,
     })
+}
+
+fn sample_thumb_from_pair(
+    profile_image: PathBuf,
+    diffusion_image: PathBuf,
+    profile: &Path,
+    emulation_root: &Path,
+) -> Result<SampleThumb> {
+    let profile_dimensions = decoded_sampler_image_dimensions(&profile_image)
+        .with_context(|| format!("reading {}", profile_image.display()))?;
+    let diffusion_dimensions = decoded_sampler_image_dimensions(&diffusion_image)
+        .with_context(|| format!("reading {}", diffusion_image.display()))?;
+    if profile_dimensions != diffusion_dimensions {
+        bail!(
+            "HTML sampler pair dimensions differ: {:?} and {:?}",
+            profile_dimensions,
+            diffusion_dimensions
+        );
+    }
+    let mut thumb = sample_thumb_from_image(profile_image, profile, emulation_root)?;
+    thumb.diffusion_image = Some(diffusion_image);
+    Ok(thumb)
 }
 
 fn sampler_output_kind(output: &Path) -> Result<Option<SheetOutputKind>> {
@@ -614,7 +742,27 @@ fn render_profile_thumbnail(
     context: &ProfileRenderContext<'_>,
     profile: &Path,
 ) -> Result<SampleThumb> {
-    if let Some(cache) = context.cache {
+    let output_kind =
+        sampler_output_kind(&context.args.output)?.context("unsupported sampler output format")?;
+    let html_pair_cache = if output_kind == SheetOutputKind::Html {
+        context
+            .cache
+            .map(|cache| cache.html_pair_paths(profile, context.index, context.args))
+            .transpose()?
+    } else {
+        None
+    };
+    if let Some(cached) = html_pair_cache.as_ref() {
+        if cached.is_valid() {
+            sampler_step(context.progress, 5, "cache hit");
+            return sample_thumb_from_pair(
+                cached.profile_image.clone(),
+                cached.diffusion_image.clone(),
+                profile,
+                context.emulation_root,
+            );
+        }
+    } else if let Some(cache) = context.cache {
         let cached = cache.path_for(profile, context.args)?;
         if cached.is_file() {
             sampler_step(context.progress, 5, "cache hit");
@@ -637,7 +785,7 @@ fn render_profile_thumbnail(
     .with_context(|| format!("resolving profile {}", profile.display()))?;
     let prepared_source = context.args.dng_fallback.prepare_known(&context.args.raw)?;
     let active_source = prepared_source.active().to_path_buf();
-    let intermediate_kind = SamplerIntermediateKind::for_diffusion(context.args.diffusion);
+    let intermediate_kind = sampler_intermediate_kind(output_kind, context.args.diffusion);
     let diffusion_enabled = intermediate_kind == SamplerIntermediateKind::Tiff16;
     let developed = profile_temp.join(intermediate_kind.filename());
     let mut rawtherapee_profiles = rawtherapee_profiles_with_hald(&resolved, &profile_temp)?;
@@ -702,6 +850,161 @@ fn render_profile_thumbnail(
         )?,
     };
     raw_stage.finish();
+
+    if output_kind == SheetOutputKind::Html {
+        let diffusion = html_sampler_diffusion_settings(context.args.diffusion);
+        sampler_step(context.progress, 3, "diffusion pair");
+        let diffused = profile_temp.join("diffused.tif");
+        apply_diffusion(&developed, &diffused, diffusion)?;
+
+        let grain_enabled = !context.args.no_grain && resolved.grain.is_enabled();
+        let metadata_grain = if grain_enabled {
+            attenuate_sampler_grain_amount(resolved.grain, context.args.thumbnail_long_edge)
+        } else {
+            GrainSettings::default()
+        };
+        let metadata_grain_seed =
+            grain_enabled.then(|| sample_seed(context.base_seed, context.index, profile));
+        let (profile_source, diffusion_source) = if grain_enabled {
+            let grain_stage = progress_stage_adaptive(
+                Some(&apply_progress),
+                3,
+                4,
+                "sampler-grain-pair",
+                "grain pair",
+                estimate_sampler_grain_duration(context.args.thumbnail_long_edge) * 2,
+            );
+            let profile_grained = profile_temp.join("profile-grained-8.ppm");
+            let diffusion_grained = profile_temp.join("diffusion-grained-8.ppm");
+            let grain_options = GrainRenderOptions {
+                engine: context.args.grain_engine,
+                normalize_grain_mpix: context.args.normalize_grain_mpix,
+            };
+            let grain_seed = metadata_grain_seed.unwrap_or_default();
+            apply_grain_8bit_with_options(
+                &developed,
+                &profile_grained,
+                metadata_grain,
+                grain_seed,
+                grain_options,
+            )?;
+            apply_grain_8bit_with_options(
+                &diffused,
+                &diffusion_grained,
+                metadata_grain,
+                grain_seed,
+                grain_options,
+            )?;
+            grain_stage.finish();
+            (profile_grained, diffusion_grained)
+        } else {
+            sampler_step(context.progress, 3, "grain skipped");
+            (developed.clone(), diffused.clone())
+        };
+
+        let thumbnail_stage = progress_stage_adaptive(
+            Some(&apply_progress),
+            4,
+            5,
+            "sampler-thumbnail-pair",
+            "thumbnail pair",
+            estimate_sampler_thumbnail_duration(context.args.thumbnail_long_edge) * 2,
+        );
+        let profile_thumb = profile_temp.join("thumb.jpg");
+        let diffusion_thumb = profile_temp.join("diffusion-thumb.jpg");
+        finalize_output(
+            &context.args.convert,
+            &profile_source,
+            &profile_thumb,
+            context.export,
+        )?;
+        finalize_output(
+            &context.args.convert,
+            &diffusion_source,
+            &diffusion_thumb,
+            context.export,
+        )?;
+        thumbnail_stage.finish();
+
+        if context.args.strip_metadata {
+            restore_output_color_profile(Some(&developed), &profile_thumb)?;
+            restore_output_color_profile(Some(&developed), &diffusion_thumb)?;
+            let metadata_stage = progress_stage_adaptive(
+                Some(&apply_progress),
+                5,
+                6,
+                "sampler-timestamps-pair",
+                "timestamps pair",
+                estimate_sampler_metadata_duration() * 2,
+            );
+            sync_output_timestamps_from_exif(raw_outcome.source.active(), &profile_thumb)?;
+            sync_output_timestamps_from_exif(raw_outcome.source.active(), &diffusion_thumb)?;
+            metadata_stage.finish();
+        } else {
+            let metadata_stage = progress_stage_adaptive(
+                Some(&apply_progress),
+                5,
+                6,
+                "sampler-exif-pair",
+                "exif pair",
+                estimate_sampler_exif_duration() * 2,
+            );
+            let comment = format!(
+                "mini-film {} usage=sampler profile={}",
+                env!("CARGO_PKG_VERSION"),
+                resolved.resolved_stem
+            );
+            let metadata = |diffusion| OutputEditMetadata {
+                comment: Some(comment.as_str()),
+                profile: &resolved.metadata,
+                profile_sharpening_applied: is_raw_input_file(raw_outcome.source.active()),
+                grain: metadata_grain,
+                grain_seed: metadata_grain_seed,
+                grain_engine: grain_enabled.then_some(context.args.grain_engine),
+                normalize_grain_mpix: context.args.normalize_grain_mpix,
+                diffusion,
+            };
+            sync_output_metadata_from_raw_with_color_profile(
+                raw_outcome.source.active(),
+                &profile_thumb,
+                metadata(DiffusionSettings::default()),
+                Some(&developed),
+            )?;
+            sync_output_timestamps_from_exif(raw_outcome.source.active(), &profile_thumb)?;
+            sync_output_metadata_from_raw_with_color_profile(
+                raw_outcome.source.active(),
+                &diffusion_thumb,
+                metadata(diffusion),
+                Some(&developed),
+            )?;
+            sync_output_timestamps_from_exif(raw_outcome.source.active(), &diffusion_thumb)?;
+            metadata_stage.finish();
+        }
+
+        if grain_enabled {
+            remove_temp_file(&profile_source)?;
+            remove_temp_file(&diffusion_source)?;
+        }
+        remove_temp_file(&developed)?;
+        remove_temp_file(&diffused)?;
+        let (profile_image, diffusion_image) = if let Some(cached) = html_pair_cache {
+            copy_html_pair_to_cache(&profile_thumb, &diffusion_thumb, &cached)?;
+            (cached.profile_image, cached.diffusion_image)
+        } else {
+            (profile_thumb, diffusion_thumb)
+        };
+        context
+            .args
+            .dng_fallback
+            .finish_successful_development(&raw_outcome.source)?;
+        sampler_step(context.progress, 6, "done");
+        return sample_thumb_from_pair(
+            profile_image,
+            diffusion_image,
+            profile,
+            context.emulation_root,
+        );
+    }
 
     let diffused = if diffusion_enabled {
         sampler_step(context.progress, 3, "diffusion");
@@ -936,6 +1239,96 @@ fn copy_thumbnail_to_cache(source: &Path, destination: &Path) -> Result<()> {
     }
 }
 
+fn copy_html_pair_to_cache(
+    profile_source: &Path,
+    diffusion_source: &Path,
+    destinations: &HtmlPairCachePaths,
+) -> Result<()> {
+    let parent = destinations
+        .manifest
+        .parent()
+        .context("HTML sampler cache pair has no parent directory")?;
+    fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+
+    let profile_dimensions = decoded_sampler_image_dimensions(profile_source)
+        .context("HTML sampler profile image does not decode")?;
+    let diffusion_dimensions = decoded_sampler_image_dimensions(diffusion_source)
+        .context("HTML sampler diffusion image does not decode")?;
+    if profile_dimensions != diffusion_dimensions {
+        bail!(
+            "HTML sampler pair dimensions differ: {:?} and {:?}",
+            profile_dimensions,
+            diffusion_dimensions
+        );
+    }
+    let profile_sha1 = sha1_file(profile_source)?;
+    let diffusion_sha1 = sha1_file(diffusion_source)?;
+
+    // The manifest is the pair's commit marker. Remove it and both old halves
+    // before publishing either replacement, then install a manifest tied to
+    // the exact hashes only after both images decode and agree in dimensions.
+    remove_temp_file(&destinations.manifest)?;
+    remove_temp_file(&destinations.profile_image)?;
+    remove_temp_file(&destinations.diffusion_image)?;
+    copy_cache_file_atomically(profile_source, &destinations.profile_image)?;
+    copy_cache_file_atomically(diffusion_source, &destinations.diffusion_image)?;
+
+    let cached_profile_dimensions = decoded_sampler_image_dimensions(&destinations.profile_image)
+        .context("cached HTML sampler profile image does not decode")?;
+    let cached_diffusion_dimensions =
+        decoded_sampler_image_dimensions(&destinations.diffusion_image)
+            .context("cached HTML sampler diffusion image does not decode")?;
+    if cached_profile_dimensions != profile_dimensions
+        || cached_diffusion_dimensions != diffusion_dimensions
+        || sha1_file(&destinations.profile_image)? != profile_sha1
+        || sha1_file(&destinations.diffusion_image)? != diffusion_sha1
+    {
+        bail!("cached HTML sampler pair changed while it was being published");
+    }
+    let manifest = html_pair_manifest(profile_dimensions, &profile_sha1, &diffusion_sha1);
+    write_cache_file_atomically(manifest.as_bytes(), &destinations.manifest)
+}
+
+fn copy_cache_file_atomically(source: &Path, destination: &Path) -> Result<()> {
+    let parent = destination
+        .parent()
+        .context("sampler cache file has no parent directory")?;
+    let temp = Builder::new()
+        .prefix(".mini-film-sampler-cache-")
+        .suffix(".tmp")
+        .tempfile_in(parent)
+        .with_context(|| format!("creating temporary cache file in {}", parent.display()))?;
+    fs::copy(source, temp.path())
+        .with_context(|| format!("copying {} to {}", source.display(), temp.path().display()))?;
+    temp.as_file()
+        .sync_all()
+        .with_context(|| format!("syncing {}", temp.path().display()))?;
+    temp.persist(destination)
+        .map(|_| ())
+        .map_err(|err| err.error)
+        .with_context(|| format!("publishing cache file {}", destination.display()))
+}
+
+fn write_cache_file_atomically(contents: &[u8], destination: &Path) -> Result<()> {
+    let parent = destination
+        .parent()
+        .context("sampler cache file has no parent directory")?;
+    let temp = Builder::new()
+        .prefix(".mini-film-sampler-cache-")
+        .suffix(".tmp")
+        .tempfile_in(parent)
+        .with_context(|| format!("creating temporary cache file in {}", parent.display()))?;
+    fs::write(temp.path(), contents)
+        .with_context(|| format!("writing {}", temp.path().display()))?;
+    temp.as_file()
+        .sync_all()
+        .with_context(|| format!("syncing {}", temp.path().display()))?;
+    temp.persist(destination)
+        .map(|_| ())
+        .map_err(|err| err.error)
+        .with_context(|| format!("publishing cache file {}", destination.display()))
+}
+
 fn run_structured_sheet(context: &StructuredSheetContext<'_>) -> Result<()> {
     let convert = context.convert;
     let output = context.output;
@@ -1017,6 +1410,12 @@ fn run_html_sheet(context: &StructuredSheetContext<'_>) -> Result<()> {
             .map(|(index, thumb)| {
                 let file_name = html_thumbnail_file_name(index, thumb);
                 let destination = thumbnail_dir.join(&file_name);
+                let diffusion_source = thumb
+                    .diffusion_image
+                    .as_ref()
+                    .context("HTML sampler thumbnail is missing its diffusion variant")?;
+                let diffusion_file_name = html_diffusion_thumbnail_file_name(index, thumb);
+                let diffusion_destination = thumbnail_dir.join(&diffusion_file_name);
                 write_cached_progressive_html_thumbnail(
                     context.convert,
                     &thumb.image,
@@ -1024,8 +1423,17 @@ fn run_html_sheet(context: &StructuredSheetContext<'_>) -> Result<()> {
                     context.jpg_quality,
                     context.jpeg_subsampling,
                 )?;
+                write_cached_progressive_html_thumbnail(
+                    context.convert,
+                    diffusion_source,
+                    &diffusion_destination,
+                    context.jpg_quality,
+                    context.jpeg_subsampling,
+                )?;
                 let mut exported = thumb.clone_for_tree();
                 exported.image = PathBuf::from("thumbnails").join(file_name);
+                exported.diffusion_image =
+                    Some(PathBuf::from("thumbnails").join(diffusion_file_name));
                 exported.original_image = Some(baseline_original.clone());
                 Ok::<_, anyhow::Error>((index, exported))
             })
@@ -1272,6 +1680,14 @@ fn html_thumbnail_file_name(index: usize, thumb: &SampleThumb) -> String {
     format!("{index:04}-{stem}.jpg")
 }
 
+fn html_diffusion_thumbnail_file_name(index: usize, thumb: &SampleThumb) -> String {
+    let profile_file_name = html_thumbnail_file_name(index, thumb);
+    let stem = profile_file_name
+        .strip_suffix(".jpg")
+        .expect("HTML thumbnail names use a JPEG extension");
+    format!("{stem}-diffusion.jpg")
+}
+
 fn render_sheet_html(trie: &ProfileTrie, columns: u32) -> Result<String> {
     let templates = html_templates()?;
     let mut sections = String::new();
@@ -1474,7 +1890,7 @@ fn url_escape_path(path: &Path, keep_slashes: bool) -> String {
 fn render_html_grid(templates: &Handlebars<'_>, entries: &[SheetEntry<'_>]) -> Result<String> {
     let mut tiles = String::new();
     for entry in entries {
-        let image = entry.thumb.image.to_string_lossy();
+        let profile_image = relative_url(&entry.thumb.image);
         tiles.push_str(
             &templates
                 .render(
@@ -1482,7 +1898,14 @@ fn render_html_grid(templates: &Handlebars<'_>, entries: &[SheetEntry<'_>]) -> R
                     &json!({
                         "label": entry.label,
                         "filename": entry.full_name,
-                        "image": image,
+                        "image": &profile_image,
+                        "profile_image": &profile_image,
+                        "diffusion_image": entry
+                            .thumb
+                            .diffusion_image
+                            .as_ref()
+                            .map(|path| relative_url(path))
+                            .unwrap_or_else(String::new),
                         "original_image": entry
                             .thumb
                             .original_image
@@ -1600,6 +2023,7 @@ impl SampleThumb {
     fn clone_for_tree(&self) -> Self {
         Self {
             image: self.image.clone(),
+            diffusion_image: self.diffusion_image.clone(),
             original_image: self.original_image.clone(),
             profile: self.profile.clone(),
             pp3: self.pp3.clone(),
@@ -2174,6 +2598,7 @@ mod tests {
     fn sample_thumb(name: &str, width: u32, height: u32) -> SampleThumb {
         SampleThumb {
             image: PathBuf::from(format!("/tmp/{name}.jpg")),
+            diffusion_image: None,
             original_image: None,
             profile: PathBuf::from(format!("/tmp/{name}.xmp")),
             pp3: None,
@@ -2240,6 +2665,38 @@ mod tests {
         assert_eq!(
             SamplerIntermediateKind::Tiff16.filename(),
             "rawtherapee.tif"
+        );
+        assert_eq!(
+            sampler_intermediate_kind(SheetOutputKind::Html, DiffusionSettings::default()),
+            SamplerIntermediateKind::Tiff16,
+            "HTML comparisons always branch from one 16-bit intermediate"
+        );
+        assert_eq!(
+            sampler_intermediate_kind(SheetOutputKind::Jpeg, DiffusionSettings::default()),
+            SamplerIntermediateKind::Jpeg8,
+            "the static JPEG sampler keeps its existing fast path"
+        );
+    }
+
+    #[test]
+    fn html_diffusion_uses_medium_mist_by_default_and_honors_enabled_settings() {
+        assert_eq!(
+            html_sampler_diffusion_settings(DiffusionSettings::default()),
+            DiffusionPreset::Medium.settings(DiffusionMethod::MultiScaleMist)
+        );
+
+        let configured = DiffusionSettings {
+            method: DiffusionMethod::EdgeAwareGlow,
+            softness: 31,
+            highlight_glow: 62,
+            softness_radius_percent: 175,
+            glow_radius_percent: 240,
+            intensity_percent: 190,
+            highlight_reach: 72,
+        };
+        assert_eq!(
+            html_sampler_diffusion_settings(configured),
+            configured.canonical_render_settings()
         );
     }
 
@@ -2504,6 +2961,8 @@ mod tests {
         let mut trie = ProfileTrie::default();
         let mut thumb = sample_thumb("Kodak Portra 400 Grainy", 1024, 683);
         thumb.image = PathBuf::from("thumbnails/kodak.jpg");
+        thumb.diffusion_image = Some(PathBuf::from("thumbnails/kodak-diffusion.jpg"));
+        thumb.original_image = Some(PathBuf::from("thumbnails/original.jpg"));
         thumb.pp3 = Some(PathBuf::from("pp3/Kodak Portra 400 Grainy.pp3"));
         thumb.hald = Some(PathBuf::from("/tmp/Kodak Portra 400 Grainy.hald.png"));
         trie.insert(thumb);
@@ -2533,6 +2992,9 @@ mod tests {
         assert!(html.contains("mini-film-collapsed-branches"));
         assert!(html.contains("localStorage.setItem"));
         assert!(html.contains("src=\"thumbnails/kodak.jpg\""));
+        assert!(html.contains("data-profile=\"thumbnails/kodak.jpg\""));
+        assert!(html.contains("data-diffusion=\"thumbnails/kodak-diffusion.jpg\""));
+        assert!(html.contains("data-original=\"thumbnails/original.jpg\""));
         assert!(html.contains("href=\"file:///tmp/Kodak%20Portra%20400%20Grainy.xmp\""));
         assert!(html.contains("href=\"pp3/Kodak%20Portra%20400%20Grainy.pp3\""));
         assert!(html.contains("href=\"file:///tmp/Kodak%20Portra%20400%20Grainy.hald.png\""));
@@ -2575,6 +3037,17 @@ mod tests {
         assert_eq!(
             unique_html_sidecar_stem(&mut names, &second),
             "Ilford FP4-2"
+        );
+    }
+
+    #[test]
+    fn html_profile_and_diffusion_thumbnails_have_distinct_names() {
+        let thumb = sample_thumb("Ilford FP4", 1024, 683);
+
+        assert_eq!(html_thumbnail_file_name(7, &thumb), "0007-Ilford FP4.jpg");
+        assert_eq!(
+            html_diffusion_thumbnail_file_name(7, &thumb),
+            "0007-Ilford FP4-diffusion.jpg"
         );
     }
 
@@ -2716,6 +3189,122 @@ mod tests {
         args.diffusion.method = mini_film::DiffusionMethod::EdgeAwareGlow;
         let edge_aware_diffusion = cache.path_for(&xmp, &args).unwrap();
         assert_ne!(mist_diffusion, edge_aware_diffusion);
+    }
+
+    #[test]
+    fn html_pair_cache_identity_tracks_effective_diffusion_profile_and_seed() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = dir.path().join("input.dng");
+        let xmp = dir.path().join("profile.xmp");
+        let same_xmp_elsewhere = dir.path().join("same-profile.xmp");
+        fs::write(&raw, b"raw bytes").unwrap();
+        fs::write(&xmp, b"xmp bytes").unwrap();
+        fs::write(&same_xmp_elsewhere, b"xmp bytes").unwrap();
+        let mut args = sampler_args_for_cache(
+            raw.clone(),
+            dir.path().to_path_buf(),
+            dir.path().join("hald"),
+        );
+        let cache = ThumbnailCache {
+            dir: dir.path().join("cache"),
+            raw_sha1: sha1_file(&raw).unwrap(),
+            dcp_identity: "dcp-none".to_string(),
+        };
+
+        let default_pair = cache.html_pair_paths(&xmp, 4, &args).unwrap();
+        assert_ne!(default_pair.profile_image, default_pair.diffusion_image);
+        assert_ne!(default_pair.profile_image, default_pair.manifest);
+        assert!(
+            default_pair
+                .profile_image
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .ends_with("-profile.jpg")
+        );
+
+        args.diffusion = DiffusionPreset::Strong.settings(DiffusionMethod::MultiScaleMist);
+        let strong_pair = cache.html_pair_paths(&xmp, 4, &args).unwrap();
+        assert_ne!(default_pair.profile_image, strong_pair.profile_image);
+
+        args.diffusion.highlight_reach = 100;
+        assert_eq!(
+            strong_pair.profile_image,
+            cache.html_pair_paths(&xmp, 4, &args).unwrap().profile_image,
+            "mist highlight reach is render-inert and must not invalidate the pair"
+        );
+        assert_ne!(
+            strong_pair.profile_image,
+            cache
+                .html_pair_paths(&same_xmp_elsewhere, 4, &args)
+                .unwrap()
+                .profile_image,
+            "content-identical profiles use different deterministic grain seeds"
+        );
+        assert_ne!(
+            strong_pair.profile_image,
+            cache.html_pair_paths(&xmp, 5, &args).unwrap().profile_image,
+            "the profile index participates in the deterministic grain seed"
+        );
+
+        args.grain_seed = Some(456);
+        assert_ne!(
+            strong_pair.profile_image,
+            cache.html_pair_paths(&xmp, 4, &args).unwrap().profile_image
+        );
+    }
+
+    #[test]
+    fn html_pair_cache_requires_a_fully_decodable_matching_manifest_pair() {
+        let dir = tempfile::tempdir().unwrap();
+        let sources = dir.path().join("sources");
+        let cache_dir = dir.path().join("cache");
+        fs::create_dir_all(&sources).unwrap();
+        fs::create_dir_all(&cache_dir).unwrap();
+        let profile_source = sources.join("profile.jpg");
+        let diffusion_source = sources.join("diffusion.jpg");
+        let mismatched_source = sources.join("mismatched.jpg");
+        image::RgbImage::from_pixel(8, 6, image::Rgb([10, 20, 30]))
+            .save(&profile_source)
+            .unwrap();
+        image::RgbImage::from_pixel(8, 6, image::Rgb([40, 50, 60]))
+            .save(&diffusion_source)
+            .unwrap();
+        image::RgbImage::from_pixel(7, 6, image::Rgb([70, 80, 90]))
+            .save(&mismatched_source)
+            .unwrap();
+        let destinations = HtmlPairCachePaths {
+            profile_image: cache_dir.join("pair-profile.jpg"),
+            diffusion_image: cache_dir.join("pair-diffusion.jpg"),
+            manifest: cache_dir.join("pair.pair"),
+        };
+
+        copy_html_pair_to_cache(&profile_source, &diffusion_source, &destinations).unwrap();
+        assert!(destinations.is_valid());
+
+        image::RgbImage::from_pixel(8, 6, image::Rgb([90, 80, 70]))
+            .save(&destinations.diffusion_image)
+            .unwrap();
+        assert!(
+            !destinations.is_valid(),
+            "a valid but stale replacement must not match the committed pair manifest"
+        );
+
+        copy_html_pair_to_cache(&profile_source, &diffusion_source, &destinations).unwrap();
+        fs::write(&destinations.diffusion_image, [0xff, 0xd8, 0xff, 0xe0]).unwrap();
+        assert!(
+            !destinations.is_valid(),
+            "a JPEG-like header without decodable pixels must be rejected"
+        );
+
+        copy_html_pair_to_cache(&profile_source, &diffusion_source, &destinations).unwrap();
+        assert!(
+            copy_html_pair_to_cache(&profile_source, &mismatched_source, &destinations).is_err()
+        );
+        assert!(
+            destinations.is_valid(),
+            "a rejected source pair must not invalidate the last committed cache entry"
+        );
     }
 
     #[test]

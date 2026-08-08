@@ -1005,6 +1005,14 @@ attenuation remains a separate sampler-specific adjustment;
 `--no-normalize-grain` disables spatial normalization but does not disable that
 amount attenuation.
 
+HTML sampler output renders each profile both without diffusion and with medium
+multi-scale mist, sharing one 16-bit profile development and the same
+deterministic grain seed. The profile-only thumbnail is shown first. Click it to
+open the larger preview, click the larger preview to toggle diffusion, and hold
+either size to show the neutral original until release. An explicitly enabled
+`--diffusion` setting customizes the diffusion-on comparison; static JPEG
+sampler sheets retain their existing single-render behavior.
+
 Use a non-default convert binary or write a progressive sampler JPEG with:
 
 ```sh

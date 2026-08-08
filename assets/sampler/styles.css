@@ -33,6 +33,14 @@ button,
 }
 #overlay-image {
   touch-action: none;
+  cursor: pointer;
+}
+#overlay-image[aria-disabled="true"] {
+  cursor: default;
+}
+#overlay-image:focus-visible {
+  outline: 2px solid #ffffff;
+  outline-offset: 6px;
 }
 main {
   padding: 92px 40px 48px;
@@ -208,6 +216,7 @@ h1 {
   bottom: 20px;
   color: #ffffff;
   font-size: 16px;
+  pointer-events: none;
   text-align: center;
 }
 .overlay-close {
