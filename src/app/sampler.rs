@@ -2,14 +2,14 @@ use std::{
     collections::BTreeMap,
     env,
     fs::{self, File},
-    io::{self, Read},
+    io::Read,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use anyhow::{Context, Result, bail};
@@ -21,6 +21,7 @@ use mini_film::{
     write_rawtherapee_resize_profile,
 };
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha1::{Digest, Sha1};
 use tempfile::Builder;
@@ -44,6 +45,11 @@ use crate::app::sampler_assets::{
     html_children_template, html_grid_template, html_page_template, html_script,
     html_section_template, html_styles, html_tile_template,
 };
+use crate::app::sampler_detail::{
+    ANALYSIS_LONG_EDGE, SAMPLER_DETAIL_ANALYSIS_VERSION, SamplerDetailAnalysis, SamplerDetailArea,
+    SamplerDetailKind, analyze_sampler_detail_areas,
+};
+use crate::app::timestamps::{GalleryFocusRegion, extract_gallery_exif};
 use crate::app::util::{
     OutputEditMetadata, extract_capture_iso, half_cpu_thread_count, is_raw_input_file,
     remove_temp_file, restore_output_color_profile,
@@ -171,6 +177,19 @@ struct ThumbnailCache {
     dcp_identity: String,
 }
 
+const SAMPLER_CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+const DEFAULT_COLOR_NOISE_ISO_THRESHOLD: u32 = 1600;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct CachedSamplerDetailAnalysis {
+    analysis_version: String,
+    source_sha1: String,
+    focus_signature: String,
+    source_width: u32,
+    source_height: u32,
+    analysis: SamplerDetailAnalysis,
+}
+
 struct HtmlPairCachePaths {
     profile_image: PathBuf,
     diffusion_image: PathBuf,
@@ -179,7 +198,17 @@ struct HtmlPairCachePaths {
 
 impl HtmlPairCachePaths {
     fn is_valid(&self) -> bool {
+        self.is_valid_at(SystemTime::now())
+    }
+
+    fn is_valid_at(&self, now: SystemTime) -> bool {
         if !self.manifest.is_file() {
+            return false;
+        }
+        if !cache_file_is_fresh_at(&self.manifest, now)
+            || !cache_file_is_fresh_at(&self.profile_image, now)
+            || !cache_file_is_fresh_at(&self.diffusion_image, now)
+        {
             return false;
         }
         match (
@@ -231,6 +260,8 @@ struct StructuredSheetContext<'a> {
     jpeg_subsampling: JpegSubsampling,
     progressive_jpeg: bool,
     dcp_profile: Option<&'a DcpProfile>,
+    cache: Option<&'a ThumbnailCache>,
+    focus_regions: &'a [GalleryFocusRegion],
 }
 
 struct SamplerSidecarContext<'a> {
@@ -254,6 +285,9 @@ struct SamplerSidecarContext<'a> {
 pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
     let mut args = args;
     validate_sampler_args(&args)?;
+    let focus_regions = extract_gallery_exif(&args.raw)
+        .map(|exif| exif.focus_regions)
+        .unwrap_or_default();
     let prepared_source = args.dng_fallback.prepare_known(&args.raw)?;
     args.raw = prepared_source.active().to_path_buf();
     let dcp_profile = is_raw_input_file(&args.raw)
@@ -269,14 +303,7 @@ pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
 
     let temp_dir = Builder::new().prefix("mini-film-sampler-").tempdir()?;
     let base_seed = args.grain_seed.unwrap_or_else(time_of_day_seed);
-    let cache = if args.no_cache {
-        None
-    } else {
-        Some(Arc::new(ThumbnailCache::new(
-            &args.raw,
-            dcp_profile.as_ref(),
-        )?))
-    };
+    let cache = sampler_cache(&args.raw, dcp_profile.as_ref(), args.no_cache)?.map(Arc::new);
     let export = ExportOptions {
         jpg_quality: args.jpg_quality,
         resize: None,
@@ -417,6 +444,8 @@ pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
         jpeg_subsampling: args.jpeg_subsampling,
         progressive_jpeg: args.progressive_jpeg,
         dcp_profile: dcp_profile.as_ref(),
+        cache: cache.as_deref(),
+        focus_regions: &focus_regions,
     };
     run_structured_sheet(&sheet_context)?;
     args.dng_fallback
@@ -468,6 +497,19 @@ impl ThumbnailCache {
     }
 
     fn path_for(&self, profile: &Path, args: &SamplerArgs) -> Result<PathBuf> {
+        self.path_for_with_seed(profile, args, args.grain_seed)
+    }
+
+    fn html_pair_base_path(&self, profile: &Path, args: &SamplerArgs) -> Result<PathBuf> {
+        self.path_for_with_seed(profile, args, None)
+    }
+
+    fn path_for_with_seed(
+        &self,
+        profile: &Path,
+        args: &SamplerArgs,
+        grain_seed: Option<u64>,
+    ) -> Result<PathBuf> {
         let xmp_sha1 =
             sha1_file(profile).with_context(|| format!("hashing XMP {}", profile.display()))?;
         let grain_mode = if args.no_grain {
@@ -477,7 +519,10 @@ impl ThumbnailCache {
                 .normalize_grain_mpix
                 .map(|mpix| format!("norm-{:016x}", mpix.to_bits()))
                 .unwrap_or_else(|| "norm-off".to_string());
-            format!("grain-{}-{normalization}", args.grain_engine)
+            let seed = grain_seed
+                .map(|seed| format!("-seed-{seed}"))
+                .unwrap_or_default();
+            format!("grain-{}-{normalization}{seed}", args.grain_engine)
         };
         let diffusion = args.diffusion.canonical_render_settings();
         let advanced_diffusion = !diffusion.has_neutral_advanced_controls();
@@ -501,7 +546,7 @@ impl ThumbnailCache {
                 }
             )
         };
-        let render_options = format!(
+        let mut render_options = format!(
             "{}-{}-l{}-{}px-lc{}-q{}-{}-{}-{}-sg3-strip{}-prog{}",
             RAW_RENDER_PIPELINE_KEY,
             self.dcp_identity,
@@ -515,6 +560,9 @@ impl ThumbnailCache {
             args.strip_metadata as u8,
             args.progressive_jpeg as u8,
         );
+        if args.color_noise_iso_threshold != DEFAULT_COLOR_NOISE_ISO_THRESHOLD {
+            render_options.push_str(&format!("-noise{}", args.color_noise_iso_threshold));
+        }
         let legacy_file_name = format!("{}-{xmp_sha1}-{render_options}.jpg", self.raw_sha1);
         let file_name = if !advanced_diffusion && legacy_file_name.len() <= 255 {
             legacy_file_name
@@ -544,7 +592,7 @@ impl ThumbnailCache {
     ) -> Result<HtmlPairCachePaths> {
         let xmp_sha1 =
             sha1_file(profile).with_context(|| format!("hashing XMP {}", profile.display()))?;
-        let single_output_key = self.path_for(profile, args)?;
+        let single_output_key = self.html_pair_base_path(profile, args)?;
         let diffusion = html_sampler_diffusion_settings(args.diffusion)
             .render_identity()
             .expect("the HTML sampler diffusion variant is enabled");
@@ -576,6 +624,187 @@ impl ThumbnailCache {
             manifest: self.dir.join(format!("{stem}.pair")),
         })
     }
+
+    fn html_original_path(&self, jpg_quality: u8, jpeg_subsampling: JpegSubsampling) -> PathBuf {
+        let mut hasher = Sha1::new();
+        hasher.update(b"html-sampler-original-v1\0");
+        hasher.update(RAW_RENDER_PIPELINE_KEY);
+        hasher.update(b"\0");
+        hasher.update(self.dcp_identity.as_bytes());
+        hasher.update(b"\0quality=");
+        hasher.update(jpg_quality.clamp(1, 100).to_le_bytes());
+        hasher.update(b"\0subsampling=");
+        hasher.update(format!("{jpeg_subsampling:?}").as_bytes());
+        let digest = hasher
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        self.dir
+            .join(format!("{}-html-original-v1-{digest}.jpg", self.raw_sha1))
+    }
+
+    fn progressive_html_path(
+        &self,
+        source: &Path,
+        jpg_quality: u8,
+        jpeg_subsampling: JpegSubsampling,
+    ) -> Result<PathBuf> {
+        progressive_html_cache_path(&self.dir, source, jpg_quality, jpeg_subsampling)
+    }
+
+    fn html_detail_analysis_path(&self, source_sha1: &str, focus_signature: &str) -> PathBuf {
+        let mut hasher = Sha1::new();
+        hasher.update(SAMPLER_DETAIL_ANALYSIS_VERSION.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(source_sha1.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(focus_signature.as_bytes());
+        let digest = hasher
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        self.dir
+            .join("html-detail-areas")
+            .join(format!("{digest}.json"))
+    }
+}
+
+fn sampler_cache(
+    raw: &Path,
+    dcp_profile: Option<&DcpProfile>,
+    no_cache: bool,
+) -> Result<Option<ThumbnailCache>> {
+    if no_cache {
+        return Ok(None);
+    }
+    ThumbnailCache::new(raw, dcp_profile).map(Some)
+}
+
+fn cache_file_is_fresh_at(path: &Path, now: SystemTime) -> bool {
+    let Ok(modified) = fs::metadata(path).and_then(|metadata| metadata.modified()) else {
+        return false;
+    };
+    now.duration_since(modified)
+        .is_ok_and(|age| age <= SAMPLER_CACHE_TTL)
+}
+
+fn fresh_decodable_sampler_image(path: &Path) -> bool {
+    fresh_decodable_sampler_image_at(path, SystemTime::now())
+}
+
+fn fresh_decodable_sampler_image_at(path: &Path, now: SystemTime) -> bool {
+    cache_file_is_fresh_at(path, now) && decoded_sampler_image_dimensions(path).is_some()
+}
+
+fn sampler_focus_signature(focus_regions: &[GalleryFocusRegion]) -> Result<String> {
+    let serialized =
+        serde_json::to_vec(focus_regions).context("serializing sampler focus regions")?;
+    let mut hasher = Sha1::new();
+    hasher.update(serialized);
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+fn load_or_analyze_sampler_details(
+    convert: &Path,
+    source: &Path,
+    focus_regions: &[GalleryFocusRegion],
+    cache: Option<&ThumbnailCache>,
+) -> Result<SamplerDetailAnalysis> {
+    let source_sha1 = sha1_file(source)
+        .with_context(|| format!("hashing sampler original {}", source.display()))?;
+    let focus_signature = sampler_focus_signature(focus_regions)?;
+    let (source_width, source_height) = image::image_dimensions(source)
+        .with_context(|| format!("decoding sampler original {}", source.display()))?;
+    let cache_path =
+        cache.map(|cache| cache.html_detail_analysis_path(&source_sha1, &focus_signature));
+
+    if let Some(cache_path) = cache_path.as_ref()
+        && cache_file_is_fresh_at(cache_path, SystemTime::now())
+        && let Ok(bytes) = fs::read(cache_path)
+        && let Ok(cached) = serde_json::from_slice::<CachedSamplerDetailAnalysis>(&bytes)
+        && cached.analysis_version == SAMPLER_DETAIL_ANALYSIS_VERSION
+        && cached.source_sha1 == source_sha1
+        && cached.focus_signature == focus_signature
+        && cached.source_width == source_width
+        && cached.source_height == source_height
+        && cached.analysis.is_valid()
+    {
+        return Ok(cached.analysis);
+    }
+
+    let image = load_sampler_detail_proxy(convert, source, source_width, source_height)?;
+    let analysis = analyze_sampler_detail_areas(&image, focus_regions);
+    if !analysis.is_valid() {
+        bail!("sampler detail analysis produced invalid areas");
+    }
+
+    if let Some(cache_path) = cache_path {
+        if let Some(parent) = cache_path.parent() {
+            fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+        }
+        let cached = CachedSamplerDetailAnalysis {
+            analysis_version: SAMPLER_DETAIL_ANALYSIS_VERSION.to_string(),
+            source_sha1,
+            focus_signature,
+            source_width,
+            source_height,
+            analysis: analysis.clone(),
+        };
+        let serialized =
+            serde_json::to_vec(&cached).context("serializing sampler detail analysis")?;
+        write_cache_file_atomically(&serialized, &cache_path)?;
+    }
+
+    Ok(analysis)
+}
+
+fn load_sampler_detail_proxy(
+    convert: &Path,
+    source: &Path,
+    source_width: u32,
+    source_height: u32,
+) -> Result<image::RgbImage> {
+    if source_width.max(source_height) <= ANALYSIS_LONG_EDGE {
+        return Ok(image::open(source)
+            .with_context(|| format!("decoding sampler original {}", source.display()))?
+            .into_rgb8());
+    }
+
+    let temp_dir = Builder::new()
+        .prefix("mini-film-sampler-analysis-")
+        .tempdir()?;
+    let proxy = temp_dir.path().join("analysis.ppm");
+    let mut command = Command::new(convert);
+    add_convert_thread_limit(&mut command, convert);
+    command
+        .arg(source)
+        .arg("-resize")
+        .arg(format!("{ANALYSIS_LONG_EDGE}x{ANALYSIS_LONG_EDGE}>"))
+        .arg("-depth")
+        .arg("8")
+        .arg(&proxy)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let output = command
+        .output()
+        .with_context(|| format!("running {} for sampler detail analysis", convert.display()))?;
+    if !output.status.success() {
+        bail!(
+            "sampler detail proxy failed with status {}\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout).trim(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(image::open(&proxy)
+        .with_context(|| format!("decoding sampler detail proxy {}", proxy.display()))?
+        .into_rgb8())
 }
 
 fn decoded_sampler_image_dimensions(path: &Path) -> Option<(u32, u32)> {
@@ -764,7 +993,7 @@ fn render_profile_thumbnail(
         }
     } else if let Some(cache) = context.cache {
         let cached = cache.path_for(profile, context.args)?;
-        if cached.is_file() {
+        if fresh_decodable_sampler_image(&cached) {
             sampler_step(context.progress, 5, "cache hit");
             return sample_thumb_from_image(cached, profile, context.emulation_root);
         }
@@ -1222,21 +1451,9 @@ fn append_lens_corrections_to_profiles(
 }
 
 fn copy_thumbnail_to_cache(source: &Path, destination: &Path) -> Result<()> {
-    if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-    }
-    let temp = destination.with_extension("jpg.tmp");
-    fs::copy(source, &temp)
-        .with_context(|| format!("copying {} to {}", source.display(), temp.display()))?;
-    match fs::rename(&temp, destination) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
-            remove_temp_file(&temp)?;
-            Ok(())
-        }
-        Err(err) => Err(err)
-            .with_context(|| format!("renaming {} to {}", temp.display(), destination.display())),
-    }
+    decoded_sampler_image_dimensions(source)
+        .with_context(|| format!("sampler thumbnail does not decode: {}", source.display()))?;
+    copy_cache_file_atomically(source, destination)
 }
 
 fn copy_html_pair_to_cache(
@@ -1293,6 +1510,7 @@ fn copy_cache_file_atomically(source: &Path, destination: &Path) -> Result<()> {
     let parent = destination
         .parent()
         .context("sampler cache file has no parent directory")?;
+    fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     let temp = Builder::new()
         .prefix(".mini-film-sampler-cache-")
         .suffix(".tmp")
@@ -1313,6 +1531,7 @@ fn write_cache_file_atomically(contents: &[u8], destination: &Path) -> Result<()
     let parent = destination
         .parent()
         .context("sampler cache file has no parent directory")?;
+    fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     let temp = Builder::new()
         .prefix(".mini-film-sampler-cache-")
         .suffix(".tmp")
@@ -1400,6 +1619,12 @@ fn run_html_sheet(context: &StructuredSheetContext<'_>) -> Result<()> {
         write_html_baseline_thumbnail(context, &baseline_source)?;
         baseline_relative
     };
+    let detail_analysis = load_or_analyze_sampler_details(
+        context.convert,
+        &thumbnail_dir.join("original.jpg"),
+        context.focus_regions,
+        context.cache,
+    )?;
 
     let jobs = half_cpu_thread_count();
     let pool = rayon::ThreadPoolBuilder::new().num_threads(jobs).build()?;
@@ -1422,6 +1647,7 @@ fn run_html_sheet(context: &StructuredSheetContext<'_>) -> Result<()> {
                     &destination,
                     context.jpg_quality,
                     context.jpeg_subsampling,
+                    context.cache,
                 )?;
                 write_cached_progressive_html_thumbnail(
                     context.convert,
@@ -1429,6 +1655,7 @@ fn run_html_sheet(context: &StructuredSheetContext<'_>) -> Result<()> {
                     &diffusion_destination,
                     context.jpg_quality,
                     context.jpeg_subsampling,
+                    context.cache,
                 )?;
                 let mut exported = thumb.clone_for_tree();
                 exported.image = PathBuf::from("thumbnails").join(file_name);
@@ -1480,7 +1707,7 @@ fn run_html_sheet(context: &StructuredSheetContext<'_>) -> Result<()> {
     for (_, thumb) in html_thumbs {
         trie.insert(thumb);
     }
-    let html = render_sheet_html(&trie, context.columns)?;
+    let html = render_sheet_html(&trie, context.columns, &detail_analysis)?;
     fs::write(output, html).with_context(|| format!("writing {}", output.display()))?;
     Ok(())
 }
@@ -1562,14 +1789,30 @@ fn write_cached_progressive_html_thumbnail(
     destination: &Path,
     jpg_quality: u8,
     jpeg_subsampling: JpegSubsampling,
+    cache: Option<&ThumbnailCache>,
 ) -> Result<()> {
-    let cached = progressive_html_cache_path(source, jpg_quality, jpeg_subsampling)?;
-    if cached.is_file() {
+    let Some(cache) = cache else {
+        return write_progressive_html_thumbnail(
+            convert,
+            source,
+            destination,
+            jpg_quality,
+            jpeg_subsampling,
+        );
+    };
+    let cached = cache.progressive_html_path(source, jpg_quality, jpeg_subsampling)?;
+    if fresh_decodable_sampler_image(&cached) {
         copy_file(&cached, destination)?;
         return Ok(());
     }
 
-    write_progressive_html_thumbnail(convert, source, &cached, jpg_quality, jpeg_subsampling)?;
+    write_progressive_html_thumbnail_to_cache(
+        convert,
+        source,
+        &cached,
+        jpg_quality,
+        jpeg_subsampling,
+    )?;
     copy_file(&cached, destination)?;
     Ok(())
 }
@@ -1578,6 +1821,16 @@ fn write_html_baseline_thumbnail(
     context: &StructuredSheetContext<'_>,
     destination: &Path,
 ) -> Result<PathBuf> {
+    let cached = context
+        .cache
+        .map(|cache| cache.html_original_path(context.jpg_quality, context.jpeg_subsampling));
+    if let Some(cached) = cached.as_ref()
+        && fresh_decodable_sampler_image(cached)
+    {
+        copy_file(cached, destination)?;
+        return Ok(destination.to_path_buf());
+    }
+
     let temp_dir = Builder::new()
         .prefix("mini-film-sampler-baseline-")
         .tempdir()?;
@@ -1596,13 +1849,24 @@ fn write_html_baseline_thumbnail(
         true,
         context.dng_fallback,
     )?;
-    write_cached_progressive_html_thumbnail(
-        context.convert,
-        &raw_source,
-        destination,
-        context.jpg_quality,
-        context.jpeg_subsampling,
-    )?;
+    if let Some(cached) = cached {
+        write_progressive_html_thumbnail_to_cache(
+            context.convert,
+            &raw_source,
+            &cached,
+            context.jpg_quality,
+            context.jpeg_subsampling,
+        )?;
+        copy_file(&cached, destination)?;
+    } else {
+        write_progressive_html_thumbnail(
+            context.convert,
+            &raw_source,
+            destination,
+            context.jpg_quality,
+            context.jpeg_subsampling,
+        )?;
+    }
     context
         .dng_fallback
         .finish_successful_development(&outcome.source)?;
@@ -1610,6 +1874,7 @@ fn write_html_baseline_thumbnail(
 }
 
 fn progressive_html_cache_path(
+    cache_root: &Path,
     source: &Path,
     jpg_quality: u8,
     jpeg_subsampling: JpegSubsampling,
@@ -1617,14 +1882,44 @@ fn progressive_html_cache_path(
     let source_sha1 =
         sha1_file(source).with_context(|| format!("hashing thumbnail {}", source.display()))?;
     let subsampling = format!("{:?}", jpeg_subsampling).to_ascii_lowercase();
-    let dir = env::temp_dir()
-        .join("mini-film-sampler-cache")
-        .join("html-progressive");
+    let dir = cache_root.join("html-progressive");
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     Ok(dir.join(format!(
         "{source_sha1}-q{}-{subsampling}-progressive.jpg",
         jpg_quality.clamp(1, 100)
     )))
+}
+
+fn write_progressive_html_thumbnail_to_cache(
+    convert: &Path,
+    source: &Path,
+    destination: &Path,
+    jpg_quality: u8,
+    jpeg_subsampling: JpegSubsampling,
+) -> Result<()> {
+    let parent = destination
+        .parent()
+        .context("HTML sampler cache file has no parent directory")?;
+    fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    let temp = Builder::new()
+        .prefix(".mini-film-sampler-progressive-")
+        .suffix(".jpg")
+        .tempfile_in(parent)
+        .with_context(|| format!("creating temporary cache file in {}", parent.display()))?;
+    write_progressive_html_thumbnail(convert, source, temp.path(), jpg_quality, jpeg_subsampling)?;
+    decoded_sampler_image_dimensions(temp.path()).with_context(|| {
+        format!(
+            "generated HTML sampler image does not decode: {}",
+            temp.path().display()
+        )
+    })?;
+    temp.as_file()
+        .sync_all()
+        .with_context(|| format!("syncing {}", temp.path().display()))?;
+    temp.persist(destination)
+        .map(|_| ())
+        .map_err(|err| err.error)
+        .with_context(|| format!("publishing cache file {}", destination.display()))
 }
 
 fn copy_file(source: &Path, destination: &Path) -> Result<()> {
@@ -1688,8 +1983,15 @@ fn html_diffusion_thumbnail_file_name(index: usize, thumb: &SampleThumb) -> Stri
     format!("{stem}-diffusion.jpg")
 }
 
-fn render_sheet_html(trie: &ProfileTrie, columns: u32) -> Result<String> {
+fn render_sheet_html(
+    trie: &ProfileTrie,
+    columns: u32,
+    detail_analysis: &SamplerDetailAnalysis,
+) -> Result<String> {
     let templates = html_templates()?;
+    let focus = sampler_detail_area(detail_analysis, SamplerDetailKind::Focus)?;
+    let highlights = sampler_detail_area(detail_analysis, SamplerDetailKind::Highlights)?;
+    let shadows = sampler_detail_area(detail_analysis, SamplerDetailKind::Shadows)?;
     let mut sections = String::new();
     for (part, child) in &trie.children {
         sections.push_str(&render_html_node(
@@ -1709,9 +2011,27 @@ fn render_sheet_html(trie: &ProfileTrie, columns: u32) -> Result<String> {
                 "script": html_script(),
                 "sections": sections,
                 "version": env!("CARGO_PKG_VERSION"),
+                "focus_x": focus.center_x,
+                "focus_y": focus.center_y,
+                "highlights_x": highlights.center_x,
+                "highlights_y": highlights.center_y,
+                "shadows_x": shadows.center_x,
+                "shadows_y": shadows.center_y,
             }),
         )
         .context("rendering HTML sampler page")
+}
+
+fn sampler_detail_area(
+    analysis: &SamplerDetailAnalysis,
+    kind: SamplerDetailKind,
+) -> Result<SamplerDetailArea> {
+    analysis
+        .areas
+        .iter()
+        .copied()
+        .find(|area| area.kind == kind)
+        .with_context(|| format!("sampler detail analysis is missing {kind:?}"))
 }
 
 fn html_templates() -> Result<Handlebars<'static>> {
@@ -2594,6 +2914,7 @@ letter-spacing: 0;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use filetime::{FileTime, set_file_mtime};
 
     fn sample_thumb(name: &str, width: u32, height: u32) -> SampleThumb {
         SampleThumb {
@@ -2609,6 +2930,47 @@ mod tests {
             width,
             height,
         }
+    }
+
+    fn sample_detail_analysis() -> SamplerDetailAnalysis {
+        SamplerDetailAnalysis {
+            areas: vec![
+                SamplerDetailArea {
+                    kind: SamplerDetailKind::Focus,
+                    center_x: 0.25,
+                    center_y: 0.35,
+                },
+                SamplerDetailArea {
+                    kind: SamplerDetailKind::Highlights,
+                    center_x: 0.65,
+                    center_y: 0.2,
+                },
+                SamplerDetailArea {
+                    kind: SamplerDetailKind::Shadows,
+                    center_x: 0.75,
+                    center_y: 0.8,
+                },
+            ],
+        }
+    }
+
+    fn html_detail_coordinates(html: &str, region: &str) -> (f32, f32) {
+        let region = html
+            .split_once(&format!("data-region=\"{region}\""))
+            .unwrap()
+            .1;
+        let coordinate = |name: &str| {
+            region
+                .split_once(&format!("data-center-{name}=\""))
+                .unwrap()
+                .1
+                .split_once('"')
+                .unwrap()
+                .0
+                .parse::<f32>()
+                .unwrap()
+        };
+        (coordinate("x"), coordinate("y"))
     }
 
     fn sampler_args_for_cache(
@@ -2967,7 +3329,7 @@ mod tests {
         thumb.hald = Some(PathBuf::from("/tmp/Kodak Portra 400 Grainy.hald.png"));
         trie.insert(thumb);
 
-        let html = render_sheet_html(&trie, 4).unwrap();
+        let html = render_sheet_html(&trie, 4, &sample_detail_analysis()).unwrap();
 
         assert!(html.contains("<!doctype html>"));
         assert!(html.contains("--columns: 4"));
@@ -3008,7 +3370,14 @@ mod tests {
         );
         assert!(html.contains("class=\"thumb-button\""));
         assert!(html.contains("id=\"overlay\""));
-        assert!(html.contains("max-width: calc(100vw - 96px)"));
+        assert!(html.contains("class=\"detail-rail\""));
+        assert!(html.contains("data-region=\"focus\""));
+        assert!(html.contains("data-region=\"highlights\""));
+        assert!(html.contains("data-region=\"shadows\""));
+        assert_eq!(html_detail_coordinates(&html, "focus"), (0.25, 0.35));
+        assert_eq!(html_detail_coordinates(&html, "highlights"), (0.65, 0.2));
+        assert_eq!(html_detail_coordinates(&html, "shadows"), (0.75, 0.8));
+        assert!(html.contains("--detail-size: clamp(144px, 16vw, 192px)"));
         assert!(html.contains("max-height: calc(100vh - 128px)"));
         assert!(html.contains("https://github.com/alfanick/mini-film"));
         let version = env!("CARGO_PKG_VERSION");
@@ -3092,6 +3461,7 @@ mod tests {
             dir.path().to_path_buf(),
             dir.path().join("hald"),
         );
+        args.grain_seed = None;
         let cache = ThumbnailCache::new(&raw, None).unwrap();
         let cached = cache.path_for(&xmp, &args).unwrap();
         let name = cached.file_name().unwrap().to_string_lossy();
@@ -3101,6 +3471,8 @@ mod tests {
         assert!(name.contains(&sha1_file(&xmp).unwrap()));
         assert!(name.contains(RAW_RENDER_PIPELINE_KEY));
         assert!(name.contains("512px"));
+        assert!(!name.contains("seed-"));
+        assert!(!name.contains("noise1600"));
 
         args.thumbnail_long_edge = 1024;
         let larger = cache.path_for(&xmp, &args).unwrap();
@@ -3119,7 +3491,20 @@ mod tests {
         let no_noise = cache.path_for(&xmp, &args).unwrap();
         args.color_noise_iso_threshold = 6400;
         let with_noise = cache.path_for(&xmp, &args).unwrap();
-        assert_eq!(no_noise, with_noise);
+        assert_ne!(no_noise, with_noise);
+
+        args.grain_seed = Some(456);
+        let other_seed = cache.path_for(&xmp, &args).unwrap();
+        assert_ne!(with_noise, other_seed);
+        let explicit_seed_pair_base = cache.html_pair_base_path(&xmp, &args).unwrap();
+        args.grain_seed = None;
+        let automatic_seed = cache.path_for(&xmp, &args).unwrap();
+        assert_ne!(other_seed, automatic_seed);
+        assert_eq!(
+            explicit_seed_pair_base,
+            cache.html_pair_base_path(&xmp, &args).unwrap(),
+            "the pair identity keeps its existing separate grain-seed suffix"
+        );
 
         args.diffusion = DiffusionSettings {
             method: mini_film::DiffusionMethod::MultiScaleMist,
@@ -3189,6 +3574,180 @@ mod tests {
         args.diffusion.method = mini_film::DiffusionMethod::EdgeAwareGlow;
         let edge_aware_diffusion = cache.path_for(&xmp, &args).unwrap();
         assert_ne!(mist_diffusion, edge_aware_diffusion);
+    }
+
+    #[test]
+    fn sampler_cache_freshness_rejects_expired_future_and_corrupt_images() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("thumbnail.jpg");
+        image::RgbImage::from_pixel(8, 6, image::Rgb([10, 20, 30]))
+            .save(&image)
+            .unwrap();
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(2 * 24 * 60 * 60);
+
+        set_file_mtime(&image, FileTime::from_system_time(now - SAMPLER_CACHE_TTL)).unwrap();
+        assert!(fresh_decodable_sampler_image_at(&image, now));
+
+        set_file_mtime(
+            &image,
+            FileTime::from_system_time(now - SAMPLER_CACHE_TTL - Duration::from_secs(1)),
+        )
+        .unwrap();
+        assert!(!fresh_decodable_sampler_image_at(&image, now));
+
+        set_file_mtime(
+            &image,
+            FileTime::from_system_time(now + Duration::from_secs(1)),
+        )
+        .unwrap();
+        assert!(!fresh_decodable_sampler_image_at(&image, now));
+
+        fs::write(&image, b"not a JPEG").unwrap();
+        set_file_mtime(&image, FileTime::from_system_time(now)).unwrap();
+        assert!(!fresh_decodable_sampler_image_at(&image, now));
+    }
+
+    #[test]
+    fn no_cache_bypasses_sampler_cache_initialization() {
+        let missing = Path::new("/definitely/missing/mini-film-cache-input.dng");
+
+        assert!(sampler_cache(missing, None, true).unwrap().is_none());
+        assert!(sampler_cache(missing, None, false).is_err());
+    }
+
+    #[test]
+    fn html_original_and_progressive_cache_paths_track_render_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("profile.jpg");
+        fs::write(&source, b"profile pixels").unwrap();
+        let cache = ThumbnailCache {
+            dir: dir.path().join("cache"),
+            raw_sha1: "raw-sha1".to_string(),
+            dcp_identity: "dcp-one".to_string(),
+        };
+
+        let original = cache.html_original_path(95, JpegSubsampling::S444);
+        assert!(original.starts_with(&cache.dir));
+        assert!(
+            original
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains("html-original-v1")
+        );
+        assert_ne!(
+            original,
+            cache.html_original_path(90, JpegSubsampling::S444)
+        );
+        assert_ne!(
+            original,
+            cache.html_original_path(95, JpegSubsampling::S420)
+        );
+        let other_dcp = ThumbnailCache {
+            dir: cache.dir.clone(),
+            raw_sha1: cache.raw_sha1.clone(),
+            dcp_identity: "dcp-two".to_string(),
+        };
+        assert_ne!(
+            original,
+            other_dcp.html_original_path(95, JpegSubsampling::S444)
+        );
+
+        let progressive = cache
+            .progressive_html_path(&source, 95, JpegSubsampling::S444)
+            .unwrap();
+        assert!(progressive.starts_with(cache.dir.join("html-progressive")));
+        assert_ne!(
+            progressive,
+            cache
+                .progressive_html_path(&source, 90, JpegSubsampling::S444)
+                .unwrap()
+        );
+        fs::write(&source, b"different profile pixels").unwrap();
+        assert_ne!(
+            progressive,
+            cache
+                .progressive_html_path(&source, 95, JpegSubsampling::S444)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn sampler_detail_analysis_cache_reuses_valid_data_and_recovers_from_corruption() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("original.jpg");
+        let mut image = image::RgbImage::new(320, 200);
+        for (x, y, pixel) in image.enumerate_pixels_mut() {
+            let value = ((x * 3 + y * 5) % 256) as u8;
+            *pixel = image::Rgb([value, value, value]);
+        }
+        image.save(&source).unwrap();
+        let focus_regions = vec![GalleryFocusRegion {
+            x: 0.1,
+            y: 0.2,
+            width: 0.1,
+            height: 0.1,
+            primary: true,
+        }];
+        let cache = ThumbnailCache {
+            dir: dir.path().join("cache"),
+            raw_sha1: "raw-sha1".to_string(),
+            dcp_identity: "dcp-none".to_string(),
+        };
+
+        let computed = load_or_analyze_sampler_details(
+            Path::new("convert"),
+            &source,
+            &focus_regions,
+            Some(&cache),
+        )
+        .unwrap();
+        assert!(computed.is_valid());
+        let source_sha1 = sha1_file(&source).unwrap();
+        let focus_signature = sampler_focus_signature(&focus_regions).unwrap();
+        let cache_path = cache.html_detail_analysis_path(&source_sha1, &focus_signature);
+        assert!(cache_path.is_file());
+
+        let replacement = sample_detail_analysis();
+        let cached = CachedSamplerDetailAnalysis {
+            analysis_version: SAMPLER_DETAIL_ANALYSIS_VERSION.to_string(),
+            source_sha1,
+            focus_signature,
+            source_width: 320,
+            source_height: 200,
+            analysis: replacement.clone(),
+        };
+        write_cache_file_atomically(&serde_json::to_vec(&cached).unwrap(), &cache_path).unwrap();
+        assert_eq!(
+            load_or_analyze_sampler_details(
+                Path::new("convert"),
+                &source,
+                &focus_regions,
+                Some(&cache),
+            )
+            .unwrap(),
+            replacement
+        );
+
+        fs::write(&cache_path, b"not json").unwrap();
+        assert_eq!(
+            load_or_analyze_sampler_details(
+                Path::new("convert"),
+                &source,
+                &focus_regions,
+                Some(&cache),
+            )
+            .unwrap(),
+            computed
+        );
+
+        fs::write(&cache_path, b"leave untouched").unwrap();
+        assert_eq!(
+            load_or_analyze_sampler_details(Path::new("convert"), &source, &focus_regions, None,)
+                .unwrap(),
+            computed
+        );
+        assert_eq!(fs::read(&cache_path).unwrap(), b"leave untouched");
     }
 
     #[test]
@@ -3305,6 +3864,31 @@ mod tests {
             destinations.is_valid(),
             "a rejected source pair must not invalidate the last committed cache entry"
         );
+
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(2 * 24 * 60 * 60);
+        for path in [
+            &destinations.profile_image,
+            &destinations.diffusion_image,
+            &destinations.manifest,
+        ] {
+            set_file_mtime(path, FileTime::from_system_time(now)).unwrap();
+        }
+        assert!(destinations.is_valid_at(now));
+
+        set_file_mtime(
+            &destinations.manifest,
+            FileTime::from_system_time(now - SAMPLER_CACHE_TTL - Duration::from_secs(1)),
+        )
+        .unwrap();
+        assert!(!destinations.is_valid_at(now));
+
+        set_file_mtime(&destinations.manifest, FileTime::from_system_time(now)).unwrap();
+        set_file_mtime(
+            &destinations.profile_image,
+            FileTime::from_system_time(now + Duration::from_secs(1)),
+        )
+        .unwrap();
+        assert!(!destinations.is_valid_at(now));
     }
 
     #[test]

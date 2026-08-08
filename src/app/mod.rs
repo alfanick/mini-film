@@ -23,6 +23,7 @@ pub(crate) mod review;
 pub(crate) mod review_assets;
 pub(crate) mod sampler;
 pub(crate) mod sampler_assets;
+pub(crate) mod sampler_detail;
 pub(crate) mod system_stats;
 pub(crate) mod timestamps;
 pub(crate) mod update;

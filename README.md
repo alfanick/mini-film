@@ -1009,9 +1009,18 @@ HTML sampler output renders each profile both without diffusion and with medium
 multi-scale mist, sharing one 16-bit profile development and the same
 deterministic grain seed. The profile-only thumbnail is shown first. Click it to
 open the larger preview, click the larger preview to toggle diffusion, and hold
-either size to show the neutral original until release. An explicitly enabled
+either size to show the neutral original until release. The overlay also shows
+Focus, Highlights, and Shadows as square 100% crops. Their locations are
+detected once from the neutral original, using camera focus metadata when
+available and the frame center otherwise, and stay aligned across every
+profile. The crops switch with the main profile, diffusion, and original view
+without creating separately rendered images. An explicitly enabled
 `--diffusion` setting customizes the diffusion-on comparison; static JPEG
 sampler sheets retain their existing single-render behavior.
+
+Sampler renders are reused only while their content-and-settings cache entries
+are at most 24 hours old. `--no-cache` bypasses sampler image and analysis cache
+reads and writes, forcing all thumbnails and previews to be rendered again.
 
 Use a non-default convert binary or write a progressive sampler JPEG with:
 

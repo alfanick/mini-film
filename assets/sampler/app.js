@@ -1,6 +1,11 @@
 const overlay = document.getElementById("overlay");
 const overlayImage = document.getElementById("overlay-image");
 const overlayCaption = document.getElementById("overlay-caption");
+const detailCrops = [...document.querySelectorAll(".detail-crop")].map((element) => ({
+  element,
+  viewport: element.querySelector(".detail-viewport"),
+  image: element.querySelector("img"),
+}));
 const collapsedBranches = new Set(JSON.parse(localStorage.getItem("mini-film-collapsed-branches") || "[]"));
 const HOLD_DELAY_MS = 280;
 const HOLD_LONG_DELAY_MS = 240;
@@ -12,6 +17,72 @@ let overlayPointerId = null;
 let suppressNextOverlayClick = false;
 let suppressOverlayClickTimer = null;
 let restoreFocusTo = null;
+let detailResizeFrame = null;
+
+function normalizedCoordinate(value) {
+  const coordinate = Number.parseFloat(value);
+  return Number.isFinite(coordinate) ? Math.min(1, Math.max(0, coordinate)) : 0.5;
+}
+
+function positionDetailCrop(detail) {
+  const image = detail.image;
+  const viewport = detail.viewport;
+  if (!image.complete || image.naturalWidth === 0 || image.naturalHeight === 0) {
+    return;
+  }
+
+  const centerX = normalizedCoordinate(detail.element.dataset.centerX);
+  const centerY = normalizedCoordinate(detail.element.dataset.centerY);
+  const viewportWidth = viewport.clientWidth;
+  const viewportHeight = viewport.clientHeight;
+  const imageWidth = image.naturalWidth;
+  const imageHeight = image.naturalHeight;
+  const cropLeft = Math.round(
+    Math.min(Math.max(centerX * imageWidth - viewportWidth / 2, 0), Math.max(0, imageWidth - viewportWidth)),
+  );
+  const cropTop = Math.round(
+    Math.min(Math.max(centerY * imageHeight - viewportHeight / 2, 0), Math.max(0, imageHeight - viewportHeight)),
+  );
+  const imageLeft = Math.round(imageWidth < viewportWidth ? (viewportWidth - imageWidth) / 2 : -cropLeft);
+  const imageTop = Math.round(imageHeight < viewportHeight ? (viewportHeight - imageHeight) / 2 : -cropTop);
+
+  image.style.width = `${imageWidth}px`;
+  image.style.height = `${imageHeight}px`;
+  image.style.left = `${imageLeft}px`;
+  image.style.top = `${imageTop}px`;
+}
+
+function positionAllDetailCrops() {
+  detailCrops.forEach(positionDetailCrop);
+}
+
+function setOverlaySource(source) {
+  if (!source) {
+    return;
+  }
+  overlayImage.src = source;
+  detailCrops.forEach((detail) => {
+    if (detail.image.getAttribute("src") !== source) {
+      detail.image.src = source;
+    } else {
+      positionDetailCrop(detail);
+    }
+  });
+}
+
+detailCrops.forEach((detail) => {
+  detail.image.addEventListener("load", () => positionDetailCrop(detail));
+});
+
+window.addEventListener("resize", () => {
+  if (!overlay.classList.contains("open") || detailResizeFrame !== null) {
+    return;
+  }
+  detailResizeFrame = window.requestAnimationFrame(() => {
+    detailResizeFrame = null;
+    positionAllDetailCrops();
+  });
+});
 
 function suppressContextMenu(event) {
   event.preventDefault();
@@ -70,7 +141,7 @@ function setOverlayMode(mode) {
   overlayImage.dataset.mode = nextMode;
   overlayImage.classList.remove("showing-original");
   if (source) {
-    overlayImage.src = source;
+    setOverlaySource(source);
   }
   overlayImage.setAttribute("aria-pressed", String(nextMode === "diffusion"));
   overlayImage.setAttribute("aria-disabled", String(!comparisonAvailable()));
@@ -89,7 +160,7 @@ function showOverlayOriginal() {
   if (!original || original === processed) {
     return false;
   }
-  overlayImage.src = original;
+  setOverlaySource(original);
   overlayImage.classList.add("showing-original");
   overlayImage.setAttribute(
     "aria-label",
@@ -191,6 +262,10 @@ function closeOverlay() {
   overlayImage.removeAttribute("data-original");
   overlayImage.removeAttribute("data-title");
   overlayImage.removeAttribute("data-mode");
+  detailCrops.forEach((detail) => {
+    detail.image.removeAttribute("src");
+    detail.image.removeAttribute("style");
+  });
   overlayImage.classList.remove("showing-original");
   overlayImage.alt = "";
   overlayImage.setAttribute("aria-pressed", "false");
@@ -337,7 +412,12 @@ overlayImage.addEventListener("keydown", (event) => {
 });
 
 overlay.addEventListener("click", (event) => {
-  if (event.target === overlay || event.target.classList.contains("overlay-close")) {
+  if (
+    event.target === overlay ||
+    event.target.classList.contains("overlay-content") ||
+    event.target.classList.contains("overlay-preview") ||
+    event.target.classList.contains("overlay-close")
+  ) {
     closeOverlay();
   }
 });

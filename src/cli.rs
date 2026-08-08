@@ -608,7 +608,8 @@ pub(crate) enum CommandKind {
         #[command(flatten)]
         diffusion: DiffusionCliArgs,
 
-        /// Disable /tmp sampler thumbnail cache and regenerate every profile thumbnail.
+        /// Bypass sampler caches and regenerate every profile thumbnail and preview.
+        /// By default, matching renders up to 24 hours old are reused.
         #[arg(long)]
         no_cache: bool,
 
