@@ -442,10 +442,11 @@ cargo run --release -- batch \
   --jobs 8
 ```
 
-The output directory is created if it does not exist. Nested input folders are
-preserved, and each input uses the same relative path with a `.jpg` extension by
-default. Use `--output-format tiff` to write `.tif` files through the 16-bit
-Zip-compressed TIFF path. With `--profile`, standalone JPEG/HEIC/TIFF inputs use the
+If the input directory does not exist, `batch` asks whether to create its full
+directory tree. The output directory is created if it does not exist. Nested
+input folders are preserved, and each input uses the same relative path with a
+`.jpg` extension by default. Use `--output-format tiff` to write `.tif` files
+through the 16-bit Zip-compressed TIFF path. With `--profile`, standalone JPEG/HEIC/TIFF inputs use the
 same PP3, Hald, grain, retouch, and black-and-white profile pipeline as RAW.
 JPEG goes directly to RawTherapee; HEIC is first auto-oriented into a 16-bit
 Zip-compressed TIFF. A final PP3 layer disables standard, edge, microcontrast,
@@ -533,9 +534,10 @@ mini-film daemon \
 ```
 
 The command validates configured profiles on startup, so mistyped `--profile`
-values fail immediately. It watches the input directory recursively, waits for the file to
-be reported as completed by the watcher (or a short fallback window when that
-signal is not available), and writes each
+values fail immediately. If the input directory does not exist, it asks whether
+to create its full directory tree. It then watches the input directory
+recursively, waits for the file to be reported as completed by the watcher (or
+a short fallback window when that signal is not available), and writes each
 result into:
 
 ```text

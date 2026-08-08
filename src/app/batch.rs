@@ -37,9 +37,9 @@ use crate::app::progress::{
 use crate::app::system_stats::{ResourceUsageSummary, sample_usage_block};
 use crate::app::timestamps::{GalleryExifData, extract_gallery_exif};
 use crate::app::util::{
-    InputFileFilter, coalesce_input_sidecars, half_cpu_thread_count, input_filter_name,
-    is_jpeg_input_file, is_raw_input_file, is_supported_input_file, matching_raw_for_sidecar,
-    time_of_day_seed,
+    InputFileFilter, coalesce_input_sidecars, create_missing_input_directory,
+    half_cpu_thread_count, input_filter_name, is_jpeg_input_file, is_raw_input_file,
+    is_supported_input_file, matching_raw_for_sidecar, time_of_day_seed,
 };
 use crate::cli::{BatchOutputFormat, ExportOptions, GalleryTemplate, LensCorrections};
 
@@ -143,6 +143,7 @@ pub(crate) struct FolderGalleryOptions<'a> {
 pub(crate) fn run_batch(args: BatchArgs) -> Result<()> {
     validate_export_options(&args.export)?;
     let jobs = resolve_batch_jobs(args.jobs)?;
+    create_missing_input_directory(&args.input)?;
     if !args.input.is_dir() {
         bail!("batch input is not a directory: {}", args.input.display());
     }

@@ -43,8 +43,8 @@ use crate::app::review::{
 use crate::app::system_stats::{ResourceUsageSummary, sample_usage_block};
 use crate::app::util::{
     InputFileFilter, coalesce_due_input_sidecars, coalesce_input_sidecars, cpu_thread_count,
-    half_cpu_thread_count, input_filter_name, is_jpeg_input_file, is_raw_input_file,
-    is_rendered_input_file, is_supported_input_file, matching_raw_for_sidecar,
+    create_missing_input_directory, half_cpu_thread_count, input_filter_name, is_jpeg_input_file,
+    is_raw_input_file, is_rendered_input_file, is_supported_input_file, matching_raw_for_sidecar,
     matching_sidecar_for_raw, time_of_day_seed,
 };
 use crate::cli::{
@@ -439,6 +439,7 @@ pub(crate) fn run_batch_daemon(mut args: BatchDaemonArgs) -> Result<()> {
     if args.auto_import && !cfg!(target_os = "linux") {
         bail!("--auto-import is supported only on Linux with mounted GVfs PTP/MTP cameras");
     }
+    create_missing_input_directory(&args.input)?;
     if !args.input.is_dir() {
         bail!("daemon input is not a directory: {}", args.input.display());
     }
