@@ -14,7 +14,6 @@ mkdir -p target/coverage
 
 echo "🧪 Running coverage (lcov)"
 cargo llvm-cov \
-  --all-targets \
   --no-default-features \
   --tests \
   --lcov \
