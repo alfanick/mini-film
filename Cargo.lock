@@ -2531,9 +2531,9 @@ dependencies = [
 
 [[package]]
 name = "handlebars"
-version = "6.4.3"
+version = "6.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4633d16a2350341713c379d6d06a4b9e1845329386026a49ce4fd09c2f3b16f6"
+checksum = "75c54236f9045c8004a77942bebc52145b4844639db934a5c70fe08617fbe61a"
 dependencies = [
  "derive_builder",
  "log",
@@ -3527,7 +3527,7 @@ dependencies = [
 
 [[package]]
 name = "mini-film"
-version = "22.9.1"
+version = "22.9.2"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5292,9 +5292,9 @@ dependencies = [
 
 [[package]]
 name = "sea-orm"
-version = "2.0.1"
+version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e29e1a2e2e6da3d2486086f9d96b4bf5b7d8bf344e16c48bd87ce7977b8d0154"
+checksum = "a334e83ced3ae3ee44db0f84d1fcf8d2087a1ad9bb9036f00f9f6067156ea197"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -5340,9 +5340,9 @@ dependencies = [
 
 [[package]]
 name = "sea-orm-cli"
-version = "2.0.1"
+version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "53cc7731b9472864d21bc6223c6747de539c5ec0cfe29bbd92aac0537c22812c"
+checksum = "5a53505884d7c907bcf4f7b4ddb1b29425e62fef8b98aea9c99e17781cceb798"
 dependencies = [
  "chrono",
  "glob",
@@ -5358,9 +5358,9 @@ dependencies = [
 
 [[package]]
 name = "sea-orm-macros"
-version = "2.0.1"
+version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88a6fd7ae2932a838d3bc7ca1e5483ffa10d6b25e4c43c8aebb4cd14773c2d08"
+checksum = "4039a86f9acc4d3b52747508b347dddc6fd725bbc429902ebeb6d26225fc2528"
 dependencies = [
  "heck 0.5.0",
  "itertools 0.14.0",
@@ -5374,9 +5374,9 @@ dependencies = [
 
 [[package]]
 name = "sea-orm-migration"
-version = "2.0.1"
+version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "95ae369463e80e8a75e57434ba10dd9008a1010d81ec66cba5909561add7223f"
+checksum = "bd09adbef87100d07131a60a8c5508b53d0cf2136521f654aae47af5e6a097fe"
 dependencies = [
  "async-trait",
  "sea-orm",
@@ -5599,7 +5599,6 @@ version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
 dependencies = [
- "indexmap 2.14.0",
  "itoa",
  "memchr",
  "serde",
@@ -8255,9 +8254,9 @@ dependencies = [
 
 [[package]]
 name = "zbus"
-version = "5.18.0"
+version = "5.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe18fb60dc696039e738717b76eaea21e7a4489bbb1885020b43c94236d7e98a"
+checksum = "5db4be7c075cb421e4b7ee645541604239bd243ba7c357511f4ff3a74b555907"
 dependencies = [
  "async-broadcast",
  "async-executor",
@@ -8290,14 +8289,14 @@ dependencies = [
 
 [[package]]
 name = "zbus_macros"
-version = "5.18.0"
+version = "5.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe96480bed92df2b442a1a30df364e12d08eed03aeb061f2b8dc6afb2be91119"
+checksum = "2990635d09ade6df1868f72f8cac69a876a90981e8bd3c40b1be413f8dc88f40"
 dependencies = [
  "proc-macro-crate 3.5.0",
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.3",
  "zbus_names",
  "zvariant",
  "zvariant_utils",
@@ -8312,6 +8311,15 @@ dependencies = [
  "serde",
  "winnow 1.0.4",
  "zvariant",
+]
+
+[[package]]
+name = "zcheapstr"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1afec51604565183aeb5c54c20aeab286120d4e4460f7f76e3e8bb8c0d99473"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -8438,40 +8446,41 @@ dependencies = [
 
 [[package]]
 name = "zvariant"
-version = "5.13.1"
+version = "5.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bee2a0bcd2a907786a456fff45aaaaf54c9ba5f50b71ae9ec1a4edd200c94911"
+checksum = "b5e28c25bd8bb8da5a1f3e7065d0c156b9ee9a7973adf78b0e35eaefdf3b1b5c"
 dependencies = [
  "endi",
  "enumflags2",
  "serde",
  "winnow 1.0.4",
+ "zcheapstr",
  "zvariant_derive",
  "zvariant_utils",
 ]
 
 [[package]]
 name = "zvariant_derive"
-version = "5.13.1"
+version = "5.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38a708216a18780796770bfe3f4739c7c83a3e8f789b755534bbbc06e4e23e12"
+checksum = "d496a145685283b67e232bd9e47377f6b60ad9d51e3601b23867f77c42477f96"
 dependencies = [
  "proc-macro-crate 3.5.0",
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.3",
  "zvariant_utils",
 ]
 
 [[package]]
 name = "zvariant_utils"
-version = "3.5.0"
+version = "4.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "90cb9383f9b45290407a1258b202d3f8f01db719eb60b4e4055c6375af4fc7c7"
+checksum = "629d80ece222cad20fe0e8741be493c4ab166acf3b85341bdc2cdbcfd8f3c2d6"
 dependencies = [
  "proc-macro2",
  "quote",
  "serde",
- "syn 2.0.119",
+ "syn 3.0.3",
  "winnow 1.0.4",
 ]

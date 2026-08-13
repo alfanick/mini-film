@@ -1,6 +1,6 @@
 [package]
 name = "mini-film"
-version = "22.9.1"
+version = "22.9.2"
 description = "Review and publish RAW, JPEG, and HEIC photos with optional Lightroom-style film emulation profiles."
 repository = "https://github.com/alfanick/mini-film"
 homepage = "https://github.com/alfanick/mini-film"
@@ -30,7 +30,7 @@ filetime = "0.2.29"
 anyhow = "1.0.103"
 clap = { version = "4.6.6", features = ["derive"] }
 flate2 = "1.1.9"
-handlebars = "6.4.3"
+handlebars = "6.4.4"
 image = "0.25.10"
 indicatif = "0.18.6"
 noise = "0.9.0"
@@ -38,8 +38,8 @@ png = "0.18.1"
 pulp = "0.22.3"
 quick-xml = "0.41.0"
 rayon = "1.12.0"
-sea-orm = { version = "=2.0.1", default-features = false, features = ["macros", "runtime-tokio", "sqlx-sqlite"] }
-sea-orm-migration = { version = "=2.0.1", default-features = false, features = ["runtime-tokio", "sqlx-sqlite"] }
+sea-orm = { version = "=2.0.2", default-features = false, features = ["macros", "runtime-tokio", "sqlx-sqlite"] }
+sea-orm-migration = { version = "=2.0.2", default-features = false, features = ["runtime-tokio", "sqlx-sqlite"] }
 sanitize-filename = "0.7.0-beta"
 serde_json = "1.0.151"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -62,7 +62,7 @@ tauri-plugin-dialog = { version = "2.7.2", optional = true }
 arc-swap = "1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-zbus = { version = "5.18.0", default-features = false, features = ["async-io", "blocking-api"] }
+zbus = { version = "5.19.0", default-features = false, features = ["async-io", "blocking-api"] }
 
 [build-dependencies]
 tauri-build = { version = "2.6.3", optional = true }
