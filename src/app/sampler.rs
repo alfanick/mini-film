@@ -1928,6 +1928,17 @@ fn copy_file(source: &Path, destination: &Path) -> Result<()> {
     }
     fs::copy(source, destination)
         .with_context(|| format!("copying {} to {}", source.display(), destination.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let mut permissions = fs::metadata(destination)
+            .with_context(|| format!("reading permissions for {}", destination.display()))?
+            .permissions();
+        permissions.set_mode(permissions.mode() | 0o044);
+        fs::set_permissions(destination, permissions)
+            .with_context(|| format!("making {} web-readable", destination.display()))?;
+    }
     Ok(())
 }
 
@@ -3605,6 +3616,25 @@ mod tests {
         fs::write(&image, b"not a JPEG").unwrap();
         set_file_mtime(&image, FileTime::from_system_time(now)).unwrap();
         assert!(!fresh_decodable_sampler_image_at(&image, now));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copied_sampler_images_are_web_readable() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("cached.jpg");
+        let destination = dir.path().join("published.jpg");
+        fs::write(&source, b"cached sampler image").unwrap();
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o600)).unwrap();
+
+        copy_file(&source, &destination).unwrap();
+
+        assert_eq!(
+            fs::metadata(destination).unwrap().permissions().mode() & 0o444,
+            0o444
+        );
     }
 
     #[test]
