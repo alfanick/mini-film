@@ -19,8 +19,9 @@ const HIGH_COLOR_NOISE_CHROMA: u16 = 18;
 const VERY_HIGH_COLOR_NOISE_LUMA: u16 = 44;
 const VERY_HIGH_COLOR_NOISE_LDETAIL: u16 = 64;
 const VERY_HIGH_COLOR_NOISE_CHROMA: u16 = 28;
-pub(crate) const RAW_RENDER_PIPELINE_KEY: &str = "raw-render-v7-adobe-dcp";
+pub(crate) const RAW_RENDER_PIPELINE_KEY: &str = "raw-render-v8-adobe-lcp";
 
+use crate::app::lcp::ResolvedLensCorrection;
 use crate::app::profile::{ProfileInfo, combined_contrast_clarity, inspect_profile};
 use crate::cli::LensCorrections;
 
@@ -265,8 +266,9 @@ fn rawtherapee_color_noise_profile_text(settings: &NoiseRemovalSettings) -> Stri
 pub(crate) fn write_rawtherapee_lens_corrections_profile(
     path: &PathBuf,
     lens: LensCorrections,
+    correction: &ResolvedLensCorrection,
 ) -> Result<Option<PathBuf>> {
-    if !lens.is_enabled() {
+    if !lens.is_enabled() || matches!(correction, ResolvedLensCorrection::Disabled) {
         return Ok(None);
     }
 
@@ -274,15 +276,33 @@ pub(crate) fn write_rawtherapee_lens_corrections_profile(
         .parent()
         .context("lens correction profile has no parent")?;
     fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-    fs::write(path, rawtherapee_lens_corrections_profile_text(&lens))
-        .with_context(|| format!("writing {}", path.display()))?;
+    fs::write(
+        path,
+        rawtherapee_lens_corrections_profile_text(&lens, correction),
+    )
+    .with_context(|| format!("writing {}", path.display()))?;
     Ok(Some(path.to_path_buf()))
 }
 
-fn rawtherapee_lens_corrections_profile_text(lens: &LensCorrections) -> String {
+fn rawtherapee_lens_corrections_profile_text(
+    lens: &LensCorrections,
+    correction: &ResolvedLensCorrection,
+) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "[LensProfile]");
-    let _ = writeln!(out, "LcMode=lfauto");
+    match correction {
+        ResolvedLensCorrection::AdobeLcp(profile) => {
+            let _ = writeln!(out, "LcMode=lcp");
+            let _ = writeln!(out, "LCPFile={}", profile.path.display());
+        }
+        ResolvedLensCorrection::DngMetadata { .. } => {
+            let _ = writeln!(out, "LcMode=metadata");
+        }
+        ResolvedLensCorrection::LensfunAuto => {
+            let _ = writeln!(out, "LcMode=lfauto");
+        }
+        ResolvedLensCorrection::Disabled => return String::new(),
+    }
     let _ = writeln!(out, "UseDistortion={}", lens.distortion);
     let _ = writeln!(out, "UseVignette={}", lens.vignetting);
     let _ = writeln!(out, "UseCA={}", lens.ca);
@@ -406,15 +426,49 @@ mod tests {
 
     #[test]
     fn lens_corrections_profile_turns_off_unused_corrections_off() {
-        let text = rawtherapee_lens_corrections_profile_text(&crate::cli::LensCorrections {
-            distortion: true,
-            ca: false,
-            vignetting: true,
-        });
+        let text = rawtherapee_lens_corrections_profile_text(
+            &crate::cli::LensCorrections {
+                distortion: true,
+                ca: false,
+                vignetting: true,
+            },
+            &ResolvedLensCorrection::LensfunAuto,
+        );
 
         assert!(text.contains("[LensProfile]"));
         assert!(text.contains("UseDistortion=true"));
         assert!(text.contains("UseCA=false"));
         assert!(text.contains("UseVignette=true"));
+    }
+
+    #[test]
+    fn lens_corrections_profile_uses_dng_metadata_mode() {
+        let text = rawtherapee_lens_corrections_profile_text(
+            &crate::cli::LensCorrections::all(),
+            &ResolvedLensCorrection::DngMetadata {
+                fingerprint: "opcode-list-3".to_string(),
+            },
+        );
+
+        assert!(text.contains("LcMode=metadata"));
+        assert!(!text.contains("LCPFile="));
+    }
+
+    #[test]
+    fn lens_corrections_profile_uses_absolute_adobe_lcp_path() {
+        let profile = crate::app::lcp::LcpProfile {
+            path: PathBuf::from("/profiles/Nikon lens - RAW.lcp"),
+            filename: "Nikon lens - RAW.lcp".to_string(),
+            fingerprint: "abc".to_string(),
+        };
+        let text = rawtherapee_lens_corrections_profile_text(
+            &crate::cli::LensCorrections::all(),
+            &ResolvedLensCorrection::AdobeLcp(profile),
+        );
+
+        assert!(text.contains("LcMode=lcp"));
+        assert!(text.contains("LCPFile=/profiles/Nikon lens - RAW.lcp"));
+        assert!(!text.contains("LcMode=metadata"));
+        assert!(!text.contains("LcMode=lfauto"));
     }
 }

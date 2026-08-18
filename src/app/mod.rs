@@ -10,6 +10,7 @@ pub(crate) mod desktop;
 pub(crate) mod dng;
 pub(crate) mod export;
 pub(crate) mod info;
+pub(crate) mod lcp;
 pub(crate) mod managed_symlink;
 pub(crate) mod nikon;
 pub(crate) mod nikon_wtu;

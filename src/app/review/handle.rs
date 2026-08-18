@@ -60,6 +60,11 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
     store.normalize_grain_mpix = config.normalize_grain_mpix;
     store.render_export.clone_from(&config.export);
     store.render_diffusion = config.diffusion;
+    store.raw_render_config = ReviewRawRenderConfig {
+        dng_fallback: config.dng_fallback.clone(),
+        lcp_root: config.lcp_root.clone(),
+        lens_corrections: config.lens_corrections,
+    };
     let stored_raw_paths = store
         .images
         .iter()
@@ -893,6 +898,7 @@ impl ReviewHandle {
             let mut history_entry = None;
             let discovered = !store.images.iter().any(|image| image.raw_path == raw);
             let profiles = store.profiles.clone();
+            let raw_render_config = store.raw_render_config.clone();
             {
                 let image = store.ensure_image(&self.input_root, raw)?;
                 let old_sidecar = image.sooc_sidecar_path.clone();
@@ -904,7 +910,7 @@ impl ReviewHandle {
                     }
                 }
                 if image.sooc_sidecar_path != old_sidecar {
-                    sync_image_profile_renders(
+                    sync_image_profile_renders_with_raw_config(
                         image,
                         &profiles,
                         false,
@@ -912,6 +918,7 @@ impl ReviewHandle {
                         self.normalize_grain_mpix,
                         &self.export,
                         self.diffusion,
+                        &raw_render_config,
                     );
                 }
                 let preview_path = self.preview_path_for(raw, image.id);
@@ -1361,14 +1368,17 @@ impl ReviewHandle {
                 .cloned();
             let profile_diffusion_settings = store.profile_diffusion_settings.clone();
             let image_profile_diffusion_settings = store.image_profile_diffusion_settings.clone();
+            let raw_render_config = store.raw_render_config.clone();
             let image = store.ensure_image(&self.input_root, raw)?;
-            let processing_key = review_render_processing_key_for_input_with_diffusion(
-                raw,
-                profile_index,
-                self.normalize_grain_mpix,
-                &self.export,
-                self.diffusion,
-            );
+            let processing_key =
+                review_render_processing_key_for_input_with_diffusion_and_raw_config(
+                    raw,
+                    profile_index,
+                    self.normalize_grain_mpix,
+                    &self.export,
+                    self.diffusion,
+                    &raw_render_config,
+                );
             let bw_filter = profile
                 .as_ref()
                 .map(|profile| effective_bw_filter_for_profile(image, profile))
@@ -1441,12 +1451,13 @@ impl ReviewHandle {
         let Some(image) = store.images.iter().find(|image| image.raw_path == raw) else {
             return false;
         };
-        let processing_key = review_render_processing_key_for_input_with_diffusion(
+        let processing_key = review_render_processing_key_for_input_with_diffusion_and_raw_config(
             raw,
             profile_index,
             self.normalize_grain_mpix,
             &self.export,
             self.diffusion,
+            &store.raw_render_config,
         );
         image.profiles.iter().any(|render| {
             let Some(output) = render.output_path.as_deref() else {
@@ -1497,7 +1508,7 @@ impl ReviewHandle {
         output: &Path,
         duration: Duration,
     ) -> Result<()> {
-        self.record_profile_done_with_dcp(raw, profile_index, output, duration, None)
+        self.record_profile_done_with_dcp(raw, profile_index, output, duration, None, None)
     }
 
     pub(crate) fn record_profile_done_with_dcp(
@@ -1507,10 +1518,12 @@ impl ReviewHandle {
         output: &Path,
         duration: Duration,
         dcp_profile_filename: Option<&str>,
+        lcp_profile_filename: Option<&str>,
     ) -> Result<()> {
         let mut pending_retouch_key = None;
         let result = self.update_render(raw, profile_index, |render| {
             render.dcp_profile_filename = dcp_profile_filename.map(str::to_string);
+            render.lcp_profile_filename = lcp_profile_filename.map(str::to_string);
             pending_retouch_key = apply_base_render_done(render, output, duration);
             if let Some(render_key) = pending_retouch_key.as_deref()
                 && apply_cached_profile_output(
@@ -1549,10 +1562,12 @@ impl ReviewHandle {
         output: &Path,
         duration: Duration,
         dcp_profile_filename: Option<&str>,
+        lcp_profile_filename: Option<&str>,
     ) -> Result<()> {
         let mut pending_retouch_key = None;
         self.update_render_for_image(image_id, profile_index, |render| {
             render.dcp_profile_filename = dcp_profile_filename.map(str::to_string);
+            render.lcp_profile_filename = lcp_profile_filename.map(str::to_string);
             pending_retouch_key = apply_base_render_done(render, output, duration);
             if let Some(render_key) = pending_retouch_key.as_deref()
                 && apply_cached_profile_output(
@@ -1609,6 +1624,7 @@ impl ReviewHandle {
             render.error = Some(error.to_string());
             render.duration_ms = Some(duration.as_millis() as u64);
             render.dcp_profile_filename = None;
+            render.lcp_profile_filename = None;
         });
         if result.is_ok() {
             self.maybe_schedule_codex_for_raw(raw)?;
@@ -1640,6 +1656,7 @@ impl ReviewHandle {
             render.error = Some(error.to_string());
             render.duration_ms = Some(duration.as_millis() as u64);
             render.dcp_profile_filename = None;
+            render.lcp_profile_filename = None;
         })?;
         if let Some(raw) = self.review_raw_for_image_id(image_id) {
             self.maybe_schedule_codex_for_raw(&raw)?;
@@ -2655,6 +2672,7 @@ impl ReviewHandle {
                 let profile_diffusion_settings = store.profile_diffusion_settings.clone();
                 let image_profile_diffusion_settings =
                     store.image_profile_diffusion_settings.clone();
+                let raw_render_config = store.raw_render_config.clone();
                 let advance = update
                     .advance_after_update
                     .then(|| store.planned_advance_after(update.image_id));
@@ -2861,13 +2879,13 @@ impl ReviewHandle {
                             render_order.sort_by_key(|(priority, index)| (*priority, *index));
                             for (_, index) in render_order {
                                 let profile_index = image.profiles[index].profile_index;
-                                let processing_key =
-                                    review_render_processing_key_for_input_with_diffusion(
+                                let processing_key = review_render_processing_key_for_input_with_diffusion_and_raw_config(
                                         &image.raw_path,
                                         profile_index,
                                         self.normalize_grain_mpix,
                                         &self.export,
                                         self.diffusion,
+                                        &raw_render_config,
                                     );
                                 if image.profiles[index].output_path.is_none()
                                     && let Some(profile) = profiles_by_index.get(&profile_index)
@@ -2947,13 +2965,13 @@ impl ReviewHandle {
                                         &profile.stem,
                                     )?);
                             }
-                            let processing_key =
-                                review_render_processing_key_for_input_with_diffusion(
+                            let processing_key = review_render_processing_key_for_input_with_diffusion_and_raw_config(
                                     &image.raw_path,
                                     profile_index,
                                     self.normalize_grain_mpix,
                                     &self.export,
                                     self.diffusion,
+                                    &raw_render_config,
                                 );
                             image.profiles[index].processing_key = Some(processing_key.clone());
                             let bw_filter = effective_bw_filter_for_profile(image, profile);
@@ -3302,8 +3320,14 @@ impl ReviewHandle {
         let raw = safe_existing_raw_source(&image.raw_path, &self.input_root)?;
         let white_balance = retouch_white_balance_for_image(&image);
         let bw_filter = effective_bw_filter_for_profile(&image, &profile);
-        let cache_key =
-            diffusion_preview_cache_key(&raw, &profile, &image.retouch, white_balance, bw_filter)?;
+        let cache_key = diffusion_preview_cache_key(
+            &raw,
+            &profile,
+            &image.retouch,
+            white_balance,
+            bw_filter,
+            &store.raw_render_config,
+        )?;
         let cache_dir = self
             .cache_root
             .join(DIFFUSION_PREVIEWS_CACHE_DIR)
@@ -3581,6 +3605,7 @@ impl ReviewHandle {
                             "height": render.height,
                             "retouch_pending": render.render_key.is_some(),
                             "dcp_profile_filename": effective_dcp_profile_filename(image, render),
+                            "lcp_profile_filename": effective_lcp_profile_filename(image, render),
                             "bw_filter_eligible": bw_filter_eligible,
                             "bw_filter": bw_filter,
                             "diffusion": {
@@ -3906,6 +3931,12 @@ impl ReviewHandle {
         let dcp_profile = is_raw_input_file(&input)
             .then(|| resolve_dcp_profile(&input, &self.dng_fallback))
             .flatten();
+        let lens_correction = resolve_lens_correction(
+            &input,
+            &self.dng_fallback,
+            self.lcp_root.as_deref(),
+            self.lens_corrections,
+        );
         let mut profiles = rawtherapee_profiles_for_input(
             RawTherapeeProfileOptions {
                 input: &input,
@@ -3914,6 +3945,7 @@ impl ReviewHandle {
                 bw_filter: effective_bw_filter_for_profile(image, profile),
                 color_noise_iso_threshold: self.color_noise_iso_threshold,
                 lens_corrections: self.lens_corrections,
+                lens_correction: &lens_correction,
                 dcp_profile: dcp_profile.as_ref(),
             },
             &resolved,
@@ -4853,15 +4885,16 @@ pub(super) fn diffusion_preview_after_filename(settings: DiffusionSettings) -> S
     format!("v2-{}.jpg", short_render_digest(hasher))
 }
 
-fn diffusion_preview_cache_key(
+pub(super) fn diffusion_preview_cache_key(
     raw: &Path,
     profile: &ReviewProfile,
     retouch: &RetouchSettings,
     white_balance: RetouchWhiteBalance,
     bw_filter: BwFilter,
+    raw_render_config: &ReviewRawRenderConfig,
 ) -> Result<String> {
     let mut hasher = Sha1::new();
-    hasher.update("diffusion-preview-v1");
+    hasher.update("diffusion-preview-v2-adobe-lcp");
     hasher.update(raw.to_string_lossy().as_bytes());
     if let Ok(metadata) = raw.metadata() {
         hasher.update(metadata.len().to_le_bytes());
@@ -4874,6 +4907,16 @@ fn diffusion_preview_cache_key(
     hasher.update(
         serde_json::to_vec(profile).context("serializing diffusion preview profile identity")?,
     );
+    if is_raw_input_file(raw) {
+        hasher.update(RAW_RENDER_PIPELINE_KEY);
+        hasher.update(dcp_cache_identity(raw, &raw_render_config.dng_fallback));
+        hasher.update(lens_correction_cache_identity(
+            raw,
+            &raw_render_config.dng_fallback,
+            raw_render_config.lcp_root.as_deref(),
+            raw_render_config.lens_corrections,
+        ));
+    }
     hasher.update(retouch.render_key_with_white_balance(white_balance));
     hasher.update(bw_filter.as_str());
     Ok(short_render_digest(hasher))
@@ -5121,6 +5164,7 @@ fn queue_diffusion_target_renders(
         .ok_or_else(|| anyhow!("review profile {profile_index} does not exist"))?;
     let profile_settings = store.profile_diffusion_settings.clone();
     let image_settings = store.image_profile_diffusion_settings.clone();
+    let raw_render_config = store.raw_render_config.clone();
     let mut jobs = Vec::new();
     for image in &mut store.images {
         if !image_ids.contains(&image.id) {
@@ -5143,12 +5187,13 @@ fn queue_diffusion_target_renders(
                     &profile.stem,
                 )?);
         }
-        let processing_key = review_render_processing_key_for_input_with_diffusion(
+        let processing_key = review_render_processing_key_for_input_with_diffusion_and_raw_config(
             &image.raw_path,
             profile_index,
             normalize_grain_mpix,
             export,
             daemon_default,
+            &raw_render_config,
         );
         image.profiles[render_index].processing_key = Some(processing_key.clone());
         let bw_filter = effective_bw_filter_for_profile(image, &profile);
@@ -5248,6 +5293,28 @@ pub(super) fn effective_dcp_profile_filename<'a>(
                 && candidate.processing_key.as_deref() == Some(processing_key)
         })
         .find_map(|candidate| candidate.dcp_profile_filename.as_deref())
+}
+
+pub(super) fn effective_lcp_profile_filename<'a>(
+    image: &'a ReviewImage,
+    render: &'a ReviewProfileRender,
+) -> Option<&'a str> {
+    if render.profile_index == SOOC_PROFILE_INDEX || !is_raw_input_file(&image.raw_path) {
+        return None;
+    }
+    if let Some(filename) = render.lcp_profile_filename.as_deref() {
+        return Some(filename);
+    }
+    let processing_key = render.processing_key.as_deref()?;
+    image
+        .profiles
+        .iter()
+        .filter(|candidate| {
+            candidate.status == ReviewRenderStatus::Done
+                && candidate.profile_index != SOOC_PROFILE_INDEX
+                && candidate.processing_key.as_deref() == Some(processing_key)
+        })
+        .find_map(|candidate| candidate.lcp_profile_filename.as_deref())
 }
 
 fn refresh_review_render_dimensions(render: &mut ReviewProfileRender, output: &Path) {

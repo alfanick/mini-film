@@ -30,7 +30,7 @@ use crate::app::sampler::{SamplerArgs, run_sampler};
 use crate::app::util::{
     InputFileFilter, configure_threads, default_hald_dir, half_cpu_thread_count,
 };
-use crate::cli::{Cli, CommandKind, DngFallbackCliArgs, ExportOptions};
+use crate::cli::{Cli, CommandKind, DngFallbackCliArgs, ExportOptions, LensCorrections};
 
 /// Parse CLI arguments and dispatch to the selected mini-film workflow.
 ///
@@ -145,7 +145,7 @@ fn main() -> Result<()> {
             keep_intermediate,
             no_grain,
             normalize_grain_mpix: resolve_grain_normalization(normalize_grain, no_normalize_grain),
-            lens_corrections: lens_corrections.unwrap_or_default(),
+            lens_corrections: resolve_lens_corrections(lens_corrections),
             lcp_root: resolve_lcp_root(lcp_root),
             color_noise_iso_threshold,
             grain,
@@ -193,7 +193,7 @@ fn main() -> Result<()> {
                 convert,
                 jobs: jobs.unwrap_or_else(half_cpu_thread_count),
                 color_noise_iso_threshold,
-                lens_corrections: lens_corrections.unwrap_or_default(),
+                lens_corrections: resolve_lens_corrections(lens_corrections),
                 lcp_root: resolve_lcp_root(lcp_root),
             },
             overwrite,
@@ -247,7 +247,7 @@ fn main() -> Result<()> {
             convert,
             no_grain,
             normalize_grain_mpix: resolve_grain_normalization(normalize_grain, no_normalize_grain),
-            lens_corrections: lens_corrections.unwrap_or_default(),
+            lens_corrections: resolve_lens_corrections(lens_corrections),
             lcp_root: resolve_lcp_root(lcp_root),
             color_noise_iso_threshold,
             grain,
@@ -333,7 +333,7 @@ fn main() -> Result<()> {
             convert,
             no_grain,
             normalize_grain_mpix: resolve_grain_normalization(normalize_grain, no_normalize_grain),
-            lens_corrections: lens_corrections.unwrap_or_default(),
+            lens_corrections: resolve_lens_corrections(lens_corrections),
             lcp_root: resolve_lcp_root(lcp_root),
             color_noise_iso_threshold,
             grain,
@@ -409,7 +409,7 @@ fn main() -> Result<()> {
             convert,
             no_grain,
             normalize_grain_mpix: resolve_grain_normalization(normalize_grain, no_normalize_grain),
-            lens_corrections: lens_corrections.unwrap_or_default(),
+            lens_corrections: resolve_lens_corrections(lens_corrections),
             lcp_root: resolve_lcp_root(lcp_root),
             color_noise_iso_threshold,
             grain_seed,
@@ -498,7 +498,7 @@ fn main() -> Result<()> {
             no_grain,
             normalize_grain_mpix: resolve_grain_normalization(normalize_grain, no_normalize_grain),
             color_noise_iso_threshold,
-            lens_corrections: lens_corrections.unwrap_or_default(),
+            lens_corrections: resolve_lens_corrections(lens_corrections),
             grain,
             grain_preset,
             grain_seed,
@@ -519,6 +519,10 @@ fn resolve_grain_normalization(
     } else {
         Some(normalize_grain.unwrap_or(DEFAULT_GRAIN_REFERENCE_MPIX))
     }
+}
+
+fn resolve_lens_corrections(requested: Option<LensCorrections>) -> LensCorrections {
+    requested.unwrap_or_else(LensCorrections::all)
 }
 
 fn args_with_default_command(mut args: Vec<String>) -> Vec<String> {
@@ -767,6 +771,15 @@ mod tests {
         );
         assert_eq!(resolve_grain_normalization(Some(24.5), false), Some(24.5));
         assert_eq!(resolve_grain_normalization(Some(24.5), true), None);
+    }
+
+    #[test]
+    fn lens_corrections_resolve_enabled_by_default_and_explicit_off() {
+        assert_eq!(resolve_lens_corrections(None), LensCorrections::all());
+        assert_eq!(
+            resolve_lens_corrections(Some(LensCorrections::none())),
+            LensCorrections::none()
+        );
     }
 
     #[test]

@@ -33,6 +33,8 @@ pub struct Model {
     pub processing_key: Option<String>,
     #[sea_orm(column_type = "Text", nullable)]
     pub dcp_profile_filename: Option<String>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub lcp_profile_filename: Option<String>,
     #[sea_orm(
         belongs_to,
         from = "image_id",

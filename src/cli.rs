@@ -249,22 +249,24 @@ pub(crate) enum CommandKind {
         #[arg(long, default_value_t = 1600)]
         color_noise_iso_threshold: u32,
 
-        /// Enable RawTherapee lens corrections.
+        /// Configure RAW lens corrections; enabled for all supported items by default.
         ///
         /// Without an explicit value, enables distortion, ca, and vignetting.
         /// Optionally pass a comma-separated list of:
-        /// `distortion`, `ca`, `vignetting`.
+        /// `distortion`, `ca`, `vignetting`, or `all`; pass `off` or `none` to disable.
         ///
         /// Examples:
         /// - `--lens-corrections`
         /// - `--lens-corrections distortion,ca`
         /// - `--lens-corrections all`
+        /// - `--lens-corrections off`
         #[arg(long, num_args = 0..=1, value_parser = parse_lens_corrections_arg, default_missing_value = "all")]
         lens_corrections: Option<LensCorrections>,
 
-        /// Optional Lensfun profile root for RawTherapee LCP profiles.
+        /// Override the Adobe Camera Raw LCP catalog root.
         ///
-        /// If omitted, mini-film resolves from `MINI_FILM_LCP_ROOT` when set.
+        /// If omitted, mini-film checks `MINI_FILM_LCP_ROOT`, then discovers the
+        /// Adobe catalog in the configured or default Wine prefix.
         #[arg(long)]
         lcp_root: Option<PathBuf>,
 
@@ -362,11 +364,13 @@ pub(crate) enum CommandKind {
         #[arg(long, default_value_t = 1600)]
         color_noise_iso_threshold: u32,
 
-        /// Enable RawTherapee lens corrections for RAW panorama sources.
+        /// Configure RAW panorama lens corrections; enabled by default.
+        /// Pass `off` or `none` to disable.
         #[arg(long, num_args = 0..=1, value_parser = parse_lens_corrections_arg, default_missing_value = "all")]
         lens_corrections: Option<LensCorrections>,
 
-        /// Optional Lensfun profile root for RawTherapee LCP profiles.
+        /// Override the Adobe Camera Raw LCP catalog root.
+        /// If omitted, mini-film checks `MINI_FILM_LCP_ROOT`, then Wine.
         #[arg(long)]
         lcp_root: Option<PathBuf>,
 
@@ -433,17 +437,18 @@ pub(crate) enum CommandKind {
         #[arg(long, default_value_t = 1600)]
         color_noise_iso_threshold: u32,
 
-        /// Enable RawTherapee lens corrections.
+        /// Configure RAW lens corrections; enabled for all supported items by default.
         ///
         /// Without an explicit value, enables distortion, ca, and vignetting.
         /// Optionally pass a comma-separated list of:
-        /// `distortion`, `ca`, `vignetting`.
+        /// `distortion`, `ca`, `vignetting`, or `all`; pass `off` or `none` to disable.
         #[arg(long, num_args = 0..=1, value_parser = parse_lens_corrections_arg, default_missing_value = "all")]
         lens_corrections: Option<LensCorrections>,
 
-        /// Optional Lensfun profile root for RawTherapee LCP profiles.
+        /// Override the Adobe Camera Raw LCP catalog root.
         ///
-        /// If omitted, mini-film resolves from `MINI_FILM_LCP_ROOT` when set.
+        /// If omitted, mini-film checks `MINI_FILM_LCP_ROOT`, then discovers the
+        /// Adobe catalog in the configured or default Wine prefix.
         #[arg(long)]
         lcp_root: Option<PathBuf>,
 
@@ -583,17 +588,18 @@ pub(crate) enum CommandKind {
         #[arg(long, default_value_t = 1600)]
         color_noise_iso_threshold: u32,
 
-        /// Enable RawTherapee lens corrections.
+        /// Configure RAW lens corrections; enabled for all supported items by default.
         ///
         /// Without an explicit value, enables distortion, ca, and vignetting.
         /// Optionally pass a comma-separated list of:
-        /// `distortion`, `ca`, `vignetting`.
+        /// `distortion`, `ca`, `vignetting`, or `all`; pass `off` or `none` to disable.
         #[arg(long, num_args = 0..=1, value_parser = parse_lens_corrections_arg, default_missing_value = "all")]
         lens_corrections: Option<LensCorrections>,
 
-        /// Optional Lensfun profile root for RawTherapee LCP profiles.
+        /// Override the Adobe Camera Raw LCP catalog root.
         ///
-        /// If omitted, mini-film resolves from `MINI_FILM_LCP_ROOT` when set.
+        /// If omitted, mini-film checks `MINI_FILM_LCP_ROOT`, then discovers the
+        /// Adobe catalog in the configured or default Wine prefix.
         #[arg(long)]
         lcp_root: Option<PathBuf>,
 
@@ -700,17 +706,18 @@ pub(crate) enum CommandKind {
         #[arg(long, default_value_t = 1600)]
         color_noise_iso_threshold: u32,
 
-        /// Enable RawTherapee lens corrections.
+        /// Configure RAW lens corrections; enabled for all supported items by default.
         ///
         /// Without an explicit value, enables distortion, ca, and vignetting.
         /// Optionally pass a comma-separated list of:
-        /// `distortion`, `ca`, `vignetting`.
+        /// `distortion`, `ca`, `vignetting`, or `all`; pass `off` or `none` to disable.
         #[arg(long, num_args = 0..=1, value_parser = parse_lens_corrections_arg, default_missing_value = "all")]
         lens_corrections: Option<LensCorrections>,
 
-        /// Optional Lensfun profile root for RawTherapee LCP profiles.
+        /// Override the Adobe Camera Raw LCP catalog root.
         ///
-        /// If omitted, mini-film resolves from `MINI_FILM_LCP_ROOT` when set.
+        /// If omitted, mini-film checks `MINI_FILM_LCP_ROOT`, then discovers the
+        /// Adobe catalog in the configured or default Wine prefix.
         #[arg(long)]
         lcp_root: Option<PathBuf>,
 
@@ -988,13 +995,15 @@ pub(crate) enum CommandKind {
         #[arg(long, default_value_t = 1600)]
         color_noise_iso_threshold: u32,
 
-        /// Enable RawTherapee lens corrections for rerendered RAWs.
+        /// Configure rerendered-RAW lens corrections; enabled by default.
+        /// Pass `off` or `none` to disable.
         #[arg(long, num_args = 0..=1, value_parser = parse_lens_corrections_arg, default_missing_value = "all")]
         lens_corrections: Option<LensCorrections>,
 
-        /// Optional Lensfun profile root for RawTherapee LCP profiles.
+        /// Override the Adobe Camera Raw LCP catalog root.
         ///
-        /// If omitted, mini-film resolves from `MINI_FILM_LCP_ROOT` when set.
+        /// If omitted, mini-film checks `MINI_FILM_LCP_ROOT`, then discovers the
+        /// Adobe catalog in the configured or default Wine prefix.
         #[arg(long)]
         lcp_root: Option<PathBuf>,
 
@@ -1380,7 +1389,7 @@ fn parse_lens_corrections(raw: &str) -> Result<LensCorrections, String> {
             }
             _ => {
                 return Err(format!(
-                    "unsupported --lens-corrections token {token:?}; expected distortion,ca,vignetting,all"
+                    "unsupported --lens-corrections token {token:?}; expected distortion,ca,vignetting,all,off,none"
                 ));
             }
         }
@@ -1761,7 +1770,7 @@ mod tests {
     }
 
     #[test]
-    fn cli_lens_corrections_disabled_by_default_and_can_be_enabled() {
+    fn cli_lens_corrections_accepts_default_subset_and_disabled_modes() {
         let cli = Cli::parse_from([
             "mini-film",
             "apply",
@@ -1841,6 +1850,31 @@ mod tests {
                 assert!(corrections.vignetting);
             }
             _ => panic!("wrong command"),
+        }
+
+        for disabled in ["off", "none"] {
+            let cli = Cli::parse_from([
+                "mini-film",
+                "apply",
+                "input.dng",
+                "--output",
+                "out.jpg",
+                "--profile",
+                "profile",
+                "--lens-corrections",
+                disabled,
+            ]);
+            assert!(matches!(
+                cli.command,
+                CommandKind::Apply {
+                    lens_corrections: Some(LensCorrections {
+                        distortion: false,
+                        ca: false,
+                        vignetting: false,
+                    }),
+                    ..
+                }
+            ));
         }
     }
 

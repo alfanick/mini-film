@@ -631,6 +631,15 @@ pub(super) struct ReviewStore {
     pub(super) render_export: ExportOptions,
     #[serde(skip)]
     pub(super) render_diffusion: DiffusionSettings,
+    #[serde(skip)]
+    pub(super) raw_render_config: ReviewRawRenderConfig,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(super) struct ReviewRawRenderConfig {
+    pub(super) dng_fallback: DngFallbackConfig,
+    pub(super) lcp_root: Option<PathBuf>,
+    pub(super) lens_corrections: LensCorrections,
 }
 
 pub(super) const fn default_review_normalize_grain_mpix() -> Option<f64> {
@@ -932,6 +941,8 @@ pub(super) struct ReviewProfileRender {
     pub(super) processing_key: Option<String>,
     #[serde(default)]
     pub(super) dcp_profile_filename: Option<String>,
+    #[serde(default)]
+    pub(super) lcp_profile_filename: Option<String>,
     #[serde(default)]
     pub(super) width: Option<u32>,
     #[serde(default)]

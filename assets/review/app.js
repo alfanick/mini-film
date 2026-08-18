@@ -3223,6 +3223,7 @@ function currentCodexStateText(image) {
 function renderProfileStateSummary(image, selected, selectedState, previewNote, codexState, hideProfiles) {
   const selectedName = !hideProfiles && selected ? profileDisplayName(selected) : "";
   const dcpFilename = typeof selected?.dcp_profile_filename === "string" ? selected.dcp_profile_filename.trim() : "";
+  const lcpFilename = typeof selected?.lcp_profile_filename === "string" ? selected.lcp_profile_filename.trim() : "";
   if (isDirectCompressedImage(image) || !selectedName) {
     els.profileState.textContent = `${selectedState?.text || ""}${codexState ? ` | ${codexState}` : ""}`.trim();
     return;
@@ -3241,14 +3242,21 @@ function renderProfileStateSummary(image, selected, selectedState, previewNote, 
         },
         selectedName,
       ),
-      dcpFilename
+      dcpFilename || lcpFilename
         ? h(
             "span",
             {
-              title: dcpFilename,
-              "aria-label": `DCP used: ${dcpFilename}`,
+              title: [dcpFilename && `DCP: ${dcpFilename}`, lcpFilename && `LCP: ${lcpFilename}`]
+                .filter(Boolean)
+                .join("; "),
+              "aria-label":
+                dcpFilename && lcpFilename
+                  ? `DCP + LCP used: DCP: ${dcpFilename}; LCP: ${lcpFilename}`
+                  : dcpFilename
+                    ? `DCP used: ${dcpFilename}`
+                    : `LCP used: ${lcpFilename}`,
             },
-            "DCP used",
+            dcpFilename && lcpFilename ? "DCP + LCP used" : dcpFilename ? "DCP used" : "LCP used",
           )
         : null,
       selected.bw_filter_eligible ? h(BwFilterControls, { image, profile: selected }) : null,

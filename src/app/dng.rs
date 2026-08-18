@@ -20,6 +20,7 @@ const ADOBE_DNG_CONVERTER_RELATIVE_PATHS: &[&str] = &[
 ];
 const ADOBE_STANDARD_DCP_RELATIVE_PATH: &str =
     "drive_c/ProgramData/Adobe/CameraRaw/CameraProfiles/Adobe Standard";
+const ADOBE_LCP_RELATIVE_PATH: &str = "drive_c/ProgramData/Adobe/CameraRaw/LensProfiles/1.0";
 static GENERATED_DNGS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
 
 #[derive(Clone, Debug)]
@@ -154,6 +155,41 @@ impl DngFallbackConfig {
         default_wine_prefixes()
             .into_iter()
             .find_map(|prefix| adobe_standard_dcp_root_in_prefix(&prefix))
+    }
+
+    pub(crate) fn adobe_lcp_root(&self) -> Option<PathBuf> {
+        if let Some(root) = nonempty_env_path("MINI_FILM_LCP_ROOT").filter(|root| root.is_dir()) {
+            return Some(root);
+        }
+
+        let explicit_prefix = self
+            .wine_prefix
+            .clone()
+            .or_else(|| nonempty_env_path("MINI_FILM_WINE_PREFIX"))
+            .or_else(|| nonempty_env_path("WINEPREFIX"));
+        if let Some(root) = explicit_prefix
+            .as_deref()
+            .and_then(adobe_lcp_root_in_prefix)
+        {
+            return Some(root);
+        }
+
+        let explicit_converter = self
+            .converter
+            .clone()
+            .or_else(|| nonempty_env_path("MINI_FILM_ADOBE_DNG_CONVERTER"));
+        if let Some(root) = explicit_converter
+            .as_deref()
+            .and_then(wine_prefix_for_converter)
+            .as_deref()
+            .and_then(adobe_lcp_root_in_prefix)
+        {
+            return Some(root);
+        }
+
+        default_wine_prefixes()
+            .into_iter()
+            .find_map(|prefix| adobe_lcp_root_in_prefix(&prefix))
     }
 
     #[cfg(test)]
@@ -783,6 +819,11 @@ fn adobe_standard_dcp_root_in_prefix(prefix: &Path) -> Option<PathBuf> {
     root.is_dir().then_some(root)
 }
 
+fn adobe_lcp_root_in_prefix(prefix: &Path) -> Option<PathBuf> {
+    let root = prefix.join(ADOBE_LCP_RELATIVE_PATH);
+    root.is_dir().then_some(root)
+}
+
 fn wine_prefix_for_converter(converter: &Path) -> Option<PathBuf> {
     converter.ancestors().find_map(|ancestor| {
         (ancestor.file_name().and_then(|name| name.to_str()) == Some("drive_c"))
@@ -929,6 +970,19 @@ mod tests {
         assert_eq!(
             wine_z_path(Path::new("/tmp/folder with spaces/frame.nef")).unwrap(),
             r"Z:\tmp\folder with spaces\frame.nef"
+        );
+    }
+
+    #[test]
+    fn recognizes_adobe_lens_profiles_beside_converter_installation() {
+        let temp = tempfile::tempdir().unwrap();
+        let prefix = temp.path().join("wine-prefix");
+        let root = prefix.join(ADOBE_LCP_RELATIVE_PATH);
+        fs::create_dir_all(&root).unwrap();
+
+        assert_eq!(
+            adobe_lcp_root_in_prefix(&prefix).as_deref(),
+            Some(root.as_path())
         );
     }
 

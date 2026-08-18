@@ -24,6 +24,7 @@ impl ReviewStore {
             normalize_grain_mpix: default_review_normalize_grain_mpix(),
             render_export: ExportOptions::default(),
             render_diffusion: DiffusionSettings::default(),
+            raw_render_config: ReviewRawRenderConfig::default(),
         }
     }
 
@@ -81,6 +82,7 @@ impl ReviewStore {
         let normalize_grain_mpix = self.normalize_grain_mpix;
         let render_export = self.render_export.clone();
         let render_diffusion = self.render_diffusion;
+        let raw_render_config = self.raw_render_config.clone();
         for image in &mut self.images {
             normalize_review_metadata_sources(image);
             if matches!(
@@ -90,7 +92,7 @@ impl ReviewStore {
                 image.preview.status = ReviewRenderStatus::Missing;
                 image.preview.updated_at = now_string();
             }
-            sync_image_profile_renders(
+            sync_image_profile_renders_with_raw_config(
                 image,
                 &profiles,
                 profiles_changed,
@@ -98,6 +100,7 @@ impl ReviewStore {
                 normalize_grain_mpix,
                 &render_export,
                 render_diffusion,
+                &raw_render_config,
             );
         }
         self.merge_standalone_sooc_sidecars();
@@ -140,8 +143,9 @@ impl ReviewStore {
         let normalize_grain_mpix = self.normalize_grain_mpix;
         let render_export = self.render_export.clone();
         let render_diffusion = self.render_diffusion;
+        let raw_render_config = self.raw_render_config.clone();
         for image in &mut self.images {
-            sync_image_profile_renders(
+            sync_image_profile_renders_with_raw_config(
                 image,
                 &profiles,
                 false,
@@ -149,6 +153,7 @@ impl ReviewStore {
                 normalize_grain_mpix,
                 &render_export,
                 render_diffusion,
+                &raw_render_config,
             );
         }
         Ok(index)
@@ -458,7 +463,7 @@ impl ReviewStore {
             profiles: Vec::new(),
             updated_at: now_string(),
         };
-        sync_image_profile_renders(
+        sync_image_profile_renders_with_raw_config(
             &mut image,
             &self.profiles,
             false,
@@ -466,6 +471,7 @@ impl ReviewStore {
             self.normalize_grain_mpix,
             &self.render_export,
             self.render_diffusion,
+            &self.raw_render_config,
         );
         self.images.push(image);
         self.normalize_ui();
@@ -551,22 +557,25 @@ impl ReviewStore {
             image.codex.updated_at = now_string();
         }
         for render in &mut image.profiles {
-            let previous_processing_key = review_render_processing_key_for_input_with_diffusion(
-                old_path,
-                render.profile_index,
-                self.normalize_grain_mpix,
-                &self.render_export,
-                self.render_diffusion,
-            );
+            let previous_processing_key =
+                review_render_processing_key_for_input_with_diffusion_and_raw_config(
+                    old_path,
+                    render.profile_index,
+                    self.normalize_grain_mpix,
+                    &self.render_export,
+                    self.render_diffusion,
+                    &self.raw_render_config,
+                );
             let processing_key_matches =
                 render.processing_key.as_deref() == Some(previous_processing_key.as_str());
             render.processing_key = Some(
-                review_render_processing_key_for_input_with_diffusion(
+                review_render_processing_key_for_input_with_diffusion_and_raw_config(
                     new_path,
                     render.profile_index,
                     self.normalize_grain_mpix,
                     &self.render_export,
                     self.render_diffusion,
+                    &self.raw_render_config,
                 )
                 .to_string(),
             );
@@ -602,6 +611,7 @@ impl ReviewStore {
         let normalize_grain_mpix = self.normalize_grain_mpix;
         let render_export = self.render_export.clone();
         let render_diffusion = self.render_diffusion;
+        let raw_render_config = self.raw_render_config.clone();
         let image = &mut self.images[raw_index];
         if image.sooc_sidecar_path.as_deref() == Some(sidecar) {
             return true;
@@ -610,7 +620,7 @@ impl ReviewStore {
             return false;
         }
         image.sooc_sidecar_path = Some(sidecar.to_path_buf());
-        sync_image_profile_renders(
+        sync_image_profile_renders_with_raw_config(
             image,
             &profiles,
             false,
@@ -618,6 +628,7 @@ impl ReviewStore {
             normalize_grain_mpix,
             &render_export,
             render_diffusion,
+            &raw_render_config,
         );
         image.updated_at = now_string();
         self.normalize_ui();
@@ -636,6 +647,7 @@ impl ReviewStore {
         let normalize_grain_mpix = self.normalize_grain_mpix;
         let render_export = self.render_export.clone();
         let render_diffusion = self.render_diffusion;
+        let raw_render_config = self.raw_render_config.clone();
         let mut remove_ids = HashSet::new();
         let mut redirect_ids = HashMap::new();
 
@@ -661,7 +673,7 @@ impl ReviewStore {
             let raw = &mut self.images[raw_index];
             raw.sooc_sidecar_path = Some(sidecar.raw_path.clone());
             merge_sidecar_review_metadata(raw, &sidecar);
-            sync_image_profile_renders(
+            sync_image_profile_renders_with_raw_config(
                 raw,
                 &profiles,
                 false,
@@ -669,6 +681,7 @@ impl ReviewStore {
                 normalize_grain_mpix,
                 &render_export,
                 render_diffusion,
+                &raw_render_config,
             );
             raw.updated_at = now_string();
             remove_ids.insert(sidecar.id);
@@ -1168,7 +1181,8 @@ fn merge_refreshed_focus_data(
     }
 }
 
-pub(super) fn sync_image_profile_renders(
+#[allow(clippy::too_many_arguments)]
+pub(super) fn sync_image_profile_renders_with_raw_config(
     image: &mut ReviewImage,
     profiles: &[ReviewProfile],
     profiles_changed: bool,
@@ -1176,6 +1190,7 @@ pub(super) fn sync_image_profile_renders(
     normalize_grain_mpix: Option<f64>,
     export: &ExportOptions,
     diffusion: DiffusionSettings,
+    raw_render_config: &ReviewRawRenderConfig,
 ) {
     let profiles_apply_to_compressed = profiles
         .iter()
@@ -1201,13 +1216,15 @@ pub(super) fn sync_image_profile_renders(
     image.profiles = profiles
         .iter()
         .map(|profile| {
-            let processing_key = review_render_processing_key_for_input_with_diffusion(
-                &image.raw_path,
-                profile.index,
-                normalize_grain_mpix,
-                export,
-                diffusion,
-            );
+            let processing_key =
+                review_render_processing_key_for_input_with_diffusion_and_raw_config(
+                    &image.raw_path,
+                    profile.index,
+                    normalize_grain_mpix,
+                    export,
+                    diffusion,
+                    raw_render_config,
+                );
             let existing_render = existing.get(&profile.index);
             let profile_matches = existing_render.is_some_and(|render| {
                 render.profile_stem == profile.stem
@@ -1374,11 +1391,28 @@ pub(super) fn review_render_processing_key_for_input_with_normalization(
     )
 }
 
+#[cfg(test)]
 pub(super) fn review_render_processing_key_for_input_with_options(
     input: &Path,
     profile_index: usize,
     normalize_grain_mpix: Option<f64>,
     export: &ExportOptions,
+) -> String {
+    review_render_processing_key_for_input_with_options_and_raw_config(
+        input,
+        profile_index,
+        normalize_grain_mpix,
+        export,
+        &ReviewRawRenderConfig::default(),
+    )
+}
+
+pub(super) fn review_render_processing_key_for_input_with_options_and_raw_config(
+    input: &Path,
+    profile_index: usize,
+    normalize_grain_mpix: Option<f64>,
+    export: &ExportOptions,
+    raw_render_config: &ReviewRawRenderConfig,
 ) -> String {
     let base = if profile_index == SOOC_PROFILE_INDEX {
         SOOC_RENDER_PIPELINE_KEY
@@ -1395,8 +1429,14 @@ pub(super) fn review_render_processing_key_for_input_with_options(
     }
     let base = if is_raw_input_file(input) {
         format!(
-            "{base}:{}",
-            dcp_cache_identity(input, &crate::app::dng::DngFallbackConfig::default())
+            "{base}:{}:{}",
+            dcp_cache_identity(input, &raw_render_config.dng_fallback),
+            lens_correction_cache_identity(
+                input,
+                &raw_render_config.dng_fallback,
+                raw_render_config.lcp_root.as_deref(),
+                raw_render_config.lens_corrections,
+            )
         )
     } else {
         base.to_string()
@@ -1414,11 +1454,30 @@ pub(super) fn review_render_processing_key_for_input_with_diffusion(
     export: &ExportOptions,
     diffusion: DiffusionSettings,
 ) -> String {
-    let base = review_render_processing_key_for_input_with_options(
+    review_render_processing_key_for_input_with_diffusion_and_raw_config(
         input,
         profile_index,
         normalize_grain_mpix,
         export,
+        diffusion,
+        &ReviewRawRenderConfig::default(),
+    )
+}
+
+pub(super) fn review_render_processing_key_for_input_with_diffusion_and_raw_config(
+    input: &Path,
+    profile_index: usize,
+    normalize_grain_mpix: Option<f64>,
+    export: &ExportOptions,
+    diffusion: DiffusionSettings,
+    raw_render_config: &ReviewRawRenderConfig,
+) -> String {
+    let base = review_render_processing_key_for_input_with_options_and_raw_config(
+        input,
+        profile_index,
+        normalize_grain_mpix,
+        export,
+        raw_render_config,
     );
     if profile_index == SOOC_PROFILE_INDEX {
         return base;
@@ -1495,6 +1554,7 @@ fn missing_profile_render(
         render_key: None,
         processing_key: Some(processing_key.to_string()),
         dcp_profile_filename: None,
+        lcp_profile_filename: None,
         width: None,
         height: None,
         updated_at: now_string(),

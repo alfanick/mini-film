@@ -1327,7 +1327,7 @@ pub(super) fn make_schema_v12_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(10)).await?;
+        Migrator::down(&connection, Some(11)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1343,7 +1343,7 @@ pub(super) fn make_schema_v13_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(9)).await?;
+        Migrator::down(&connection, Some(10)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1359,7 +1359,7 @@ pub(super) fn make_schema_v14_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(8)).await?;
+        Migrator::down(&connection, Some(9)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1375,7 +1375,7 @@ pub(super) fn make_schema_v15_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(7)).await?;
+        Migrator::down(&connection, Some(8)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1391,7 +1391,7 @@ pub(super) fn make_schema_v17_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(5)).await?;
+        Migrator::down(&connection, Some(6)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1407,7 +1407,7 @@ pub(super) fn make_schema_v18_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(4)).await?;
+        Migrator::down(&connection, Some(5)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1423,7 +1423,7 @@ pub(super) fn make_schema_v20_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(2)).await?;
+        Migrator::down(&connection, Some(3)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1439,7 +1439,7 @@ pub(super) fn make_schema_v21_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(1)).await?;
+        Migrator::down(&connection, Some(2)).await?;
 
         // The v22 down migration intentionally leaves compatible columns in
         // place. Rebuild the two tables with their historical v21 shape so

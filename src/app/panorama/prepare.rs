@@ -8,6 +8,7 @@ use crate::app::{
     apply::{RawTherapeeProfileOptions, rawtherapee_profiles_for_input},
     dcp::resolve_dcp_profile,
     export::add_convert_thread_limit_with_count,
+    lcp::resolve_lens_correction,
     pp3::write_rawtherapee_disable_sharpening_profile,
     profile::neutral_profile,
     raw::run_raw_develop,
@@ -128,6 +129,12 @@ pub(crate) fn prepare_full_source(
     let dcp_profile = is_raw_input_file(develop_input)
         .then(|| resolve_dcp_profile(develop_input, &config.dng_fallback))
         .flatten();
+    let lens_correction = resolve_lens_correction(
+        develop_input,
+        &config.dng_fallback,
+        config.lcp_root.as_deref(),
+        config.lens_corrections,
+    );
     let neutral = neutral_profile();
     let mut profiles = rawtherapee_profiles_for_input(
         RawTherapeeProfileOptions {
@@ -137,6 +144,7 @@ pub(crate) fn prepare_full_source(
             bw_filter: BwFilter::None,
             color_noise_iso_threshold: config.color_noise_iso_threshold,
             lens_corrections: config.lens_corrections,
+            lens_correction: &lens_correction,
             dcp_profile: dcp_profile.as_ref(),
         },
         &neutral,

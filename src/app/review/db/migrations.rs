@@ -15,7 +15,9 @@ const AUTO_IMPORT_SCHEMA_VERSION: i64 = 18;
 const RETOUCH_CONTRAST_SCHEMA_VERSION: i64 = 19;
 const DCP_PROVENANCE_SCHEMA_VERSION: i64 = 20;
 const DIFFUSION_SETTINGS_SCHEMA_VERSION: i64 = 21;
-pub(super) const LATEST_SCHEMA_VERSION: i64 = 22;
+const DIFFUSION_PARAMETERS_SCHEMA_VERSION: i64 = 22;
+const LCP_PROVENANCE_SCHEMA_VERSION: i64 = 23;
+pub(super) const LATEST_SCHEMA_VERSION: i64 = 23;
 pub(super) const V18_BASELINE_MIGRATION: &str = "m20260718_000001_v18_baseline";
 pub(super) const PANORAMA_PROJECTS_MIGRATION: &str = "m20260719_000002_panorama_projects";
 pub(super) const REVIEW_SAMPLER_MIGRATION: &str = "m20260721_000003_review_sampler";
@@ -27,6 +29,7 @@ pub(super) const RETOUCH_CONTRAST_MIGRATION: &str = "m20260727_000008_retouch_co
 pub(super) const DCP_PROVENANCE_MIGRATION: &str = "m20260729_000009_dcp_provenance";
 pub(super) const DIFFUSION_SETTINGS_MIGRATION: &str = "m20260803_000010_diffusion_settings";
 pub(super) const DIFFUSION_PARAMETERS_MIGRATION: &str = "m20260804_000011_diffusion_parameters";
+pub(super) const LCP_PROVENANCE_MIGRATION: &str = "m20260818_000012_lcp_provenance";
 pub(super) const PRE_RELEASE_SEAORM_LEDGER: [&str; 2] = [
     "m20260718_000001_create_review_schema",
     "m20260718_000002_adopt_seaorm",
@@ -63,6 +66,7 @@ impl MigratorTrait for Migrator {
             Box::new(DcpProvenance),
             Box::new(DiffusionSettings),
             Box::new(DiffusionParameters),
+            Box::new(LcpProvenance),
         ]
     }
 }
@@ -709,7 +713,11 @@ impl MigrationTrait for DiffusionParameters {
                 }
             }
         }
-        sqlite_compat::set_user_version(manager.get_connection(), LATEST_SCHEMA_VERSION).await
+        sqlite_compat::set_user_version(
+            manager.get_connection(),
+            DIFFUSION_PARAMETERS_SCHEMA_VERSION,
+        )
+        .await
     }
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
@@ -717,6 +725,55 @@ impl MigrationTrait for DiffusionParameters {
         // avoids rebuilding both settings tables during a rollback.
         sqlite_compat::set_user_version(manager.get_connection(), DIFFUSION_SETTINGS_SCHEMA_VERSION)
             .await
+    }
+}
+
+struct LcpProvenance;
+
+impl MigrationName for LcpProvenance {
+    fn name(&self) -> &str {
+        LCP_PROVENANCE_MIGRATION
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for LcpProvenance {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        if !manager
+            .has_column(
+                image_profile_renders::Entity.table_name(),
+                "lcp_profile_filename",
+            )
+            .await?
+        {
+            manager
+                .alter_table(
+                    Table::alter()
+                        .table(image_profile_renders::Entity)
+                        .add_column(
+                            ColumnDef::new(image_profile_renders::Column::LcpProfileFilename)
+                                .text()
+                                .null(),
+                        )
+                        .to_owned(),
+                )
+                .await?;
+        }
+        sqlite_compat::set_user_version(manager.get_connection(), LCP_PROVENANCE_SCHEMA_VERSION)
+            .await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        // Older binaries ignore the nullable forward-compatible column.
+        sqlite_compat::set_user_version(
+            manager.get_connection(),
+            DIFFUSION_PARAMETERS_SCHEMA_VERSION,
+        )
+        .await
     }
 }
 

@@ -61,7 +61,11 @@ pub(super) fn lens_corrections_arg(corrections: LensCorrections) -> String {
     if corrections.vignetting {
         parts.push("vignetting");
     }
-    parts.join(",")
+    if parts.is_empty() {
+        "off".to_string()
+    } else {
+        parts.join(",")
+    }
 }
 
 pub(super) fn parse_review_label(raw: &str) -> Result<ReviewLabel> {
@@ -225,11 +229,9 @@ where
     } else {
         command.arg("--no-normalize-grain");
     }
-    if args.lens_corrections.is_enabled() {
-        command
-            .arg("--lens-corrections")
-            .arg(lens_corrections_arg(args.lens_corrections));
-    }
+    command
+        .arg("--lens-corrections")
+        .arg(lens_corrections_arg(args.lens_corrections));
     command
         .arg("--color-noise-iso-threshold")
         .arg(args.color_noise_iso_threshold.to_string());

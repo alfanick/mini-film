@@ -34,6 +34,7 @@ pub(super) use crate::{
     app::codex::{CodexAnalysisOptions, CodexAnalysisResult, run_codex_image_analysis},
     app::dcp::{dcp_cache_identity, resolve_dcp_profile},
     app::export::validate_export_options,
+    app::lcp::{lens_correction_cache_identity, resolve_lens_correction},
     app::pp3::RAW_RENDER_PIPELINE_KEY,
     app::profile::resolve_profile,
     app::retouch::{BasicRetouchAdjustments, BwFilter, RetouchSettings, RetouchWhiteBalance},

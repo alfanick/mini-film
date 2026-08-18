@@ -27,7 +27,7 @@ use crate::{
 use tools::HuginToolchain;
 pub(crate) use tools::PanoramaCapability;
 
-const PANORAMA_CACHE_VERSION: &str = "panorama-v3-adobe-dcp";
+const PANORAMA_CACHE_VERSION: &str = "panorama-v4-adobe-lcp";
 
 #[derive(Clone, Debug)]
 pub(crate) struct PanoramaConfig {
@@ -312,18 +312,16 @@ fn project_cache_root(
     hasher.update(PANORAMA_CACHE_VERSION.as_bytes());
     hasher.update(tools.fingerprint().as_bytes());
     hasher.update(config.color_noise_iso_threshold.to_le_bytes());
-    hasher.update([
-        u8::from(config.lens_corrections.distortion),
-        u8::from(config.lens_corrections.ca),
-        u8::from(config.lens_corrections.vignetting),
-    ]);
-    if let Some(lcp_root) = &config.lcp_root {
-        hasher.update(lcp_root.to_string_lossy().as_bytes());
-    }
     for source in sources {
         hasher.update(crate::app::dcp::dcp_cache_identity(
             source,
             &config.dng_fallback,
+        ));
+        hasher.update(crate::app::lcp::lens_correction_cache_identity(
+            source,
+            &config.dng_fallback,
+            config.lcp_root.as_deref(),
+            config.lens_corrections,
         ));
         let canonical = fs::canonicalize(source).unwrap_or_else(|_| source.clone());
         hasher.update(canonical.to_string_lossy().as_bytes());

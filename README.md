@@ -76,10 +76,10 @@ Available shortcuts:
   review pipeline.
 - **Batch, sampler, and gallery output**: process whole folders, render profile
   sampler sheets, and generate modern static HTML galleries.
-- **RAW pipeline extras**: automatic Adobe Standard DCP matching with
+- **RAW pipeline extras**: automatic Adobe Standard DCP and lens LCP matching with
   RawTherapee histogram-matched tone fallback, deterministic film grain,
   optional neutral film diffusion and highlight glow, optional high-ISO color
-  denoise, optional RawTherapee lens corrections,
+  denoise, RawTherapee lens corrections with embedded-DNG and Lensfun fallbacks,
   metadata copyback with `exiftool`, 8-bit JPEG output, and 16-bit
   Zip-compressed TIFF output.
 
@@ -241,6 +241,12 @@ illumination. In that case mini-film does not add histogram matching. Without a
 match, the existing RawTherapee histogram-matched curve remains active. This is
 automatic with no DCP flag. DCP profiles are never applied to JPEG, HEIC, or
 TIFF inputs.
+
+Adobe DNG Converter does not bake the camera DCP or an external LCP into the
+converted pixels. Converted Nikon High Efficiency files therefore still use a
+matched DCP for camera color. For lens geometry, mini-film chooses either an
+external LCP or the supported `OpcodeList3` corrections carried by the DNG, not
+both, so the converted path does not double-apply lens correction.
 
 The fallback writes a same-stem `.dng` beside the source through a hidden
 staging directory, verifies its lossless compression, raw-image digest, DNG
@@ -784,9 +790,9 @@ black-and-white filter choices are stored per picture/profile variant and are
 used by review and publish rerenders. Generated retouch and black-and-white
 filter variants are cached under `<cache-root>/.mini-film-retouch/` so returning
 to an already rendered variant swaps immediately.
-When a completed RAW render used an Adobe DCP, `DCP used` appears beside the
-selected profile name; hover it to see the exact DCP filename recorded for that
-render.
+Completed RAW renders show `DCP used`, `LCP used`, or `DCP + LCP used` beside
+the selected profile name according to the profiles actually applied. Hover the
+text to see the exact DCP and LCP filenames recorded for that render.
 Click the selected profile name to open the film simulation info overlay; it
 shows profile identity, camera Active D-Lighting metadata for the current RAW,
 and a compact summary of generated or direct PP3 adjustment sections. Its
@@ -1482,32 +1488,62 @@ Example:
 
 ## RawTherapee Lens Corrections
 
-Mini-film can optionally enable RawTherapee lens-correction controls. This is
-off by default and available on `apply`, `batch`, `sampler`, and `daemon` via:
+Mini-film enables RawTherapee lens corrections for RAW inputs by default on
+`apply`, `batch`, `sampler`, `daemon`, `panorama`, and RAW
+`review-publish` rerenders. JPEG, HEIC, and TIFF inputs never receive DCP, LCP,
+embedded-DNG, or Lensfun RAW corrections.
+
+Use the default correction set, select a subset, or turn corrections off with:
 
 ```sh
 --lens-corrections
 --lens-corrections all
 --lens-corrections distortion,ca,vignetting
+--lens-corrections off
 ```
 
-When no value is provided, `--lens-corrections` enables all supported items.
-You can also pass any subset of:
+Omitting the option, or passing it without a value, enables all supported
+items. You can pass any subset of:
 
 - `distortion`
 - `ca` or `chromatic-aberration`
 - `vignetting` / `vignette`
 - `all`
+- `off` or `none` to disable every correction
 
-The generated section is inserted into the temporary pp3 stack as:
+For each RAW, mini-film selects one mutually exclusive RawTherapee correction
+source in this order:
+
+1. a matching Adobe Camera Raw LCP profile;
+2. supported correction metadata embedded in a DNG;
+3. RawTherapee Lensfun automatic matching.
+
+Adobe LCPs are matched from the source camera and lens EXIF. By default,
+mini-film discovers the recursive
+`drive_c/ProgramData/Adobe/CameraRaw/LensProfiles/1.0` catalog beside the Adobe
+DCP catalog in the configured Adobe DNG Converter Wine prefix, then in the
+usual discovered Wine prefixes. `MINI_FILM_LCP_ROOT` overrides automatic
+discovery, and `--lcp-root /path/to/LensProfiles/1.0` overrides both.
+
+The generated temporary PP3 `[LensProfile]` section uses `LcMode=lcp` with the
+matched profile's absolute `LCPFile`, `LcMode=metadata` for supported embedded
+DNG correction data, or `LcMode=lfauto` for Lensfun. Each mode carries the
+requested switches:
 
 ```ini
 [LensProfile]
-LcMode=lfauto
+LcMode=<lcp|metadata|lfauto>
+LCPFile=<absolute path when LcMode=lcp>
 UseDistortion=<true|false>
 UseVignette=<true|false>
 UseCA=<true|false>
 ```
+
+Render and preview cache identities include the effective correction mode, the
+enabled correction subset, and the matched LCP's content fingerprint. Adding,
+removing, replacing, or changing the best-matching LCP therefore invalidates
+affected cached RAW renders and queues them again instead of reusing an output
+made with a different lens profile.
 
 ## Caveat
 

@@ -30,6 +30,7 @@ use walkdir::WalkDir;
 use crate::app::dcp::{DcpProfile, resolve_dcp_profile};
 use crate::app::dng::DngFallbackConfig;
 use crate::app::export::{add_convert_thread_limit, finalize_output, output_ext};
+use crate::app::lcp::{ResolvedLensCorrection, resolve_lens_correction};
 use crate::app::pp3::{
     RAW_RENDER_PIPELINE_KEY, write_rawtherapee_auto_matched_curve_profile,
     write_rawtherapee_color_noise_profile, write_rawtherapee_dcp_profile,
@@ -175,6 +176,7 @@ struct ThumbnailCache {
     dir: PathBuf,
     raw_sha1: String,
     dcp_identity: String,
+    lens_correction_identity: String,
 }
 
 const SAMPLER_CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
@@ -239,6 +241,7 @@ struct ProfileRenderContext<'a> {
     export: &'a ExportOptions,
     cache: Option<&'a ThumbnailCache>,
     dcp_profile: Option<&'a DcpProfile>,
+    lens_correction: &'a ResolvedLensCorrection,
     progress: &'a SamplerProgress,
 }
 
@@ -260,6 +263,7 @@ struct StructuredSheetContext<'a> {
     jpeg_subsampling: JpegSubsampling,
     progressive_jpeg: bool,
     dcp_profile: Option<&'a DcpProfile>,
+    lens_correction: &'a ResolvedLensCorrection,
     cache: Option<&'a ThumbnailCache>,
     focus_regions: &'a [GalleryFocusRegion],
 }
@@ -272,6 +276,7 @@ struct SamplerSidecarContext<'a> {
     color_noise_iso_threshold: u32,
     lens_corrections: LensCorrections,
     dcp_profile: Option<&'a DcpProfile>,
+    lens_correction: &'a ResolvedLensCorrection,
 }
 
 /// Render a structured contact sheet showing every resolvable XMP profile.
@@ -293,6 +298,12 @@ pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
     let dcp_profile = is_raw_input_file(&args.raw)
         .then(|| resolve_dcp_profile(&args.raw, &args.dng_fallback))
         .flatten();
+    let lens_correction = resolve_lens_correction(
+        &args.raw,
+        &args.dng_fallback,
+        args.lcp_root.as_deref(),
+        args.lens_corrections,
+    );
     let jobs = resolve_sampler_jobs(args.jobs)?;
 
     let emulation_root = emulation_root(&args.profiles_root);
@@ -303,7 +314,14 @@ pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
 
     let temp_dir = Builder::new().prefix("mini-film-sampler-").tempdir()?;
     let base_seed = args.grain_seed.unwrap_or_else(time_of_day_seed);
-    let cache = sampler_cache(&args.raw, dcp_profile.as_ref(), args.no_cache)?.map(Arc::new);
+    let cache = sampler_cache(
+        &args.raw,
+        dcp_profile.as_ref(),
+        &lens_correction,
+        args.lens_corrections,
+        args.no_cache,
+    )?
+    .map(Arc::new);
     let export = ExportOptions {
         jpg_quality: args.jpg_quality,
         resize: None,
@@ -367,6 +385,7 @@ pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
                         export: &export,
                         cache: cache.as_deref(),
                         dcp_profile: dcp_profile.as_ref(),
+                        lens_correction: &lens_correction,
                         progress: &progress,
                     };
                     let result = render_profile_thumbnail(&render_context, profile);
@@ -444,6 +463,7 @@ pub(crate) fn run_sampler(args: SamplerArgs) -> Result<()> {
         jpeg_subsampling: args.jpeg_subsampling,
         progressive_jpeg: args.progressive_jpeg,
         dcp_profile: dcp_profile.as_ref(),
+        lens_correction: &lens_correction,
         cache: cache.as_deref(),
         focus_regions: &focus_regions,
     };
@@ -482,17 +502,24 @@ fn validate_sampler_args(args: &SamplerArgs) -> Result<()> {
 }
 
 impl ThumbnailCache {
-    fn new(raw: &Path, dcp_profile: Option<&DcpProfile>) -> Result<Self> {
+    fn new(
+        raw: &Path,
+        dcp_profile: Option<&DcpProfile>,
+        lens_correction: &ResolvedLensCorrection,
+        lens_corrections: LensCorrections,
+    ) -> Result<Self> {
         let raw_sha1 = sha1_file(raw).with_context(|| format!("hashing RAW {}", raw.display()))?;
         let dir = env::temp_dir().join("mini-film-sampler-cache");
         fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
         let dcp_identity = dcp_profile
             .map(DcpProfile::cache_identity)
             .unwrap_or_else(|| "dcp-none".to_string());
+        let lens_correction_identity = lens_correction.cache_identity(lens_corrections);
         Ok(Self {
             dir,
             raw_sha1,
             dcp_identity,
+            lens_correction_identity,
         })
     }
 
@@ -547,9 +574,10 @@ impl ThumbnailCache {
             )
         };
         let mut render_options = format!(
-            "{}-{}-l{}-{}px-lc{}-q{}-{}-{}-{}-sg3-strip{}-prog{}",
+            "{}-{}-{}-l{}-{}px-lc{}-q{}-{}-{}-{}-sg3-strip{}-prog{}",
             RAW_RENDER_PIPELINE_KEY,
             self.dcp_identity,
+            self.lens_correction_identity,
             args.hald_level,
             args.thumbnail_long_edge,
             lens_corrections,
@@ -631,6 +659,8 @@ impl ThumbnailCache {
         hasher.update(RAW_RENDER_PIPELINE_KEY);
         hasher.update(b"\0");
         hasher.update(self.dcp_identity.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(self.lens_correction_identity.as_bytes());
         hasher.update(b"\0quality=");
         hasher.update(jpg_quality.clamp(1, 100).to_le_bytes());
         hasher.update(b"\0subsampling=");
@@ -674,12 +704,14 @@ impl ThumbnailCache {
 fn sampler_cache(
     raw: &Path,
     dcp_profile: Option<&DcpProfile>,
+    lens_correction: &ResolvedLensCorrection,
+    lens_corrections: LensCorrections,
     no_cache: bool,
 ) -> Result<Option<ThumbnailCache>> {
     if no_cache {
         return Ok(None);
     }
-    ThumbnailCache::new(raw, dcp_profile).map(Some)
+    ThumbnailCache::new(raw, dcp_profile, lens_correction, lens_corrections).map(Some)
 }
 
 fn cache_file_is_fresh_at(path: &Path, now: SystemTime) -> bool {
@@ -1026,6 +1058,7 @@ fn render_profile_thumbnail(
     )?;
     append_lens_corrections_if_requested(
         context.args.lens_corrections,
+        context.lens_correction,
         &mut rawtherapee_profiles,
         &profile_temp,
     )?;
@@ -1391,12 +1424,14 @@ fn append_color_noise_if_qualified(
 
 fn append_lens_corrections_if_requested(
     lens_corrections: LensCorrections,
+    lens_correction: &ResolvedLensCorrection,
     rawtherapee_profiles: &mut Vec<PathBuf>,
     temp_dir: &Path,
 ) -> Result<()> {
     if let Some(path) = write_rawtherapee_lens_corrections_profile(
         &temp_dir.join("lens-corrections.pp3"),
         lens_corrections,
+        lens_correction,
     )? {
         rawtherapee_profiles.push(path);
     }
@@ -1444,9 +1479,15 @@ fn append_lens_corrections_to_profiles(
     rawtherapee_profiles: Vec<PathBuf>,
     temp_dir: &Path,
     lens_corrections: LensCorrections,
+    lens_correction: &ResolvedLensCorrection,
 ) -> Result<Vec<PathBuf>> {
     let mut profiles = rawtherapee_profiles;
-    append_lens_corrections_if_requested(lens_corrections, &mut profiles, temp_dir)?;
+    append_lens_corrections_if_requested(
+        lens_corrections,
+        lens_correction,
+        &mut profiles,
+        temp_dir,
+    )?;
     Ok(profiles)
 }
 
@@ -1689,6 +1730,7 @@ fn run_html_sheet(context: &StructuredSheetContext<'_>) -> Result<()> {
                     color_noise_iso_threshold: context.color_noise_iso_threshold,
                     lens_corrections: context.lens_corrections,
                     dcp_profile: context.dcp_profile,
+                    lens_correction: context.lens_correction,
                 };
                 let hald = write_html_sampler_sidecars(profile, &sidecar_context, pp3_output)
                     .with_context(|| {
@@ -1740,6 +1782,7 @@ fn write_html_sampler_sidecars(
         rawtherapee_profiles,
         temp_dir.path(),
         context.lens_corrections,
+        context.lens_correction,
     )?;
     let mut rawtherapee_profiles = rawtherapee_profiles;
     append_dcp_or_auto_matched_curve(
@@ -1836,6 +1879,12 @@ fn write_html_baseline_thumbnail(
         .tempdir()?;
     let raw_source = temp_dir.path().join("raw-baseline.jpg");
     let mut profiles = Vec::new();
+    append_lens_corrections_if_requested(
+        context.lens_corrections,
+        context.lens_correction,
+        &mut profiles,
+        temp_dir.path(),
+    )?;
     append_dcp_or_auto_matched_curve(&mut profiles, temp_dir.path(), context.dcp_profile)?;
     let prepared_source = context.dng_fallback.prepare_known(context.raw)?;
     let outcome = run_raw_develop_jpeg(
@@ -3473,7 +3522,13 @@ mod tests {
             dir.path().join("hald"),
         );
         args.grain_seed = None;
-        let cache = ThumbnailCache::new(&raw, None).unwrap();
+        let cache = ThumbnailCache::new(
+            &raw,
+            None,
+            &ResolvedLensCorrection::Disabled,
+            LensCorrections::none(),
+        )
+        .unwrap();
         let cached = cache.path_for(&xmp, &args).unwrap();
         let name = cached.file_name().unwrap().to_string_lossy();
 
@@ -3562,6 +3617,7 @@ mod tests {
             dir: cache.dir.clone(),
             raw_sha1: cache.raw_sha1.clone(),
             dcp_identity: format!("dcp-{}", "f".repeat(40)),
+            lens_correction_identity: cache.lens_correction_identity.clone(),
         };
         args.normalize_grain_mpix = Some(mini_film::DEFAULT_GRAIN_REFERENCE_MPIX);
         let dcp_advanced = dcp_cache.path_for(&xmp, &args).unwrap();
@@ -3641,8 +3697,27 @@ mod tests {
     fn no_cache_bypasses_sampler_cache_initialization() {
         let missing = Path::new("/definitely/missing/mini-film-cache-input.dng");
 
-        assert!(sampler_cache(missing, None, true).unwrap().is_none());
-        assert!(sampler_cache(missing, None, false).is_err());
+        assert!(
+            sampler_cache(
+                missing,
+                None,
+                &ResolvedLensCorrection::Disabled,
+                LensCorrections::none(),
+                true,
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            sampler_cache(
+                missing,
+                None,
+                &ResolvedLensCorrection::Disabled,
+                LensCorrections::none(),
+                false,
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -3654,6 +3729,7 @@ mod tests {
             dir: dir.path().join("cache"),
             raw_sha1: "raw-sha1".to_string(),
             dcp_identity: "dcp-one".to_string(),
+            lens_correction_identity: "lens-lensfun-auto-d1c1v1".to_string(),
         };
 
         let original = cache.html_original_path(95, JpegSubsampling::S444);
@@ -3677,10 +3753,21 @@ mod tests {
             dir: cache.dir.clone(),
             raw_sha1: cache.raw_sha1.clone(),
             dcp_identity: "dcp-two".to_string(),
+            lens_correction_identity: cache.lens_correction_identity.clone(),
         };
         assert_ne!(
             original,
             other_dcp.html_original_path(95, JpegSubsampling::S444)
+        );
+        let other_lens = ThumbnailCache {
+            dir: cache.dir.clone(),
+            raw_sha1: cache.raw_sha1.clone(),
+            dcp_identity: cache.dcp_identity.clone(),
+            lens_correction_identity: "lens-lcp-changed-d1c1v1".to_string(),
+        };
+        assert_ne!(
+            original,
+            other_lens.html_original_path(95, JpegSubsampling::S444)
         );
 
         let progressive = cache
@@ -3723,6 +3810,7 @@ mod tests {
             dir: dir.path().join("cache"),
             raw_sha1: "raw-sha1".to_string(),
             dcp_identity: "dcp-none".to_string(),
+            lens_correction_identity: "lens-disabled-d0c0v0".to_string(),
         };
 
         let computed = load_or_analyze_sampler_details(
@@ -3798,6 +3886,7 @@ mod tests {
             dir: dir.path().join("cache"),
             raw_sha1: sha1_file(&raw).unwrap(),
             dcp_identity: "dcp-none".to_string(),
+            lens_correction_identity: "lens-disabled-d0c0v0".to_string(),
         };
 
         let default_pair = cache.html_pair_paths(&xmp, 4, &args).unwrap();

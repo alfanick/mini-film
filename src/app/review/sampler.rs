@@ -27,7 +27,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const REVIEW_SAMPLER_CACHE_VERSION: &str = "review-sampler-v3-normalized-grain";
+const REVIEW_SAMPLER_CACHE_VERSION: &str = "review-sampler-v4-adobe-lcp";
 const REVIEW_SAMPLER_LONG_EDGE: u32 = 512;
 const REVIEW_SAMPLER_JPEG_QUALITY: u8 = 85;
 
@@ -188,7 +188,7 @@ impl ReviewHandle {
         if profiles.is_empty() {
             bail!("no XMP emulations found under {}", root.display());
         }
-        let job_key = sampler_job_key(&source, &profiles)?;
+        let job_key = sampler_job_key(self, &source, &profiles)?;
         if let Some(job_id) = self.sampler_registry.find_job(image_id, &job_key) {
             return self.sampler_job_snapshot(job_id);
         }
@@ -474,6 +474,7 @@ impl ReviewHandle {
                     .find(|profile| profile.index == profile_index)
                     .cloned()
                     .ok_or_else(|| anyhow!("review profile {profile_index} does not exist"))?;
+                let raw_render_config = store.raw_render_config.clone();
                 let mut jobs = Vec::new();
                 for image_id in image_ids {
                     let Some(image) = store.images.iter_mut().find(|image| image.id == image_id)
@@ -497,13 +498,15 @@ impl ReviewHandle {
                                 &profile.stem,
                             )?);
                     }
-                    let processing_key = review_render_processing_key_for_input_with_diffusion(
-                        &image.raw_path,
-                        profile_index,
-                        self.normalize_grain_mpix,
-                        &self.export,
-                        self.diffusion,
-                    );
+                    let processing_key =
+                        review_render_processing_key_for_input_with_diffusion_and_raw_config(
+                            &image.raw_path,
+                            profile_index,
+                            self.normalize_grain_mpix,
+                            &self.export,
+                            self.diffusion,
+                            &raw_render_config,
+                        );
                     image.profiles[render_index].processing_key = Some(processing_key.clone());
                     let bw_filter = effective_bw_filter_for_profile(image, &profile);
                     let render_key = profile_render_key_value_with_diffusion(
@@ -614,6 +617,12 @@ impl ReviewHandle {
             let prepared_source = self.dng_fallback.prepare_known(source)?;
             let active_source = prepared_source.active();
             let dcp_profile = resolve_dcp_profile(active_source, &self.dng_fallback);
+            let lens_correction = resolve_lens_correction(
+                active_source,
+                &self.dng_fallback,
+                self.lcp_root.as_deref(),
+                self.lens_corrections,
+            );
             let developed = work.path().join("neutral.tif");
             let neutral = neutral_profile();
             let mut profiles = rawtherapee_profiles_for_input(
@@ -624,6 +633,7 @@ impl ReviewHandle {
                     bw_filter: BwFilter::None,
                     color_noise_iso_threshold: self.color_noise_iso_threshold,
                     lens_corrections: self.lens_corrections,
+                    lens_correction: &lens_correction,
                     dcp_profile: dcp_profile.as_ref(),
                 },
                 &neutral,
@@ -963,13 +973,20 @@ fn sampler_entry(root: &Path, profile_path: PathBuf) -> Result<ReviewSamplerEntr
     })
 }
 
-fn sampler_job_key(source: &Path, profiles: &[PathBuf]) -> Result<String> {
+fn sampler_job_key(handle: &ReviewHandle, source: &Path, profiles: &[PathBuf]) -> Result<String> {
     let metadata = fs::metadata(source).with_context(|| format!("reading {}", source.display()))?;
     let mut hasher = Sha1::new();
     hasher.update(REVIEW_SAMPLER_CACHE_VERSION.as_bytes());
     hasher.update(source.to_string_lossy().as_bytes());
     hasher.update(metadata.len().to_le_bytes());
     hash_modified_time(&mut hasher, metadata.modified().ok());
+    hasher.update(dcp_cache_identity(source, &handle.dng_fallback));
+    hasher.update(lens_correction_cache_identity(
+        source,
+        &handle.dng_fallback,
+        handle.lcp_root.as_deref(),
+        handle.lens_corrections,
+    ));
     for profile in profiles {
         hasher.update(profile.to_string_lossy().as_bytes());
         if let Ok(metadata) = fs::metadata(profile) {
@@ -985,8 +1002,13 @@ fn sampler_source_digest(handle: &ReviewHandle, source: &Path) -> Result<String>
     hasher.update(REVIEW_SAMPLER_CACHE_VERSION.as_bytes());
     hasher.update(REVIEW_SAMPLER_LONG_EDGE.to_le_bytes());
     hasher.update(handle.color_noise_iso_threshold.to_le_bytes());
-    hasher.update(format!("{:?}", handle.lens_corrections));
     hasher.update(dcp_cache_identity(source, &handle.dng_fallback));
+    hasher.update(lens_correction_cache_identity(
+        source,
+        &handle.dng_fallback,
+        handle.lcp_root.as_deref(),
+        handle.lens_corrections,
+    ));
     hash_file_into(&mut hasher, source)?;
     Ok(hex_digest(hasher.finalize()))
 }

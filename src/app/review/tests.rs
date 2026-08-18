@@ -145,6 +145,7 @@ fn fully_populated_review_store() -> ReviewStore {
         render_key: Some("render-key".to_string()),
         processing_key: Some("processing-key".to_string()),
         dcp_profile_filename: Some("Nikon Z 7 2 Adobe Standard.dcp".to_string()),
+        lcp_profile_filename: Some("NIKKOR Z 24-70mm f-4 S.lcp".to_string()),
         width: Some(4096),
         height: Some(2731),
         updated_at: timestamp.clone(),
@@ -731,6 +732,7 @@ fn profile_render(index: usize, stem: &str) -> ReviewProfileRender {
         render_key: None,
         processing_key: Some(review_render_processing_key(index).to_string()),
         dcp_profile_filename: None,
+        lcp_profile_filename: None,
         width: None,
         height: None,
         updated_at: now_string(),
@@ -776,6 +778,15 @@ fn priority_image(
         profiles,
         updated_at: now_string(),
     }
+}
+
+#[test]
+fn review_publish_lens_correction_argument_preserves_disabled_mode() {
+    assert_eq!(lens_corrections_arg(LensCorrections::none()), "off");
+    assert_eq!(
+        lens_corrections_arg(LensCorrections::all()),
+        "distortion,ca,vignetting"
+    );
 }
 
 #[test]
@@ -1433,7 +1444,7 @@ fn preferred_preview_profile_keeps_selected_profile_even_when_publish_unchecked(
 }
 
 #[test]
-fn scheduled_profile_completion_records_dcp_provenance() {
+fn scheduled_profile_completion_keeps_lens_provenance() {
     let mut render = profile_render(SAMPLER_PROFILE_INDEX_BASE, "Sampler Film");
     render.status = ReviewRenderStatus::Processing;
     render.render_key = Some("render-key".to_string());
@@ -1451,6 +1462,7 @@ fn scheduled_profile_completion_records_dcp_provenance() {
         render.dcp_profile_filename.as_deref(),
         Some("Nikon Z 7 2 Adobe Standard.dcp")
     );
+    assert_eq!(render.lcp_profile_filename, None);
 }
 
 #[test]
@@ -1476,6 +1488,7 @@ fn requeued_profile_keeps_dcp_provenance_visible() {
             &rendered,
             Duration::from_millis(42),
             Some("Nikon Z 7 2 Adobe Standard.dcp"),
+            Some("NIKKOR Z 24-70mm f-4 S.lcp"),
         )
         .unwrap();
     handle.record_profile_queued(&raw, 0, &rendered).unwrap();
@@ -1485,6 +1498,10 @@ fn requeued_profile_keeps_dcp_provenance_visible() {
     assert_eq!(
         effective_dcp_profile_filename(image, &image.profiles[0]),
         Some("Nikon Z 7 2 Adobe Standard.dcp")
+    );
+    assert_eq!(
+        effective_lcp_profile_filename(image, &image.profiles[0]),
+        Some("NIKKOR Z 24-70mm f-4 S.lcp")
     );
 }
 
@@ -1505,10 +1522,18 @@ fn dcp_provenance_fallback_is_limited_to_current_raw_profile_renders() {
         effective_dcp_profile_filename(image, &image.profiles[1]),
         Some("Nikon Z 7 2 Adobe Standard.dcp")
     );
+    assert_eq!(
+        effective_lcp_profile_filename(image, &image.profiles[1]),
+        Some("NIKKOR Z 24-70mm f-4 S.lcp")
+    );
 
     image.profiles[1].profile_index = SOOC_PROFILE_INDEX;
     assert_eq!(
         effective_dcp_profile_filename(image, &image.profiles[1]),
+        None
+    );
+    assert_eq!(
+        effective_lcp_profile_filename(image, &image.profiles[1]),
         None
     );
 
@@ -1516,6 +1541,10 @@ fn dcp_provenance_fallback_is_limited_to_current_raw_profile_renders() {
     image.raw_path = PathBuf::from("/in/one.JPG");
     assert_eq!(
         effective_dcp_profile_filename(image, &image.profiles[1]),
+        None
+    );
+    assert_eq!(
+        effective_lcp_profile_filename(image, &image.profiles[1]),
         None
     );
 }
@@ -1555,6 +1584,7 @@ fn review_state_defaults_to_first_profile_and_records_outputs() {
             &rendered,
             Duration::from_millis(42),
             Some("Nikon Z 7 2 Adobe Standard.dcp"),
+            Some("NIKKOR Z 24-70mm f-4 S.lcp"),
         )
         .unwrap();
     handle
@@ -1566,10 +1596,15 @@ fn review_state_defaults_to_first_profile_and_records_outputs() {
     assert!(text.contains("\"publish_profile_indexes\":[0,1]"));
     assert!(text.contains("\"status\":\"done\""));
     assert!(text.contains("\"dcp_profile_filename\":\"Nikon Z 7 2 Adobe Standard.dcp\""));
+    assert!(text.contains("\"lcp_profile_filename\":\"NIKKOR Z 24-70mm f-4 S.lcp\""));
     assert!(text.contains("media/1/0"));
     assert_eq!(
         state["images"][0]["profiles"][1]["dcp_profile_filename"],
         json!("Nikon Z 7 2 Adobe Standard.dcp")
+    );
+    assert_eq!(
+        state["images"][0]["profiles"][1]["lcp_profile_filename"],
+        json!("NIKKOR Z 24-70mm f-4 S.lcp")
     );
     let base = &state["profiles"][0]["retouch_base"];
     assert_eq!(base["exposure"], json!(0.5));
@@ -1714,7 +1749,14 @@ fn stable_image_render_updates_follow_dng_rebind_without_creating_a_ghost_image(
 
     handle.record_profile_processing_for_image(1, 0).unwrap();
     handle
-        .record_profile_done_with_dcp_for_image(1, 0, &rendered, Duration::from_millis(10), None)
+        .record_profile_done_with_dcp_for_image(
+            1,
+            0,
+            &rendered,
+            Duration::from_millis(10),
+            None,
+            None,
+        )
         .unwrap();
 
     let store = handle.store_snapshot();
@@ -2091,12 +2133,97 @@ fn rendered_profile_processing_keys_track_input_sharpening_policy() {
     }
     assert_eq!(
         review_render_processing_key_for_input(Path::new("frame.NEF"), 0),
-        format!("{RAW_RENDER_PIPELINE_KEY}:dcp-none:{normalization}:{export}")
+        format!("{RAW_RENDER_PIPELINE_KEY}:dcp-none:lens-disabled-d0c0v0:{normalization}:{export}")
     );
     assert_eq!(
         review_render_processing_key_for_input(Path::new("frame.TIFF"), 0),
         format!("profiled-tiff-render-v3-normalized-grain:{normalization}:{export}")
     );
+}
+
+#[test]
+fn raw_review_processing_keys_track_lens_configuration_only_for_raw_inputs() {
+    let temp = tempfile::tempdir().unwrap();
+    let raw = temp.path().join("frame.NEF");
+    fs::write(&raw, b"not a real raw").unwrap();
+    let disabled = ReviewRawRenderConfig::default();
+    let enabled = ReviewRawRenderConfig {
+        lcp_root: Some(temp.path().join("empty-lcp-catalog")),
+        lens_corrections: LensCorrections::all(),
+        ..ReviewRawRenderConfig::default()
+    };
+    let export = ExportOptions::default();
+    let key = |input, config| {
+        review_render_processing_key_for_input_with_options_and_raw_config(
+            input,
+            0,
+            Some(mini_film::DEFAULT_GRAIN_REFERENCE_MPIX),
+            &export,
+            config,
+        )
+    };
+
+    assert_ne!(key(&raw, &disabled), key(&raw, &enabled));
+    for rendered in ["frame.jpg", "frame.HEIC", "frame.TIFF"] {
+        assert_eq!(
+            key(Path::new(rendered), &disabled),
+            key(Path::new(rendered), &enabled),
+        );
+    }
+}
+
+#[test]
+fn diffusion_preview_cache_tracks_lens_configuration_only_for_raw_inputs() {
+    let temp = tempfile::tempdir().unwrap();
+    let raw = temp.path().join("frame.NEF");
+    let jpeg = temp.path().join("frame.jpg");
+    fs::write(&raw, b"not a real raw").unwrap();
+    fs::write(&jpeg, b"not a real jpeg").unwrap();
+    let profile = profile(0, "Classic");
+    let disabled = ReviewRawRenderConfig::default();
+    let enabled = ReviewRawRenderConfig {
+        lcp_root: Some(temp.path().join("empty-lcp-catalog")),
+        lens_corrections: LensCorrections::all(),
+        ..ReviewRawRenderConfig::default()
+    };
+    let key = |input, config| {
+        diffusion_preview_cache_key(
+            input,
+            &profile,
+            &RetouchSettings::default(),
+            RetouchWhiteBalance::default(),
+            BwFilter::None,
+            config,
+        )
+        .unwrap()
+    };
+
+    assert_ne!(key(&raw, &disabled), key(&raw, &enabled));
+    assert_eq!(key(&jpeg, &disabled), key(&jpeg, &enabled));
+}
+
+#[test]
+fn sync_profiles_invalidates_raw_render_when_runtime_lens_configuration_changes() {
+    let temp = tempfile::tempdir().unwrap();
+    let raw = temp.path().join("frame.NEF");
+    fs::write(&raw, b"not a real raw").unwrap();
+    let profiles = vec![profile(0, "Classic")];
+    let mut store = ReviewStore::new(profiles.clone());
+    let old_key = {
+        let render = &mut store.ensure_image(temp.path(), &raw).unwrap().profiles[0];
+        render.status = ReviewRenderStatus::Done;
+        render.output_path = Some(temp.path().join("Classic/frame.jpg"));
+        render.processing_key.clone().unwrap()
+    };
+
+    store.raw_render_config.lcp_root = Some(temp.path().join("empty-lcp-catalog"));
+    store.raw_render_config.lens_corrections = LensCorrections::all();
+    store.sync_profiles(profiles);
+
+    let render = &store.images[0].profiles[0];
+    assert_eq!(render.status, ReviewRenderStatus::Missing);
+    assert_eq!(render.output_path, None);
+    assert_ne!(render.processing_key.as_deref(), Some(old_key.as_str()));
 }
 
 #[test]
@@ -2794,9 +2921,9 @@ fn review_state_seaorm_round_trips_every_normalized_collection() {
         serde_json::to_value(persisted_store(store)).unwrap()
     );
     let facts = database_facts(&state_path).unwrap();
-    assert_eq!(facts.schema_version, 22);
+    assert_eq!(facts.schema_version, 23);
     assert!(facts.has_seaql_ledger);
-    assert_eq!(facts.seaql_migration_count, 11);
+    assert_eq!(facts.seaql_migration_count, 12);
     assert_eq!(
         facts.seaql_migrations,
         [
@@ -2811,6 +2938,7 @@ fn review_state_seaorm_round_trips_every_normalized_collection() {
             "m20260729_000009_dcp_provenance",
             "m20260803_000010_diffusion_settings",
             "m20260804_000011_diffusion_parameters",
+            "m20260818_000012_lcp_provenance",
         ]
     );
     assert!(!facts.has_legacy_ledger);
@@ -2880,10 +3008,10 @@ fn normalized_v11_database_is_backed_up_and_adopted_losslessly_once() {
     let backup_bytes = fs::read(&backup_path).unwrap();
 
     let after_facts = database_facts(&state_path).unwrap();
-    assert_eq!(after_facts.schema_version, 22);
+    assert_eq!(after_facts.schema_version, 23);
     assert!(!after_facts.has_legacy_ledger);
     assert!(after_facts.has_seaql_ledger);
-    assert_eq!(after_facts.seaql_migration_count, 11);
+    assert_eq!(after_facts.seaql_migration_count, 12);
     assert_eq!(
         after_facts.seaql_migrations,
         [
@@ -2898,6 +3026,7 @@ fn normalized_v11_database_is_backed_up_and_adopted_losslessly_once() {
             "m20260729_000009_dcp_provenance",
             "m20260803_000010_diffusion_settings",
             "m20260804_000011_diffusion_parameters",
+            "m20260818_000012_lcp_provenance",
         ]
     );
     assert!(!after_facts.has_json_storage_columns);
@@ -2936,7 +3065,7 @@ fn pre_release_two_entry_seaorm_ledger_is_collapsed_without_data_loss() {
         serde_json::to_value(migrated_pre_contrast_store(persisted_store(store))).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.seaql_migration_count, 11);
+    assert_eq!(after.seaql_migration_count, 12);
     assert_eq!(
         after.seaql_migrations,
         [
@@ -2951,6 +3080,7 @@ fn pre_release_two_entry_seaorm_ledger_is_collapsed_without_data_loss() {
             "m20260729_000009_dcp_provenance",
             "m20260803_000010_diffusion_settings",
             "m20260804_000011_diffusion_parameters",
+            "m20260818_000012_lcp_provenance",
         ]
     );
 }
@@ -2968,8 +3098,8 @@ fn schema_v12_migrates_to_panorama_schema_without_review_data_loss() {
         serde_json::to_value(migrated_pre_sampler_store(store)).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 22);
-    assert_eq!(after.seaql_migration_count, 11);
+    assert_eq!(after.schema_version, 23);
+    assert_eq!(after.seaql_migration_count, 12);
     assert_eq!(after.counts["panorama_projects"], 0);
     assert_eq!(after.counts["panorama_project_images"], 0);
     assert_eq!(after.counts["panorama_previews"], 0);
@@ -2998,8 +3128,8 @@ fn schema_v13_migrates_sampler_state_without_review_data_loss() {
             && profile.identity.starts_with("legacy:")
     }));
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 22);
-    assert_eq!(after.seaql_migration_count, 11);
+    assert_eq!(after.schema_version, 23);
+    assert_eq!(after.seaql_migration_count, 12);
     assert_eq!(after.indexes.len(), 29);
 }
 
@@ -3025,8 +3155,8 @@ fn schema_v14_adds_focus_region_storage_without_review_data_loss() {
         .unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 22);
-    assert_eq!(after.seaql_migration_count, 11);
+    assert_eq!(after.schema_version, 23);
+    assert_eq!(after.seaql_migration_count, 12);
     assert_eq!(after.counts["image_focus_regions"], 0);
     assert_eq!(after.indexes.len(), 29);
 }
@@ -3065,8 +3195,8 @@ fn schema_v15_paths_migrate_and_rebase_after_input_and_output_move() {
     );
 
     let facts = database_facts(&new_state).unwrap();
-    assert_eq!(facts.schema_version, 22);
-    assert_eq!(facts.seaql_migration_count, 11);
+    assert_eq!(facts.schema_version, 23);
+    assert_eq!(facts.seaql_migration_count, 12);
     assert_eq!(paths.input_root, new_input.to_string_lossy());
     assert_eq!(paths.output_root, new_output.to_string_lossy());
     assert!(
@@ -3138,8 +3268,8 @@ fn schema_v17_adds_normalized_auto_import_tables_without_review_data_loss() {
         .unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 22);
-    assert_eq!(after.seaql_migration_count, 11);
+    assert_eq!(after.schema_version, 23);
+    assert_eq!(after.seaql_migration_count, 12);
     assert_eq!(after.counts["auto_import_devices"], 0);
     assert_eq!(after.counts["auto_import_storages"], 0);
     assert_eq!(after.counts["auto_import_groups"], 0);
@@ -3178,8 +3308,8 @@ fn schema_v18_splits_contrast_from_clarity_without_losing_old_edits() {
     assert_eq!(detailed.retouch_base.clarity, 15.0);
 
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 22);
-    assert_eq!(after.seaql_migration_count, 11);
+    assert_eq!(after.schema_version, 23);
+    assert_eq!(after.seaql_migration_count, 12);
 }
 
 #[test]
@@ -3201,8 +3331,8 @@ fn schema_v20_adds_diffusion_settings_without_losing_review_data() {
         serde_json::to_value(migrated_pre_diffusion_store(persisted_store(store))).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 22);
-    assert_eq!(after.seaql_migration_count, 11);
+    assert_eq!(after.schema_version, 23);
+    assert_eq!(after.seaql_migration_count, 12);
     assert_eq!(after.counts["profile_diffusion_settings"], 0);
     assert_eq!(after.counts["image_profile_diffusion_settings"], 0);
     assert_eq!(after.indexes.len(), 29);
@@ -3229,8 +3359,8 @@ fn schema_v21_adds_neutral_diffusion_parameters_without_losing_settings() {
         serde_json::to_value(expected).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 22);
-    assert_eq!(after.seaql_migration_count, 11);
+    assert_eq!(after.schema_version, 23);
+    assert_eq!(after.seaql_migration_count, 12);
     assert!(after.has_diffusion_parameter_columns);
     assert_eq!(after.counts["profile_diffusion_settings"], 1);
     assert_eq!(after.counts["image_profile_diffusion_settings"], 1);
@@ -4018,6 +4148,7 @@ fn base_render_done_triggers_pending_retouch_without_marking_done() {
         render_key: Some("retouch-key".to_string()),
         processing_key: Some(review_render_processing_key(0).to_string()),
         dcp_profile_filename: None,
+        lcp_profile_filename: None,
         width: None,
         height: None,
         updated_at: now_string(),
@@ -5912,6 +6043,7 @@ fn publish_flat_album_filters_rating_label_and_tag() {
             render_key: None,
             processing_key: Some(review_render_processing_key(0).to_string()),
             dcp_profile_filename: None,
+            lcp_profile_filename: None,
             width: None,
             height: None,
             updated_at: now_string(),
@@ -5974,6 +6106,7 @@ fn publish_flat_album_suffixes_non_default_profiles() {
                 render_key: None,
                 processing_key: Some(review_render_processing_key(0).to_string()),
                 dcp_profile_filename: None,
+                lcp_profile_filename: None,
                 width: None,
                 height: None,
                 updated_at: now_string(),
@@ -5990,6 +6123,7 @@ fn publish_flat_album_suffixes_non_default_profiles() {
                 render_key: None,
                 processing_key: Some(review_render_processing_key(1).to_string()),
                 dcp_profile_filename: None,
+                lcp_profile_filename: None,
                 width: None,
                 height: None,
                 updated_at: now_string(),
@@ -6051,6 +6185,7 @@ fn publish_store_reports_realtime_progress() {
                 render_key: None,
                 processing_key: Some(review_render_processing_key(0).to_string()),
                 dcp_profile_filename: None,
+                lcp_profile_filename: None,
                 width: None,
                 height: None,
                 updated_at: now_string(),
@@ -6067,6 +6202,7 @@ fn publish_store_reports_realtime_progress() {
                 render_key: None,
                 processing_key: Some(review_render_processing_key(1).to_string()),
                 dcp_profile_filename: None,
+                lcp_profile_filename: None,
                 width: None,
                 height: None,
                 updated_at: now_string(),

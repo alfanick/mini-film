@@ -739,6 +739,7 @@ fn profile_render_row(
         updated_at: render.updated_at.clone(),
         processing_key: render.processing_key.clone(),
         dcp_profile_filename: render.dcp_profile_filename.clone(),
+        lcp_profile_filename: render.lcp_profile_filename.clone(),
     })
 }
 

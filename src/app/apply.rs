@@ -24,6 +24,7 @@ use crate::app::export::{
     add_convert_thread_limit, finalize_auto_oriented_output_with_retouch,
     finalize_output_with_retouch, output_ext, validate_export_options, validate_output_format,
 };
+use crate::app::lcp::{ResolvedLensCorrection, resolve_lens_correction};
 use crate::app::pp3::{
     write_rawtherapee_auto_matched_curve_profile, write_rawtherapee_color_noise_profile,
     write_rawtherapee_dcp_profile, write_rawtherapee_disable_sharpening_profile,
@@ -104,6 +105,7 @@ pub(crate) struct ApplyOutcome {
     pub(crate) source_path: PathBuf,
     pub(crate) replacement: Option<RawSourceReplacement>,
     pub(crate) dcp_profile_filename: Option<String>,
+    pub(crate) lcp_profile_filename: Option<String>,
 }
 
 pub(crate) struct RawTherapeeProfileOptions<'a> {
@@ -113,6 +115,7 @@ pub(crate) struct RawTherapeeProfileOptions<'a> {
     pub(crate) bw_filter: BwFilter,
     pub(crate) color_noise_iso_threshold: u32,
     pub(crate) lens_corrections: LensCorrections,
+    pub(crate) lens_correction: &'a ResolvedLensCorrection,
     pub(crate) dcp_profile: Option<&'a DcpProfile>,
 }
 
@@ -151,9 +154,6 @@ pub(crate) fn run_apply(args: ApplyArgs) -> Result<()> {
         .as_deref()
         .is_some_and(|profile| !profile.trim().is_empty());
     if is_rendered_input_file(&args.raw) && !explicit_profile {
-        if args.lens_corrections.is_enabled() {
-            bail!("--lens-corrections is only supported for RAW inputs");
-        }
         if args.grain.is_some() || args.grain_preset.is_some() {
             bail!("--grain and --grain-preset require --profile for JPEG/HEIC/TIFF inputs");
         }
@@ -384,6 +384,12 @@ pub(crate) fn apply_resolved(
     let dcp_profile = raw_input
         .then(|| resolve_dcp_profile(&canonical_input, job.dng_fallback))
         .flatten();
+    let lens_correction = resolve_lens_correction(
+        &canonical_input,
+        job.dng_fallback,
+        job.lcp_root,
+        job.lens_corrections,
+    );
 
     let grain_enabled = !job.no_grain && resolved.grain.is_enabled();
     let output_ext = output_ext(job.output)?;
@@ -410,6 +416,7 @@ pub(crate) fn apply_resolved(
             bw_filter: job.bw_filter,
             color_noise_iso_threshold: job.color_noise_iso_threshold,
             lens_corrections: job.lens_corrections,
+            lens_correction: &lens_correction,
             dcp_profile: dcp_profile.as_ref(),
         },
         resolved,
@@ -648,6 +655,9 @@ pub(crate) fn apply_resolved(
         source_path: raw_source.active().to_path_buf(),
         replacement: raw_source.replacement(),
         dcp_profile_filename: dcp_profile.map(|profile| profile.filename),
+        lcp_profile_filename: lens_correction
+            .lcp_profile()
+            .map(|profile| profile.filename.clone()),
     })
 }
 
@@ -864,17 +874,23 @@ pub(crate) fn rawtherapee_profiles_for_input(
         return Ok(profiles);
     }
 
+    if !is_raw_input_file(options.input) {
+        return with_auto_matched_curve_profile(&profiles, temp_dir);
+    }
+
     let profiles = with_optional_color_noise_profile(
         options.input,
         &profiles,
         temp_dir,
         options.color_noise_iso_threshold,
     )?;
-    let profiles =
-        with_optional_lens_corrections_profile(&profiles, temp_dir, options.lens_corrections)?;
-    if is_raw_input_file(options.input)
-        && let Some(dcp_profile) = options.dcp_profile
-    {
+    let profiles = with_optional_lens_corrections_profile(
+        &profiles,
+        temp_dir,
+        options.lens_corrections,
+        options.lens_correction,
+    )?;
+    if let Some(dcp_profile) = options.dcp_profile {
         let mut profiles = profiles;
         profiles.push(write_rawtherapee_dcp_profile(
             &temp_dir.join("adobe-dcp.pp3"),
@@ -964,11 +980,13 @@ fn with_optional_lens_corrections_profile(
     base_profiles: &[PathBuf],
     temp_dir: &Path,
     lens_corrections: LensCorrections,
+    lens_correction: &ResolvedLensCorrection,
 ) -> Result<Vec<PathBuf>> {
     let mut profiles = Vec::from(base_profiles);
     if let Some(path) = write_rawtherapee_lens_corrections_profile(
         &temp_dir.join("lens-corrections.pp3"),
         lens_corrections,
+        lens_correction,
     )? {
         profiles.push(path);
     }
@@ -1178,6 +1196,7 @@ mod tests {
                     bw_filter: BwFilter::None,
                     color_noise_iso_threshold: 0,
                     lens_corrections: LensCorrections::default(),
+                    lens_correction: &ResolvedLensCorrection::Disabled,
                     dcp_profile: None,
                 },
                 &resolved,
@@ -1203,6 +1222,7 @@ mod tests {
                 bw_filter: BwFilter::None,
                 color_noise_iso_threshold: 0,
                 lens_corrections: LensCorrections::default(),
+                lens_correction: &ResolvedLensCorrection::Disabled,
                 dcp_profile: None,
             },
             &resolved,
@@ -1221,6 +1241,7 @@ mod tests {
                 bw_filter: BwFilter::None,
                 color_noise_iso_threshold: 0,
                 lens_corrections: LensCorrections::default(),
+                lens_correction: &ResolvedLensCorrection::Disabled,
                 dcp_profile: None,
             },
             &resolved,
@@ -1240,6 +1261,11 @@ mod tests {
             filename: "Nikon Z 7 2 Adobe Standard.dcp".to_string(),
             fingerprint: "test".to_string(),
         };
+        let lens_correction = ResolvedLensCorrection::AdobeLcp(crate::app::lcp::LcpProfile {
+            path: temp.path().join("Nikon lens - RAW.lcp"),
+            filename: "Nikon lens - RAW.lcp".to_string(),
+            fingerprint: "lens-test".to_string(),
+        });
         let resolved = resolved_profile(GrainSettings::default(), None);
 
         let raw_profiles = rawtherapee_profiles_for_input(
@@ -1249,7 +1275,8 @@ mod tests {
                 retouch_white_balance: RetouchWhiteBalance::default(),
                 bw_filter: BwFilter::None,
                 color_noise_iso_threshold: 0,
-                lens_corrections: LensCorrections::default(),
+                lens_corrections: LensCorrections::all(),
+                lens_correction: &lens_correction,
                 dcp_profile: Some(&dcp_profile),
             },
             &resolved,
@@ -1261,6 +1288,9 @@ mod tests {
         }));
         assert!(raw_profiles.iter().all(|profile| {
             profile.file_name().and_then(|name| name.to_str()) != Some("auto-matched-curve.pp3")
+        }));
+        assert!(raw_profiles.iter().any(|profile| {
+            profile.file_name().and_then(|name| name.to_str()) == Some("lens-corrections.pp3")
         }));
         let dcp_text = fs::read_to_string(raw_profiles.last().unwrap()).unwrap();
         assert!(dcp_text.contains(&format!("InputProfile=file:{}", dcp_path.display())));
@@ -1275,7 +1305,8 @@ mod tests {
                     retouch_white_balance: RetouchWhiteBalance::default(),
                     bw_filter: BwFilter::None,
                     color_noise_iso_threshold: 0,
-                    lens_corrections: LensCorrections::default(),
+                    lens_corrections: LensCorrections::all(),
+                    lens_correction: &lens_correction,
                     dcp_profile: Some(&dcp_profile),
                 },
                 &resolved,
@@ -1284,6 +1315,9 @@ mod tests {
             .unwrap();
             assert!(profiles.iter().all(|profile| {
                 profile.file_name().and_then(|name| name.to_str()) != Some("adobe-dcp.pp3")
+            }));
+            assert!(profiles.iter().all(|profile| {
+                profile.file_name().and_then(|name| name.to_str()) != Some("lens-corrections.pp3")
             }));
         }
     }

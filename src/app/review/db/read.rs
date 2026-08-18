@@ -35,6 +35,7 @@ where
         normalize_grain_mpix: default_review_normalize_grain_mpix(),
         render_export: ExportOptions::default(),
         render_diffusion: DiffusionSettings::default(),
+        raw_render_config: ReviewRawRenderConfig::default(),
     }))
 }
 
@@ -898,6 +899,7 @@ where
             render_key: row.render_key,
             processing_key: row.processing_key,
             dcp_profile_filename: row.dcp_profile_filename,
+            lcp_profile_filename: row.lcp_profile_filename,
             width: optional_i64(row.width, "profile render width", i64_to_u32)?,
             height: optional_i64(row.height, "profile render height", i64_to_u32)?,
             updated_at: row.updated_at,
