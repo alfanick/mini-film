@@ -522,7 +522,7 @@ fn resolve_grain_normalization(
 }
 
 fn resolve_lens_corrections(requested: Option<LensCorrections>) -> LensCorrections {
-    requested.unwrap_or_else(LensCorrections::all)
+    requested.unwrap_or_default()
 }
 
 fn args_with_default_command(mut args: Vec<String>) -> Vec<String> {
@@ -774,8 +774,12 @@ mod tests {
     }
 
     #[test]
-    fn lens_corrections_resolve_enabled_by_default_and_explicit_off() {
-        assert_eq!(resolve_lens_corrections(None), LensCorrections::all());
+    fn lens_corrections_are_opt_in() {
+        assert_eq!(resolve_lens_corrections(None), LensCorrections::none());
+        assert_eq!(
+            resolve_lens_corrections(Some(LensCorrections::all())),
+            LensCorrections::all()
+        );
         assert_eq!(
             resolve_lens_corrections(Some(LensCorrections::none())),
             LensCorrections::none()

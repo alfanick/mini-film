@@ -1,8 +1,8 @@
 use std::{
     cmp::Ordering,
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet},
     fs::{self, File},
-    io::{BufReader, Read, Seek, SeekFrom},
+    io::{BufReader, Read},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock},
     time::SystemTime,
@@ -19,11 +19,6 @@ use crate::{
 };
 
 const UNIQUE_CAMERA_MODEL: Tag = Tag(ExifContext::Tiff, 0xc614);
-const OPCODE_LIST_3_TAG: u16 = 0xc74e;
-const SUB_IFDS_TAG: u16 = 0x014a;
-const MAX_TIFF_IFDS: usize = 64;
-const MAX_TIFF_ENTRIES: usize = 4096;
-const MAX_OPCODE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LcpProfile {
@@ -42,7 +37,6 @@ impl LcpProfile {
 pub(crate) enum ResolvedLensCorrection {
     Disabled,
     AdobeLcp(LcpProfile),
-    DngMetadata { fingerprint: String },
     LensfunAuto,
 }
 
@@ -51,7 +45,6 @@ impl ResolvedLensCorrection {
         let source = match self {
             Self::Disabled => "disabled".to_string(),
             Self::AdobeLcp(profile) => profile.cache_identity(),
-            Self::DngMetadata { fingerprint } => format!("dng-metadata-{fingerprint}"),
             Self::LensfunAuto => "lensfun-auto".to_string(),
         };
         format!(
@@ -154,17 +147,6 @@ impl PartialOrd for CandidateRank {
     }
 }
 
-#[derive(Clone, Copy)]
-enum TiffByteOrder {
-    Little,
-    Big,
-}
-
-#[derive(Debug)]
-struct DngCorrectionInfo {
-    fingerprint: String,
-}
-
 static CATALOG_CACHE: OnceLock<Mutex<HashMap<PathBuf, CachedCatalog>>> = OnceLock::new();
 
 pub(crate) fn resolve_lcp_profile(
@@ -201,11 +183,6 @@ pub(crate) fn resolve_lens_correction(
     }
     if let Some(profile) = resolve_lcp_profile(input, dng_fallback, lcp_root) {
         return ResolvedLensCorrection::AdobeLcp(profile);
-    }
-    if let Some(info) = dng_correction_info(input) {
-        return ResolvedLensCorrection::DngMetadata {
-            fingerprint: info.fingerprint,
-        };
     }
     ResolvedLensCorrection::LensfunAuto
 }
@@ -850,204 +827,6 @@ fn sha1_file(path: &Path) -> Option<String> {
     Some(hex_digest(hasher.finalize().as_slice()))
 }
 
-fn dng_correction_info(path: &Path) -> Option<DngCorrectionInfo> {
-    if !path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("dng"))
-    {
-        return None;
-    }
-    let payload = read_tiff_tag(path, OPCODE_LIST_3_TAG)?;
-    supported_opcode_list_3(&payload)?;
-    let fingerprint = hex_digest(Sha1::digest(&payload).as_slice());
-    Some(DngCorrectionInfo { fingerprint })
-}
-
-fn supported_opcode_list_3(payload: &[u8]) -> Option<(bool, bool)> {
-    let count = usize::try_from(read_be_u32(payload, 0)?).ok()?;
-    if count > 1024 {
-        return None;
-    }
-    let mut offset = 4usize;
-    let mut distortion_and_ca = false;
-    let mut vignette = false;
-    for _ in 0..count {
-        let opcode = read_be_u32(payload, offset)?;
-        let parameter_size =
-            usize::try_from(read_be_u32(payload, offset.checked_add(12)?)?).ok()?;
-        offset = offset.checked_add(16)?;
-        let parameters = payload.get(offset..offset.checked_add(parameter_size)?)?;
-        match opcode {
-            1 => {
-                let planes = usize::try_from(read_be_u32(parameters, 0)?).ok()?;
-                if matches!(planes, 1 | 3) {
-                    let required = 4usize
-                        .checked_add(planes.checked_mul(48)?)?
-                        .checked_add(16)?;
-                    if parameters.len() >= required {
-                        distortion_and_ca = true;
-                    }
-                }
-            }
-            3 if parameters.len() >= 56 => vignette = true,
-            _ => {}
-        }
-        offset = offset.checked_add(parameter_size)?;
-    }
-    (distortion_and_ca || vignette).then_some((distortion_and_ca, vignette))
-}
-
-fn read_tiff_tag(path: &Path, wanted_tag: u16) -> Option<Vec<u8>> {
-    let mut file = File::open(path).ok()?;
-    let file_len = file.metadata().ok()?.len();
-    let mut header = [0u8; 8];
-    file.read_exact(&mut header).ok()?;
-    let order = match &header[..2] {
-        b"II" => TiffByteOrder::Little,
-        b"MM" => TiffByteOrder::Big,
-        _ => return None,
-    };
-    if tiff_u16(&header, 2, order)? != 42 {
-        return None;
-    }
-    let first_ifd = u64::from(tiff_u32(&header, 4, order)?);
-    let mut pending = VecDeque::from([first_ifd]);
-    let mut visited = HashSet::new();
-    while let Some(ifd_offset) = pending.pop_front() {
-        if ifd_offset == 0 || ifd_offset >= file_len || !visited.insert(ifd_offset) {
-            continue;
-        }
-        if visited.len() > MAX_TIFF_IFDS {
-            return None;
-        }
-        let count = usize::from(read_tiff_u16_at(&mut file, ifd_offset, order)?);
-        if count > MAX_TIFF_ENTRIES {
-            return None;
-        }
-        let entries_start = ifd_offset.checked_add(2)?;
-        let mut sub_ifds = Vec::new();
-        for index in 0..count {
-            let entry_offset =
-                entries_start.checked_add(u64::try_from(index.checked_mul(12)?).ok()?)?;
-            let entry = read_at(&mut file, entry_offset, 12)?;
-            let tag = tiff_u16(&entry, 0, order)?;
-            let field_type = tiff_u16(&entry, 2, order)?;
-            let field_count = usize::try_from(tiff_u32(&entry, 4, order)?).ok()?;
-            if tag == wanted_tag {
-                let payload = read_tiff_value(
-                    &mut file,
-                    &entry,
-                    entry_offset,
-                    field_type,
-                    field_count,
-                    order,
-                    file_len,
-                )?;
-                if payload.len() <= MAX_OPCODE_BYTES {
-                    return Some(payload);
-                }
-                return None;
-            }
-            if tag == SUB_IFDS_TAG && field_type == 4 {
-                let bytes = read_tiff_value(
-                    &mut file,
-                    &entry,
-                    entry_offset,
-                    field_type,
-                    field_count,
-                    order,
-                    file_len,
-                )?;
-                for offset in (0..bytes.len()).step_by(4) {
-                    if let Some(sub_ifd) = tiff_u32(&bytes, offset, order) {
-                        sub_ifds.push(u64::from(sub_ifd));
-                    }
-                }
-            }
-        }
-        let next_offset_position =
-            entries_start.checked_add(u64::try_from(count.checked_mul(12)?).ok()?)?;
-        let next_ifd = u64::from(read_tiff_u32_at(&mut file, next_offset_position, order)?);
-        for sub_ifd in sub_ifds.into_iter().rev() {
-            pending.push_front(sub_ifd);
-        }
-        if next_ifd != 0 {
-            pending.push_back(next_ifd);
-        }
-    }
-    None
-}
-
-fn read_tiff_value(
-    file: &mut File,
-    entry: &[u8],
-    entry_offset: u64,
-    field_type: u16,
-    count: usize,
-    order: TiffByteOrder,
-    file_len: u64,
-) -> Option<Vec<u8>> {
-    let unit_size = match field_type {
-        1 | 2 | 6 | 7 => 1usize,
-        3 | 8 => 2,
-        4 | 9 | 11 => 4,
-        5 | 10 | 12 => 8,
-        _ => return None,
-    };
-    let length = count.checked_mul(unit_size)?;
-    if length > MAX_OPCODE_BYTES {
-        return None;
-    }
-    if length <= 4 {
-        return Some(entry.get(8..8 + length)?.to_vec());
-    }
-    let offset = u64::from(tiff_u32(entry, 8, order)?);
-    let end = offset.checked_add(u64::try_from(length).ok()?)?;
-    if end > file_len || offset == entry_offset {
-        return None;
-    }
-    read_at(file, offset, length)
-}
-
-fn read_at(file: &mut File, offset: u64, length: usize) -> Option<Vec<u8>> {
-    file.seek(SeekFrom::Start(offset)).ok()?;
-    let mut buffer = vec![0u8; length];
-    file.read_exact(&mut buffer).ok()?;
-    Some(buffer)
-}
-
-fn read_tiff_u16_at(file: &mut File, offset: u64, order: TiffByteOrder) -> Option<u16> {
-    let bytes = read_at(file, offset, 2)?;
-    tiff_u16(&bytes, 0, order)
-}
-
-fn read_tiff_u32_at(file: &mut File, offset: u64, order: TiffByteOrder) -> Option<u32> {
-    let bytes = read_at(file, offset, 4)?;
-    tiff_u32(&bytes, 0, order)
-}
-
-fn tiff_u16(bytes: &[u8], offset: usize, order: TiffByteOrder) -> Option<u16> {
-    let value: [u8; 2] = bytes.get(offset..offset.checked_add(2)?)?.try_into().ok()?;
-    Some(match order {
-        TiffByteOrder::Little => u16::from_le_bytes(value),
-        TiffByteOrder::Big => u16::from_be_bytes(value),
-    })
-}
-
-fn tiff_u32(bytes: &[u8], offset: usize, order: TiffByteOrder) -> Option<u32> {
-    let value: [u8; 4] = bytes.get(offset..offset.checked_add(4)?)?.try_into().ok()?;
-    Some(match order {
-        TiffByteOrder::Little => u32::from_le_bytes(value),
-        TiffByteOrder::Big => u32::from_be_bytes(value),
-    })
-}
-
-fn read_be_u32(bytes: &[u8], offset: usize) -> Option<u32> {
-    let value: [u8; 4] = bytes.get(offset..offset.checked_add(4)?)?.try_into().ok()?;
-    Some(u32::from_be_bytes(value))
-}
-
 fn hex_digest(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -1161,34 +940,8 @@ mod tests {
     }
 
     #[test]
-    fn recognizes_only_supported_well_formed_opcode_list_3_entries() {
-        let mut warp = Vec::new();
-        warp.extend_from_slice(&1u32.to_be_bytes());
-        warp.extend_from_slice(&1u32.to_be_bytes());
-        warp.extend_from_slice(&0x0103_0000u32.to_be_bytes());
-        warp.extend_from_slice(&0u32.to_be_bytes());
-        warp.extend_from_slice(&68u32.to_be_bytes());
-        warp.extend_from_slice(&1u32.to_be_bytes());
-        warp.resize(4 + 16 + 68, 0);
-        assert_eq!(supported_opcode_list_3(&warp), Some((true, false)));
-
-        let mut unsupported = Vec::new();
-        unsupported.extend_from_slice(&1u32.to_be_bytes());
-        unsupported.extend_from_slice(&9u32.to_be_bytes());
-        unsupported.extend_from_slice(&0x0103_0000u32.to_be_bytes());
-        unsupported.extend_from_slice(&0u32.to_be_bytes());
-        unsupported.extend_from_slice(&0u32.to_be_bytes());
-        assert_eq!(supported_opcode_list_3(&unsupported), None);
-
-        warp.pop();
-        assert_eq!(supported_opcode_list_3(&warp), None);
-    }
-
-    #[test]
     fn cache_identity_covers_source_and_requested_components() {
-        let source = ResolvedLensCorrection::DngMetadata {
-            fingerprint: "abc".to_string(),
-        };
+        let source = ResolvedLensCorrection::LensfunAuto;
         let all = source.cache_identity(LensCorrections::all());
         let distortion = source.cache_identity(LensCorrections {
             distortion: true,
@@ -1196,6 +949,25 @@ mod tests {
             vignetting: false,
         });
         assert_ne!(all, distortion);
-        assert!(all.contains("dng-metadata-abc"));
+        assert!(all.contains("lensfun-auto"));
+    }
+
+    #[test]
+    fn enabled_dng_without_matching_lcp_falls_back_to_lensfun() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = temp.path().join("frame.dng");
+        let catalog = temp.path().join("empty-lcp-catalog");
+        fs::write(&input, b"not a TIFF").unwrap();
+        fs::create_dir(&catalog).unwrap();
+
+        assert_eq!(
+            resolve_lens_correction(
+                &input,
+                &DngFallbackConfig::default(),
+                Some(&catalog),
+                LensCorrections::all(),
+            ),
+            ResolvedLensCorrection::LensfunAuto
+        );
     }
 }

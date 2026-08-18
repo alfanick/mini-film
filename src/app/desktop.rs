@@ -180,7 +180,7 @@ mod enabled {
                 normalize_grain_mpix: Some(mini_film::DEFAULT_GRAIN_REFERENCE_MPIX),
                 progressive_jpeg: false,
                 no_grain: false,
-                lens_corrections: true,
+                lens_corrections: false,
                 codex: false,
                 codex_tags: true,
                 codex_note: false,

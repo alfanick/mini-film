@@ -19,7 +19,7 @@ const HIGH_COLOR_NOISE_CHROMA: u16 = 18;
 const VERY_HIGH_COLOR_NOISE_LUMA: u16 = 44;
 const VERY_HIGH_COLOR_NOISE_LDETAIL: u16 = 64;
 const VERY_HIGH_COLOR_NOISE_CHROMA: u16 = 28;
-pub(crate) const RAW_RENDER_PIPELINE_KEY: &str = "raw-render-v8-adobe-lcp";
+pub(crate) const RAW_RENDER_PIPELINE_KEY: &str = "raw-render-v9-lcp-opt-in";
 
 use crate::app::lcp::ResolvedLensCorrection;
 use crate::app::profile::{ProfileInfo, combined_contrast_clarity, inspect_profile};
@@ -295,9 +295,6 @@ fn rawtherapee_lens_corrections_profile_text(
             let _ = writeln!(out, "LcMode=lcp");
             let _ = writeln!(out, "LCPFile={}", profile.path.display());
         }
-        ResolvedLensCorrection::DngMetadata { .. } => {
-            let _ = writeln!(out, "LcMode=metadata");
-        }
         ResolvedLensCorrection::LensfunAuto => {
             let _ = writeln!(out, "LcMode=lfauto");
         }
@@ -436,22 +433,10 @@ mod tests {
         );
 
         assert!(text.contains("[LensProfile]"));
+        assert!(text.contains("LcMode=lfauto"));
         assert!(text.contains("UseDistortion=true"));
         assert!(text.contains("UseCA=false"));
         assert!(text.contains("UseVignette=true"));
-    }
-
-    #[test]
-    fn lens_corrections_profile_uses_dng_metadata_mode() {
-        let text = rawtherapee_lens_corrections_profile_text(
-            &crate::cli::LensCorrections::all(),
-            &ResolvedLensCorrection::DngMetadata {
-                fingerprint: "opcode-list-3".to_string(),
-            },
-        );
-
-        assert!(text.contains("LcMode=metadata"));
-        assert!(!text.contains("LCPFile="));
     }
 
     #[test]

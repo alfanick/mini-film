@@ -249,8 +249,9 @@ pub(crate) enum CommandKind {
         #[arg(long, default_value_t = 1600)]
         color_noise_iso_threshold: u32,
 
-        /// Configure RAW lens corrections; enabled for all supported items by default.
+        /// Enable RAW lens corrections.
         ///
+        /// Omit this option to leave lens corrections disabled.
         /// Without an explicit value, enables distortion, ca, and vignetting.
         /// Optionally pass a comma-separated list of:
         /// `distortion`, `ca`, `vignetting`, or `all`; pass `off` or `none` to disable.
@@ -364,8 +365,7 @@ pub(crate) enum CommandKind {
         #[arg(long, default_value_t = 1600)]
         color_noise_iso_threshold: u32,
 
-        /// Configure RAW panorama lens corrections; enabled by default.
-        /// Pass `off` or `none` to disable.
+        /// Enable RAW panorama lens corrections. Omit to leave them disabled.
         #[arg(long, num_args = 0..=1, value_parser = parse_lens_corrections_arg, default_missing_value = "all")]
         lens_corrections: Option<LensCorrections>,
 
@@ -437,8 +437,9 @@ pub(crate) enum CommandKind {
         #[arg(long, default_value_t = 1600)]
         color_noise_iso_threshold: u32,
 
-        /// Configure RAW lens corrections; enabled for all supported items by default.
+        /// Enable RAW lens corrections.
         ///
+        /// Omit this option to leave lens corrections disabled.
         /// Without an explicit value, enables distortion, ca, and vignetting.
         /// Optionally pass a comma-separated list of:
         /// `distortion`, `ca`, `vignetting`, or `all`; pass `off` or `none` to disable.
@@ -588,8 +589,9 @@ pub(crate) enum CommandKind {
         #[arg(long, default_value_t = 1600)]
         color_noise_iso_threshold: u32,
 
-        /// Configure RAW lens corrections; enabled for all supported items by default.
+        /// Enable RAW lens corrections.
         ///
+        /// Omit this option to leave lens corrections disabled.
         /// Without an explicit value, enables distortion, ca, and vignetting.
         /// Optionally pass a comma-separated list of:
         /// `distortion`, `ca`, `vignetting`, or `all`; pass `off` or `none` to disable.
@@ -706,8 +708,9 @@ pub(crate) enum CommandKind {
         #[arg(long, default_value_t = 1600)]
         color_noise_iso_threshold: u32,
 
-        /// Configure RAW lens corrections; enabled for all supported items by default.
+        /// Enable RAW lens corrections.
         ///
+        /// Omit this option to leave lens corrections disabled.
         /// Without an explicit value, enables distortion, ca, and vignetting.
         /// Optionally pass a comma-separated list of:
         /// `distortion`, `ca`, `vignetting`, or `all`; pass `off` or `none` to disable.
@@ -995,8 +998,7 @@ pub(crate) enum CommandKind {
         #[arg(long, default_value_t = 1600)]
         color_noise_iso_threshold: u32,
 
-        /// Configure rerendered-RAW lens corrections; enabled by default.
-        /// Pass `off` or `none` to disable.
+        /// Enable rerendered-RAW lens corrections. Omit to leave them disabled.
         #[arg(long, num_args = 0..=1, value_parser = parse_lens_corrections_arg, default_missing_value = "all")]
         lens_corrections: Option<LensCorrections>,
 
