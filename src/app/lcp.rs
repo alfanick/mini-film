@@ -256,7 +256,7 @@ fn read_catalog_entry(path: &Path) -> Option<LcpCatalogEntry> {
             }
             Event::Empty(event) => collect_lcp_attributes(&event, &mut values)?,
             Event::Text(event) => {
-                let decoded = event.decode().ok()?;
+                let decoded = event.xml_content(XmlVersion::Implicit1_0);
                 let value = unescape(&decoded).ok()?.trim().to_string();
                 if !value.is_empty() {
                     collect_lcp_text(&stack, &value, &mut values);
@@ -808,9 +808,8 @@ fn push_f64(values: &mut Vec<f64>, value: &str) {
     }
 }
 
-fn local_xml_name(name: &[u8]) -> String {
-    let name = name.rsplit(|byte| *byte == b':').next().unwrap_or(name);
-    String::from_utf8_lossy(name).into_owned()
+fn local_xml_name(name: &str) -> String {
+    name.rsplit(':').next().unwrap_or(name).to_string()
 }
 
 fn sha1_file(path: &Path) -> Option<String> {

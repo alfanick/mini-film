@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::{fs::File, io::Read, path::Path};
 
 use anyhow::{Context, Result, anyhow};
@@ -50,7 +49,7 @@ pub fn extract_film_recipe(path: &Path) -> Result<XmpFilmRecipe> {
     loop {
         match reader.read_event()? {
             Event::Start(e) => {
-                let tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                let tag = e.name().as_ref().to_string();
                 if tag == "crs:Look" {
                     inside_look = true;
                 }
@@ -71,7 +70,7 @@ pub fn extract_film_recipe(path: &Path) -> Result<XmpFilmRecipe> {
 
                 for attr in e.attributes() {
                     let attr = attr?;
-                    let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
+                    let key = attr.key.as_ref().to_string();
                     let value = attr.normalized_value(XmlVersion::Implicit1_0)?.into_owned();
 
                     if key == "crs:RGBTable" {
@@ -104,11 +103,11 @@ pub fn extract_film_recipe(path: &Path) -> Result<XmpFilmRecipe> {
                 }
             }
             Event::Empty(e) => {
-                let tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                let tag = e.name().as_ref().to_string();
                 let empty_inside_look = inside_look || tag == "crs:Look";
                 for attr in e.attributes() {
                     let attr = attr?;
-                    let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
+                    let key = attr.key.as_ref().to_string();
                     let value = attr.normalized_value(XmlVersion::Implicit1_0)?.into_owned();
 
                     if key == "crs:RGBTable" {
@@ -141,7 +140,7 @@ pub fn extract_film_recipe(path: &Path) -> Result<XmpFilmRecipe> {
                 }
             }
             Event::Text(e) => {
-                let text = e.decode().map(Cow::into_owned)?;
+                let text = e.xml_content(XmlVersion::Implicit1_0).into_owned();
                 match text_target {
                     _ if curve_target.is_some() && !text.is_empty() => {
                         if let Some(point) = parse_curve_point(&text) {
@@ -158,7 +157,7 @@ pub fn extract_film_recipe(path: &Path) -> Result<XmpFilmRecipe> {
                 }
             }
             Event::End(e) => {
-                let tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                let tag = e.name().as_ref().to_string();
                 if tag == "crs:Name" || tag == "crs:Group" {
                     text_target = None;
                 } else if tag == "crs:Look" {
