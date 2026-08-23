@@ -2954,7 +2954,7 @@ function ImageList({ images, bursts, currentId, onSelect, onToggleBurst }) {
       .filter((imageId) => !burstByImageId.has(imageId))
       .map((imageId) => imageById.get(imageId))
       .filter(Boolean);
-    if (members.length === 0) continue;
+    if (members.length < 2) continue;
     const visibleBurst = {
       ...burst,
       members,

@@ -687,9 +687,10 @@ converted DNGs and paired camera JPEGs remain part of the same logical series.
 The stack shows the current member while navigating through a collapsed series,
 and its chevron reveals the individual pictures. Under a rating filter, the
 stack count shows visible versus total pictures and expansion lists only the
-visible members. Expansion is shared between connected browsers and persisted
-in the review catalog. Ratings, profiles, retouching, rendering, and publishing
-remain independent for every picture in the stack.
+visible members. When only one member remains visible, it appears as a normal
+picture row without stack controls. Expansion is shared between connected
+browsers and persisted in the review catalog. Ratings, profiles, retouching,
+rendering, and publishing remain independent for every picture in the stack.
 
 Multiple browsers can use the review page at the same time. The current picture
 and minimum rating filter are server-owned shared state, so every browser shows
