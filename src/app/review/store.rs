@@ -12,7 +12,7 @@ const LEGACY_BURST_MAX_SHUTTER_GAP: u64 = 64;
 const LEGACY_BURST_MAX_CAPTURE_GAP_SECONDS: i64 = 5;
 
 impl ReviewStore {
-    const EXIF_SCHEMA_VERSION: u32 = 12;
+    const EXIF_SCHEMA_VERSION: u32 = 13;
 
     pub(super) fn new(profiles: Vec<ReviewProfile>) -> Self {
         Self {
@@ -1331,6 +1331,7 @@ fn refresh_image_exif_data(image: &mut ReviewImage, force: bool) {
             image.exif.image_height = refreshed.image_height.or(image.exif.image_height);
         }
         merge_refreshed_focus_data(&mut image.exif, &refreshed, force);
+        merge_refreshed_capture_data(&mut image.exif, &refreshed, force);
         if image.exif.focal_length.is_none() {
             image.exif.focal_length = refreshed.focal_length;
         }
@@ -1408,7 +1409,6 @@ fn refresh_image_exif_data(image: &mut ReviewImage, force: bool) {
         if image.exif.active_d_lighting.is_none() {
             image.exif.active_d_lighting = refreshed.active_d_lighting;
         }
-        image.exif.capture_timestamp = image.exif.capture_timestamp.or(refreshed.capture_timestamp);
         image.exif.rating = image.exif.rating.or(refreshed.rating);
     }
     if image.rating_source == ReviewMetadataSource::Default
@@ -1445,6 +1445,20 @@ fn merge_refreshed_focus_data(
         existing.focus_frame_width = refreshed.focus_frame_width;
         existing.focus_frame_height = refreshed.focus_frame_height;
         existing.focus_regions.clone_from(&refreshed.focus_regions);
+    }
+}
+
+fn merge_refreshed_capture_data(
+    existing: &mut GalleryExifData,
+    refreshed: &GalleryExifData,
+    force: bool,
+) {
+    existing.capture_timestamp = existing.capture_timestamp.or(refreshed.capture_timestamp);
+    if force || existing.capture_subsecond.is_none() {
+        existing.capture_subsecond = refreshed
+            .capture_subsecond
+            .clone()
+            .or(existing.capture_subsecond.take());
     }
 }
 
@@ -2019,5 +2033,42 @@ mod tests {
         assert_eq!(existing.focus_frame_width, Some(8256));
         assert_eq!(existing.focus_frame_height, Some(5504));
         assert_eq!(existing.focus_regions, refreshed.focus_regions);
+    }
+
+    #[test]
+    fn exif_refresh_fills_missing_capture_subsecond_without_replacing_timestamp() {
+        let mut existing = GalleryExifData {
+            capture_timestamp: Some(100),
+            ..GalleryExifData::default()
+        };
+        let refreshed = GalleryExifData {
+            capture_timestamp: Some(101),
+            capture_subsecond: Some("07".to_string()),
+            ..GalleryExifData::default()
+        };
+
+        merge_refreshed_capture_data(&mut existing, &refreshed, false);
+
+        assert_eq!(existing.capture_timestamp, Some(100));
+        assert_eq!(existing.capture_subsecond.as_deref(), Some("07"));
+    }
+
+    #[test]
+    fn exif_schema_refresh_replaces_capture_subsecond_but_not_timestamp() {
+        let mut existing = GalleryExifData {
+            capture_timestamp: Some(100),
+            capture_subsecond: Some("03".to_string()),
+            ..GalleryExifData::default()
+        };
+        let refreshed = GalleryExifData {
+            capture_timestamp: Some(101),
+            capture_subsecond: Some("07".to_string()),
+            ..GalleryExifData::default()
+        };
+
+        merge_refreshed_capture_data(&mut existing, &refreshed, true);
+
+        assert_eq!(existing.capture_timestamp, Some(100));
+        assert_eq!(existing.capture_subsecond.as_deref(), Some("07"));
     }
 }

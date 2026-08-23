@@ -685,12 +685,16 @@ picture sidebar when their MakerNote burst identity is available. The grouping
 uses the recorded burst start and shot order rather than capture-time guesses;
 converted DNGs and paired camera JPEGs remain part of the same logical series.
 The stack shows the current member while navigating through a collapsed series,
-and its chevron reveals the individual pictures. Under a rating filter, the
-stack count shows visible versus total pictures and expansion lists only the
-visible members. When only one member remains visible, it appears as a normal
-picture row without stack controls. Expansion is shared between connected
-browsers and persisted in the review catalog. Ratings, profiles, retouching,
-rendering, and publishing remain independent for every picture in the stack.
+and its chevron reveals the individual pictures. The stack and first visible
+member show their normal capture date/time; later visible members show their
+precise elapsed time from that first picture when capture subseconds are
+available. Under a rating filter, the stack count shows visible versus total
+pictures and expansion lists only the visible members, which also becomes the
+elapsed-time anchor. When only one member remains visible, it appears as a
+normal picture row without stack controls. Expansion is shared between
+connected browsers and persisted in the review catalog. Ratings, profiles,
+retouching, rendering, and publishing remain independent for every picture in
+the stack.
 
 Multiple browsers can use the review page at the same time. The current picture
 and minimum rating filter are server-owned shared state, so every browser shows

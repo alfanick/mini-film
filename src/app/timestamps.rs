@@ -73,6 +73,8 @@ pub(crate) struct GalleryExifData {
     #[serde(default)]
     pub(crate) capture_timestamp: Option<i64>,
     #[serde(default)]
+    pub(crate) capture_subsecond: Option<String>,
+    #[serde(default)]
     pub(crate) rating: Option<u8>,
     #[serde(default)]
     pub(crate) file_size_bytes: Option<u64>,
@@ -130,6 +132,7 @@ pub(crate) struct GalleryExifData {
 impl GalleryExifData {
     pub(crate) fn is_empty(&self) -> bool {
         self.capture_timestamp.is_none()
+            && self.capture_subsecond.is_none()
             && self.rating.is_none()
             && self.focal_length.is_none()
             && self.aperture.is_none()
@@ -159,6 +162,7 @@ impl GalleryExifData {
     }
 
     pub(crate) fn sanitize_text_fields(&mut self) {
+        clean_optional_capture_subsecond(&mut self.capture_subsecond);
         clean_optional_exif_text(&mut self.focal_length);
         clean_optional_exif_text(&mut self.aperture);
         clean_optional_exif_text(&mut self.shutter_speed);
@@ -898,6 +902,7 @@ fn extract_gallery_exif_uncached(file: &Path) -> Result<GalleryExifData> {
                 ..GalleryExifData::default()
             };
             if let Some(metadata) = extract_gallery_metadata_with_exiftool(file) {
+                data.capture_subsecond = metadata.capture_subsecond;
                 data.tags = metadata.tags;
                 data.note = metadata.note;
                 data.rating = metadata.rating;
@@ -963,7 +968,9 @@ fn extract_gallery_exif_uncached(file: &Path) -> Result<GalleryExifData> {
     let mut focus_frame_width = None;
     let mut focus_frame_height = None;
     let mut focus_regions = Vec::new();
+    let mut capture_subsecond = None;
     if let Some(metadata) = extract_gallery_metadata_with_exiftool(file) {
+        capture_subsecond = metadata.capture_subsecond;
         tags = metadata.tags;
         rating = metadata.rating;
         exposure_compensation = exposure_compensation.or(metadata.exposure_compensation);
@@ -999,6 +1006,7 @@ fn extract_gallery_exif_uncached(file: &Path) -> Result<GalleryExifData> {
 
     let mut data = GalleryExifData {
         capture_timestamp,
+        capture_subsecond,
         rating,
         file_size_bytes,
         image_width,
@@ -1073,6 +1081,7 @@ fn cache_gallery_exif(cache_key: GalleryExifCacheKey, data: GalleryExifData) {
 
 #[derive(Debug, Default)]
 struct GalleryMetadata {
+    capture_subsecond: Option<String>,
     tags: Vec<String>,
     note: Option<String>,
     rating: Option<u8>,
@@ -1103,6 +1112,7 @@ fn extract_gallery_metadata_with_exiftool(file: &Path) -> Option<GalleryMetadata
         .arg("-q")
         .arg("-q")
         .arg("-j")
+        .arg("-SubSecTimeOriginal")
         .arg("-Subject")
         .arg("-Keywords")
         .arg("-Description")
@@ -1154,6 +1164,7 @@ fn extract_gallery_metadata_with_exiftool(file: &Path) -> Option<GalleryMetadata
 fn gallery_metadata_from_exiftool_json(encoded: &[u8]) -> Option<GalleryMetadata> {
     let mut values = serde_json::from_slice::<Vec<Value>>(encoded).ok()?;
     let object = values.pop()?;
+    let capture_subsecond = json_capture_subsecond_value(object.get("SubSecTimeOriginal"));
     let tags = normalize_gallery_tags(
         json_string_values(object.get("Subject"))
             .into_iter()
@@ -1220,6 +1231,7 @@ fn gallery_metadata_from_exiftool_json(encoded: &[u8]) -> Option<GalleryMetadata
     let image_height = json_u32_value(object.get("ImageHeight"));
     let (focus_frame_width, focus_frame_height, focus_regions) = json_nikon_focus_regions(&object);
     Some(GalleryMetadata {
+        capture_subsecond,
         tags,
         note,
         rating,
@@ -1511,6 +1523,17 @@ fn json_clean_first_string(value: Option<&Value>) -> Option<String> {
     }
 }
 
+fn json_capture_subsecond_value(value: Option<&Value>) -> Option<String> {
+    match value {
+        Some(Value::String(value)) => normalize_capture_subsecond(value),
+        Some(Value::Number(value)) => normalize_capture_subsecond(&value.to_string()),
+        Some(Value::Array(values)) => values
+            .iter()
+            .find_map(|value| json_capture_subsecond_value(Some(value))),
+        _ => None,
+    }
+}
+
 fn json_exposure_compensation_value(value: Option<&Value>) -> Option<String> {
     let value = match value {
         Some(Value::Number(value)) => json_to_exposure_compensation_value(value.as_f64()?),
@@ -1652,6 +1675,18 @@ fn clean_optional_exif_text(value: &mut Option<String>) {
         .take()
         .map(clean_exif_display_text)
         .filter(|value| !value.is_empty());
+}
+
+fn clean_optional_capture_subsecond(value: &mut Option<String>) {
+    *value = value
+        .take()
+        .and_then(|value| normalize_capture_subsecond(&value));
+}
+
+fn normalize_capture_subsecond(value: &str) -> Option<String> {
+    let value = value.trim_matches('\0').trim();
+    (!value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| value.to_string())
 }
 
 fn clean_exif_display_text(value: String) -> String {
@@ -2175,6 +2210,35 @@ mod tests {
         assert_eq!(metadata.camera_serial.as_deref(), Some("6062976"));
         assert_eq!(metadata.nikon_burst_key.as_deref(), Some("modern:102:1780"));
         assert_eq!(metadata.nikon_burst_shot_number, Some(5));
+    }
+
+    #[test]
+    fn gallery_metadata_normalizes_capture_subseconds() {
+        for (encoded, expected) in [
+            (r#"[{"SubSecTimeOriginal":"07"}]"#, Some("07")),
+            (r#"[{"SubSecTimeOriginal":59}]"#, Some("59")),
+            (r#"[{"SubSecTimeOriginal":"5.9"}]"#, None),
+            (r#"[{}]"#, None),
+        ] {
+            let metadata = gallery_metadata_from_exiftool_json(encoded.as_bytes()).unwrap();
+            assert_eq!(metadata.capture_subsecond.as_deref(), expected);
+        }
+    }
+
+    #[test]
+    fn gallery_exif_sanitizes_capture_subseconds() {
+        let mut metadata = GalleryExifData {
+            capture_subsecond: Some(" 007\0".to_string()),
+            ..GalleryExifData::default()
+        };
+        metadata.sanitize_text_fields();
+        assert_eq!(metadata.capture_subsecond.as_deref(), Some("007"));
+        assert!(!metadata.is_empty());
+
+        metadata.capture_subsecond = Some("7.0".to_string());
+        metadata.sanitize_text_fields();
+        assert_eq!(metadata.capture_subsecond, None);
+        assert!(metadata.is_empty());
     }
 
     #[test]

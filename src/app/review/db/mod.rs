@@ -449,6 +449,15 @@ async fn verify_seaorm_database(connection: &DatabaseConnection) -> Result<()> {
             bail!("SeaORM review database is missing required column {table}.{column}");
         }
     }
+    for (table, column) in required_capture_subsecond_columns() {
+        if !manager
+            .has_column(table, column)
+            .await
+            .with_context(|| format!("checking review column {table}.{column}"))?
+        {
+            bail!("SeaORM review database is missing required column {table}.{column}");
+        }
+    }
     sqlite_compat::verify_integrity(connection)
         .await
         .context("validating SeaORM review database")
@@ -624,6 +633,10 @@ fn required_nikon_burst_columns() -> impl Iterator<Item = (&'static str, &'stati
     .into_iter()
 }
 
+fn required_capture_subsecond_columns() -> impl Iterator<Item = (&'static str, &'static str)> {
+    [("images", "exif_capture_subsecond")].into_iter()
+}
+
 fn required_diffusion_parameter_columns() -> impl Iterator<Item = (&'static str, &'static str)> {
     [
         ("profile_diffusion_settings", "softness_radius_percent"),
@@ -692,6 +705,7 @@ pub(super) struct TestDatabaseFacts {
     pub(super) has_json_storage_columns: bool,
     pub(super) has_diffusion_parameter_columns: bool,
     pub(super) has_nikon_burst_columns: bool,
+    pub(super) has_capture_subsecond_column: bool,
     pub(super) counts: HashMap<&'static str, u64>,
     pub(super) indexes: HashSet<&'static str>,
 }
@@ -788,6 +802,10 @@ pub(super) fn database_facts(path: &Path) -> Result<TestDatabaseFacts> {
         let mut has_nikon_burst_columns = true;
         for (table, column) in required_nikon_burst_columns() {
             has_nikon_burst_columns &= manager.has_column(table, column).await?;
+        }
+        let mut has_capture_subsecond_column = true;
+        for (table, column) in required_capture_subsecond_columns() {
+            has_capture_subsecond_column &= manager.has_column(table, column).await?;
         }
         let mut counts = HashMap::new();
         counts.insert(
@@ -1004,6 +1022,7 @@ pub(super) fn database_facts(path: &Path) -> Result<TestDatabaseFacts> {
             has_json_storage_columns,
             has_diffusion_parameter_columns,
             has_nikon_burst_columns,
+            has_capture_subsecond_column,
             counts,
             indexes,
         };
@@ -1374,7 +1393,7 @@ pub(super) fn make_schema_v12_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(12)).await?;
+        Migrator::down(&connection, Some(13)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1390,7 +1409,7 @@ pub(super) fn make_schema_v13_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(11)).await?;
+        Migrator::down(&connection, Some(12)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1406,7 +1425,7 @@ pub(super) fn make_schema_v14_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(10)).await?;
+        Migrator::down(&connection, Some(11)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1422,7 +1441,7 @@ pub(super) fn make_schema_v15_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(9)).await?;
+        Migrator::down(&connection, Some(10)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1438,7 +1457,7 @@ pub(super) fn make_schema_v17_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(7)).await?;
+        Migrator::down(&connection, Some(8)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1454,7 +1473,7 @@ pub(super) fn make_schema_v18_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(6)).await?;
+        Migrator::down(&connection, Some(7)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1470,7 +1489,7 @@ pub(super) fn make_schema_v20_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(4)).await?;
+        Migrator::down(&connection, Some(5)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1486,7 +1505,7 @@ pub(super) fn make_schema_v21_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(3)).await?;
+        Migrator::down(&connection, Some(4)).await?;
 
         // The v22 down migration intentionally leaves compatible columns in
         // place. Rebuild the two tables with their historical v21 shape so
@@ -1578,7 +1597,7 @@ pub(super) fn make_schema_v23_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(1)).await?;
+        Migrator::down(&connection, Some(2)).await?;
 
         // The v24 down migration intentionally leaves nullable columns in
         // place. Remove them in this fixture so the upgrade test exercises a
@@ -1592,6 +1611,29 @@ pub(super) fn make_schema_v23_database(path: &Path, store: &ReviewStore) -> Resu
                 .execute_unprepared(&format!("ALTER TABLE \"images\" DROP COLUMN \"{column}\""))
                 .await?;
         }
+
+        sqlite_compat::verify_integrity(&connection).await?;
+        connection.close().await?;
+        Ok(())
+    })
+}
+
+#[cfg(test)]
+pub(super) fn make_schema_v24_database(path: &Path, store: &ReviewStore) -> Result<()> {
+    save_store(path, store)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("building review database runtime")?;
+    runtime.block_on(async {
+        let connection = connect_database(path, false).await?;
+        Migrator::down(&connection, Some(1)).await?;
+
+        // The v25 down migration intentionally leaves the nullable column in
+        // place. Remove it so this fixture represents the genuine v24 shape.
+        connection
+            .execute_unprepared(r#"ALTER TABLE "images" DROP COLUMN "exif_capture_subsecond""#)
+            .await?;
 
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;

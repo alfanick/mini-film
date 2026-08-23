@@ -18,6 +18,8 @@ pub struct Model {
     #[sea_orm(column_type = "Text")]
     pub file_name: String,
     pub exif_capture_timestamp: Option<i64>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub exif_capture_subsecond: Option<String>,
     pub exif_rating: Option<i64>,
     #[sea_orm(column_type = "Text", nullable)]
     pub exif_focal_length: Option<String>,

@@ -576,6 +576,7 @@ where
             file_name: row.file_name,
             exif: GalleryExifData {
                 capture_timestamp: row.exif_capture_timestamp,
+                capture_subsecond: row.exif_capture_subsecond,
                 rating: optional_i64(row.exif_rating, "EXIF rating", i64_to_u8)?,
                 file_size_bytes: optional_i64(
                     row.source_file_size_bytes,

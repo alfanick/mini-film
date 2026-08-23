@@ -18,7 +18,8 @@ const DIFFUSION_SETTINGS_SCHEMA_VERSION: i64 = 21;
 const DIFFUSION_PARAMETERS_SCHEMA_VERSION: i64 = 22;
 const LCP_PROVENANCE_SCHEMA_VERSION: i64 = 23;
 const NIKON_BURSTS_SCHEMA_VERSION: i64 = 24;
-pub(super) const LATEST_SCHEMA_VERSION: i64 = 24;
+const CAPTURE_SUBSECONDS_SCHEMA_VERSION: i64 = 25;
+pub(super) const LATEST_SCHEMA_VERSION: i64 = 25;
 pub(super) const V18_BASELINE_MIGRATION: &str = "m20260718_000001_v18_baseline";
 pub(super) const PANORAMA_PROJECTS_MIGRATION: &str = "m20260719_000002_panorama_projects";
 pub(super) const REVIEW_SAMPLER_MIGRATION: &str = "m20260721_000003_review_sampler";
@@ -32,6 +33,7 @@ pub(super) const DIFFUSION_SETTINGS_MIGRATION: &str = "m20260803_000010_diffusio
 pub(super) const DIFFUSION_PARAMETERS_MIGRATION: &str = "m20260804_000011_diffusion_parameters";
 pub(super) const LCP_PROVENANCE_MIGRATION: &str = "m20260818_000012_lcp_provenance";
 pub(super) const NIKON_BURSTS_MIGRATION: &str = "m20260823_000013_nikon_bursts";
+pub(super) const CAPTURE_SUBSECONDS_MIGRATION: &str = "m20260823_000014_capture_subseconds";
 pub(super) const PRE_RELEASE_SEAORM_LEDGER: [&str; 2] = [
     "m20260718_000001_create_review_schema",
     "m20260718_000002_adopt_seaorm",
@@ -70,6 +72,7 @@ impl MigratorTrait for Migrator {
             Box::new(DiffusionParameters),
             Box::new(LcpProvenance),
             Box::new(NikonBursts),
+            Box::new(CaptureSubseconds),
         ]
     }
 }
@@ -747,6 +750,14 @@ impl MigrationName for NikonBursts {
     }
 }
 
+struct CaptureSubseconds;
+
+impl MigrationName for CaptureSubseconds {
+    fn name(&self) -> &str {
+        CAPTURE_SUBSECONDS_MIGRATION
+    }
+}
+
 #[async_trait::async_trait]
 impl MigrationTrait for LcpProvenance {
     fn use_transaction(&self) -> Option<bool> {
@@ -868,6 +879,40 @@ impl MigrationTrait for NikonBursts {
         // Older binaries ignore the nullable forward-compatible EXIF columns.
         sqlite_compat::set_user_version(manager.get_connection(), LCP_PROVENANCE_SCHEMA_VERSION)
             .await
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for CaptureSubseconds {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        if !manager
+            .has_column(images::Entity.table_name(), "exif_capture_subsecond")
+            .await?
+        {
+            manager
+                .alter_table(
+                    Table::alter()
+                        .table(images::Entity)
+                        .add_column(
+                            ColumnDef::new(images::Column::ExifCaptureSubsecond)
+                                .text()
+                                .null(),
+                        )
+                        .to_owned(),
+                )
+                .await?;
+        }
+        sqlite_compat::set_user_version(manager.get_connection(), CAPTURE_SUBSECONDS_SCHEMA_VERSION)
+            .await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        // Older binaries ignore the nullable forward-compatible EXIF column.
+        sqlite_compat::set_user_version(manager.get_connection(), NIKON_BURSTS_SCHEMA_VERSION).await
     }
 }
 

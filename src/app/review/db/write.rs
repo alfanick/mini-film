@@ -564,6 +564,7 @@ fn image_rows(position: usize, image: &ReviewImage, roots: &ReviewPathRoots) -> 
             relative_path: image.relative_path.clone(),
             file_name: image.file_name.clone(),
             exif_capture_timestamp: image.exif.capture_timestamp,
+            exif_capture_subsecond: image.exif.capture_subsecond.clone(),
             exif_rating: image.exif.rating.map(i64::from),
             exif_focal_length: image.exif.focal_length.clone(),
             exif_aperture: image.exif.aperture.clone(),

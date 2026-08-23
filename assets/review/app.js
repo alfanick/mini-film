@@ -3036,18 +3036,46 @@ function BurstGroup({ burst, currentId, onSelect, onToggleBurst }) {
       ? h(
           "div",
           { class: "burst-members" },
-          burst.members.map((image) =>
-            h(ImageRow, {
+          burst.members.map((image, index) => {
+            const relativeCaptureTime = index > 0 ? burstCaptureDeltaDisplay(burst.members[0], image) : "";
+            return h(ImageRow, {
               key: `burst:${burst.id}:image:${image.id}`,
-              image,
+              image: relativeCaptureTime ? { ...image, capture_time: relativeCaptureTime } : image,
               currentId,
               onSelect,
               className: "burst-member",
-            }),
-          ),
+            });
+          }),
         )
       : null,
   );
+}
+
+function burstCaptureDeltaDisplay(firstImage, image) {
+  const firstCapture = preciseCaptureTime(firstImage);
+  const capture = preciseCaptureTime(image);
+  if (!firstCapture || !capture) return "";
+
+  const delta = capture.timestamp - firstCapture.timestamp + capture.subsecond - firstCapture.subsecond;
+  return Number.isFinite(delta) && delta >= 0 ? `+${delta.toFixed(2)}s` : "";
+}
+
+function preciseCaptureTime(image) {
+  const rawTimestamp = image?.exif?.capture_timestamp;
+  const timestamp = Number(rawTimestamp);
+  const subsecond = image?.exif?.capture_subsecond;
+  if (
+    rawTimestamp === null ||
+    rawTimestamp === undefined ||
+    !Number.isSafeInteger(timestamp) ||
+    typeof subsecond !== "string" ||
+    !/^\d+$/.test(subsecond)
+  ) {
+    return null;
+  }
+
+  const fraction = Number(`0.${subsecond}`);
+  return Number.isFinite(fraction) ? { timestamp, subsecond: fraction } : null;
 }
 
 function isolateBurstActivation(event) {

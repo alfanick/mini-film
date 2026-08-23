@@ -166,6 +166,7 @@ fn fully_populated_review_store() -> ReviewStore {
             file_name: "one.NEF".to_string(),
             exif: GalleryExifData {
                 capture_timestamp: Some(-123_456_789),
+                capture_subsecond: Some("07".to_string()),
                 rating: Some(4),
                 file_size_bytes: Some(55_620_945),
                 image_width: Some(8288),
@@ -3161,9 +3162,9 @@ fn review_state_seaorm_round_trips_every_normalized_collection() {
         serde_json::to_value(persisted_store(store)).unwrap()
     );
     let facts = database_facts(&state_path).unwrap();
-    assert_eq!(facts.schema_version, 24);
+    assert_eq!(facts.schema_version, 25);
     assert!(facts.has_seaql_ledger);
-    assert_eq!(facts.seaql_migration_count, 13);
+    assert_eq!(facts.seaql_migration_count, 14);
     assert_eq!(
         facts.seaql_migrations,
         [
@@ -3180,6 +3181,7 @@ fn review_state_seaorm_round_trips_every_normalized_collection() {
             "m20260804_000011_diffusion_parameters",
             "m20260818_000012_lcp_provenance",
             "m20260823_000013_nikon_bursts",
+            "m20260823_000014_capture_subseconds",
         ]
     );
     assert!(!facts.has_legacy_ledger);
@@ -3187,6 +3189,7 @@ fn review_state_seaorm_round_trips_every_normalized_collection() {
     assert!(!facts.has_json_storage_columns);
     assert!(facts.has_diffusion_parameter_columns);
     assert!(facts.has_nikon_burst_columns);
+    assert!(facts.has_capture_subsecond_column);
     assert_eq!(facts.counts["review_settings"], 1);
     assert_eq!(facts.counts["profiles"], 2);
     assert_eq!(facts.counts["images"], 3);
@@ -3301,6 +3304,50 @@ fn nikon_burst_state_is_persisted_by_database_deltas() {
 }
 
 #[test]
+fn capture_subsecond_is_persisted_by_database_deltas() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let runtime = test_async_runtime();
+    let (database, _) = runtime
+        .block_on(ReviewDatabase::open_output(&input, &output))
+        .unwrap();
+
+    let mut before = rebase_review_store(fully_populated_review_store(), &input, &output);
+    before.images[0].exif.capture_subsecond = None;
+    runtime.block_on(database.replace_store(&before)).unwrap();
+
+    let mut after = before.clone();
+    after.images[0].exif.capture_subsecond = Some("05".to_string());
+    runtime
+        .block_on(database.apply_delta(&before, &after))
+        .unwrap();
+    let state_path = database.path().to_path_buf();
+
+    let restored = load_store_with_roots(&state_path, &input, &output)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        restored.images[0].exif.capture_subsecond.as_deref(),
+        Some("05")
+    );
+
+    let mut cleared = after.clone();
+    cleared.images[0].exif.capture_subsecond = None;
+    runtime
+        .block_on(database.apply_delta(&after, &cleared))
+        .unwrap();
+    drop(database);
+
+    let restored = load_store_with_roots(&state_path, &input, &output)
+        .unwrap()
+        .unwrap();
+    assert_eq!(restored.images[0].exif.capture_subsecond, None);
+}
+
+#[test]
 fn normalized_v11_database_is_backed_up_and_adopted_losslessly_once() {
     let temp = tempfile::tempdir().unwrap();
     let state_path = temp.path().join(SQLITE_STATE_FILE);
@@ -3323,10 +3370,10 @@ fn normalized_v11_database_is_backed_up_and_adopted_losslessly_once() {
     let backup_bytes = fs::read(&backup_path).unwrap();
 
     let after_facts = database_facts(&state_path).unwrap();
-    assert_eq!(after_facts.schema_version, 24);
+    assert_eq!(after_facts.schema_version, 25);
     assert!(!after_facts.has_legacy_ledger);
     assert!(after_facts.has_seaql_ledger);
-    assert_eq!(after_facts.seaql_migration_count, 13);
+    assert_eq!(after_facts.seaql_migration_count, 14);
     assert_eq!(
         after_facts.seaql_migrations,
         [
@@ -3343,6 +3390,7 @@ fn normalized_v11_database_is_backed_up_and_adopted_losslessly_once() {
             "m20260804_000011_diffusion_parameters",
             "m20260818_000012_lcp_provenance",
             "m20260823_000013_nikon_bursts",
+            "m20260823_000014_capture_subseconds",
         ]
     );
     assert!(!after_facts.has_json_storage_columns);
@@ -3381,7 +3429,7 @@ fn pre_release_two_entry_seaorm_ledger_is_collapsed_without_data_loss() {
         serde_json::to_value(migrated_pre_contrast_store(persisted_store(store))).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.seaql_migration_count, 13);
+    assert_eq!(after.seaql_migration_count, 14);
     assert_eq!(
         after.seaql_migrations,
         [
@@ -3398,6 +3446,7 @@ fn pre_release_two_entry_seaorm_ledger_is_collapsed_without_data_loss() {
             "m20260804_000011_diffusion_parameters",
             "m20260818_000012_lcp_provenance",
             "m20260823_000013_nikon_bursts",
+            "m20260823_000014_capture_subseconds",
         ]
     );
 }
@@ -3415,8 +3464,8 @@ fn schema_v12_migrates_to_panorama_schema_without_review_data_loss() {
         serde_json::to_value(migrated_pre_sampler_store(store)).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 24);
-    assert_eq!(after.seaql_migration_count, 13);
+    assert_eq!(after.schema_version, 25);
+    assert_eq!(after.seaql_migration_count, 14);
     assert_eq!(after.counts["panorama_projects"], 0);
     assert_eq!(after.counts["panorama_project_images"], 0);
     assert_eq!(after.counts["panorama_previews"], 0);
@@ -3445,8 +3494,8 @@ fn schema_v13_migrates_sampler_state_without_review_data_loss() {
             && profile.identity.starts_with("legacy:")
     }));
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 24);
-    assert_eq!(after.seaql_migration_count, 13);
+    assert_eq!(after.schema_version, 25);
+    assert_eq!(after.seaql_migration_count, 14);
     assert_eq!(after.indexes.len(), 30);
 }
 
@@ -3472,8 +3521,8 @@ fn schema_v14_adds_focus_region_storage_without_review_data_loss() {
         .unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 24);
-    assert_eq!(after.seaql_migration_count, 13);
+    assert_eq!(after.schema_version, 25);
+    assert_eq!(after.seaql_migration_count, 14);
     assert_eq!(after.counts["image_focus_regions"], 0);
     assert_eq!(after.indexes.len(), 30);
 }
@@ -3512,8 +3561,8 @@ fn schema_v15_paths_migrate_and_rebase_after_input_and_output_move() {
     );
 
     let facts = database_facts(&new_state).unwrap();
-    assert_eq!(facts.schema_version, 24);
-    assert_eq!(facts.seaql_migration_count, 13);
+    assert_eq!(facts.schema_version, 25);
+    assert_eq!(facts.seaql_migration_count, 14);
     assert_eq!(paths.input_root, new_input.to_string_lossy());
     assert_eq!(paths.output_root, new_output.to_string_lossy());
     assert!(
@@ -3585,8 +3634,8 @@ fn schema_v17_adds_normalized_auto_import_tables_without_review_data_loss() {
         .unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 24);
-    assert_eq!(after.seaql_migration_count, 13);
+    assert_eq!(after.schema_version, 25);
+    assert_eq!(after.seaql_migration_count, 14);
     assert_eq!(after.counts["auto_import_devices"], 0);
     assert_eq!(after.counts["auto_import_storages"], 0);
     assert_eq!(after.counts["auto_import_groups"], 0);
@@ -3625,8 +3674,8 @@ fn schema_v18_splits_contrast_from_clarity_without_losing_old_edits() {
     assert_eq!(detailed.retouch_base.clarity, 15.0);
 
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 24);
-    assert_eq!(after.seaql_migration_count, 13);
+    assert_eq!(after.schema_version, 25);
+    assert_eq!(after.seaql_migration_count, 14);
 }
 
 #[test]
@@ -3648,8 +3697,8 @@ fn schema_v20_adds_diffusion_settings_without_losing_review_data() {
         serde_json::to_value(migrated_pre_diffusion_store(persisted_store(store))).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 24);
-    assert_eq!(after.seaql_migration_count, 13);
+    assert_eq!(after.schema_version, 25);
+    assert_eq!(after.seaql_migration_count, 14);
     assert_eq!(after.counts["profile_diffusion_settings"], 0);
     assert_eq!(after.counts["image_profile_diffusion_settings"], 0);
     assert_eq!(after.indexes.len(), 30);
@@ -3676,8 +3725,8 @@ fn schema_v21_adds_neutral_diffusion_parameters_without_losing_settings() {
         serde_json::to_value(expected).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 24);
-    assert_eq!(after.seaql_migration_count, 13);
+    assert_eq!(after.schema_version, 25);
+    assert_eq!(after.seaql_migration_count, 14);
     assert!(after.has_diffusion_parameter_columns);
     assert_eq!(after.counts["profile_diffusion_settings"], 1);
     assert_eq!(after.counts["image_profile_diffusion_settings"], 1);
@@ -3709,11 +3758,40 @@ fn schema_v23_adds_nikon_burst_storage_without_losing_review_data() {
         serde_json::to_value(expected).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 24);
-    assert_eq!(after.seaql_migration_count, 13);
+    assert_eq!(after.schema_version, 25);
+    assert_eq!(after.seaql_migration_count, 14);
     assert!(after.has_nikon_burst_columns);
     assert_eq!(after.counts["expanded_bursts"], 0);
     assert!(after.indexes.contains("idx_images_nikon_burst_key"));
+}
+
+#[test]
+fn schema_v24_adds_nullable_capture_subseconds_without_backfill() {
+    let temp = tempfile::tempdir().unwrap();
+    let state_path = temp.path().join(SQLITE_STATE_FILE);
+    let mut store = fully_populated_review_store();
+    store.images[0].exif.capture_subsecond = Some("97".to_string());
+    let mut expected = persisted_store(store.clone());
+    for image in &mut expected.images {
+        image.exif.capture_subsecond = None;
+    }
+    make_schema_v24_database(&state_path, &store).unwrap();
+
+    let before = database_facts(&state_path).unwrap();
+    assert_eq!(before.schema_version, 24);
+    assert_eq!(before.seaql_migration_count, 13);
+    assert!(before.has_nikon_burst_columns);
+    assert!(!before.has_capture_subsecond_column);
+
+    let loaded = load_store(&state_path).unwrap().unwrap();
+    assert_eq!(
+        serde_json::to_value(loaded).unwrap(),
+        serde_json::to_value(expected).unwrap()
+    );
+    let after = database_facts(&state_path).unwrap();
+    assert_eq!(after.schema_version, 25);
+    assert_eq!(after.seaql_migration_count, 14);
+    assert!(after.has_capture_subsecond_column);
 }
 
 #[test]
