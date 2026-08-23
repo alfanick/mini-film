@@ -156,6 +156,37 @@ pub(super) async fn route_request(
                 Err(error) => json_error(400, error).into_response(),
             }
         }
+        (Method::PATCH, _) if path.starts_with("/api/bursts/") => {
+            if let Err(error) = handle.ensure_database_healthy() {
+                return json_error(503, error).into_response();
+            }
+            let burst_id = path.trim_start_matches("/api/bursts/");
+            if burst_id.is_empty() || burst_id.contains('/') {
+                return json_error(404, anyhow!("review burst was not found")).into_response();
+            }
+            let previous = match handle.api_state_value() {
+                Ok(state) => state,
+                Err(error) => return json_error(500, error).into_response(),
+            };
+            let result = match serde_json::from_slice::<ReviewBurstExpansionRequest>(&body)
+                .context("parsing burst expansion update")
+            {
+                Ok(update) => handle
+                    .apply_burst_expansion_async(burst_id, update)
+                    .await
+                    .and_then(|()| handle.api_state_patch_json_since(&previous)),
+                Err(error) => Err(error),
+            };
+            match result {
+                Ok(body) => {
+                    text_response(200, "application/json; charset=utf-8", &body).into_response()
+                }
+                Err(error) if handle.ensure_database_healthy().is_err() => {
+                    json_error(503, error).into_response()
+                }
+                Err(error) => json_error(400, error).into_response(),
+            }
+        }
         (Method::POST, "/api/publish") => {
             let previous = match handle.api_state_value() {
                 Ok(state) => state,

@@ -622,6 +622,8 @@ pub(super) struct ReviewStore {
     #[serde(default)]
     pub(super) image_profile_diffusion_settings: Vec<ReviewImageProfileDiffusionSetting>,
     #[serde(default)]
+    pub(super) expanded_burst_ids: BTreeSet<String>,
+    #[serde(default)]
     pub(super) ui: ReviewUiState,
     #[serde(default)]
     pub(super) exif_schema_version: u32,
@@ -650,6 +652,13 @@ pub(super) const fn default_review_normalize_grain_mpix() -> Option<f64> {
 pub(super) struct ReviewUiState {
     pub(super) current_image_id: Option<u64>,
     pub(super) min_rating: u8,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub(super) struct ReviewBurst {
+    pub(super) id: String,
+    pub(super) image_ids: Vec<u64>,
+    pub(super) expanded: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1049,6 +1058,11 @@ pub(super) struct ReviewUiUpdateRequest {
     pub(super) current_image_id: Option<u64>,
     #[serde(default)]
     pub(super) min_rating: u8,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub(super) struct ReviewBurstExpansionRequest {
+    pub(super) expanded: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]

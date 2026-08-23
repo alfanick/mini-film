@@ -8,9 +8,11 @@ const PROFILED_COMPRESSED_RENDER_PIPELINE_KEY: &str =
     "profiled-compressed-render-v5-normalized-grain";
 const PROFILED_TIFF_RENDER_PIPELINE_KEY: &str = "profiled-tiff-render-v3-normalized-grain";
 const GRAIN_NORMALIZATION_PIPELINE_KEY: &str = "grain-normalization-v1";
+const LEGACY_BURST_MAX_SHUTTER_GAP: u64 = 64;
+const LEGACY_BURST_MAX_CAPTURE_GAP_SECONDS: i64 = 5;
 
 impl ReviewStore {
-    const EXIF_SCHEMA_VERSION: u32 = 11;
+    const EXIF_SCHEMA_VERSION: u32 = 12;
 
     pub(super) fn new(profiles: Vec<ReviewProfile>) -> Self {
         Self {
@@ -19,6 +21,7 @@ impl ReviewStore {
             images: Vec::new(),
             profile_diffusion_settings: Vec::new(),
             image_profile_diffusion_settings: Vec::new(),
+            expanded_burst_ids: BTreeSet::new(),
             ui: ReviewUiState::default(),
             exif_schema_version: Self::EXIF_SCHEMA_VERSION,
             normalize_grain_mpix: default_review_normalize_grain_mpix(),
@@ -105,6 +108,7 @@ impl ReviewStore {
         }
         self.merge_standalone_sooc_sidecars();
         self.normalize_diffusion_settings();
+        self.normalize_burst_expansions();
         self.normalize_ui();
     }
 
@@ -400,6 +404,7 @@ impl ReviewStore {
             refresh_image_exif_data(image, force);
             normalize_review_metadata_sources(image);
         });
+        self.normalize_burst_expansions();
         self.normalize_ui();
         refresh_count
     }
@@ -474,6 +479,7 @@ impl ReviewStore {
             &self.raw_render_config,
         );
         self.images.push(image);
+        self.normalize_burst_expansions();
         self.normalize_ui();
         let index = self.images.len() - 1;
         Ok(&mut self.images[index])
@@ -591,6 +597,7 @@ impl ReviewStore {
             }
         }
         image.updated_at = now_string();
+        self.normalize_burst_expansions();
         self.normalize_ui();
         Ok(true)
     }
@@ -699,6 +706,7 @@ impl ReviewStore {
             self.ui.current_image_id = Some(current);
         }
         self.images.retain(|image| !remove_ids.contains(&image.id));
+        self.normalize_burst_expansions();
         self.normalize_ui();
         remove_ids.len()
     }
@@ -738,6 +746,125 @@ impl ReviewStore {
         }
         self.normalize_ui();
         Ok(())
+    }
+
+    pub(super) fn review_bursts(&self) -> Vec<ReviewBurst> {
+        let mut ordered = self.images.iter().collect::<Vec<_>>();
+        sort_review_image_refs(&mut ordered);
+        let global_order = ordered
+            .iter()
+            .enumerate()
+            .map(|(index, image)| (image.id, index))
+            .collect::<HashMap<_, _>>();
+
+        let mut modern = HashMap::<(String, String), Vec<&ReviewImage>>::new();
+        let mut by_camera = HashMap::<String, Vec<&ReviewImage>>::new();
+        for image in ordered {
+            let Some(serial) = image
+                .exif
+                .camera_serial
+                .as_deref()
+                .map(str::trim)
+                .filter(|serial| !serial.is_empty())
+            else {
+                continue;
+            };
+            by_camera.entry(serial.to_string()).or_default().push(image);
+            if let Some(key) = image
+                .exif
+                .nikon_burst_key
+                .as_deref()
+                .filter(|key| key.starts_with("modern:"))
+            {
+                modern
+                    .entry((serial.to_string(), key.to_string()))
+                    .or_default()
+                    .push(image);
+            }
+        }
+
+        let mut groups = Vec::<(usize, ReviewBurst)>::new();
+        for ((serial, key), mut images) in modern {
+            sort_burst_members(&mut images);
+            if images.len() < 2 {
+                continue;
+            }
+            let id = opaque_burst_id(["modern", serial.as_str(), key.as_str()]);
+            push_review_burst(
+                &mut groups,
+                &global_order,
+                &self.expanded_burst_ids,
+                id,
+                images,
+            );
+        }
+
+        for (serial, mut images) in by_camera {
+            sort_burst_sequence(&mut images);
+            let mut current_key: Option<String> = None;
+            let mut current = Vec::<&ReviewImage>::new();
+            for image in images {
+                let key = image
+                    .exif
+                    .nikon_burst_key
+                    .as_deref()
+                    .filter(|key| key.starts_with("legacy:"));
+                let sequence_break = key.is_some()
+                    && key == current_key.as_deref()
+                    && current
+                        .last()
+                        .is_some_and(|previous| legacy_burst_sequence_break(previous, image));
+                if key != current_key.as_deref() || sequence_break {
+                    finish_legacy_burst(
+                        &mut groups,
+                        &global_order,
+                        &self.expanded_burst_ids,
+                        &serial,
+                        current_key.take(),
+                        std::mem::take(&mut current),
+                    );
+                    current_key = key.map(str::to_string);
+                }
+                if key.is_some() {
+                    current.push(image);
+                }
+            }
+            finish_legacy_burst(
+                &mut groups,
+                &global_order,
+                &self.expanded_burst_ids,
+                &serial,
+                current_key,
+                current,
+            );
+        }
+
+        groups.sort_by_key(|(order, _)| *order);
+        groups.into_iter().map(|(_, burst)| burst).collect()
+    }
+
+    pub(super) fn set_burst_expanded(&mut self, burst_id: &str, expanded: bool) -> Result<bool> {
+        if !self
+            .review_bursts()
+            .iter()
+            .any(|burst| burst.id == burst_id)
+        {
+            bail!("review burst {burst_id} does not exist");
+        }
+        Ok(if expanded {
+            self.expanded_burst_ids.insert(burst_id.to_string())
+        } else {
+            self.expanded_burst_ids.remove(burst_id)
+        })
+    }
+
+    pub(super) fn normalize_burst_expansions(&mut self) {
+        let valid = self
+            .review_bursts()
+            .into_iter()
+            .map(|burst| burst.id)
+            .collect::<HashSet<_>>();
+        self.expanded_burst_ids.retain(|id| valid.contains(id));
     }
 
     pub(super) fn planned_advance_after(&self, image_id: u64) -> ReviewAdvance {
@@ -1056,6 +1183,133 @@ fn compare_review_images(left: &ReviewImage, right: &ReviewImage) -> std::cmp::O
     }
 }
 
+fn sort_burst_sequence(images: &mut [&ReviewImage]) {
+    if images
+        .iter()
+        .all(|image| image.exif.shutter_count.is_some())
+    {
+        images.sort_by(|left, right| {
+            left.exif
+                .shutter_count
+                .cmp(&right.exif.shutter_count)
+                .then_with(|| compare_review_images(left, right))
+        });
+    } else {
+        images.sort_by(|left, right| compare_review_images(left, right));
+    }
+}
+
+fn legacy_burst_sequence_break(previous: &ReviewImage, current: &ReviewImage) -> bool {
+    // Older ExifTool versions expose only the low 16 bits of Nikon's packed
+    // burst identity, so its normalized image number repeats every 2048 shots.
+    let shutter_break = match (previous.exif.shutter_count, current.exif.shutter_count) {
+        (Some(previous), Some(current)) => {
+            current <= previous || current - previous > LEGACY_BURST_MAX_SHUTTER_GAP
+        }
+        _ => false,
+    };
+    let capture_break = match (
+        previous.exif.capture_timestamp,
+        current.exif.capture_timestamp,
+    ) {
+        (Some(previous), Some(current)) => {
+            current < previous || current - previous > LEGACY_BURST_MAX_CAPTURE_GAP_SECONDS
+        }
+        _ => false,
+    };
+    shutter_break || capture_break
+}
+
+fn sort_burst_members(images: &mut [&ReviewImage]) {
+    if images
+        .iter()
+        .all(|image| image.exif.nikon_burst_shot_number.is_some())
+    {
+        images.sort_by(|left, right| {
+            left.exif
+                .nikon_burst_shot_number
+                .cmp(&right.exif.nikon_burst_shot_number)
+                .then_with(|| left.exif.shutter_count.cmp(&right.exif.shutter_count))
+                .then_with(|| compare_review_images(left, right))
+        });
+    } else {
+        sort_burst_sequence(images);
+    }
+}
+
+fn finish_legacy_burst(
+    groups: &mut Vec<(usize, ReviewBurst)>,
+    global_order: &HashMap<u64, usize>,
+    expanded_burst_ids: &BTreeSet<String>,
+    serial: &str,
+    key: Option<String>,
+    mut images: Vec<&ReviewImage>,
+) {
+    let Some(key) = key else {
+        return;
+    };
+    if images.len() < 2 {
+        return;
+    }
+    sort_burst_members(&mut images);
+    let anchor = images
+        .iter()
+        .filter_map(|image| image.exif.shutter_count)
+        .min()
+        .map_or_else(
+            || {
+                format!(
+                    "image:{}",
+                    images
+                        .iter()
+                        .map(|image| image.id)
+                        .min()
+                        .unwrap_or_default()
+                )
+            },
+            |shutter_count| format!("shutter:{shutter_count}"),
+        );
+    let id = opaque_burst_id(["legacy", serial, key.as_str(), anchor.as_str()]);
+    push_review_burst(groups, global_order, expanded_burst_ids, id, images);
+}
+
+fn push_review_burst(
+    groups: &mut Vec<(usize, ReviewBurst)>,
+    global_order: &HashMap<u64, usize>,
+    expanded_burst_ids: &BTreeSet<String>,
+    id: String,
+    images: Vec<&ReviewImage>,
+) {
+    let image_ids = images.iter().map(|image| image.id).collect::<Vec<_>>();
+    let order = image_ids
+        .iter()
+        .filter_map(|image_id| global_order.get(image_id).copied())
+        .min()
+        .unwrap_or(usize::MAX);
+    groups.push((
+        order,
+        ReviewBurst {
+            expanded: expanded_burst_ids.contains(&id),
+            id,
+            image_ids,
+        },
+    ));
+}
+
+fn opaque_burst_id<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {
+    let mut hasher = Sha1::new();
+    for part in parts {
+        hasher.update(part.as_bytes());
+        hasher.update([0]);
+    }
+    let digest = hasher.finalize();
+    let digest = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("nikon-{digest}")
+}
+
 fn refresh_image_exif_data(image: &mut ReviewImage, force: bool) {
     if !gallery_exif_needs_refresh(&image.exif, force) {
         image.exif.sanitize_text_fields();
@@ -1091,6 +1345,19 @@ fn refresh_image_exif_data(image: &mut ReviewImage, force: bool) {
         }
         if image.exif.camera_model.is_none() {
             image.exif.camera_model = refreshed.camera_model;
+        }
+        if force || image.exif.camera_serial.is_none() {
+            image.exif.camera_serial = refreshed.camera_serial.or(image.exif.camera_serial.take());
+        }
+        if force || image.exif.nikon_burst_key.is_none() {
+            image.exif.nikon_burst_key = refreshed
+                .nikon_burst_key
+                .or(image.exif.nikon_burst_key.take());
+        }
+        if force || image.exif.nikon_burst_shot_number.is_none() {
+            image.exif.nikon_burst_shot_number = refreshed
+                .nikon_burst_shot_number
+                .or(image.exif.nikon_burst_shot_number);
         }
         if force || image.exif.auto_iso.is_none() {
             image.exif.auto_iso = refreshed.auto_iso.or(image.exif.auto_iso);

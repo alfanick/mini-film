@@ -22,6 +22,7 @@ where
         next_id: i64_to_u64(settings.next_id, "review next_id")?,
         profiles: load_profiles(connection).await?,
         images: load_images(connection, roots).await?,
+        expanded_burst_ids: load_expanded_burst_ids(connection).await?,
         profile_diffusion_settings: load_profile_diffusion_settings(connection).await?,
         image_profile_diffusion_settings: load_image_profile_diffusion_settings(connection).await?,
         ui: ReviewUiState {
@@ -37,6 +38,20 @@ where
         render_diffusion: DiffusionSettings::default(),
         raw_render_config: ReviewRawRenderConfig::default(),
     }))
+}
+
+async fn load_expanded_burst_ids<C>(connection: &C) -> Result<BTreeSet<String>>
+where
+    C: ConnectionTrait,
+{
+    Ok(expanded_bursts::Entity::find()
+        .order_by_asc(expanded_bursts::Column::BurstId)
+        .all(connection)
+        .await
+        .context("reading expanded review bursts")?
+        .into_iter()
+        .map(|row| row.burst_id)
+        .collect())
 }
 
 async fn load_profile_diffusion_settings<C>(
@@ -598,6 +613,13 @@ where
                     i64_to_i32,
                 )?,
                 camera_model: row.exif_camera_model,
+                camera_serial: row.exif_camera_serial,
+                nikon_burst_key: row.exif_nikon_burst_key,
+                nikon_burst_shot_number: optional_i64(
+                    row.exif_nikon_burst_shot_number,
+                    "EXIF Nikon burst shot number",
+                    i64_to_u32,
+                )?,
                 shutter_count: optional_i64(
                     row.exif_shutter_count,
                     "EXIF shutter count",

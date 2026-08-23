@@ -198,6 +198,9 @@ fn fully_populated_review_store() -> ReviewStore {
                 white_balance_temperature: Some(4860),
                 white_balance_offset: Some(-2),
                 camera_model: Some("Nikon Z8".to_string()),
+                camera_serial: Some("3019328".to_string()),
+                nikon_burst_key: Some("nikon:3019328:57634".to_string()),
+                nikon_burst_shot_number: Some(3),
                 shutter_count: Some(66_278),
                 shutter_mode: Some("Auto (Electronic Front Curtain)".to_string()),
                 silent_photography: Some(true),
@@ -386,6 +389,16 @@ fn migrated_pre_diffusion_parameters_store(mut store: ReviewStore) -> ReviewStor
         settings.glow_radius_percent = 100;
         settings.intensity_percent = 100;
         settings.highlight_reach = 50;
+    }
+    store
+}
+
+fn migrated_pre_nikon_bursts_store(mut store: ReviewStore) -> ReviewStore {
+    store.expanded_burst_ids.clear();
+    for image in &mut store.images {
+        image.exif.camera_serial = None;
+        image.exif.nikon_burst_key = None;
+        image.exif.nikon_burst_shot_number = None;
     }
     store
 }
@@ -778,6 +791,229 @@ fn priority_image(
         profiles,
         updated_at: now_string(),
     }
+}
+
+fn set_test_burst_metadata(
+    image: &mut ReviewImage,
+    serial: &str,
+    key: Option<&str>,
+    shot_number: Option<u32>,
+    shutter_count: u64,
+) {
+    image.exif.camera_serial = Some(serial.to_string());
+    image.exif.nikon_burst_key = key.map(str::to_string);
+    image.exif.nikon_burst_shot_number = shot_number;
+    image.exif.shutter_count = Some(shutter_count);
+}
+
+#[test]
+fn review_bursts_order_modern_members_and_partition_legacy_runs() {
+    let mut store = ReviewStore::new(Vec::new());
+    store.images = (1..=10)
+        .map(|id| priority_image(id, &format!("/in/{id}.NEF"), id as i64, 0, 0, Vec::new()))
+        .collect();
+
+    set_test_burst_metadata(
+        &mut store.images[0],
+        "camera-a",
+        Some("modern:102:1807"),
+        Some(2),
+        101,
+    );
+    set_test_burst_metadata(
+        &mut store.images[1],
+        "camera-a",
+        Some("modern:102:1807"),
+        Some(1),
+        100,
+    );
+    for (index, shutter_count) in [(2, 200), (3, 201)] {
+        set_test_burst_metadata(
+            &mut store.images[index],
+            "camera-a",
+            Some("legacy:56960"),
+            None,
+            shutter_count,
+        );
+    }
+    set_test_burst_metadata(&mut store.images[4], "camera-a", None, None, 202);
+    for (index, shutter_count) in [(5, 203), (6, 204)] {
+        set_test_burst_metadata(
+            &mut store.images[index],
+            "camera-a",
+            Some("legacy:56960"),
+            None,
+            shutter_count,
+        );
+    }
+    set_test_burst_metadata(
+        &mut store.images[7],
+        "camera-a",
+        Some("modern:102:1900"),
+        Some(1),
+        205,
+    );
+    for (index, shutter_count) in [(8, 50), (9, 51)] {
+        set_test_burst_metadata(
+            &mut store.images[index],
+            "camera-b",
+            Some("legacy:56960"),
+            None,
+            shutter_count,
+        );
+    }
+
+    let bursts = store.review_bursts();
+    assert_eq!(bursts.len(), 4);
+    assert_eq!(bursts[0].image_ids, vec![2, 1]);
+    assert_eq!(bursts[1].image_ids, vec![3, 4]);
+    assert_eq!(bursts[2].image_ids, vec![6, 7]);
+    assert_eq!(bursts[3].image_ids, vec![9, 10]);
+    assert_eq!(
+        bursts
+            .iter()
+            .map(|burst| burst.id.as_str())
+            .collect::<HashSet<_>>()
+            .len(),
+        4
+    );
+
+    let first_id = bursts[0].id.clone();
+    assert!(store.set_burst_expanded(&first_id, true).unwrap());
+    assert!(store.review_bursts()[0].expanded);
+    assert!(!store.set_burst_expanded(&first_id, true).unwrap());
+    assert!(store.set_burst_expanded(&first_id, false).unwrap());
+    assert!(store.set_burst_expanded("missing", true).is_err());
+}
+
+#[test]
+fn review_bursts_use_capture_order_when_sequence_metadata_is_partial() {
+    let mut store = ReviewStore::new(Vec::new());
+    store.images = (1..=5)
+        .map(|id| priority_image(id, &format!("/in/{id}.NEF"), id as i64, 0, 0, Vec::new()))
+        .collect();
+
+    for (index, shot_number, shutter_count) in [(0, Some(3), 30), (1, None, 20), (2, Some(1), 10)] {
+        set_test_burst_metadata(
+            &mut store.images[index],
+            "camera-a",
+            Some("modern:102:1807"),
+            shot_number,
+            shutter_count,
+        );
+    }
+    store.images[2].exif.shutter_count = None;
+    for (index, shutter_count) in [(3, 40), (4, 41)] {
+        set_test_burst_metadata(
+            &mut store.images[index],
+            "camera-a",
+            Some("legacy:56960"),
+            None,
+            shutter_count,
+        );
+    }
+    store.images[4].exif.shutter_count = None;
+
+    let bursts = store.review_bursts();
+    assert_eq!(bursts.len(), 2);
+    assert_eq!(bursts[0].image_ids, vec![1, 2, 3]);
+    assert_eq!(bursts[1].image_ids, vec![4, 5]);
+}
+
+#[test]
+fn legacy_burst_collisions_split_on_shutter_or_capture_gaps() {
+    let mut store = ReviewStore::new(Vec::new());
+    store.images = (1..=8)
+        .map(|id| priority_image(id, &format!("/in/{id}.NEF"), id as i64, 0, 0, Vec::new()))
+        .collect();
+
+    for (index, shutter_count) in [(0, 100), (1, 101), (2, 2_200), (3, 2_201)] {
+        set_test_burst_metadata(
+            &mut store.images[index],
+            "camera-a",
+            Some("legacy:56960"),
+            None,
+            shutter_count,
+        );
+    }
+    for (index, capture_timestamp) in [(4, 5), (5, 6), (6, 30), (7, 31)] {
+        set_test_burst_metadata(
+            &mut store.images[index],
+            "camera-b",
+            Some("legacy:56960"),
+            None,
+            0,
+        );
+        store.images[index].exif.shutter_count = None;
+        store.images[index].exif.capture_timestamp = Some(capture_timestamp);
+    }
+
+    let bursts = store.review_bursts();
+    assert_eq!(bursts.len(), 4);
+    assert_eq!(bursts[0].image_ids, vec![1, 2]);
+    assert_eq!(bursts[1].image_ids, vec![3, 4]);
+    assert_eq!(bursts[2].image_ids, vec![5, 6]);
+    assert_eq!(bursts[3].image_ids, vec![7, 8]);
+}
+
+#[test]
+fn burst_expansion_route_persists_and_returns_a_shared_state_patch() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    for name in ["one.NEF", "two.NEF"] {
+        fs::write(input.join(name), b"raw").unwrap();
+    }
+    let handle = test_handle(input.clone(), output, Vec::new());
+    handle
+        .record_discovered_raw(&input.join("one.NEF"))
+        .unwrap();
+    handle
+        .record_discovered_raw(&input.join("two.NEF"))
+        .unwrap();
+    handle
+        .update_store(|store| {
+            for (index, image) in store.images.iter_mut().enumerate() {
+                set_test_burst_metadata(
+                    image,
+                    "camera-a",
+                    Some("modern:102:1807"),
+                    Some(index as u32 + 1),
+                    100 + index as u64,
+                );
+            }
+            Ok(())
+        })
+        .unwrap();
+
+    let state = handle.api_state_value().unwrap();
+    let burst_id = state["bursts"][0]["id"].as_str().unwrap().to_string();
+    assert_eq!(state["bursts"][0]["image_ids"], json!([1, 2]));
+    assert_eq!(state["bursts"][0]["expanded"], false);
+    assert!(state["images"][0]["exif"].get("camera_serial").is_none());
+
+    let runtime = test_async_runtime();
+    let response = runtime.block_on(route_request(
+        axum::http::Method::PATCH,
+        &format!("/api/bursts/{burst_id}"),
+        axum::body::Bytes::from_static(br#"{"expanded":true}"#),
+        &handle,
+    ));
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = runtime
+        .block_on(axum::body::to_bytes(response.into_body(), usize::MAX))
+        .unwrap();
+    let patch: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(patch["type"], "patch");
+    assert_eq!(patch["bursts"][0]["expanded"], true);
+    assert!(
+        handle
+            .store_snapshot()
+            .expanded_burst_ids
+            .contains(&burst_id)
+    );
 }
 
 #[test]
@@ -2911,7 +3147,11 @@ fn discovered_raw_merges_existing_standalone_sidecar_and_ignores_stale_jpeg_call
 fn review_state_seaorm_round_trips_every_normalized_collection() {
     let temp = tempfile::tempdir().unwrap();
     let state_path = temp.path().join(SQLITE_STATE_FILE);
-    let store = fully_populated_review_store();
+    let mut store = fully_populated_review_store();
+    store.expanded_burst_ids = BTreeSet::from([
+        "nikon:3019328:57634".to_string(),
+        "nikon:3019328:57635".to_string(),
+    ]);
 
     save_store(&state_path, &store).unwrap();
     let loaded = load_store(&state_path).unwrap().unwrap();
@@ -2921,9 +3161,9 @@ fn review_state_seaorm_round_trips_every_normalized_collection() {
         serde_json::to_value(persisted_store(store)).unwrap()
     );
     let facts = database_facts(&state_path).unwrap();
-    assert_eq!(facts.schema_version, 23);
+    assert_eq!(facts.schema_version, 24);
     assert!(facts.has_seaql_ledger);
-    assert_eq!(facts.seaql_migration_count, 12);
+    assert_eq!(facts.seaql_migration_count, 13);
     assert_eq!(
         facts.seaql_migrations,
         [
@@ -2939,15 +3179,18 @@ fn review_state_seaorm_round_trips_every_normalized_collection() {
             "m20260803_000010_diffusion_settings",
             "m20260804_000011_diffusion_parameters",
             "m20260818_000012_lcp_provenance",
+            "m20260823_000013_nikon_bursts",
         ]
     );
     assert!(!facts.has_legacy_ledger);
     assert!(!facts.has_review_state);
     assert!(!facts.has_json_storage_columns);
     assert!(facts.has_diffusion_parameter_columns);
+    assert!(facts.has_nikon_burst_columns);
     assert_eq!(facts.counts["review_settings"], 1);
     assert_eq!(facts.counts["profiles"], 2);
     assert_eq!(facts.counts["images"], 3);
+    assert_eq!(facts.counts["expanded_bursts"], 2);
     assert_eq!(facts.counts["tags"], 2);
     assert_eq!(facts.counts["image_tags"], 3);
     assert_eq!(facts.counts["image_profile_renders"], 1);
@@ -2965,7 +3208,7 @@ fn review_state_seaorm_round_trips_every_normalized_collection() {
     assert_eq!(facts.counts["auto_import_sources"], 0);
     assert_eq!(facts.counts["profile_diffusion_settings"], 1);
     assert_eq!(facts.counts["image_profile_diffusion_settings"], 1);
-    assert_eq!(facts.indexes.len(), 29);
+    assert_eq!(facts.indexes.len(), 30);
     let paths = stored_path_facts(&state_path).unwrap();
     assert_eq!(paths.input_root, "/in");
     assert_eq!(paths.output_root, "/out");
@@ -2983,6 +3226,78 @@ fn review_state_seaorm_round_trips_every_normalized_collection() {
             .all(|path| Path::new(path).is_relative())
     );
     assert_domain_constraints(&state_path).unwrap();
+}
+
+#[test]
+fn nikon_burst_state_is_persisted_by_database_deltas() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let runtime = test_async_runtime();
+    let (database, _) = runtime
+        .block_on(ReviewDatabase::open_output(&input, &output))
+        .unwrap();
+
+    let mut before = rebase_review_store(fully_populated_review_store(), &input, &output);
+    before.images[0].exif.camera_serial = None;
+    before.images[0].exif.nikon_burst_key = None;
+    before.images[0].exif.nikon_burst_shot_number = None;
+    runtime.block_on(database.replace_store(&before)).unwrap();
+
+    let mut after = before.clone();
+    after.images[0].exif.camera_serial = Some("3019328".to_string());
+    after.images[0].exif.nikon_burst_key = Some("nikon:3019328:57634".to_string());
+    after.images[0].exif.nikon_burst_shot_number = Some(3);
+    after
+        .expanded_burst_ids
+        .insert("nikon:3019328:57634".to_string());
+    runtime
+        .block_on(database.apply_delta(&before, &after))
+        .unwrap();
+    let state_path = database.path().to_path_buf();
+
+    let restored = load_store_with_roots(&state_path, &input, &output)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        restored.images[0].exif.camera_serial.as_deref(),
+        Some("3019328")
+    );
+    assert_eq!(
+        restored.images[0].exif.nikon_burst_key.as_deref(),
+        Some("nikon:3019328:57634")
+    );
+    assert_eq!(restored.images[0].exif.nikon_burst_shot_number, Some(3));
+    assert_eq!(
+        restored.expanded_burst_ids,
+        BTreeSet::from(["nikon:3019328:57634".to_string()])
+    );
+    let facts = database_facts(&state_path).unwrap();
+    assert_eq!(facts.counts["expanded_bursts"], 1);
+
+    let mut cleared = after.clone();
+    cleared.images[0].exif.camera_serial = None;
+    cleared.images[0].exif.nikon_burst_key = None;
+    cleared.images[0].exif.nikon_burst_shot_number = None;
+    cleared.expanded_burst_ids.clear();
+    runtime
+        .block_on(database.apply_delta(&after, &cleared))
+        .unwrap();
+    drop(database);
+
+    let restored = load_store_with_roots(&state_path, &input, &output)
+        .unwrap()
+        .unwrap();
+    assert_eq!(restored.images[0].exif.camera_serial, None);
+    assert_eq!(restored.images[0].exif.nikon_burst_key, None);
+    assert_eq!(restored.images[0].exif.nikon_burst_shot_number, None);
+    assert!(restored.expanded_burst_ids.is_empty());
+    assert_eq!(
+        database_facts(&state_path).unwrap().counts["expanded_bursts"],
+        0
+    );
 }
 
 #[test]
@@ -3008,10 +3323,10 @@ fn normalized_v11_database_is_backed_up_and_adopted_losslessly_once() {
     let backup_bytes = fs::read(&backup_path).unwrap();
 
     let after_facts = database_facts(&state_path).unwrap();
-    assert_eq!(after_facts.schema_version, 23);
+    assert_eq!(after_facts.schema_version, 24);
     assert!(!after_facts.has_legacy_ledger);
     assert!(after_facts.has_seaql_ledger);
-    assert_eq!(after_facts.seaql_migration_count, 12);
+    assert_eq!(after_facts.seaql_migration_count, 13);
     assert_eq!(
         after_facts.seaql_migrations,
         [
@@ -3027,6 +3342,7 @@ fn normalized_v11_database_is_backed_up_and_adopted_losslessly_once() {
             "m20260803_000010_diffusion_settings",
             "m20260804_000011_diffusion_parameters",
             "m20260818_000012_lcp_provenance",
+            "m20260823_000013_nikon_bursts",
         ]
     );
     assert!(!after_facts.has_json_storage_columns);
@@ -3065,7 +3381,7 @@ fn pre_release_two_entry_seaorm_ledger_is_collapsed_without_data_loss() {
         serde_json::to_value(migrated_pre_contrast_store(persisted_store(store))).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.seaql_migration_count, 12);
+    assert_eq!(after.seaql_migration_count, 13);
     assert_eq!(
         after.seaql_migrations,
         [
@@ -3081,6 +3397,7 @@ fn pre_release_two_entry_seaorm_ledger_is_collapsed_without_data_loss() {
             "m20260803_000010_diffusion_settings",
             "m20260804_000011_diffusion_parameters",
             "m20260818_000012_lcp_provenance",
+            "m20260823_000013_nikon_bursts",
         ]
     );
 }
@@ -3098,8 +3415,8 @@ fn schema_v12_migrates_to_panorama_schema_without_review_data_loss() {
         serde_json::to_value(migrated_pre_sampler_store(store)).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 23);
-    assert_eq!(after.seaql_migration_count, 12);
+    assert_eq!(after.schema_version, 24);
+    assert_eq!(after.seaql_migration_count, 13);
     assert_eq!(after.counts["panorama_projects"], 0);
     assert_eq!(after.counts["panorama_project_images"], 0);
     assert_eq!(after.counts["panorama_previews"], 0);
@@ -3128,9 +3445,9 @@ fn schema_v13_migrates_sampler_state_without_review_data_loss() {
             && profile.identity.starts_with("legacy:")
     }));
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 23);
-    assert_eq!(after.seaql_migration_count, 12);
-    assert_eq!(after.indexes.len(), 29);
+    assert_eq!(after.schema_version, 24);
+    assert_eq!(after.seaql_migration_count, 13);
+    assert_eq!(after.indexes.len(), 30);
 }
 
 #[test]
@@ -3155,10 +3472,10 @@ fn schema_v14_adds_focus_region_storage_without_review_data_loss() {
         .unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 23);
-    assert_eq!(after.seaql_migration_count, 12);
+    assert_eq!(after.schema_version, 24);
+    assert_eq!(after.seaql_migration_count, 13);
     assert_eq!(after.counts["image_focus_regions"], 0);
-    assert_eq!(after.indexes.len(), 29);
+    assert_eq!(after.indexes.len(), 30);
 }
 
 #[test]
@@ -3195,8 +3512,8 @@ fn schema_v15_paths_migrate_and_rebase_after_input_and_output_move() {
     );
 
     let facts = database_facts(&new_state).unwrap();
-    assert_eq!(facts.schema_version, 23);
-    assert_eq!(facts.seaql_migration_count, 12);
+    assert_eq!(facts.schema_version, 24);
+    assert_eq!(facts.seaql_migration_count, 13);
     assert_eq!(paths.input_root, new_input.to_string_lossy());
     assert_eq!(paths.output_root, new_output.to_string_lossy());
     assert!(
@@ -3268,14 +3585,14 @@ fn schema_v17_adds_normalized_auto_import_tables_without_review_data_loss() {
         .unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 23);
-    assert_eq!(after.seaql_migration_count, 12);
+    assert_eq!(after.schema_version, 24);
+    assert_eq!(after.seaql_migration_count, 13);
     assert_eq!(after.counts["auto_import_devices"], 0);
     assert_eq!(after.counts["auto_import_storages"], 0);
     assert_eq!(after.counts["auto_import_groups"], 0);
     assert_eq!(after.counts["auto_import_assets"], 0);
     assert_eq!(after.counts["auto_import_sources"], 0);
-    assert_eq!(after.indexes.len(), 29);
+    assert_eq!(after.indexes.len(), 30);
 }
 
 #[test]
@@ -3308,8 +3625,8 @@ fn schema_v18_splits_contrast_from_clarity_without_losing_old_edits() {
     assert_eq!(detailed.retouch_base.clarity, 15.0);
 
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 23);
-    assert_eq!(after.seaql_migration_count, 12);
+    assert_eq!(after.schema_version, 24);
+    assert_eq!(after.seaql_migration_count, 13);
 }
 
 #[test]
@@ -3331,11 +3648,11 @@ fn schema_v20_adds_diffusion_settings_without_losing_review_data() {
         serde_json::to_value(migrated_pre_diffusion_store(persisted_store(store))).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 23);
-    assert_eq!(after.seaql_migration_count, 12);
+    assert_eq!(after.schema_version, 24);
+    assert_eq!(after.seaql_migration_count, 13);
     assert_eq!(after.counts["profile_diffusion_settings"], 0);
     assert_eq!(after.counts["image_profile_diffusion_settings"], 0);
-    assert_eq!(after.indexes.len(), 29);
+    assert_eq!(after.indexes.len(), 30);
 }
 
 #[test]
@@ -3359,12 +3676,44 @@ fn schema_v21_adds_neutral_diffusion_parameters_without_losing_settings() {
         serde_json::to_value(expected).unwrap()
     );
     let after = database_facts(&state_path).unwrap();
-    assert_eq!(after.schema_version, 23);
-    assert_eq!(after.seaql_migration_count, 12);
+    assert_eq!(after.schema_version, 24);
+    assert_eq!(after.seaql_migration_count, 13);
     assert!(after.has_diffusion_parameter_columns);
     assert_eq!(after.counts["profile_diffusion_settings"], 1);
     assert_eq!(after.counts["image_profile_diffusion_settings"], 1);
-    assert_eq!(after.indexes.len(), 29);
+    assert_eq!(after.indexes.len(), 30);
+}
+
+#[test]
+fn schema_v23_adds_nikon_burst_storage_without_losing_review_data() {
+    let temp = tempfile::tempdir().unwrap();
+    let state_path = temp.path().join(SQLITE_STATE_FILE);
+    let mut store = fully_populated_review_store();
+    store.expanded_burst_ids = BTreeSet::from([
+        "nikon:3019328:57634".to_string(),
+        "nikon:3019328:57635".to_string(),
+    ]);
+    let expected = migrated_pre_nikon_bursts_store(persisted_store(store.clone()));
+    make_schema_v23_database(&state_path, &store).unwrap();
+
+    let before = database_facts(&state_path).unwrap();
+    assert_eq!(before.schema_version, 23);
+    assert_eq!(before.seaql_migration_count, 12);
+    assert!(!before.has_nikon_burst_columns);
+    assert_eq!(before.counts["expanded_bursts"], 0);
+    assert!(!before.indexes.contains("idx_images_nikon_burst_key"));
+
+    let loaded = load_store(&state_path).unwrap().unwrap();
+    assert_eq!(
+        serde_json::to_value(loaded).unwrap(),
+        serde_json::to_value(expected).unwrap()
+    );
+    let after = database_facts(&state_path).unwrap();
+    assert_eq!(after.schema_version, 24);
+    assert_eq!(after.seaql_migration_count, 13);
+    assert!(after.has_nikon_burst_columns);
+    assert_eq!(after.counts["expanded_bursts"], 0);
+    assert!(after.indexes.contains("idx_images_nikon_burst_key"));
 }
 
 #[test]
@@ -5200,6 +5549,10 @@ fn publish_args_rerender_when_grain_normalization_differs_from_daemon() {
 fn review_route_path_accepts_reverse_proxy_prefixes() {
     assert_eq!(review_route_path("/api/state"), "/api/state");
     assert_eq!(review_route_path("/mini-film/api/state"), "/api/state");
+    assert_eq!(
+        review_route_path("/mini-film/api/bursts/nikon-123"),
+        "/api/bursts/nikon-123"
+    );
     assert_eq!(
         review_route_path("/nested/mini-film/assets/app.js"),
         "/assets/app.js"

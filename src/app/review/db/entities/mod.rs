@@ -3,6 +3,7 @@ pub(super) mod auto_import_devices;
 pub(super) mod auto_import_groups;
 pub(super) mod auto_import_sources;
 pub(super) mod auto_import_storages;
+pub(super) mod expanded_bursts;
 pub(super) mod image_exif_tags;
 pub(super) mod image_focus_regions;
 pub(super) mod image_labels;

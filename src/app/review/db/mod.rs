@@ -422,7 +422,25 @@ async fn verify_seaorm_database(connection: &DatabaseConnection) -> Result<()> {
             bail!("SeaORM review database is missing required table {table}");
         }
     }
+    for table in required_nikon_burst_tables() {
+        if !manager
+            .has_table(table)
+            .await
+            .with_context(|| format!("checking review table {table}"))?
+        {
+            bail!("SeaORM review database is missing required table {table}");
+        }
+    }
     for (table, column) in required_diffusion_parameter_columns() {
+        if !manager
+            .has_column(table, column)
+            .await
+            .with_context(|| format!("checking review column {table}.{column}"))?
+        {
+            bail!("SeaORM review database is missing required column {table}.{column}");
+        }
+    }
+    for (table, column) in required_nikon_burst_columns() {
         if !manager
             .has_column(table, column)
             .await
@@ -593,6 +611,19 @@ fn required_diffusion_tables() -> impl Iterator<Item = &'static str> {
     .into_iter()
 }
 
+fn required_nikon_burst_tables() -> impl Iterator<Item = &'static str> {
+    ["expanded_bursts"].into_iter()
+}
+
+fn required_nikon_burst_columns() -> impl Iterator<Item = (&'static str, &'static str)> {
+    [
+        ("images", "exif_camera_serial"),
+        ("images", "exif_nikon_burst_key"),
+        ("images", "exif_nikon_burst_shot_number"),
+    ]
+    .into_iter()
+}
+
 fn required_diffusion_parameter_columns() -> impl Iterator<Item = (&'static str, &'static str)> {
     [
         ("profile_diffusion_settings", "softness_radius_percent"),
@@ -660,6 +691,7 @@ pub(super) struct TestDatabaseFacts {
     pub(super) has_review_state: bool,
     pub(super) has_json_storage_columns: bool,
     pub(super) has_diffusion_parameter_columns: bool,
+    pub(super) has_nikon_burst_columns: bool,
     pub(super) counts: HashMap<&'static str, u64>,
     pub(super) indexes: HashSet<&'static str>,
 }
@@ -753,6 +785,10 @@ pub(super) fn database_facts(path: &Path) -> Result<TestDatabaseFacts> {
         for (table, column) in required_diffusion_parameter_columns() {
             has_diffusion_parameter_columns &= manager.has_column(table, column).await?;
         }
+        let mut has_nikon_burst_columns = true;
+        for (table, column) in required_nikon_burst_columns() {
+            has_nikon_burst_columns &= manager.has_column(table, column).await?;
+        }
         let mut counts = HashMap::new();
         counts.insert(
             "review_settings",
@@ -775,6 +811,16 @@ pub(super) fn database_facts(path: &Path) -> Result<TestDatabaseFacts> {
                 .column(entities::images::Column::ImageId)
                 .count(&connection)
                 .await?,
+        );
+        counts.insert(
+            "expanded_bursts",
+            if manager.has_table("expanded_bursts").await? {
+                entities::expanded_bursts::Entity::find()
+                    .count(&connection)
+                    .await?
+            } else {
+                0
+            },
         );
         counts.insert(
             "tags",
@@ -957,6 +1003,7 @@ pub(super) fn database_facts(path: &Path) -> Result<TestDatabaseFacts> {
             has_review_state,
             has_json_storage_columns,
             has_diffusion_parameter_columns,
+            has_nikon_burst_columns,
             counts,
             indexes,
         };
@@ -1327,7 +1374,7 @@ pub(super) fn make_schema_v12_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(11)).await?;
+        Migrator::down(&connection, Some(12)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1343,7 +1390,7 @@ pub(super) fn make_schema_v13_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(10)).await?;
+        Migrator::down(&connection, Some(11)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1359,7 +1406,7 @@ pub(super) fn make_schema_v14_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(9)).await?;
+        Migrator::down(&connection, Some(10)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1375,7 +1422,7 @@ pub(super) fn make_schema_v15_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(8)).await?;
+        Migrator::down(&connection, Some(9)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1391,7 +1438,7 @@ pub(super) fn make_schema_v17_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(6)).await?;
+        Migrator::down(&connection, Some(7)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1407,7 +1454,7 @@ pub(super) fn make_schema_v18_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(5)).await?;
+        Migrator::down(&connection, Some(6)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1423,7 +1470,7 @@ pub(super) fn make_schema_v20_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(3)).await?;
+        Migrator::down(&connection, Some(4)).await?;
         sqlite_compat::verify_integrity(&connection).await?;
         connection.close().await?;
         Ok(())
@@ -1439,7 +1486,7 @@ pub(super) fn make_schema_v21_database(path: &Path, store: &ReviewStore) -> Resu
         .context("building review database runtime")?;
     runtime.block_on(async {
         let connection = connect_database(path, false).await?;
-        Migrator::down(&connection, Some(2)).await?;
+        Migrator::down(&connection, Some(3)).await?;
 
         // The v22 down migration intentionally leaves compatible columns in
         // place. Rebuild the two tables with their historical v21 shape so
@@ -1523,6 +1570,36 @@ pub(super) fn make_schema_v21_database(path: &Path, store: &ReviewStore) -> Resu
 }
 
 #[cfg(test)]
+pub(super) fn make_schema_v23_database(path: &Path, store: &ReviewStore) -> Result<()> {
+    save_store(path, store)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("building review database runtime")?;
+    runtime.block_on(async {
+        let connection = connect_database(path, false).await?;
+        Migrator::down(&connection, Some(1)).await?;
+
+        // The v24 down migration intentionally leaves nullable columns in
+        // place. Remove them in this fixture so the upgrade test exercises a
+        // genuine v23 database shape and the guarded ALTER TABLE path.
+        for column in [
+            "exif_nikon_burst_shot_number",
+            "exif_nikon_burst_key",
+            "exif_camera_serial",
+        ] {
+            connection
+                .execute_unprepared(&format!("ALTER TABLE \"images\" DROP COLUMN \"{column}\""))
+                .await?;
+        }
+
+        sqlite_compat::verify_integrity(&connection).await?;
+        connection.close().await?;
+        Ok(())
+    })
+}
+
+#[cfg(test)]
 pub(super) fn make_legacy_version_database(path: &Path, version: i64) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -1537,12 +1614,13 @@ pub(super) fn make_legacy_version_database(path: &Path, version: i64) -> Result<
 }
 
 #[cfg(test)]
-fn expected_indexes() -> [(&'static str, &'static str); 29] {
+fn expected_indexes() -> [(&'static str, &'static str); 30] {
     [
         ("profiles", "idx_profiles_position"),
         ("images", "idx_images_position"),
         ("images", "idx_images_rating_position"),
         ("images", "idx_images_updated_at"),
+        ("images", "idx_images_nikon_burst_key"),
         ("image_exif_tags", "idx_image_exif_tags_tag"),
         ("image_focus_regions", "idx_image_focus_regions_primary"),
         ("image_labels", "idx_image_labels_label"),

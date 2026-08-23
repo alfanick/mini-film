@@ -101,6 +101,12 @@ pub(crate) struct GalleryExifData {
     #[serde(default)]
     pub(crate) white_balance_offset: Option<i32>,
     pub(crate) camera_model: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub(crate) camera_serial: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub(crate) nikon_burst_key: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub(crate) nikon_burst_shot_number: Option<u32>,
     #[serde(default)]
     pub(crate) shutter_count: Option<u64>,
     #[serde(default)]
@@ -135,6 +141,9 @@ impl GalleryExifData {
             && self.white_balance_temperature.is_none()
             && self.white_balance_offset.is_none()
             && self.camera_model.is_none()
+            && self.camera_serial.is_none()
+            && self.nikon_burst_key.is_none()
+            && self.nikon_burst_shot_number.is_none()
             && self.focus_regions.is_empty()
             && self.shutter_count.is_none()
             && self.shutter_mode.is_none()
@@ -157,6 +166,8 @@ impl GalleryExifData {
         clean_optional_exif_text(&mut self.iso_auto_hi_limit);
         clean_optional_exif_text(&mut self.white_balance_mode);
         clean_optional_exif_text(&mut self.camera_model);
+        clean_optional_exif_text(&mut self.camera_serial);
+        clean_optional_exif_text(&mut self.nikon_burst_key);
         clean_optional_exif_text(&mut self.shutter_mode);
         clean_optional_exif_text(&mut self.release_mode);
         clean_optional_exif_text(&mut self.lens_model);
@@ -898,6 +909,9 @@ fn extract_gallery_exif_uncached(file: &Path) -> Result<GalleryExifData> {
                 data.white_balance_mode = metadata.white_balance_mode;
                 data.white_balance_temperature = metadata.white_balance_temperature;
                 data.white_balance_offset = metadata.white_balance_offset;
+                data.camera_serial = metadata.camera_serial;
+                data.nikon_burst_key = metadata.nikon_burst_key;
+                data.nikon_burst_shot_number = metadata.nikon_burst_shot_number;
                 data.shutter_count = metadata.shutter_count;
                 data.shutter_mode = metadata.shutter_mode;
                 data.silent_photography = metadata.silent_photography;
@@ -937,6 +951,9 @@ fn extract_gallery_exif_uncached(file: &Path) -> Result<GalleryExifData> {
     let mut white_balance_mode = None;
     let mut white_balance_temperature = None;
     let mut white_balance_offset = None;
+    let mut camera_serial = None;
+    let mut nikon_burst_key = None;
+    let mut nikon_burst_shot_number = None;
     let mut shutter_count = None;
     let mut shutter_mode = None;
     let mut silent_photography = None;
@@ -956,6 +973,9 @@ fn extract_gallery_exif_uncached(file: &Path) -> Result<GalleryExifData> {
         white_balance_mode = metadata.white_balance_mode;
         white_balance_temperature = metadata.white_balance_temperature;
         white_balance_offset = metadata.white_balance_offset;
+        camera_serial = metadata.camera_serial;
+        nikon_burst_key = metadata.nikon_burst_key;
+        nikon_burst_shot_number = metadata.nikon_burst_shot_number;
         shutter_count = metadata.shutter_count;
         shutter_mode = metadata.shutter_mode;
         silent_photography = metadata.silent_photography;
@@ -996,6 +1016,9 @@ fn extract_gallery_exif_uncached(file: &Path) -> Result<GalleryExifData> {
         white_balance_temperature,
         white_balance_offset,
         camera_model,
+        camera_serial,
+        nikon_burst_key,
+        nikon_burst_shot_number,
         shutter_count,
         shutter_mode,
         silent_photography,
@@ -1061,6 +1084,9 @@ struct GalleryMetadata {
     white_balance_mode: Option<String>,
     white_balance_temperature: Option<u32>,
     white_balance_offset: Option<i32>,
+    camera_serial: Option<String>,
+    nikon_burst_key: Option<String>,
+    nikon_burst_shot_number: Option<u32>,
     shutter_count: Option<u64>,
     shutter_mode: Option<String>,
     silent_photography: Option<bool>,
@@ -1089,6 +1115,12 @@ fn extract_gallery_metadata_with_exiftool(file: &Path) -> Option<GalleryMetadata
         .arg("-Nikon:WhiteBalance")
         .arg("-Nikon:ColorTemperatureAuto#")
         .arg("-Nikon:WhiteBalanceFineTune#")
+        .arg("-SerialNumber")
+        .arg("-InternalSerialNumber")
+        .arg("-Nikon:BurstStartFolderNumber#")
+        .arg("-Nikon:BurstStartImageNumber#")
+        .arg("-Nikon:BurstShotNumber#")
+        .arg("-Nikon:BurstGroupID#")
         .arg("-ShutterCount#")
         .arg("-Nikon:ShutterMode")
         .arg("-Nikon:SilentPhotography#")
@@ -1116,7 +1148,11 @@ fn extract_gallery_metadata_with_exiftool(file: &Path) -> Option<GalleryMetadata
     if !output.status.success() {
         return None;
     }
-    let mut values = serde_json::from_slice::<Vec<Value>>(&output.stdout).ok()?;
+    gallery_metadata_from_exiftool_json(&output.stdout)
+}
+
+fn gallery_metadata_from_exiftool_json(encoded: &[u8]) -> Option<GalleryMetadata> {
+    let mut values = serde_json::from_slice::<Vec<Value>>(encoded).ok()?;
     let object = values.pop()?;
     let tags = normalize_gallery_tags(
         json_string_values(object.get("Subject"))
@@ -1153,6 +1189,11 @@ fn extract_gallery_metadata_with_exiftool(file: &Path) -> Option<GalleryMetadata
             .get("WhiteBalanceFineTune")
             .or_else(|| object.get("Nikon:WhiteBalanceFineTune")),
     );
+    let camera_serial = json_clean_first_string(object.get("SerialNumber"))
+        .or_else(|| json_clean_first_string(object.get("Nikon:SerialNumber")))
+        .or_else(|| json_clean_first_string(object.get("InternalSerialNumber")))
+        .or_else(|| json_clean_first_string(object.get("Nikon:InternalSerialNumber")));
+    let (nikon_burst_key, nikon_burst_shot_number) = json_nikon_burst_metadata(&object);
     let shutter_count = json_u64_value(object.get("ShutterCount"))
         .or_else(|| json_u64_value(object.get("Nikon:ShutterCount")));
     let shutter_mode = json_first_string(object.get("ShutterMode"))
@@ -1190,6 +1231,9 @@ fn extract_gallery_metadata_with_exiftool(file: &Path) -> Option<GalleryMetadata
         white_balance_mode,
         white_balance_temperature,
         white_balance_offset,
+        camera_serial,
+        nikon_burst_key,
+        nikon_burst_shot_number,
         shutter_count,
         shutter_mode,
         silent_photography,
@@ -1206,6 +1250,25 @@ fn nikon_shooting_mode_uses_auto_iso(value: &str) -> bool {
     value
         .split(',')
         .any(|mode| mode.trim().eq_ignore_ascii_case("Auto ISO"))
+}
+
+fn json_nikon_burst_metadata(object: &Value) -> (Option<String>, Option<u32>) {
+    let folder = json_u32_value(object.get("BurstStartFolderNumber"))
+        .or_else(|| json_u32_value(object.get("Nikon:BurstStartFolderNumber")));
+    let start = json_u32_value(object.get("BurstStartImageNumber"))
+        .or_else(|| json_u32_value(object.get("Nikon:BurstStartImageNumber")));
+    let shot_number = json_u32_value(object.get("BurstShotNumber"))
+        .or_else(|| json_u32_value(object.get("Nikon:BurstShotNumber")));
+    if let (Some(folder), Some(start), Some(shot_number)) = (folder, start, shot_number) {
+        return (Some(format!("modern:{folder}:{start}")), Some(shot_number));
+    }
+
+    let legacy_group = json_u64_value(object.get("BurstGroupID"))
+        .or_else(|| json_u64_value(object.get("Nikon:BurstGroupID")))
+        .map(|group| group & !0x1f)
+        .filter(|group| *group > 0)
+        .map(|group| format!("legacy:{group}"));
+    (legacy_group, shot_number)
 }
 
 fn json_bool_value(value: Option<&Value>) -> Option<bool> {
@@ -1431,6 +1494,19 @@ fn json_first_string(value: Option<&Value>) -> Option<String> {
         Some(Value::Array(values)) => values
             .iter()
             .find_map(|value| json_first_string(Some(value))),
+        _ => None,
+    }
+}
+
+fn json_clean_first_string(value: Option<&Value>) -> Option<String> {
+    match value {
+        Some(Value::String(value)) => {
+            Some(clean_exif_display_text(value.clone())).filter(|value| !value.is_empty())
+        }
+        Some(Value::Number(value)) => Some(value.to_string()),
+        Some(Value::Array(values)) => values
+            .iter()
+            .find_map(|value| json_clean_first_string(Some(value))),
         _ => None,
     }
 }
@@ -1859,8 +1935,9 @@ fn system_time_to_unix_seconds(timestamp: SystemTime) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        OutputEditMetadata, add_edit_metadata_args, clean_exif_display_text, extract_gallery_exif,
-        format_exif_aperture, gallery_exif_cache_key, history_parameters, json_bool_value,
+        GalleryExifData, OutputEditMetadata, add_edit_metadata_args, clean_exif_display_text,
+        extract_gallery_exif, format_exif_aperture, gallery_exif_cache_key,
+        gallery_metadata_from_exiftool_json, history_parameters, json_bool_value,
         json_nikon_focus_regions, json_nikon_white_balance_offset, json_u32_value, json_u64_value,
         nikon_shooting_mode_uses_auto_iso, parse_exif_datetime, parse_exif_datetime_with_offset,
         parse_iso_value, sync_output_timestamps_from_exif,
@@ -2086,6 +2163,77 @@ mod tests {
         );
         assert_eq!(json_u64_value(Some(&serde_json::json!(0))), Some(0));
         assert_eq!(json_u64_value(Some(&serde_json::json!(-1))), None);
+    }
+
+    #[test]
+    fn gallery_metadata_prefers_modern_nikon_burst_identity() {
+        let metadata = gallery_metadata_from_exiftool_json(
+            br#"[{"SerialNumber":6062976,"BurstStartFolderNumber":102,"BurstStartImageNumber":"1780","BurstShotNumber":5,"BurstGroupID":56962}]"#,
+        )
+        .unwrap();
+
+        assert_eq!(metadata.camera_serial.as_deref(), Some("6062976"));
+        assert_eq!(metadata.nikon_burst_key.as_deref(), Some("modern:102:1780"));
+        assert_eq!(metadata.nikon_burst_shot_number, Some(5));
+    }
+
+    #[test]
+    fn gallery_metadata_normalizes_legacy_nikon_burst_type_bits() {
+        for (burst_group_id, normalized) in [(56_960, 56_960), (56_962, 56_960), (57_826, 57_824)] {
+            let encoded = format!(
+                r#"[{{"SerialNumber":" ","InternalSerialNumber":"  Z8-6062976\u0000 ","BurstGroupID":{burst_group_id}}}]"#
+            );
+            let metadata = gallery_metadata_from_exiftool_json(encoded.as_bytes()).unwrap();
+
+            assert_eq!(metadata.camera_serial.as_deref(), Some("Z8-6062976"));
+            assert_eq!(
+                metadata.nikon_burst_key,
+                Some(format!("legacy:{normalized}"))
+            );
+            assert_eq!(metadata.nikon_burst_shot_number, None);
+        }
+    }
+
+    #[test]
+    fn gallery_metadata_rejects_nonpositive_nikon_burst_values() {
+        let metadata = gallery_metadata_from_exiftool_json(
+            br#"[{"BurstStartFolderNumber":102,"BurstStartImageNumber":1780,"BurstShotNumber":0,"BurstGroupID":31}]"#,
+        )
+        .unwrap();
+
+        assert_eq!(metadata.nikon_burst_key, None);
+        assert_eq!(metadata.nikon_burst_shot_number, None);
+    }
+
+    #[test]
+    fn gallery_metadata_keeps_shot_number_with_legacy_burst_fallback() {
+        let metadata = gallery_metadata_from_exiftool_json(
+            br#"[{"BurstStartImageNumber":1780,"BurstShotNumber":7,"BurstGroupID":56962}]"#,
+        )
+        .unwrap();
+
+        assert_eq!(metadata.nikon_burst_key.as_deref(), Some("legacy:56960"));
+        assert_eq!(metadata.nikon_burst_shot_number, Some(7));
+    }
+
+    #[test]
+    fn internal_nikon_burst_metadata_is_not_publicly_serialized() {
+        let metadata = GalleryExifData {
+            camera_serial: Some("6062976".to_string()),
+            nikon_burst_key: Some("legacy:56960".to_string()),
+            nikon_burst_shot_number: Some(3),
+            ..GalleryExifData::default()
+        };
+        assert!(!metadata.is_empty());
+
+        let encoded = serde_json::to_value(&metadata).unwrap();
+        assert!(encoded.get("camera_serial").is_none());
+        assert!(encoded.get("nikon_burst_key").is_none());
+        assert!(encoded.get("nikon_burst_shot_number").is_none());
+        let decoded = serde_json::from_value::<GalleryExifData>(encoded).unwrap();
+        assert_eq!(decoded.camera_serial, None);
+        assert_eq!(decoded.nikon_burst_key, None);
+        assert_eq!(decoded.nikon_burst_shot_number, None);
     }
 
     #[test]

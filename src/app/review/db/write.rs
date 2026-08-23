@@ -106,6 +106,7 @@ async fn replace_store_in_transaction(
         image_profile_diffusion_rows(store)?,
     )
     .await?;
+    insert_models::<expanded_bursts::Entity, _>(transaction, expanded_burst_rows(store)).await?;
     review_settings::Entity::insert(settings_model(store, roots)?.into_active_model())
         .exec(transaction)
         .await
@@ -208,6 +209,14 @@ async fn apply_store_delta_in_transaction(
         .await?;
     }
 
+    if before.expanded_burst_ids != after.expanded_burst_ids {
+        expanded_bursts::Entity::delete_many()
+            .exec(transaction)
+            .await?;
+        insert_models::<expanded_bursts::Entity, _>(transaction, expanded_burst_rows(after))
+            .await?;
+    }
+
     prune_unused_tags(transaction).await?;
     settings_model(after, roots)?
         .into_active_model()
@@ -250,6 +259,9 @@ where
         .exec(connection)
         .await?;
     image_profile_diffusion_settings::Entity::delete_many()
+        .exec(connection)
+        .await?;
+    expanded_bursts::Entity::delete_many()
         .exec(connection)
         .await?;
     profile_diffusion_settings::Entity::delete_many()
@@ -558,6 +570,9 @@ fn image_rows(position: usize, image: &ReviewImage, roots: &ReviewPathRoots) -> 
             exif_shutter_speed: image.exif.shutter_speed.clone(),
             exif_iso: image.exif.iso.clone(),
             exif_camera_model: image.exif.camera_model.clone(),
+            exif_camera_serial: image.exif.camera_serial.clone(),
+            exif_nikon_burst_key: image.exif.nikon_burst_key.clone(),
+            exif_nikon_burst_shot_number: image.exif.nikon_burst_shot_number.map(i64::from),
             exif_lens_model: image.exif.lens_model.clone(),
             exif_shooting_mode: image.exif.shooting_mode.clone(),
             exif_exposure_compensation: image.exif.exposure_compensation.clone(),
@@ -710,6 +725,16 @@ fn image_rows(position: usize, image: &ReviewImage, roots: &ReviewPathRoots) -> 
             .map(|(position, render)| profile_render_row(image_id, position, render, roots))
             .collect::<Result<_>>()?,
     })
+}
+
+fn expanded_burst_rows(store: &ReviewStore) -> Vec<expanded_bursts::Model> {
+    store
+        .expanded_burst_ids
+        .iter()
+        .map(|burst_id| expanded_bursts::Model {
+            burst_id: burst_id.clone(),
+        })
+        .collect()
 }
 
 fn profile_render_row(

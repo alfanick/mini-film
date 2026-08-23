@@ -3510,6 +3510,19 @@ impl ReviewHandle {
         self.broadcast_state()
     }
 
+    pub(super) async fn apply_burst_expansion_async(
+        &self,
+        burst_id: &str,
+        update: ReviewBurstExpansionRequest,
+    ) -> Result<()> {
+        self.update_store_async(|store| {
+            store.set_burst_expanded(burst_id, update.expanded)?;
+            Ok(())
+        })
+        .await?;
+        self.broadcast_state()
+    }
+
     pub(super) fn api_state_json(&self) -> Result<String> {
         serde_json::to_string(&self.api_state_value()?).context("serializing review API state")
     }
@@ -3517,6 +3530,7 @@ impl ReviewHandle {
     pub(super) fn api_state_value(&self) -> Result<serde_json::Value> {
         let client_count = self.client_count()?;
         let store = self.store_snapshot();
+        let bursts = store.review_bursts();
         let mut images = store.images.clone();
         sort_review_images(&mut images);
         let active_image_id = store.ui.current_image_id;
@@ -3770,6 +3784,7 @@ impl ReviewHandle {
                 "current_image_id": store.ui.current_image_id,
                 "min_rating": store.ui.min_rating,
             },
+            "bursts": bursts,
             "images": images,
             "publish_root": self.publish_root().to_string_lossy(),
         }))
@@ -4549,6 +4564,7 @@ fn review_state_patch_value(
         "capabilities",
         "panorama",
         "ui",
+        "bursts",
         "publish_root",
     ] {
         if previous.get(key) != current.get(key)

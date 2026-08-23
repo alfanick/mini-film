@@ -2623,6 +2623,7 @@ function applyStatePatch(patch) {
     "publish_jobs",
     "capabilities",
     "panorama",
+    "bursts",
     "ui",
     "publish_root",
     "invocation",
@@ -2716,13 +2717,13 @@ function render() {
   els.appVersion.textContent = `mini-film ${state.data?.version || ""}`.trim();
   els.status.textContent = `${images.length}/${total} pictures | ${profileCount} ${plural(profileCount, "profile")} | ${clientCount} ${plural(clientCount, "client")}${codexSummary ? ` | ${codexSummary}` : ""}${publishSummary ? ` | ${publishSummary}` : ""}`;
   updatePublishStatus();
-  renderList(images);
   let current = findImage(state.currentId);
   if (current && !passesFilter(current)) current = null;
   if (!current) {
     state.currentId = firstReviewableImageId();
     current = findImage(state.currentId);
   }
+  renderList(images);
   renderCurrent(current);
   scheduleViewerSafeAreaUpdate();
 }
@@ -2914,13 +2915,15 @@ function filteredImagesFromData(data) {
 
 function renderList(images) {
   let lastCaptureDay = null;
+  const displayImages = images.map((image) => {
+    const captureDay = imageCaptureDisplay(image, lastCaptureDay);
+    lastCaptureDay = captureDay.day;
+    return { ...image, capture_time: captureDay.text };
+  });
   preactRender(
     h(ImageList, {
-      images: images.map((image) => {
-        const captureDay = imageCaptureDisplay(image, lastCaptureDay);
-        lastCaptureDay = captureDay.day;
-        return { ...image, capture_time: captureDay.text };
-      }),
+      images: displayImages,
+      bursts: state.data?.bursts || [],
       currentId: state.currentId,
       onSelect: async (image) => {
         const carryProfileIndex = selectedProfile(findImage(state.currentId))?.profile_index;
@@ -2928,10 +2931,11 @@ function renderList(images) {
         await updateSharedUi({ current_image_id: image.id, min_rating: minRating() });
         await carrySelectedProfileToImage(image.id, carryProfileIndex);
       },
+      onToggleBurst: updateBurstExpansion,
     }),
     els.list,
   );
-  const activeRow = els.list.querySelector(".image-row.active");
+  const activeRow = els.list.querySelector(".burst-member.active") || els.list.querySelector(".image-row.active");
   if (activeRow) {
     requestAnimationFrame(() => {
       activeRow.scrollIntoView({ block: "nearest", inline: "nearest" });
@@ -2939,59 +2943,172 @@ function renderList(images) {
   }
 }
 
-function ImageList({ images, currentId, onSelect }) {
-  return images.map((image) => {
-    const progress = renderProgressSummary(image);
-    const labels = imageLabels(image);
-    const isActive = image.id === currentId;
-    const thumbnailUrl = image.thumbnail_url || image.preview_url;
-    return h(
-      "button",
-      {
-        key: image.id,
-        type: "button",
-        class: `image-row${isActive ? " active" : ""}`,
-        onClick: () => onSelect(image).catch((error) => console.error(error)),
-      },
-      h("img", {
-        class: "image-row-thumb",
-        alt: "",
-        src: thumbnailUrl ? versionedUrl(thumbnailUrl, image.preview_updated_at || image.updated_at) : undefined,
-        loading: "lazy",
-        decoding: "async",
-        fetchpriority: "low",
+function ImageList({ images, bursts, currentId, onSelect, onToggleBurst }) {
+  const imageById = new Map(images.map((image) => [String(image.id), image]));
+  const burstByImageId = new Map();
+
+  for (const burst of Array.isArray(bursts) ? bursts : []) {
+    if (burst?.id === undefined || burst?.id === null || !Array.isArray(burst.image_ids)) continue;
+    const memberIds = Array.from(new Set(burst.image_ids.map(String)));
+    const members = memberIds
+      .filter((imageId) => !burstByImageId.has(imageId))
+      .map((imageId) => imageById.get(imageId))
+      .filter(Boolean);
+    if (members.length === 0) continue;
+    const visibleBurst = {
+      ...burst,
+      members,
+      total: memberIds.length,
+    };
+    for (const member of members) burstByImageId.set(String(member.id), visibleBurst);
+  }
+
+  const renderedBursts = new Set();
+  return images.flatMap((image) => {
+    const burst = burstByImageId.get(String(image.id));
+    if (!burst) {
+      return [h(ImageRow, { key: `image:${image.id}`, image, currentId, onSelect })];
+    }
+
+    const burstKey = String(burst.id);
+    if (renderedBursts.has(burstKey)) return [];
+    renderedBursts.add(burstKey);
+    return [
+      h(BurstGroup, {
+        key: `burst:${burstKey}`,
+        burst,
+        currentId,
+        onSelect,
+        onToggleBurst,
       }),
-      h(
-        "div",
-        {
-          class: "image-row-title",
-          title: image.relative_path || image.file_name,
-        },
-        h("span", { class: "image-row-title-text" }, image.file_name),
-      ),
-      image.capture_time
-        ? h("span", { class: "image-row-capture-time", title: image.capture_time }, image.capture_time)
-        : null,
-      h(
-        "div",
-        { class: "image-row-meta" },
-        h("span", { class: "image-row-rating" }, image.rating, labels.length > 0 ? h(LabelBadges, { labels }) : null),
-        h(
-          "span",
-          {
-            class: "image-row-progress",
-            title: progress.title,
-          },
-          progress.text,
-        ),
-      ),
-      h("span", {
-        class: `image-row-indicator ${progress.state}`,
-        title: progress.title,
-        "aria-label": progress.title,
-      }),
-    );
+    ];
   });
+}
+
+function BurstGroup({ burst, currentId, onSelect, onToggleBurst }) {
+  const currentMember = burst.members.find((image) => image.id === currentId);
+  const displayed = currentMember || burst.members[0];
+  const visibleCount = burst.members.length;
+  const count = `${visibleCount}/${burst.total}`;
+  const expanded = Boolean(burst.expanded);
+  const expansionLabel = `${expanded ? "Collapse" : "Expand"} burst, ${visibleCount} of ${burst.total} ${plural(
+    burst.total,
+    "picture",
+  )} visible`;
+
+  return h(
+    "section",
+    {
+      class: `burst-group${currentMember ? " contains-active" : ""}${expanded ? " expanded" : ""}`,
+      role: "group",
+      "aria-label": `Burst, ${visibleCount} of ${burst.total} ${plural(burst.total, "picture")} visible`,
+    },
+    h(
+      "div",
+      { class: "burst-header" },
+      h(ImageRow, {
+        image: displayed,
+        currentId: expanded ? null : currentId,
+        onSelect,
+        className: "burst-summary",
+        burstCount: count,
+        isolateActivation: true,
+      }),
+      h(
+        "button",
+        {
+          type: "button",
+          class: "burst-toggle",
+          title: expansionLabel,
+          "aria-label": expansionLabel,
+          "aria-expanded": String(expanded),
+          onKeyDown: isolateBurstActivation,
+          onClick: (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onToggleBurst(burst.id, !expanded).catch((error) => console.error(error));
+          },
+        },
+        h("span", { class: "burst-chevron-icon", "aria-hidden": "true" }, "\u203a"),
+      ),
+    ),
+    expanded
+      ? h(
+          "div",
+          { class: "burst-members" },
+          burst.members.map((image) =>
+            h(ImageRow, {
+              key: `burst:${burst.id}:image:${image.id}`,
+              image,
+              currentId,
+              onSelect,
+              className: "burst-member",
+            }),
+          ),
+        )
+      : null,
+  );
+}
+
+function isolateBurstActivation(event) {
+  if (event.key === "Enter" || event.key === " ") event.stopPropagation();
+}
+
+function ImageRow({ image, currentId, onSelect, className = "", burstCount = null, isolateActivation = false }) {
+  const progress = renderProgressSummary(image);
+  const labels = imageLabels(image);
+  const isActive = image.id === currentId;
+  const thumbnailUrl = image.thumbnail_url || image.preview_url;
+  return h(
+    "button",
+    {
+      type: "button",
+      class: `image-row${className ? ` ${className}` : ""}${isActive ? " active" : ""}`,
+      "aria-current": isActive ? "true" : undefined,
+      onKeyDown: isolateActivation ? isolateBurstActivation : undefined,
+      onClick: () => onSelect(image).catch((error) => console.error(error)),
+    },
+    h("img", {
+      class: "image-row-thumb",
+      alt: "",
+      src: thumbnailUrl ? versionedUrl(thumbnailUrl, image.preview_updated_at || image.updated_at) : undefined,
+      loading: "lazy",
+      decoding: "async",
+      fetchpriority: "low",
+    }),
+    h(
+      "div",
+      {
+        class: "image-row-title",
+        title: image.relative_path || image.file_name,
+      },
+      h("span", { class: "image-row-title-text" }, image.file_name),
+      burstCount
+        ? h("span", { class: "burst-count", title: `${burstCount} burst pictures visible` }, burstCount)
+        : null,
+    ),
+    image.capture_time
+      ? h("span", { class: "image-row-capture-time", title: image.capture_time }, image.capture_time)
+      : null,
+    h(
+      "div",
+      { class: "image-row-meta" },
+      h("span", { class: "image-row-rating" }, image.rating, labels.length > 0 ? h(LabelBadges, { labels }) : null),
+      h(
+        "span",
+        {
+          class: "image-row-progress",
+          title: progress.title,
+        },
+        progress.text,
+      ),
+    ),
+    h("span", {
+      class: `image-row-indicator ${progress.state}`,
+      title: progress.title,
+      "aria-label": progress.title,
+    }),
+  );
 }
 
 function renderProgressSummary(image) {
@@ -6668,6 +6785,16 @@ async function updateSharedUi(patch = {}) {
       applyStateMessage(await response.json());
     });
   return state.saveQueue;
+}
+
+async function updateBurstExpansion(burstId, expanded) {
+  const response = await fetch(reviewUrl(`api/bursts/${encodeURIComponent(String(burstId))}`), {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ expanded: Boolean(expanded) }),
+  });
+  if (!response.ok) throw new Error(`burst ${response.status}`);
+  applyStateMessage(await response.json());
 }
 
 function saveCurrentIfNeeded() {

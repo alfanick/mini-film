@@ -126,6 +126,11 @@ pub struct Model {
     pub exif_silent_photography: Option<i64>,
     #[sea_orm(column_type = "Text", nullable)]
     pub exif_release_mode: Option<String>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub exif_camera_serial: Option<String>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub exif_nikon_burst_key: Option<String>,
+    pub exif_nikon_burst_shot_number: Option<i64>,
     #[sea_orm(has_many)]
     pub image_exif_tags: HasMany<super::image_exif_tags::Entity>,
     #[sea_orm(has_many)]

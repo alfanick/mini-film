@@ -17,7 +17,8 @@ const DCP_PROVENANCE_SCHEMA_VERSION: i64 = 20;
 const DIFFUSION_SETTINGS_SCHEMA_VERSION: i64 = 21;
 const DIFFUSION_PARAMETERS_SCHEMA_VERSION: i64 = 22;
 const LCP_PROVENANCE_SCHEMA_VERSION: i64 = 23;
-pub(super) const LATEST_SCHEMA_VERSION: i64 = 23;
+const NIKON_BURSTS_SCHEMA_VERSION: i64 = 24;
+pub(super) const LATEST_SCHEMA_VERSION: i64 = 24;
 pub(super) const V18_BASELINE_MIGRATION: &str = "m20260718_000001_v18_baseline";
 pub(super) const PANORAMA_PROJECTS_MIGRATION: &str = "m20260719_000002_panorama_projects";
 pub(super) const REVIEW_SAMPLER_MIGRATION: &str = "m20260721_000003_review_sampler";
@@ -30,6 +31,7 @@ pub(super) const DCP_PROVENANCE_MIGRATION: &str = "m20260729_000009_dcp_provenan
 pub(super) const DIFFUSION_SETTINGS_MIGRATION: &str = "m20260803_000010_diffusion_settings";
 pub(super) const DIFFUSION_PARAMETERS_MIGRATION: &str = "m20260804_000011_diffusion_parameters";
 pub(super) const LCP_PROVENANCE_MIGRATION: &str = "m20260818_000012_lcp_provenance";
+pub(super) const NIKON_BURSTS_MIGRATION: &str = "m20260823_000013_nikon_bursts";
 pub(super) const PRE_RELEASE_SEAORM_LEDGER: [&str; 2] = [
     "m20260718_000001_create_review_schema",
     "m20260718_000002_adopt_seaorm",
@@ -67,6 +69,7 @@ impl MigratorTrait for Migrator {
             Box::new(DiffusionSettings),
             Box::new(DiffusionParameters),
             Box::new(LcpProvenance),
+            Box::new(NikonBursts),
         ]
     }
 }
@@ -736,6 +739,14 @@ impl MigrationName for LcpProvenance {
     }
 }
 
+struct NikonBursts;
+
+impl MigrationName for NikonBursts {
+    fn name(&self) -> &str {
+        NIKON_BURSTS_MIGRATION
+    }
+}
+
 #[async_trait::async_trait]
 impl MigrationTrait for LcpProvenance {
     fn use_transaction(&self) -> Option<bool> {
@@ -774,6 +785,89 @@ impl MigrationTrait for LcpProvenance {
             DIFFUSION_PARAMETERS_SCHEMA_VERSION,
         )
         .await
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for NikonBursts {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        for (name, column) in [
+            (
+                "exif_camera_serial",
+                ColumnDef::new(images::Column::ExifCameraSerial)
+                    .text()
+                    .null()
+                    .to_owned(),
+            ),
+            (
+                "exif_nikon_burst_key",
+                ColumnDef::new(images::Column::ExifNikonBurstKey)
+                    .text()
+                    .null()
+                    .to_owned(),
+            ),
+            (
+                "exif_nikon_burst_shot_number",
+                ColumnDef::new(images::Column::ExifNikonBurstShotNumber)
+                    .big_integer()
+                    .null()
+                    .to_owned(),
+            ),
+        ] {
+            if !manager
+                .has_column(images::Entity.table_name(), name)
+                .await?
+            {
+                manager
+                    .alter_table(
+                        Table::alter()
+                            .table(images::Entity)
+                            .add_column(column)
+                            .to_owned(),
+                    )
+                    .await?;
+            }
+        }
+
+        let schema = Schema::new(DbBackend::Sqlite);
+        create_entity_table(manager, &schema, expanded_bursts::Entity).await?;
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_images_nikon_burst_key")
+                    .table(images::Entity)
+                    .col(images::Column::ExifNikonBurstKey)
+                    .if_not_exists()
+                    .to_owned(),
+            )
+            .await?;
+        sqlite_compat::set_user_version(manager.get_connection(), NIKON_BURSTS_SCHEMA_VERSION).await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .drop_index(
+                Index::drop()
+                    .name("idx_images_nikon_burst_key")
+                    .table(images::Entity)
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .drop_table(
+                Table::drop()
+                    .table(expanded_bursts::Entity)
+                    .if_exists()
+                    .to_owned(),
+            )
+            .await?;
+        // Older binaries ignore the nullable forward-compatible EXIF columns.
+        sqlite_compat::set_user_version(manager.get_connection(), LCP_PROVENANCE_SCHEMA_VERSION)
+            .await
     }
 }
 
