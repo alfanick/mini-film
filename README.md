@@ -673,6 +673,9 @@ availability for that picture and keeps publish selection aligned; double-click
 or double-tap a thumbnail to make it the only available profile.
 Hover the filename in the review panel to see the source file size, pixel
 dimensions, and megapixel count rounded to one decimal place.
+The picture sidebar omits the final image extension and shows the camera model
+as muted text when EXIF model metadata is available, using compact Nikon Z names
+such as `Z8`, `Z9`, and `Z7ii`.
 When the source metadata contains a shutter count, hover the camera name in the
 same panel to see `Shutter count: N`. Hover the focal length to see the lens
 name when it is available. Hover the shutter speed to see the shutter mode and,

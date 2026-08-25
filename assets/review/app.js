@@ -3082,11 +3082,39 @@ function isolateBurstActivation(event) {
   if (event.key === "Enter" || event.key === " ") event.stopPropagation();
 }
 
+function sidebarFileStem(fileName) {
+  const name = typeof fileName === "string" ? fileName : "";
+  const extension = name.lastIndexOf(".");
+  return extension > 0 ? name.slice(0, extension) : name;
+}
+
+function sidebarCameraModel(cameraModel) {
+  const original = typeof cameraModel === "string" ? cameraModel.trim() : "";
+  if (!original) return "";
+
+  const nikon = /^(?:nikon(?:\s+corporation)?\s+)?z\s*(fc|f|\d+)(?:[\s_-]*(?:mark\s*)?(\d+|ii|iii|iv))?$/i.exec(
+    original,
+  );
+  if (nikon) {
+    const generation = { 2: "ii", 3: "iii", 4: "iv", ii: "ii", iii: "iii", iv: "iv" }[(nikon[2] || "").toLowerCase()];
+    const body = /^\d+$/.test(nikon[1]) ? nikon[1] : nikon[1].toLowerCase();
+    return `Z${body}${generation || ""}`;
+  }
+
+  return original
+    .replace(
+      /^(?:nikon(?:\s+corporation)?|canon(?:\s+inc\.?)?|sony(?:\s+corporation)?|fujifilm(?:\s+corporation)?|fuji|olympus(?:\s+imaging(?:\s+corp(?:oration)?\.?)?)?|om\s+(?:system|digital solutions)(?:\s+corporation)?|panasonic(?:\s+corporation)?|lumix|leica(?:\s+camera(?:\s+ag)?)?|pentax|ricoh(?:\s+imaging(?:\s+company)?(?:,?\s+ltd\.?)?)?|hasselblad|sigma|samsung|apple|google|dji|phase one|kodak)(?=$|[\s_:/-])[\s_:/-]*/i,
+      "",
+    )
+    .trim();
+}
+
 function ImageRow({ image, currentId, onSelect, className = "", burstCount = null, isolateActivation = false }) {
   const progress = renderProgressSummary(image);
   const labels = imageLabels(image);
   const isActive = image.id === currentId;
   const thumbnailUrl = image.thumbnail_url || image.preview_url;
+  const cameraModel = sidebarCameraModel(image.exif?.camera_model);
   return h(
     "button",
     {
@@ -3110,7 +3138,14 @@ function ImageRow({ image, currentId, onSelect, className = "", burstCount = nul
         class: "image-row-title",
         title: image.relative_path || image.file_name,
       },
-      h("span", { class: "image-row-title-text" }, image.file_name),
+      h(
+        "span",
+        { class: "image-row-title-text" },
+        h("span", { class: "image-row-file-name" }, sidebarFileStem(image.file_name)),
+        cameraModel
+          ? h("span", { class: "image-row-camera-model", title: image.exif.camera_model }, cameraModel)
+          : null,
+      ),
       burstCount
         ? h("span", { class: "burst-count", title: `${burstCount} burst pictures visible` }, burstCount)
         : null,

@@ -303,12 +303,31 @@ button:disabled {
 }
 
 .image-row-title-text {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
   height: 13px;
+  min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 11px;
   line-height: 13px;
+}
+
+.image-row-file-name {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.image-row-camera-model {
+  min-width: 0;
+  max-width: 45%;
+  flex: 0 1 auto;
+  overflow: hidden;
+  color: #77776f;
+  text-overflow: ellipsis;
 }
 
 .image-row-capture-time {
