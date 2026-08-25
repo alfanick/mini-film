@@ -706,6 +706,15 @@ rating-button clicks update that shared state and are replicated to every
 connected browser through the server-sent event stream. At the end of a pass,
 the shared filter moves to the next rating level.
 
+When a complete `PragmataPro Mono Liga` family is installed under
+`~/.fonts`, mini-film automatically converts its regular, bold, italic, and
+bold-italic faces to cached WOFF2 files under
+`~/.cache/mini-film/web-fonts/`. The desktop wizard, live review, and TV view
+then use those content-addressed web fonts with long-lived browser caching.
+Missing or unusable font files leave the existing font fallbacks unchanged.
+The proprietary font is never embedded in the mini-film binary or copied into
+standalone sampler pages and published galleries.
+
 Review data, panorama projects, shared browser position, and burst expansion are
 persisted in `<input>/mini-film-review.sqlite` as normalized relational rows.
 The output path

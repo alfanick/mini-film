@@ -1,6 +1,8 @@
 :root {
   color-scheme: light;
-  font-family: "PragmataPro Mono Liga", "PragmataPro", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family:
+    "Mini Film PragmataPro Mono Liga", "PragmataPro Mono Liga", "PragmataPro", ui-monospace, SFMono-Regular, Menlo,
+    Monaco, Consolas, monospace;
   background: #f3f3f1;
   color: #171717;
   --burst-border: #d8d8d2;
@@ -1826,7 +1828,7 @@ button:disabled {
   max-height: 420px;
   overflow: auto;
   color: #252520;
-  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-family: "Mini Film PragmataPro Mono Liga", ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
   font-size: 11px;
   line-height: 1.4;
   white-space: pre;
@@ -1914,7 +1916,9 @@ button:disabled {
   gap: 0;
   align-content: start;
   font-size: 12px;
-  font-family: "PragmataPro Mono Liga", "PragmataPro", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family:
+    "Mini Film PragmataPro Mono Liga", "PragmataPro Mono Liga", "PragmataPro", ui-monospace, SFMono-Regular, Menlo,
+    Monaco, Consolas, monospace;
   line-height: 1.12;
 }
 
@@ -1949,7 +1953,9 @@ button:disabled {
 }
 
 .command-invocation-binary {
-  font-family: "PragmataPro", "PragmataPro Mono Liga", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family:
+    "Mini Film PragmataPro Mono Liga", "PragmataPro", "PragmataPro Mono Liga", ui-monospace, SFMono-Regular, Menlo,
+    Monaco, Consolas, monospace;
   font-size: 12px;
   font-weight: 700;
   color: #26231d;

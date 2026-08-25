@@ -15,6 +15,10 @@ mod enabled {
     use anyhow::{Context, Result, anyhow, bail};
     use mini_film::GrainEngine;
     use serde::{Deserialize, Serialize};
+    use tauri::http::{
+        Method, Request, Response, StatusCode,
+        header::{ACCESS_CONTROL_ALLOW_ORIGIN, CACHE_CONTROL, CONTENT_TYPE, ETAG, IF_NONE_MATCH},
+    };
     use tauri_plugin_dialog::DialogExt;
 
     use crate::{
@@ -26,12 +30,16 @@ mod enabled {
                 profile_name_parts, variant_sort_key,
             },
             util::{InputFileFilter, default_hald_dir, half_cpu_thread_count},
+            web_font::{FONT_FAMILY_ALIAS, pragmata_pro_mono_liga},
         },
         cli::{
             BatchOutputFormat, CodexAnalysisFlags, ExportOptions, GalleryTemplate, JpegSubsampling,
             LensCorrections,
         },
     };
+
+    const FONT_PROTOCOL: &str = "mini-film-font";
+    const FONT_CACHE_CONTROL: &str = "private, max-age=31536000, immutable";
 
     #[derive(Default)]
     struct AppRuntime {
@@ -40,6 +48,27 @@ mod enabled {
 
     struct AppDaemon {
         review_url: String,
+    }
+
+    #[derive(Clone, Debug, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct AppWebFontFace {
+        family: &'static str,
+        asset: String,
+        weight: u16,
+        style: &'static str,
+    }
+
+    #[derive(Clone, Debug)]
+    struct AppWebFontAsset {
+        path: PathBuf,
+        etag: String,
+    }
+
+    #[derive(Clone, Debug, Default)]
+    struct AppWebFonts {
+        faces: Option<Vec<AppWebFontFace>>,
+        assets: BTreeMap<String, AppWebFontAsset>,
     }
 
     #[derive(Clone, Debug, Serialize)]
@@ -75,6 +104,8 @@ mod enabled {
         codex_binary: String,
         codex_model: String,
         codex_timeout: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        font_faces: Option<Vec<AppWebFontFace>>,
     }
 
     #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -120,9 +151,15 @@ mod enabled {
     }
 
     pub(crate) fn run_desktop_app() -> Result<()> {
+        let web_fonts = AppWebFonts::load();
+        let protocol_web_fonts = web_fonts.clone();
         tauri::Builder::default()
+            .register_uri_scheme_protocol(FONT_PROTOCOL, move |_context, request| {
+                font_protocol_response(&protocol_web_fonts, request)
+            })
             .plugin(tauri_plugin_dialog::init())
             .manage(AppRuntime::default())
+            .manage(web_fonts)
             .invoke_handler(tauri::generate_handler![
                 app_defaults,
                 pick_directory,
@@ -134,13 +171,13 @@ mod enabled {
     }
 
     #[tauri::command]
-    fn app_defaults() -> AppDefaults {
-        AppDefaults::load()
+    fn app_defaults(web_fonts: tauri::State<'_, AppWebFonts>) -> AppDefaults {
+        AppDefaults::load(web_fonts.faces.clone())
     }
 
     impl AppDefaults {
-        fn load() -> Self {
-            let default = Self::factory_defaults();
+        fn load(font_faces: Option<Vec<AppWebFontFace>>) -> Self {
+            let default = Self::factory_defaults(font_faces);
             let Ok(text) = fs::read_to_string(app_settings_path()) else {
                 return default;
             };
@@ -150,7 +187,7 @@ mod enabled {
             default.with_saved(saved)
         }
 
-        fn factory_defaults() -> Self {
+        fn factory_defaults(font_faces: Option<Vec<AppWebFontFace>>) -> Self {
             AppDefaults {
                 version: env!("CARGO_PKG_VERSION"),
                 input: default_user_path(&["Pictures", "Scratch", "Inbox"])
@@ -188,6 +225,7 @@ mod enabled {
                 codex_binary: "codex".to_string(),
                 codex_model: "gpt-5.4-mini".to_string(),
                 codex_timeout: 45,
+                font_faces,
             }
         }
 
@@ -225,6 +263,110 @@ mod enabled {
             self.codex_timeout = saved.codex_timeout.unwrap_or(self.codex_timeout);
             self
         }
+    }
+
+    impl AppWebFonts {
+        fn load() -> Self {
+            let Some(family) = pragmata_pro_mono_liga() else {
+                return Self::default();
+            };
+
+            let faces = family
+                .faces
+                .iter()
+                .map(|face| AppWebFontFace {
+                    family: FONT_FAMILY_ALIAS,
+                    asset: face.asset.file_name.clone(),
+                    weight: face.weight,
+                    style: face.style.css_value(),
+                })
+                .collect::<Vec<_>>();
+            let assets = family
+                .faces
+                .iter()
+                .map(|face| {
+                    (
+                        face.asset.file_name.clone(),
+                        AppWebFontAsset {
+                            path: face.asset.path.clone(),
+                            etag: format!("\"{}\"", face.asset.digest),
+                        },
+                    )
+                })
+                .collect();
+            Self {
+                faces: Some(faces),
+                assets,
+            }
+        }
+    }
+
+    fn font_protocol_response(
+        web_fonts: &AppWebFonts,
+        request: Request<Vec<u8>>,
+    ) -> Response<Vec<u8>> {
+        let asset = if request.method() == Method::GET && request.uri().query().is_none() {
+            request
+                .uri()
+                .path()
+                .strip_prefix('/')
+                .filter(|file_name| !file_name.is_empty() && !file_name.contains('/'))
+                .and_then(|file_name| web_fonts.assets.get(file_name))
+        } else {
+            None
+        };
+        let Some(asset) = asset else {
+            return font_not_found_response();
+        };
+        if !asset.path.is_file() {
+            return font_not_found_response();
+        }
+
+        if request_etag_matches(&request, &asset.etag) {
+            return font_response_builder(StatusCode::NOT_MODIFIED, &asset.etag)
+                .body(Vec::new())
+                .expect("static font response headers are valid");
+        }
+
+        let Ok(bytes) = fs::read(&asset.path) else {
+            return font_not_found_response();
+        };
+        font_response_builder(StatusCode::OK, &asset.etag)
+            .body(bytes)
+            .expect("static font response headers are valid")
+    }
+
+    fn font_response_builder(status: StatusCode, etag: &str) -> tauri::http::response::Builder {
+        Response::builder()
+            .status(status)
+            .header(CONTENT_TYPE, "font/woff2")
+            .header(CACHE_CONTROL, FONT_CACHE_CONTROL)
+            .header(ETAG, etag)
+            .header(ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+    }
+
+    fn font_not_found_response() -> Response<Vec<u8>> {
+        Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .header(CONTENT_TYPE, "text/plain; charset=utf-8")
+            .header(CACHE_CONTROL, "no-store")
+            .header(ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .body(b"font asset not found".to_vec())
+            .expect("static font response headers are valid")
+    }
+
+    fn request_etag_matches(request: &Request<Vec<u8>>, etag: &str) -> bool {
+        request
+            .headers()
+            .get(IF_NONE_MATCH)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| {
+                value.split(',').map(str::trim).any(|candidate| {
+                    candidate == "*"
+                        || candidate == etag
+                        || candidate.strip_prefix("W/") == Some(etag)
+                })
+            })
     }
 
     #[derive(Clone, Debug, Serialize)]
@@ -787,6 +929,118 @@ mod enabled {
         env::var_os("HOME")
             .or_else(|| env::var_os("USERPROFILE"))
             .map(PathBuf::from)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        const TEST_ASSET: &str = "pragmata-pro-mono-liga-400-normal-deadbeef.woff2";
+        const TEST_ETAG: &str = "\"deadbeef\"";
+
+        fn test_web_fonts(path: &Path) -> AppWebFonts {
+            AppWebFonts {
+                faces: None,
+                assets: BTreeMap::from([(
+                    TEST_ASSET.to_string(),
+                    AppWebFontAsset {
+                        path: path.to_path_buf(),
+                        etag: TEST_ETAG.to_string(),
+                    },
+                )]),
+            }
+        }
+
+        fn font_request(path: &str, if_none_match: Option<&str>) -> Request<Vec<u8>> {
+            let mut builder = Request::builder()
+                .method(Method::GET)
+                .uri(format!("{FONT_PROTOCOL}://localhost{path}"));
+            if let Some(etag) = if_none_match {
+                builder = builder.header(IF_NONE_MATCH, etag);
+            }
+            builder.body(Vec::new()).expect("test request is valid")
+        }
+
+        #[test]
+        fn font_protocol_serves_only_registered_woff2_with_immutable_headers() {
+            let directory = tempfile::tempdir().expect("temporary directory");
+            let path = directory.path().join(TEST_ASSET);
+            let bytes = b"wOF2test font";
+            fs::write(&path, bytes).expect("write test font");
+            let web_fonts = test_web_fonts(&path);
+
+            let response =
+                font_protocol_response(&web_fonts, font_request(&format!("/{TEST_ASSET}"), None));
+
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.body().as_slice(), bytes);
+            assert_eq!(response.headers()[CONTENT_TYPE], "font/woff2");
+            assert_eq!(response.headers()[CACHE_CONTROL], FONT_CACHE_CONTROL);
+            assert_eq!(response.headers()[ETAG], TEST_ETAG);
+            assert_eq!(response.headers()[ACCESS_CONTROL_ALLOW_ORIGIN], "*");
+        }
+
+        #[test]
+        fn font_protocol_returns_empty_304_for_matching_etag() {
+            let file = tempfile::NamedTempFile::new().expect("temporary font");
+            let web_fonts = test_web_fonts(file.path());
+            let request = font_request(
+                &format!("/{TEST_ASSET}"),
+                Some(&format!("\"other\", W/{TEST_ETAG}")),
+            );
+
+            let response = font_protocol_response(&web_fonts, request);
+
+            assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+            assert!(response.body().is_empty());
+            assert_eq!(response.headers()[CACHE_CONTROL], FONT_CACHE_CONTROL);
+            assert_eq!(response.headers()[ETAG], TEST_ETAG);
+            assert_eq!(response.headers()[ACCESS_CONTROL_ALLOW_ORIGIN], "*");
+        }
+
+        #[test]
+        fn font_protocol_ignores_a_nonmatching_etag() {
+            let directory = tempfile::tempdir().expect("temporary directory");
+            let path = directory.path().join(TEST_ASSET);
+            fs::write(&path, b"wOF2test font").expect("write test font");
+            let web_fonts = test_web_fonts(&path);
+
+            let response = font_protocol_response(
+                &web_fonts,
+                font_request(&format!("/{TEST_ASSET}"), Some("\"other\"")),
+            );
+
+            assert_eq!(response.status(), StatusCode::OK);
+            assert!(!response.body().is_empty());
+        }
+
+        #[test]
+        fn font_protocol_rejects_unknown_nested_and_query_paths_without_caching() {
+            let file = tempfile::NamedTempFile::new().expect("temporary font");
+            let web_fonts = test_web_fonts(file.path());
+            let paths = [
+                "/unknown.woff2".to_string(),
+                format!("/nested/{TEST_ASSET}"),
+                format!("/%2E%2E%2F{TEST_ASSET}"),
+                format!("/{TEST_ASSET}?v=1"),
+            ];
+
+            for path in &paths {
+                let response = font_protocol_response(&web_fonts, font_request(path, None));
+                assert_eq!(response.status(), StatusCode::NOT_FOUND, "path: {path}");
+                assert_eq!(response.headers()[CACHE_CONTROL], "no-store");
+                assert_eq!(response.headers()[ACCESS_CONTROL_ALLOW_ORIGIN], "*");
+                assert!(!response.headers().contains_key(ETAG));
+            }
+        }
+
+        #[test]
+        fn app_defaults_omit_unavailable_font_descriptors() {
+            let defaults = AppDefaults::factory_defaults(None);
+            let json = serde_json::to_value(defaults).expect("serialize defaults");
+
+            assert!(json.get("fontFaces").is_none());
+        }
     }
 }
 

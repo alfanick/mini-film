@@ -8,7 +8,7 @@ use axum::{
     Router,
     body::{Body, Bytes, to_bytes},
     extract::State,
-    http::{HeaderValue, Method, Request, StatusCode, header},
+    http::{HeaderMap, HeaderValue, Method, Request, StatusCode, header},
     response::{
         IntoResponse, Response,
         sse::{Event, KeepAlive, Sse},
@@ -54,7 +54,7 @@ async fn review_request(State(handle): State<ReviewHandle>, request: Request<Bod
             return json_error(400, anyhow!("reading HTTP request body: {error}")).into_response();
         }
     };
-    route_request(parts.method, &path, body, &handle).await
+    route_request_with_headers(parts.method, &path, body, &parts.headers, &handle).await
 }
 
 pub(super) struct HttpResponse {
@@ -63,18 +63,46 @@ pub(super) struct HttpResponse {
     pub(super) body: Vec<u8>,
 }
 
+#[cfg(test)]
 pub(super) async fn route_request(
     method: Method,
     path: &str,
     body: Bytes,
     handle: &ReviewHandle,
 ) -> Response {
+    let headers = HeaderMap::new();
+    route_request_with_headers(method, path, body, &headers, handle).await
+}
+
+pub(super) async fn route_request_with_headers(
+    method: Method,
+    path: &str,
+    body: Bytes,
+    headers: &HeaderMap,
+    handle: &ReviewHandle,
+) -> Response {
     match (method.clone(), path) {
         (Method::GET, "/") | (Method::GET, "/review") => {
-            text_response(200, "text/html; charset=utf-8", &review_index_html()).into_response()
+            let font_href = handle
+                .web_font_family
+                .map(|family| family.stylesheet_href());
+            text_response(
+                200,
+                "text/html; charset=utf-8",
+                &review_index_html(font_href.as_deref()),
+            )
+            .into_response()
         }
         (Method::GET, "/tv") => {
-            text_response(200, "text/html; charset=utf-8", &review_tv_html()).into_response()
+            let font_href = handle
+                .web_font_family
+                .map(|family| family.stylesheet_href());
+            text_response(
+                200,
+                "text/html; charset=utf-8",
+                &review_tv_html(font_href.as_deref()),
+            )
+            .into_response()
         }
         (Method::GET, "/assets/styles.css") => {
             text_response(200, "text/css; charset=utf-8", review_styles()).into_response()
@@ -85,6 +113,9 @@ pub(super) async fn route_request(
             review_script(),
         )
         .into_response(),
+        (Method::GET, _) if path.starts_with("/assets/fonts/") => {
+            font_asset_response(path, headers, handle).await
+        }
         (Method::GET, _) if path.starts_with("/assets/vendor/") => {
             let asset_path = path.trim_start_matches("/assets/");
             match review_text_asset(asset_path) {
@@ -247,6 +278,113 @@ pub(super) async fn route_request(
         }
         _ => text_response(404, "text/plain; charset=utf-8", "not found").into_response(),
     }
+}
+
+const IMMUTABLE_FONT_CACHE_CONTROL: &str = "private, max-age=31536000, immutable";
+
+async fn font_asset_response(
+    path: &str,
+    request_headers: &HeaderMap,
+    handle: &ReviewHandle,
+) -> Response {
+    let not_found = || text_response(404, "text/plain; charset=utf-8", "not found").into_response();
+    let Some(file_name) = path.strip_prefix("/assets/fonts/") else {
+        return not_found();
+    };
+    if file_name.is_empty() || file_name.contains('/') || file_name.contains('\\') {
+        return not_found();
+    }
+    let Some(family) = handle.web_font_family else {
+        return not_found();
+    };
+    let Some(asset) = family.asset(file_name) else {
+        return not_found();
+    };
+    if !asset.path.is_file() {
+        return not_found();
+    }
+    let etag = asset.etag();
+    if if_none_match_matches(request_headers, &etag) {
+        let mut response = StatusCode::NOT_MODIFIED.into_response();
+        if let Err(error) = apply_font_asset_headers(&mut response, asset, &etag) {
+            return json_error(500, error).into_response();
+        }
+        return response;
+    }
+
+    let mut request = match Request::builder()
+        .method(Method::GET)
+        .uri("/")
+        .body(Body::empty())
+    {
+        Ok(request) => request,
+        Err(error) => {
+            return json_error(500, anyhow!("building web font asset request: {error}"))
+                .into_response();
+        }
+    };
+    if let Some(range) = request_headers.get(header::RANGE) {
+        request.headers_mut().insert(header::RANGE, range.clone());
+    }
+    let mut response = match ServeFile::new(&asset.path).oneshot(request).await {
+        Ok(response) => response.map(Body::new).into_response(),
+        Err(error) => {
+            return json_error(500, anyhow!("serving cached web font asset: {error}"))
+                .into_response();
+        }
+    };
+    response.headers_mut().remove(header::CONTENT_DISPOSITION);
+    if matches!(
+        response.status(),
+        StatusCode::OK | StatusCode::PARTIAL_CONTENT | StatusCode::NOT_MODIFIED
+    ) {
+        if let Err(error) = apply_font_asset_headers(&mut response, asset, &etag) {
+            return json_error(500, error).into_response();
+        }
+    } else {
+        response.headers_mut().remove(header::ETAG);
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("no-store, max-age=0"),
+        );
+    }
+    response
+}
+
+fn if_none_match_matches(headers: &HeaderMap, etag: &str) -> bool {
+    for value in headers.get_all(header::IF_NONE_MATCH) {
+        let Ok(value) = value.to_str() else {
+            continue;
+        };
+        for candidate in value.split(',').map(str::trim) {
+            if candidate == "*" || candidate == etag || candidate.strip_prefix("W/") == Some(etag) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn apply_font_asset_headers(
+    response: &mut Response,
+    asset: &crate::app::web_font::PreparedWebFontAsset,
+    etag: &str,
+) -> Result<()> {
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_str(asset.content_type)
+            .context("building cached web font content type header")?,
+    );
+    response.headers_mut().insert(
+        header::ETAG,
+        HeaderValue::from_str(etag).context("building cached web font ETag header")?,
+    );
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(IMMUTABLE_FONT_CACHE_CONTROL),
+    );
+    response.headers_mut().remove(header::CONTENT_DISPOSITION);
+    Ok(())
 }
 
 async fn gallery_archive_response(path: &str, handle: &ReviewHandle) -> Response {

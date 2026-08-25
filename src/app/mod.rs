@@ -29,6 +29,7 @@ pub(crate) mod system_stats;
 pub(crate) mod timestamps;
 pub(crate) mod update;
 pub(crate) mod util;
+pub(crate) mod web_font;
 
 use std::path::Path;
 

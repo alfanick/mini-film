@@ -1,4 +1,7 @@
 const invoke = window.__TAURI__?.core?.invoke;
+const convertFileSrc = window.__TAURI__?.core?.convertFileSrc;
+const appFontFamily = "Mini Film PragmataPro Mono Liga";
+const appFontProtocol = "mini-film-font";
 
 const fields = {
   input: document.getElementById("input"),
@@ -77,6 +80,47 @@ function syncNormalizeGrainField() {
   fields.normalizeGrainMpix.disabled = !fields.normalizeGrain.checked;
 }
 
+function registerAppFontFaces(faces) {
+  if (
+    !Array.isArray(faces) ||
+    faces.length !== 4 ||
+    typeof FontFace !== "function" ||
+    !document.fonts ||
+    typeof convertFileSrc !== "function"
+  ) {
+    return;
+  }
+
+  const expectedFaces = new Set(["400:normal", "700:normal", "400:italic", "700:italic"]);
+  const preparedFaces = [];
+  for (const face of faces) {
+    const key = `${face.weight}:${face.style}`;
+    if (face.family !== appFontFamily || typeof face.asset !== "string" || !face.asset || !expectedFaces.delete(key)) {
+      return;
+    }
+    preparedFaces.push(face);
+  }
+  if (expectedFaces.size !== 0) return;
+
+  let browserFaces;
+  try {
+    browserFaces = preparedFaces.map((face) => {
+      const url = convertFileSrc(face.asset, appFontProtocol);
+      return new FontFace(appFontFamily, `url(${JSON.stringify(url)}) format("woff2")`, {
+        display: "swap",
+        style: face.style,
+        weight: String(face.weight),
+      });
+    });
+  } catch {
+    return;
+  }
+
+  for (const face of browserFaces) {
+    document.fonts.add(face);
+  }
+}
+
 function requestFromForm() {
   return {
     input: fields.input.value.trim(),
@@ -121,6 +165,7 @@ async function loadDefaults() {
   }
 
   const defaults = await invoke("app_defaults");
+  registerAppFontFaces(defaults.fontFaces);
   version.textContent = `mini-film ${defaults.version}`;
   setIfEmpty(fields.input, defaults.input);
   setIfEmpty(fields.output, defaults.output);

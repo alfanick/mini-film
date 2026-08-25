@@ -7,8 +7,8 @@ use include_dir::{Dir, include_dir};
 
 static REVIEW_ASSETS: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/assets/review");
 
-pub(crate) fn review_index_html() -> String {
-    read_text_asset("index.html")
+pub(crate) fn review_index_html(font_stylesheet_href: Option<&str>) -> String {
+    let html = read_text_asset("index.html")
         .replace(
             "assets/styles.css",
             concat!("assets/styles.css?v=", env!("CARGO_PKG_VERSION")),
@@ -16,7 +16,8 @@ pub(crate) fn review_index_html() -> String {
         .replace(
             "assets/app.js",
             concat!("assets/app.js?v=", env!("CARGO_PKG_VERSION")),
-        )
+        );
+    inject_font_stylesheet(html, font_stylesheet_href)
 }
 
 pub(crate) fn review_styles() -> &'static str {
@@ -27,8 +28,8 @@ pub(crate) fn review_script() -> &'static str {
     read_text_asset("app.js")
 }
 
-pub(crate) fn review_tv_html() -> String {
-    read_text_asset("tv.html").to_string()
+pub(crate) fn review_tv_html(font_stylesheet_href: Option<&str>) -> String {
+    inject_font_stylesheet(read_text_asset("tv.html").to_string(), font_stylesheet_href)
 }
 
 pub(crate) fn review_text_asset(path: &str) -> Option<&'static str> {
@@ -43,4 +44,15 @@ fn read_text_asset(path: &str) -> &'static str {
         .unwrap_or_else(|| panic!("embedded review asset missing: {path}"));
     file.contents_utf8()
         .unwrap_or_else(|| panic!("embedded review asset is not valid UTF-8: {path}"))
+}
+
+fn inject_font_stylesheet(html: String, font_stylesheet_href: Option<&str>) -> String {
+    let Some(href) = font_stylesheet_href else {
+        return html;
+    };
+    html.replacen(
+        "  </head>",
+        &format!("    <link rel=\"stylesheet\" href=\"{href}\" />\n  </head>"),
+        1,
+    )
 }

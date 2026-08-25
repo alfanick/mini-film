@@ -196,6 +196,7 @@ pub(crate) fn start_review_server(config: ReviewConfig) -> Result<ReviewHandle> 
         diffusion_preview_sender,
         trusted_input_sender: config.trusted_input_sender,
         converted_input_sender: config.converted_input_sender,
+        web_font_family: crate::app::web_font::pragmata_pro_mono_liga(),
     };
     handle.refresh_state_cache()?;
     handle.append_history(history_server_started(

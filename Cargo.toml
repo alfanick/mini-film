@@ -1,6 +1,6 @@
 [package]
 name = "mini-film"
-version = "22.13.0"
+version = "22.14.0"
 description = "Review and publish RAW, JPEG, and HEIC photos with optional Lightroom-style film emulation profiles."
 repository = "https://github.com/alfanick/mini-film"
 homepage = "https://github.com/alfanick/mini-film"
@@ -44,6 +44,8 @@ sanitize-filename = "0.7.0-beta"
 serde_json = "1.0.151"
 serde = { version = "1.0.228", features = ["derive"] }
 sha1 = "0.11.0"
+ttf-parser = "0.25.1"
+ttf2woff2 = { version = "=0.13.2", default-features = false }
 self_update = { version = "0.44.0", default-features = false, features = ["reqwest", "default-tls"], optional = true }
 tar = "0.4.44"
 tempfile = "3.27.0"

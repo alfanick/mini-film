@@ -614,6 +614,74 @@ fn test_handle(input: PathBuf, output: PathBuf, profiles: Vec<ReviewProfile>) ->
         diffusion_preview_sender,
         trusted_input_sender: None,
         converted_input_sender: None,
+        web_font_family: None,
+    }
+}
+
+fn test_web_font_family(directory: &Path) -> crate::app::web_font::PreparedWebFontFamily {
+    use crate::app::web_font::{
+        PreparedWebFontAsset, PreparedWebFontFace, PreparedWebFontFamily, WebFontStyle,
+    };
+
+    fs::create_dir_all(directory).unwrap();
+    let faces = [
+        (400, WebFontStyle::Normal),
+        (700, WebFontStyle::Normal),
+        (400, WebFontStyle::Italic),
+        (700, WebFontStyle::Italic),
+    ]
+    .map(|(weight, style)| {
+        let contents = format!("wOF2-test-{weight}-{}", style.css_value()).into_bytes();
+        let digest = Sha1::digest(&contents)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let file_name = format!(
+            "pragmata-pro-mono-liga-{weight}-{}-{digest}.woff2",
+            style.css_value()
+        );
+        let path = directory.join(&file_name);
+        fs::write(&path, contents).unwrap();
+        PreparedWebFontFace {
+            weight,
+            style,
+            source_path: directory.join(format!("source-{weight}-{}.ttf", style.css_value())),
+            asset: PreparedWebFontAsset {
+                file_name,
+                path,
+                digest,
+                content_type: "font/woff2",
+            },
+        }
+    });
+    let css = faces
+        .iter()
+        .map(|face| {
+            format!(
+                "@font-face {{ font-family: '{}'; src: url(\"./{}\"); font-weight: {}; font-style: {}; }}\n",
+                crate::app::web_font::FONT_FAMILY_ALIAS,
+                face.asset.file_name,
+                face.weight,
+                face.style.css_value()
+            )
+        })
+        .collect::<String>();
+    let digest = Sha1::digest(css.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let file_name = format!("pragmata-pro-mono-liga-{digest}.css");
+    let path = directory.join(&file_name);
+    fs::write(&path, css).unwrap();
+
+    PreparedWebFontFamily {
+        stylesheet: PreparedWebFontAsset {
+            file_name,
+            path,
+            digest,
+            content_type: "text/css; charset=utf-8",
+        },
+        faces,
     }
 }
 
@@ -5639,6 +5707,10 @@ fn review_route_path_accepts_reverse_proxy_prefixes() {
         review_route_path("/nested/mini-film/assets/vendor/preact.module.js"),
         "/assets/vendor/preact.module.js"
     );
+    assert_eq!(
+        review_route_path("/nested/mini-film/assets/fonts/family-deadbeef.css"),
+        "/assets/fonts/family-deadbeef.css"
+    );
     assert_eq!(review_route_path("/mini-film/media/1/0"), "/media/1/0");
     assert_eq!(
         review_route_path("/mini-film/crop-source/1"),
@@ -6184,6 +6256,267 @@ fn review_vendor_assets_are_embedded_as_javascript() {
     assert_eq!(
         review_asset_content_type("vendor/preact.module.js"),
         "application/javascript; charset=utf-8"
+    );
+}
+
+#[test]
+fn live_review_pages_conditionally_load_the_relative_web_font_stylesheet() {
+    let href = "assets/fonts/pragmata-pro-mono-liga-family-deadbeef.css";
+    let review_without_font = review_index_html(None);
+    let tv_without_font = review_tv_html(None);
+    assert!(!review_without_font.contains("assets/fonts/"));
+    assert!(!tv_without_font.contains("assets/fonts/"));
+
+    let review_with_font = review_index_html(Some(href));
+    let tv_with_font = review_tv_html(Some(href));
+    let link = format!(r#"<link rel="stylesheet" href="{href}" />"#);
+    assert!(review_with_font.contains(&link));
+    assert!(tv_with_font.contains(&link));
+    assert!(review_with_font.contains(concat!("assets/styles.css?v=", env!("CARGO_PKG_VERSION"))));
+    assert!(review_with_font.contains(concat!("assets/app.js?v=", env!("CARGO_PKG_VERSION"))));
+    assert!(!review_with_font.contains("href=\"/assets/fonts/"));
+    assert!(!tv_with_font.contains("href=\"/assets/fonts/"));
+}
+
+#[test]
+fn all_live_review_font_stacks_prefer_the_served_family_alias() {
+    let alias = r#""Mini Film PragmataPro Mono Liga""#;
+    let styles = review_styles();
+    assert_eq!(styles.matches("font-family:").count(), 4);
+    assert_eq!(styles.matches(alias).count(), 4);
+
+    let tv = review_tv_html(None);
+    assert!(tv.contains(&format!("16px/1.2 {alias},")));
+}
+
+#[test]
+fn unavailable_and_non_allowlisted_font_assets_are_uncached_not_found_responses() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let handle = test_handle(input, output, Vec::new());
+    let runtime = test_async_runtime();
+
+    for path in [
+        "/assets/fonts/unregistered.woff2",
+        "/assets/fonts/../styles.css",
+        "/assets/fonts/nested/font.woff2",
+        "/assets/fonts/",
+    ] {
+        let response = runtime.block_on(route_request(
+            axum::http::Method::GET,
+            path,
+            axum::body::Bytes::new(),
+            &handle,
+        ));
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::NOT_FOUND,
+            "{path}"
+        );
+        assert!(
+            response
+                .headers()
+                .get(axum::http::header::CACHE_CONTROL)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("no-store"),
+            "{path}"
+        );
+    }
+}
+
+#[test]
+fn registered_font_assets_use_content_validators_and_immutable_private_caching() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("in");
+    let output = temp.path().join("out");
+    let font_cache = temp.path().join("font-cache");
+    fs::create_dir_all(&input).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let family = Box::leak(Box::new(test_web_font_family(&font_cache)));
+    let mut handle = test_handle(input, output, Vec::new());
+    handle.web_font_family = Some(family);
+    let runtime = test_async_runtime();
+    let immutable_cache = "private, max-age=31536000, immutable";
+
+    for route in ["/review", "/tv"] {
+        let response = runtime.block_on(route_request(
+            axum::http::Method::GET,
+            route,
+            axum::body::Bytes::new(),
+            &handle,
+        ));
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = runtime
+            .block_on(axum::body::to_bytes(response.into_body(), usize::MAX))
+            .unwrap();
+        let body = std::str::from_utf8(&body).unwrap();
+        assert!(body.contains(&format!("href=\"{}\"", family.stylesheet_href())));
+    }
+
+    let stylesheet_path = format!("/assets/fonts/{}", family.stylesheet.file_name);
+    let response = runtime.block_on(route_request_with_headers(
+        axum::http::Method::GET,
+        &stylesheet_path,
+        axum::body::Bytes::new(),
+        &axum::http::HeaderMap::new(),
+        &handle,
+    ));
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .unwrap(),
+        "text/css; charset=utf-8"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::CACHE_CONTROL)
+            .unwrap(),
+        immutable_cache
+    );
+    assert!(
+        response
+            .headers()
+            .get(axum::http::header::CONTENT_DISPOSITION)
+            .is_none()
+    );
+    let etag = response
+        .headers()
+        .get(axum::http::header::ETAG)
+        .unwrap()
+        .clone();
+    assert_eq!(etag, family.stylesheet.etag());
+    let body = runtime
+        .block_on(axum::body::to_bytes(response.into_body(), usize::MAX))
+        .unwrap();
+    assert_eq!(&body[..], fs::read(&family.stylesheet.path).unwrap());
+
+    let mut matching_headers = axum::http::HeaderMap::new();
+    matching_headers.insert(axum::http::header::IF_NONE_MATCH, etag.clone());
+    let response = runtime.block_on(route_request_with_headers(
+        axum::http::Method::GET,
+        &stylesheet_path,
+        axum::body::Bytes::new(),
+        &matching_headers,
+        &handle,
+    ));
+    assert_eq!(response.status(), axum::http::StatusCode::NOT_MODIFIED);
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .unwrap(),
+        "text/css; charset=utf-8"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::CACHE_CONTROL)
+            .unwrap(),
+        immutable_cache
+    );
+    assert_eq!(
+        response.headers().get(axum::http::header::ETAG).unwrap(),
+        &etag
+    );
+    assert!(
+        response
+            .headers()
+            .get(axum::http::header::CONTENT_DISPOSITION)
+            .is_none()
+    );
+    let body = runtime
+        .block_on(axum::body::to_bytes(response.into_body(), usize::MAX))
+        .unwrap();
+    assert!(body.is_empty());
+
+    let mut nonmatching_headers = axum::http::HeaderMap::new();
+    nonmatching_headers.insert(
+        axum::http::header::IF_NONE_MATCH,
+        axum::http::HeaderValue::from_static("\"not-current\""),
+    );
+    let response = runtime.block_on(route_request_with_headers(
+        axum::http::Method::GET,
+        &stylesheet_path,
+        axum::body::Bytes::new(),
+        &nonmatching_headers,
+        &handle,
+    ));
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+    let face = &family.faces[0].asset;
+    let face_path = format!("/assets/fonts/{}", face.file_name);
+    let mut range_headers = axum::http::HeaderMap::new();
+    range_headers.insert(
+        axum::http::header::RANGE,
+        axum::http::HeaderValue::from_static("bytes=0-6"),
+    );
+    let response = runtime.block_on(route_request_with_headers(
+        axum::http::Method::GET,
+        &face_path,
+        axum::body::Bytes::new(),
+        &range_headers,
+        &handle,
+    ));
+    assert_eq!(response.status(), axum::http::StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .unwrap(),
+        "font/woff2"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::CACHE_CONTROL)
+            .unwrap(),
+        immutable_cache
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::ETAG)
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        face.etag()
+    );
+    assert!(
+        response
+            .headers()
+            .get(axum::http::header::CONTENT_DISPOSITION)
+            .is_none()
+    );
+    let body = runtime
+        .block_on(axum::body::to_bytes(response.into_body(), usize::MAX))
+        .unwrap();
+    assert_eq!(&body[..], &fs::read(&face.path).unwrap()[..=6]);
+
+    fs::remove_file(&family.stylesheet.path).unwrap();
+    let response = runtime.block_on(route_request_with_headers(
+        axum::http::Method::GET,
+        &stylesheet_path,
+        axum::body::Bytes::new(),
+        &matching_headers,
+        &handle,
+    ));
+    assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+    assert!(
+        response
+            .headers()
+            .get(axum::http::header::CACHE_CONTROL)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("no-store")
     );
 }
 

@@ -465,6 +465,7 @@ pub(crate) struct ReviewHandle {
     pub(super) diffusion_preview_sender: std::sync::mpsc::Sender<u64>,
     pub(super) trusted_input_sender: Option<std::sync::mpsc::Sender<PathBuf>>,
     pub(super) converted_input_sender: Option<std::sync::mpsc::Sender<PathBuf>>,
+    pub(super) web_font_family: Option<&'static crate::app::web_font::PreparedWebFontFamily>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
