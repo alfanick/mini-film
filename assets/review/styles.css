@@ -229,6 +229,9 @@ button:disabled {
 }
 
 .filter {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px;
   padding: 5px 9px;
   border-bottom: 1px solid #ecece7;
   flex: 0 0 auto;

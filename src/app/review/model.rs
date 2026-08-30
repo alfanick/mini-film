@@ -653,6 +653,8 @@ pub(super) const fn default_review_normalize_grain_mpix() -> Option<f64> {
 pub(super) struct ReviewUiState {
     pub(super) current_image_id: Option<u64>,
     pub(super) min_rating: u8,
+    #[serde(default)]
+    pub(super) labels: BTreeSet<ReviewLabel>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -662,7 +664,7 @@ pub(super) struct ReviewBurst {
     pub(super) expanded: bool,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub(super) struct ReviewImage {
     pub(super) id: u64,
     pub(super) raw_path: PathBuf,
@@ -896,7 +898,9 @@ impl Default for ReviewCodexScheduler {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(
+    Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
 #[serde(rename_all = "kebab-case")]
 pub(super) enum ReviewLabel {
     #[default]
@@ -908,7 +912,7 @@ pub(super) enum ReviewLabel {
     Purple,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub(super) struct ReviewPreview {
     pub(super) status: ReviewRenderStatus,
     pub(super) path: Option<PathBuf>,
@@ -933,7 +937,7 @@ impl Default for ReviewPreview {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub(super) struct ReviewProfileRender {
     pub(super) profile_index: usize,
     pub(super) profile_stem: String,
@@ -1053,12 +1057,14 @@ pub(super) struct ReviewUpdateRequest {
     pub(super) advance_after_update: bool,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub(super) struct ReviewUiUpdateRequest {
     #[serde(default)]
     pub(super) current_image_id: Option<u64>,
     #[serde(default)]
     pub(super) min_rating: u8,
+    #[serde(default)]
+    pub(super) labels: BTreeSet<ReviewLabel>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -1076,6 +1082,8 @@ pub(super) struct PublishRequest {
     pub(super) labels: Vec<ReviewLabel>,
     #[serde(default)]
     pub(super) tags: Vec<String>,
+    #[serde(default)]
+    pub(super) main_profile_only: bool,
     #[serde(default)]
     pub(super) output_format: Option<String>,
     #[serde(default)]
@@ -1128,6 +1136,7 @@ pub(crate) struct ReviewPublishCommandArgs {
     pub(crate) min_rating: u8,
     pub(crate) labels: Vec<String>,
     pub(crate) tags: Vec<String>,
+    pub(crate) main_profile_only: bool,
     pub(crate) output_format: BatchOutputFormat,
     pub(crate) hald_dir: PathBuf,
     pub(crate) profiles_root: PathBuf,
@@ -1213,6 +1222,7 @@ pub(super) struct ReviewPublishOptions {
     pub(super) min_rating: u8,
     pub(super) labels: HashSet<ReviewLabel>,
     pub(super) tags: HashSet<String>,
+    pub(super) main_profile_only: bool,
     pub(super) output_format: BatchOutputFormat,
     pub(super) hald_dir: PathBuf,
     pub(super) profiles_root: PathBuf,

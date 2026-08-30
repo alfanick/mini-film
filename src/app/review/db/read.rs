@@ -31,6 +31,7 @@ where
                 .map(|value| i64_to_u64(value, "current image id"))
                 .transpose()?,
             min_rating: i64_to_u8(settings.min_rating, "minimum rating")?,
+            labels: BTreeSet::new(),
         },
         exif_schema_version: i64_to_u32(settings.exif_schema_version, "EXIF schema version")?,
         normalize_grain_mpix: default_review_normalize_grain_mpix(),

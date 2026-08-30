@@ -155,6 +155,7 @@ fn fully_populated_review_store() -> ReviewStore {
     store.ui = ReviewUiState {
         current_image_id: Some(2),
         min_rating: 3,
+        labels: BTreeSet::new(),
     };
     store.exif_schema_version = 9;
     store.images = vec![
@@ -698,6 +699,7 @@ fn test_publish_options(album: &str) -> ReviewPublishOptions {
         min_rating: 2,
         labels: HashSet::new(),
         tags: HashSet::new(),
+        main_profile_only: false,
         output_format: BatchOutputFormat::Jpg,
         hald_dir: PathBuf::from("hald"),
         profiles_root: PathBuf::from("profiles"),
@@ -1146,6 +1148,7 @@ fn render_priority_snapshot_orders_six_buckets_and_enforces_eligibility() {
     store.ui = ReviewUiState {
         current_image_id: Some(10),
         min_rating: 3,
+        labels: BTreeSet::new(),
     };
 
     let priorities = store.render_priority_snapshot();
@@ -1786,6 +1789,14 @@ fn requeued_profile_keeps_dcp_provenance_visible() {
 
     handle.record_discovered_raw(&raw).unwrap();
     handle.record_profile_queued(&raw, 0, &rendered).unwrap();
+    let queued_at = handle.store_snapshot().images[0].profiles[0]
+        .updated_at
+        .clone();
+    assert!(handle.record_profile_queued(&raw, 0, &rendered).unwrap());
+    assert_eq!(
+        handle.store_snapshot().images[0].profiles[0].updated_at,
+        queued_at
+    );
     handle
         .record_profile_done_with_dcp(
             &raw,
@@ -2207,12 +2218,121 @@ fn review_visible_order_uses_exif_capture_time_before_path() {
         updated_at: now_string(),
     });
 
-    assert_eq!(store.visible_image_ids_at(1), vec![2, 1, 3]);
+    assert_eq!(
+        store.visible_image_ids_at(1, &BTreeSet::new()),
+        vec![2, 1, 3]
+    );
     let mut images = store.images.clone();
     sort_review_images(&mut images);
     assert_eq!(
         images.iter().map(|image| image.id).collect::<Vec<_>>(),
         vec![2, 1, 3]
+    );
+}
+
+#[test]
+fn review_visible_images_support_label_filtering() {
+    let mut store = ReviewStore::new(vec![profile(0, "Classic")]);
+    store.images.push(ReviewImage {
+        id: 1,
+        raw_path: PathBuf::from("/in/red.nef"),
+        sooc_sidecar_path: None,
+        relative_path: "red.nef".to_string(),
+        file_name: "red.nef".to_string(),
+        exif: GalleryExifData {
+            capture_timestamp: Some(111),
+            ..GalleryExifData::default()
+        },
+        preview: ReviewPreview::default(),
+        selected_profile_index: 0,
+        rating: 3,
+        label: ReviewLabel::Red,
+        labels: Vec::new(),
+        tags: Vec::new(),
+        notes: String::new(),
+        rating_source: ReviewMetadataSource::Default,
+        tags_source: ReviewMetadataSource::Default,
+        notes_source: ReviewMetadataSource::Default,
+        codex: ReviewCodexAnalysis::default(),
+        retouch: RetouchSettings::default(),
+        publish_profile_indexes: Some(vec![0]),
+        profile_bw_filters: Vec::new(),
+        profiles: vec![profile_render(0, "Classic")],
+        updated_at: now_string(),
+    });
+    store.images.push(ReviewImage {
+        id: 2,
+        raw_path: PathBuf::from("/in/green.nef"),
+        sooc_sidecar_path: None,
+        relative_path: "green.nef".to_string(),
+        file_name: "green.nef".to_string(),
+        exif: GalleryExifData {
+            capture_timestamp: Some(222),
+            ..GalleryExifData::default()
+        },
+        preview: ReviewPreview::default(),
+        selected_profile_index: 0,
+        rating: 3,
+        label: ReviewLabel::None,
+        labels: vec![ReviewLabel::Green],
+        tags: Vec::new(),
+        notes: String::new(),
+        rating_source: ReviewMetadataSource::Default,
+        tags_source: ReviewMetadataSource::Default,
+        notes_source: ReviewMetadataSource::Default,
+        codex: ReviewCodexAnalysis::default(),
+        retouch: RetouchSettings::default(),
+        publish_profile_indexes: Some(vec![0]),
+        profile_bw_filters: Vec::new(),
+        profiles: vec![profile_render(0, "Classic")],
+        updated_at: now_string(),
+    });
+    store.images.push(ReviewImage {
+        id: 3,
+        raw_path: PathBuf::from("/in/yellow.nef"),
+        sooc_sidecar_path: None,
+        relative_path: "yellow.nef".to_string(),
+        file_name: "yellow.nef".to_string(),
+        exif: GalleryExifData {
+            capture_timestamp: Some(333),
+            ..GalleryExifData::default()
+        },
+        preview: ReviewPreview::default(),
+        selected_profile_index: 0,
+        rating: 1,
+        label: ReviewLabel::Yellow,
+        labels: Vec::new(),
+        tags: Vec::new(),
+        notes: String::new(),
+        rating_source: ReviewMetadataSource::Default,
+        tags_source: ReviewMetadataSource::Default,
+        notes_source: ReviewMetadataSource::Default,
+        codex: ReviewCodexAnalysis::default(),
+        retouch: RetouchSettings::default(),
+        publish_profile_indexes: Some(vec![0]),
+        profile_bw_filters: Vec::new(),
+        profiles: vec![profile_render(0, "Classic")],
+        updated_at: now_string(),
+    });
+
+    assert_eq!(
+        store.visible_image_ids_at(1, &BTreeSet::new()),
+        vec![1, 2, 3]
+    );
+    assert_eq!(
+        store.visible_image_ids_at(2, &BTreeSet::from([ReviewLabel::Red])),
+        vec![1]
+    );
+    assert_eq!(
+        store.visible_image_ids_at(2, &BTreeSet::from([ReviewLabel::Green])),
+        vec![2]
+    );
+    assert_eq!(
+        store.visible_image_ids_at(
+            1,
+            &BTreeSet::from([ReviewLabel::Red, ReviewLabel::Green, ReviewLabel::Purple]),
+        ),
+        vec![1, 2]
     );
 }
 
@@ -5233,6 +5353,7 @@ fn retouch_scheduler_reorders_due_jobs_from_fresh_review_state() {
     store.ui = ReviewUiState {
         current_image_id: Some(1),
         min_rating: 0,
+        labels: BTreeSet::new(),
     };
     let scheduler = ReviewRetouchScheduler::default();
     for (image_id, raw, profile_index) in [
@@ -5471,6 +5592,7 @@ fn review_history_records_review_and_publish_state_changes() {
         .apply_ui_update(ReviewUiUpdateRequest {
             current_image_id: Some(1),
             min_rating: 3,
+            labels: BTreeSet::new(),
         })
         .unwrap();
 
@@ -6660,7 +6782,7 @@ fn publish_rerender_uses_effective_diffusion_and_skips_pending_profile_renders()
     options.diffusion = daemon;
     options.export.strip_metadata = true;
 
-    let report = publish_store_inner(&store, &input, &output, &options, None).unwrap();
+    let report = publish_store_inner(&store, &output, &input, &output, &options, None).unwrap();
     assert_eq!(report.linked, 4);
     assert_eq!(report.skipped, 2);
 
@@ -6697,10 +6819,11 @@ fn publish_accepts_managed_direct_compressed_link() {
     let temp = tempfile::tempdir().unwrap();
     let input = temp.path().join("in");
     let output = temp.path().join("out");
+    let cache_root = output.join(".mini-film-retouch");
     fs::create_dir_all(&input).unwrap();
-    fs::create_dir_all(&output).unwrap();
+    fs::create_dir_all(&cache_root).unwrap();
     let original = input.join("frame.JPG");
-    let managed = output.join("frame.jpg");
+    let managed = cache_root.join("frame.jpg");
     fs::write(&original, b"original jpeg").unwrap();
     crate::app::managed_symlink::ensure_file_symlink(&original, &managed, true).unwrap();
 
@@ -6711,7 +6834,7 @@ fn publish_accepts_managed_direct_compressed_link() {
     image.preview.path = Some(managed.clone());
     let options = test_publish_options("published");
 
-    let report = publish_store_inner(&store, &input, &output, &options, None).unwrap();
+    let report = publish_store_inner(&store, &cache_root, &input, &output, &options, None).unwrap();
 
     assert_eq!(report.linked, 1);
     assert_eq!(
@@ -6731,11 +6854,12 @@ fn publish_accepts_managed_sooc_link() {
     let temp = tempfile::tempdir().unwrap();
     let input = temp.path().join("in");
     let output = temp.path().join("out");
+    let cache_root = output.join(".mini-film-retouch");
     fs::create_dir_all(&input).unwrap();
-    fs::create_dir_all(output.join(SOOC_PROFILE_STEM)).unwrap();
+    fs::create_dir_all(&cache_root).unwrap();
     let raw = input.join("frame.NEF");
     let sidecar = input.join("frame.JPG");
-    let managed = output.join(SOOC_PROFILE_STEM).join("frame.jpg");
+    let managed = cache_root.join("frame.jpg");
     fs::write(&raw, b"raw").unwrap();
     fs::write(&sidecar, b"original jpeg").unwrap();
     crate::app::managed_symlink::ensure_file_symlink(&sidecar, &managed, true).unwrap();
@@ -6750,7 +6874,7 @@ fn publish_accepts_managed_sooc_link() {
     image.profiles.push(render);
     let options = test_publish_options("published");
 
-    let report = publish_store_inner(&store, &input, &output, &options, None).unwrap();
+    let report = publish_store_inner(&store, &cache_root, &input, &output, &options, None).unwrap();
 
     assert_eq!(report.linked, 1);
     assert_eq!(
@@ -6818,7 +6942,8 @@ fn publish_flat_album_filters_rating_label_and_tag() {
     let mut options = test_publish_options("published/final");
     options.labels = HashSet::from([ReviewLabel::Red]);
     options.tags = HashSet::from(["42".to_string()]);
-    let report = publish_store_inner(&store, Path::new("/in"), &output, &options, None).unwrap();
+    let report =
+        publish_store_inner(&store, &output, Path::new("/in"), &output, &options, None).unwrap();
     assert_eq!(report.linked, 1);
     assert_eq!(report.skipped, 0);
     assert!(output.join("published/final/frame.jpg").exists());
@@ -6828,8 +6953,12 @@ fn publish_flat_album_filters_rating_label_and_tag() {
 fn publish_flat_album_suffixes_non_default_profiles() {
     let temp = tempfile::tempdir().unwrap();
     let output = temp.path().join("out");
+    let cache_root = temp.path().join("cache");
     let classic = output.join("day").join("Classic").join("frame.jpg");
-    let fade = output.join("day").join("Fade").join("frame.jpg");
+    let fade = cache_root
+        .join(".mini-film-retouch")
+        .join("Fade")
+        .join("frame.jpg");
     fs::create_dir_all(classic.parent().unwrap()).unwrap();
     fs::create_dir_all(fade.parent().unwrap()).unwrap();
     fs::write(&classic, b"classic").unwrap();
@@ -6897,10 +7026,38 @@ fn publish_flat_album_suffixes_non_default_profiles() {
     });
 
     let options = test_publish_options("published");
-    let report = publish_store_inner(&store, Path::new("/in"), &output, &options, None).unwrap();
+    let report = publish_store_inner(
+        &store,
+        &cache_root,
+        Path::new("/in"),
+        &output,
+        &options,
+        None,
+    )
+    .unwrap();
     assert_eq!(report.linked, 1);
     assert!(!output.join("published/frame.jpg").exists());
     assert!(output.join("published/frame-Fade.jpg").exists());
+
+    store.images[0].publish_profile_indexes = Some(vec![1, SOOC_PROFILE_INDEX]);
+    let mut sooc = profile_render(SOOC_PROFILE_INDEX, SOOC_PROFILE_STEM);
+    sooc.output_path = Some(temp.path().join("must-not-be-read.jpg"));
+    store.images[0].profiles.push(sooc);
+    let mut main_only = test_publish_options("published-main");
+    main_only.main_profile_only = true;
+    let report = publish_store_inner(
+        &store,
+        &cache_root,
+        Path::new("/in"),
+        &output,
+        &main_only,
+        None,
+    )
+    .unwrap();
+    assert_eq!(report.linked, 1);
+    assert!(output.join("published-main/frame.jpg").exists());
+    assert!(!output.join("published-main/frame-Fade.jpg").exists());
+    assert!(!output.join("published-main/frame-sooc.jpg").exists());
 }
 
 #[test]
@@ -6980,8 +7137,15 @@ fn publish_store_reports_realtime_progress() {
         events.lock().unwrap().push(event);
     };
     let options = test_publish_options("published");
-    let report =
-        publish_store_inner(&store, Path::new("/in"), &output, &options, Some(&progress)).unwrap();
+    let report = publish_store_inner(
+        &store,
+        &output,
+        Path::new("/in"),
+        &output,
+        &options,
+        Some(&progress),
+    )
+    .unwrap();
     let events = events.lock().unwrap();
     assert_eq!(report.linked, 2);
     assert!(events.iter().any(|event| event.total == 2));

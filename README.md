@@ -897,7 +897,8 @@ incompatible. Override the model or binary path with:
 
 Publishing opens a wizard that acts as a browser frontend for a spawned
 `mini-film review-publish` job. The wizard can filter by rating, color label,
-and tags; choose a relative album folder inside the daemon output directory;
+and tags; optionally export only the first/main profile while excluding SOOC;
+choose a relative album folder inside the daemon output directory;
 select JPG/TIFF output, original size or resize options, JPEG
 quality/subsampling/progressive mode, grain engine and normalization settings,
 and an optional gallery template.

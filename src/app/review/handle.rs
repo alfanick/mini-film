@@ -893,6 +893,29 @@ impl ReviewHandle {
         raw: &Path,
         sooc_sidecar: Option<&Path>,
     ) -> Result<()> {
+        let existing = self.store_snapshot();
+        if let Some(image) = existing.images.iter().find(|image| image.raw_path == raw) {
+            let preview_path = self.preview_path_for(raw, image.id);
+            let preview_current = matches!(
+                image.preview.status,
+                ReviewRenderStatus::Queued | ReviewRenderStatus::Processing
+            ) || (preview_path.is_file()
+                && image.preview.status == ReviewRenderStatus::Done
+                && image.preview.path.as_deref() == Some(preview_path.as_path()));
+            let crop_source_current = sooc_sidecar.is_none_or(|sidecar| {
+                self.crop_source_preview_path_for(sidecar, image.id)
+                    .is_file()
+            });
+            if image.sooc_sidecar_path.as_deref() == sooc_sidecar
+                && preview_current
+                && crop_source_current
+            {
+                drop(existing);
+                self.schedule_sampler_profiles_for_source(raw)?;
+                return Ok(());
+            }
+        }
+        drop(existing);
         let (history_entry, preview_job, crop_source_job) = self.update_store(|store| {
             let mut preview_job = None;
             let mut crop_source_job = None;
@@ -1358,6 +1381,9 @@ impl ReviewHandle {
         profile_index: usize,
         expected_output: &Path,
     ) -> Result<bool> {
+        if self.profile_render_queue_current(raw, profile_index, expected_output) {
+            return Ok(true);
+        }
         let (queued, history_entry) = self.update_store(|store| {
             if store.claim_sooc_sidecar(raw) {
                 return Ok((false, None));
@@ -1437,6 +1463,68 @@ impl ReviewHandle {
         }
         self.broadcast_state()?;
         Ok(queued)
+    }
+
+    fn profile_render_queue_current(
+        &self,
+        raw: &Path,
+        profile_index: usize,
+        expected_output: &Path,
+    ) -> bool {
+        let store = self.store_snapshot();
+        let Some(image) = store.images.iter().find(|image| image.raw_path == raw) else {
+            return false;
+        };
+        let profile = store
+            .profiles
+            .iter()
+            .find(|profile| profile.index == profile_index);
+        let processing_key = review_render_processing_key_for_input_with_diffusion_and_raw_config(
+            raw,
+            profile_index,
+            self.normalize_grain_mpix,
+            &self.export,
+            self.diffusion,
+            &store.raw_render_config,
+        );
+        let bw_filter = profile
+            .map(|profile| effective_bw_filter_for_profile(image, profile))
+            .unwrap_or_default();
+        let diffusion = effective_diffusion_settings_from(
+            &store.profile_diffusion_settings,
+            &store.image_profile_diffusion_settings,
+            image.id,
+            profile_index,
+            &self.diffusion,
+        )
+        .0;
+        let render_key = (image.retouch.clone().normalized() != RetouchSettings::default()
+            || bw_filter != BwFilter::None
+            || !diffusion_settings_render_equivalent(diffusion, self.diffusion))
+        .then(|| {
+            profile_render_key_value_with_diffusion(
+                &image.retouch,
+                retouch_white_balance_for_image(image),
+                bw_filter,
+                (profile_index != SOOC_PROFILE_INDEX)
+                    .then_some(self.normalize_grain_mpix)
+                    .flatten(),
+                &processing_key,
+                diffusion,
+            )
+        });
+        image.profiles.iter().any(|render| {
+            render.profile_index == profile_index
+                && render.enabled
+                && render.status == ReviewRenderStatus::Queued
+                && render.output_path.as_deref() == Some(expected_output)
+                && render.error.is_none()
+                && render.duration_ms.is_none()
+                && render.render_key == render_key
+                && render.processing_key.as_deref() == Some(processing_key.as_str())
+                && render.width.is_none()
+                && render.height.is_none()
+        })
     }
 
     pub(crate) fn profile_render_current(
@@ -3784,6 +3872,7 @@ impl ReviewHandle {
             "ui": {
                 "current_image_id": store.ui.current_image_id,
                 "min_rating": store.ui.min_rating,
+                "labels": store.ui.labels,
             },
             "bursts": bursts,
             "images": images,
@@ -4230,6 +4319,7 @@ impl ReviewHandle {
                 .map(|label| review_label_name(*label).to_string())
                 .collect(),
             tags: normalize_tags(request.tags.clone()),
+            main_profile_only: request.main_profile_only,
             output_format,
             hald_dir: self.hald_dir.clone(),
             profiles_root: self.profiles_root.clone(),

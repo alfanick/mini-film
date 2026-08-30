@@ -902,6 +902,10 @@ pub(crate) enum CommandKind {
         #[arg(long)]
         tag: Vec<String>,
 
+        /// Export only the first/main profile for each picture and exclude SOOC outputs.
+        #[arg(long)]
+        main_profile_only: bool,
+
         /// Output format for published files.
         #[arg(long, value_enum, default_value_t = BatchOutputFormat::Jpg)]
         output_format: BatchOutputFormat,

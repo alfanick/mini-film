@@ -247,6 +247,11 @@ pub(super) fn history_ui_changed(
     let mut entry = HistoryEntry::new("review UI changed");
     entry.change("minimum rating", before.min_rating, after.min_rating);
     entry.change(
+        "label filters",
+        review_labels_text(&before.labels.iter().copied().collect::<Vec<_>>()),
+        review_labels_text(&after.labels.iter().copied().collect::<Vec<_>>()),
+    );
+    entry.change(
         "current image",
         image_id_text(store, before.current_image_id),
         image_id_text(store, after.current_image_id),

@@ -1,4 +1,5 @@
 use super::{entities::*, *};
+use rayon::prelude::*;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseConnection, DatabaseTransaction,
     EntityTrait, IntoActiveModel, QueryFilter, QuerySelect, Set, TransactionTrait,
@@ -142,57 +143,51 @@ async fn apply_store_delta_in_transaction(
         )
         .await?;
     }
-    let before_images = image_row_map(before, roots)?;
-    let after_images = image_row_map(after, roots)?;
-    for image_id in before_images.keys() {
-        if !after_images.contains_key(image_id) {
-            images::Entity::delete_by_id(*image_id)
-                .exec(transaction)
-                .await
-                .with_context(|| format!("deleting review image {image_id}"))?;
-        }
-    }
-
-    move_changed_images_to_temporary_positions(transaction, &before_images, &after_images).await?;
-    let mut tags_by_name = load_tag_ids(transaction).await?;
-    for (image_id, after_rows) in &after_images {
-        let Some(before_rows) = before_images.get(image_id) else {
-            insert_image_rows(transaction, after_rows.clone(), &mut tags_by_name).await?;
-            continue;
-        };
-        if before_rows.image != after_rows.image {
-            let result = after_rows
-                .image
-                .clone()
-                .into_active_model()
-                .reset_all()
-                .update(transaction)
-                .await
-                .with_context(|| format!("updating review image {image_id}"))?;
-            if result.image_id != *image_id {
-                bail!("updated review image {image_id} returned a different id");
+    let stable_image_layout = !profiles_changed
+        && before.images.len() == after.images.len()
+        && before
+            .images
+            .iter()
+            .zip(&after.images)
+            .all(|(before, after)| before.id == after.id);
+    if stable_image_layout {
+        let changed = before
+            .images
+            .par_iter()
+            .zip(after.images.par_iter())
+            .enumerate()
+            .filter(|(_, (before, after))| before != after)
+            .collect::<Vec<_>>();
+        if !changed.is_empty() {
+            let mut tags_by_name = load_tag_ids(transaction).await?;
+            for (position, (before, after)) in changed {
+                let before_rows = image_rows(position, before, roots)?;
+                let after_rows = image_rows(position, after, roots)?;
+                apply_image_rows_delta(transaction, &before_rows, &after_rows, &mut tags_by_name)
+                    .await?;
             }
         }
-        if before_rows.exif_tags != after_rows.exif_tags {
-            replace_exif_tags(transaction, *image_id, &after_rows.exif_tags).await?;
+    } else {
+        let before_images = image_row_map(before, roots)?;
+        let after_images = image_row_map(after, roots)?;
+        for image_id in before_images.keys() {
+            if !after_images.contains_key(image_id) {
+                images::Entity::delete_by_id(*image_id)
+                    .exec(transaction)
+                    .await
+                    .with_context(|| format!("deleting review image {image_id}"))?;
+            }
         }
-        if before_rows.focus_regions != after_rows.focus_regions {
-            replace_focus_regions(transaction, *image_id, &after_rows.focus_regions).await?;
-        }
-        if before_rows.tags != after_rows.tags {
-            replace_image_tags(transaction, *image_id, &after_rows.tags, &mut tags_by_name).await?;
-        }
-        if before_rows.labels != after_rows.labels {
-            replace_labels(transaction, *image_id, &after_rows.labels).await?;
-        }
-        if before_rows.publish_profiles != after_rows.publish_profiles {
-            replace_publish_profiles(transaction, *image_id, &after_rows.publish_profiles).await?;
-        }
-        if before_rows.bw_filters != after_rows.bw_filters {
-            replace_bw_filters(transaction, *image_id, &after_rows.bw_filters).await?;
-        }
-        if before_rows.renders != after_rows.renders {
-            replace_renders(transaction, *image_id, &after_rows.renders).await?;
+
+        move_changed_images_to_temporary_positions(transaction, &before_images, &after_images)
+            .await?;
+        let mut tags_by_name = load_tag_ids(transaction).await?;
+        for (image_id, after_rows) in &after_images {
+            let Some(before_rows) = before_images.get(image_id) else {
+                insert_image_rows(transaction, after_rows.clone(), &mut tags_by_name).await?;
+                continue;
+            };
+            apply_image_rows_delta(transaction, before_rows, after_rows, &mut tags_by_name).await?;
         }
     }
 
@@ -224,6 +219,53 @@ async fn apply_store_delta_in_transaction(
         .update(transaction)
         .await
         .context("updating review settings")?;
+    Ok(())
+}
+
+async fn apply_image_rows_delta<C>(
+    transaction: &C,
+    before_rows: &ImageRows,
+    after_rows: &ImageRows,
+    tags_by_name: &mut HashMap<String, i64>,
+) -> Result<()>
+where
+    C: ConnectionTrait,
+{
+    let image_id = after_rows.image.image_id;
+    if before_rows.image != after_rows.image {
+        let result = after_rows
+            .image
+            .clone()
+            .into_active_model()
+            .reset_all()
+            .update(transaction)
+            .await
+            .with_context(|| format!("updating review image {image_id}"))?;
+        if result.image_id != image_id {
+            bail!("updated review image {image_id} returned a different id");
+        }
+    }
+    if before_rows.exif_tags != after_rows.exif_tags {
+        replace_exif_tags(transaction, image_id, &after_rows.exif_tags).await?;
+    }
+    if before_rows.focus_regions != after_rows.focus_regions {
+        replace_focus_regions(transaction, image_id, &after_rows.focus_regions).await?;
+    }
+    if before_rows.tags != after_rows.tags {
+        replace_image_tags(transaction, image_id, &after_rows.tags, tags_by_name).await?;
+    }
+    if before_rows.labels != after_rows.labels {
+        replace_labels(transaction, image_id, &after_rows.labels).await?;
+    }
+    if before_rows.publish_profiles != after_rows.publish_profiles {
+        replace_publish_profiles(transaction, image_id, &after_rows.publish_profiles).await?;
+    }
+    if before_rows.bw_filters != after_rows.bw_filters {
+        replace_bw_filters(transaction, image_id, &after_rows.bw_filters).await?;
+    }
+    if before_rows.renders != after_rows.renders {
+        replace_renders(transaction, image_id, &after_rows.renders).await?;
+    }
     Ok(())
 }
 

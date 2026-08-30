@@ -726,7 +726,7 @@ impl ReviewStore {
 
     pub(super) fn normalize_ui(&mut self) {
         self.ui.min_rating = self.ui.min_rating.min(5);
-        let visible = self.visible_image_ids_at(self.ui.min_rating);
+        let visible = self.visible_image_ids_at(self.ui.min_rating, &self.ui.labels);
         if !self
             .ui
             .current_image_id
@@ -738,6 +738,7 @@ impl ReviewStore {
 
     pub(super) fn set_ui(&mut self, update: ReviewUiUpdateRequest) -> Result<()> {
         self.ui.min_rating = update.min_rating.min(5);
+        self.ui.labels = update.labels;
         if let Some(id) = update.current_image_id {
             if !self.images.iter().any(|image| image.id == id) {
                 bail!("review image {id} does not exist");
@@ -868,7 +869,7 @@ impl ReviewStore {
     }
 
     pub(super) fn planned_advance_after(&self, image_id: u64) -> ReviewAdvance {
-        let visible = self.visible_image_ids_at(self.ui.min_rating);
+        let visible = self.visible_image_ids_at(self.ui.min_rating, &self.ui.labels);
         let Some(index) = visible.iter().position(|id| *id == image_id) else {
             return ReviewAdvance::FirstVisible;
         };
@@ -889,7 +890,7 @@ impl ReviewStore {
             ReviewAdvance::NextPass => {
                 self.ui.min_rating = self.ui.min_rating.saturating_add(1).min(5);
                 self.ui.current_image_id = self
-                    .visible_image_ids_at(self.ui.min_rating)
+                    .visible_image_ids_at(self.ui.min_rating, &self.ui.labels)
                     .first()
                     .copied();
                 self.normalize_ui();
@@ -897,11 +898,17 @@ impl ReviewStore {
         }
     }
 
-    pub(super) fn visible_image_ids_at(&self, min_rating: u8) -> Vec<u64> {
+    pub(super) fn visible_image_ids_at(
+        &self,
+        min_rating: u8,
+        labels: &BTreeSet<ReviewLabel>,
+    ) -> Vec<u64> {
         let mut images = self
             .images
             .iter()
-            .filter(|image| image.rating >= min_rating.min(5))
+            .filter(|image| {
+                image.rating >= min_rating.min(5) && image_matches_label_filter(image, labels)
+            })
             .collect::<Vec<_>>();
         sort_review_image_refs(&mut images);
         images.into_iter().map(|image| image.id).collect()
@@ -940,7 +947,8 @@ impl ReviewStore {
                 image.id,
                 ReviewRenderPriorityImage {
                     order,
-                    visible: image.rating >= self.ui.min_rating,
+                    visible: image.rating >= self.ui.min_rating
+                        && image_matches_label_filter(image, &self.ui.labels),
                     main_profile_index,
                     enabled_profile_indexes,
                 },
@@ -951,6 +959,14 @@ impl ReviewStore {
             images,
         }
     }
+}
+
+fn image_matches_label_filter(image: &ReviewImage, labels: &BTreeSet<ReviewLabel>) -> bool {
+    if labels.is_empty() {
+        return true;
+    }
+    let image_labels = image_review_labels(image);
+    labels.iter().any(|label| image_labels.contains(label))
 }
 
 pub(super) fn effective_diffusion_settings_from(

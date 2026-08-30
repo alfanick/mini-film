@@ -156,20 +156,20 @@ pub(super) fn load_store_for_publish(
     state: &Path,
     input_root: &Path,
     output_root: &Path,
-) -> Result<Option<ReviewStore>> {
+) -> Result<(Option<ReviewStore>, PathBuf)> {
     reject_json_state_path(state)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("building review database runtime")?;
     runtime.block_on(async {
-        let (connection, store, _) =
+        let (connection, store, roots) =
             prepare_database(state, false, input_root, output_root).await?;
         connection
             .close()
             .await
             .context("closing review database")?;
-        Ok(store)
+        Ok((store, roots.cache_root().to_path_buf()))
     })
 }
 
@@ -665,7 +665,8 @@ pub(super) fn load_store_with_roots(
     input_root: &Path,
     output_root: &Path,
 ) -> Result<Option<ReviewStore>> {
-    load_store_for_publish(path, input_root, output_root)
+    let (store, _) = load_store_for_publish(path, input_root, output_root)?;
+    Ok(store)
 }
 
 #[cfg(test)]

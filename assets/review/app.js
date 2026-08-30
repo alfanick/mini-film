@@ -3,6 +3,7 @@ import { Fragment, h, render as preactRender } from "./vendor/preact.module.js";
 const state = {
   data: null,
   currentId: null,
+  labelFilters: new Set(),
   lastInputImageId: null,
   saveQueue: Promise.resolve(),
   preloaded: new Set(),
@@ -271,11 +272,22 @@ function ReviewShell() {
           h(
             "label",
             null,
-            h("span", null, "Show rating >="),
+            h("span", null, "Rating"),
             h(
               "select",
               { id: "min-rating" },
               RATING_VALUES.map((rating) => h("option", { key: rating, value: String(rating) }, String(rating))),
+            ),
+          ),
+          h(
+            "label",
+            null,
+            h("span", null, "Colour"),
+            h(
+              "select",
+              { id: "filter-label", "aria-label": "Colour label filter" },
+              h("option", { value: "" }, "Any"),
+              COLOR_LABELS.map((label) => h("option", { key: label, value: label }, capitalize(label))),
             ),
           ),
         ),
@@ -1044,7 +1056,7 @@ function ControlsShell() {
     ),
     h(
       "div",
-      { class: "labels", role: "group", "aria-label": "Label" },
+      { class: "labels edit-labels", role: "group", "aria-label": "Label" },
       COLOR_LABELS.map((label) =>
         h(
           "button",
@@ -1340,6 +1352,12 @@ function PublishSelectionSection() {
         autocomplete: "off",
         placeholder: "optional comma-separated tags",
       }),
+    ),
+    h(
+      "label",
+      null,
+      h("input", { id: "publish-main-profile-only", type: "checkbox" }),
+      " First/main profile only (exclude SOOC)",
     ),
   );
 }
@@ -2529,6 +2547,7 @@ const els = {
   sampler: document.getElementById("sampler"),
   panorama: document.getElementById("panorama"),
   minRating: document.getElementById("min-rating"),
+  filterLabel: document.getElementById("filter-label"),
   app: document.querySelector(".app"),
   shortcutsHelp: document.getElementById("shortcuts-help"),
   mobileDrawerButtons: document.querySelectorAll("[data-mobile-drawer]"),
@@ -2549,6 +2568,7 @@ const els = {
   publishAlbum: document.getElementById("publish-album"),
   publishMinRating: document.getElementById("publish-min-rating"),
   publishTags: document.getElementById("publish-tags"),
+  publishMainProfileOnly: document.getElementById("publish-main-profile-only"),
   publishOutputFormat: document.getElementById("publish-output-format"),
   publishGrainEngine: document.getElementById("publish-grain-engine"),
   publishNormalizeGrain: document.getElementById("publish-normalize-grain"),
@@ -2672,6 +2692,8 @@ function incomingImageIsOlder(incoming, current) {
 
 function applyServerUi(data) {
   els.minRating.value = String(Math.max(0, Math.min(5, Number(data?.ui?.min_rating) || 0)));
+  state.labelFilters = normalizeLabelFilters(data?.ui?.labels);
+  syncFilterLabels();
   state.currentId = data?.ui?.current_image_id ?? firstReviewableImageIdFromData(data);
 }
 
@@ -2901,8 +2923,31 @@ function minRating() {
   return Number(els.minRating.value || 0);
 }
 
+function filterLabels() {
+  return state.labelFilters instanceof Set ? state.labelFilters : new Set();
+}
+
+function normalizeLabelFilters(values) {
+  const raw = Array.isArray(values) ? values : [];
+  const label = raw
+    .map((value) =>
+      String(value || "")
+        .trim()
+        .toLowerCase(),
+    )
+    .find((value) => COLOR_LABELS.includes(value));
+  return new Set(label ? [label] : []);
+}
+
+function syncFilterLabels() {
+  els.filterLabel.value = filterLabels().values().next().value || "";
+}
+
 function passesFilter(image) {
-  return Number(image.rating || 0) >= minRating();
+  if (Number(image.rating || 0) < minRating()) return false;
+  const activeLabelFilters = filterLabels();
+  if (activeLabelFilters.size === 0) return true;
+  return imageLabels(image).some((label) => activeLabelFilters.has(label));
 }
 
 function filteredImages() {
@@ -5335,6 +5380,7 @@ function populatePublishWizard() {
   els.publishAlbum.value = defaults.album || "published";
   els.publishMinRating.value = String(minRating());
   els.publishTags.value = "";
+  els.publishMainProfileOnly.checked = false;
   document.querySelectorAll("[name='publish-label']").forEach((input) => {
     input.checked = false;
   });
@@ -5387,6 +5433,7 @@ function publishFormBody() {
     min_rating: Number(els.publishMinRating.value || 0),
     labels: Array.from(document.querySelectorAll("[name='publish-label']:checked")).map((input) => input.value),
     tags: splitPublishTags(els.publishTags.value),
+    main_profile_only: els.publishMainProfileOnly.checked,
     output_format: els.publishOutputFormat.value,
     grain_engine: els.publishGrainEngine.value,
     normalize_grain: els.publishNormalizeGrain.checked,
@@ -5417,7 +5464,7 @@ function publishSelectionStats(body = publishFormBody()) {
   for (const image of state.data?.images || []) {
     if (!imagePassesPublishFilters(image, body.min_rating, labels, tags)) continue;
     pictures += 1;
-    outputs += isDirectCompressedImage(image) ? 1 : publishProfileIndexes(image).length;
+    outputs += isDirectCompressedImage(image) ? 1 : body.main_profile_only ? 1 : publishProfileIndexes(image).length;
   }
   return { pictures, outputs };
 }
@@ -5492,7 +5539,7 @@ function setActiveReviewButtons(image) {
     button.classList.toggle("active", Number(image?.rating || 0) === Number(button.dataset.rating));
   });
   const labels = new Set(imageLabels(image));
-  document.querySelectorAll(".labels button[data-label]").forEach((button) => {
+  document.querySelectorAll(".edit-labels button[data-label]").forEach((button) => {
     button.classList.toggle("active", labels.has(button.dataset.label));
   });
 }
@@ -6832,9 +6879,13 @@ function reviewRequestBody(image, patch = {}, options = {}) {
 }
 
 async function updateSharedUi(patch = {}) {
+  const labels = patch.labels !== undefined ? normalizeLabelFilters(patch.labels) : filterLabels();
+  state.labelFilters = labels;
+  syncFilterLabels();
   const body = {
     current_image_id: patch.current_image_id ?? state.currentId,
     min_rating: patch.min_rating ?? minRating(),
+    labels: Array.from(labels),
   };
   state.saveQueue = state.saveQueue
     .catch(() => {})
@@ -7329,10 +7380,15 @@ document.querySelectorAll(".rating button[data-rating]").forEach((button) => {
   button.addEventListener("click", () => rateCurrentAndAdvance(Number(button.dataset.rating)));
 });
 
-document.querySelectorAll(".labels button[data-label]").forEach((button) => {
+document.querySelectorAll(".edit-labels button[data-label]").forEach((button) => {
   button.addEventListener("click", () => {
     toggleCurrentLabel(button.dataset.label);
   });
+});
+
+els.filterLabel.addEventListener("change", () => {
+  const label = String(els.filterLabel.value || "");
+  updateSharedUi({ labels: label ? [label] : [] }).catch((error) => console.error(error));
 });
 
 els.tags.addEventListener("change", () => saveReview());

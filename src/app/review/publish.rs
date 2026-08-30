@@ -198,6 +198,9 @@ where
     for tag in &args.tags {
         command.arg("--tag").arg(tag);
     }
+    if args.main_profile_only {
+        command.arg("--main-profile-only");
+    }
     if let Some(resize) = &args.export.resize {
         command.arg("--resize").arg(resize);
     }
@@ -325,8 +328,9 @@ pub(super) fn publish_review_state(
     let input_root = canonical_existing_dir(&args.input_root)?;
     let output_root = canonical_existing_dir(&args.output_root)?;
     let state = resolve_review_state_for_publish(&args.state, &input_root, &output_root)?;
-    let store = load_store_for_publish(&state, &input_root, &output_root)?
-        .ok_or_else(|| anyhow!("review state is empty"))?;
+    let (store, cache_root) = load_store_for_publish(&state, &input_root, &output_root)?;
+    let cache_root = canonical_existing_dir(&cache_root)?;
+    let store = store.ok_or_else(|| anyhow!("review state is empty"))?;
     let album = validate_relative_publish_album(&args.album)?;
     ensure_safe_dir_all(&output_root, &album)?;
 
@@ -344,6 +348,7 @@ pub(super) fn publish_review_state(
         min_rating: args.min_rating.min(5),
         labels,
         tags,
+        main_profile_only: args.main_profile_only,
         output_format: args.output_format,
         hald_dir: args.hald_dir.clone(),
         profiles_root: args.profiles_root.clone(),
@@ -366,7 +371,14 @@ pub(super) fn publish_review_state(
         normalize_grain_mpix: args.normalize_grain_mpix,
         write_metadata: true,
     };
-    let mut report = publish_store_inner(&store, &input_root, &output_root, &options, progress)?;
+    let mut report = publish_store_inner(
+        &store,
+        &cache_root,
+        &input_root,
+        &output_root,
+        &options,
+        progress,
+    )?;
 
     if let Some(template) = args.gallery {
         let mut rendered = 0u64;
@@ -423,6 +435,7 @@ pub(super) fn publish_review_state(
 
 pub(super) fn publish_store_inner(
     store: &ReviewStore,
+    cache_root: &Path,
     input_root: &Path,
     output_root: &Path,
     options: &ReviewPublishOptions,
@@ -453,6 +466,7 @@ pub(super) fn publish_store_inner(
                 source,
                 &image.raw_path,
                 input_root,
+                cache_root,
                 output_root,
             )?;
             let raw_stem = Path::new(&image.relative_path)
@@ -476,7 +490,15 @@ pub(super) fn publish_store_inner(
             continue;
         }
 
-        let publish_indexes = effective_publish_profile_indexes(image);
+        let publish_indexes = if options.main_profile_only {
+            store
+                .profiles
+                .first()
+                .map(|profile| vec![profile.index])
+                .unwrap_or_default()
+        } else {
+            effective_publish_profile_indexes(image)
+        };
         if publish_indexes.is_empty() {
             report.skipped += 1;
             continue;
@@ -508,9 +530,15 @@ pub(super) fn publish_store_inner(
                 let original = image_sooc_source(image).ok_or_else(|| {
                     anyhow!("review image has no SOOC source: {}", image.relative_path)
                 })?;
-                safe_existing_managed_output_source(source, original, input_root, output_root)?
+                safe_existing_managed_output_source(
+                    source,
+                    original,
+                    input_root,
+                    cache_root,
+                    output_root,
+                )?
             } else {
-                safe_existing_output_source(source, output_root)?
+                safe_existing_output_source(source, cache_root, output_root)?
             };
             let file_name = review_publish_file_name(
                 raw_stem,
@@ -945,10 +973,16 @@ pub(super) fn ensure_safe_dir_all(root: &Path, relative: &Path) -> Result<PathBu
     Ok(current)
 }
 
-pub(super) fn safe_existing_output_source(source: &Path, output_root: &Path) -> Result<PathBuf> {
+pub(super) fn safe_existing_output_source(
+    source: &Path,
+    cache_root: &Path,
+    output_root: &Path,
+) -> Result<PathBuf> {
     let source = fs::canonicalize(source)
         .with_context(|| format!("canonicalizing review output {}", source.display()))?;
-    ensure_path_within(&source, output_root)?;
+    if !source.starts_with(output_root) {
+        ensure_path_within(&source, cache_root)?;
+    }
     if !source.is_file() {
         bail!("review output is not a file: {}", source.display());
     }
@@ -959,11 +993,18 @@ pub(super) fn safe_existing_managed_output_source(
     source: &Path,
     original: &Path,
     input_root: &Path,
+    cache_root: &Path,
     output_root: &Path,
 ) -> Result<PathBuf> {
     let source = fs::canonicalize(source)
         .with_context(|| format!("canonicalizing managed review output {}", source.display()))?;
     if source.starts_with(output_root) {
+        if !source.is_file() {
+            bail!("managed review output is not a file: {}", source.display());
+        }
+        return Ok(source);
+    }
+    if source.starts_with(cache_root) {
         if !source.is_file() {
             bail!("managed review output is not a file: {}", source.display());
         }
