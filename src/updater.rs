@@ -33,7 +33,7 @@ pub(crate) fn run_binary_update(timeout: Duration) -> anyhow::Result<String> {
     }
 
     let status = check_for_update()?;
-    if let self_update::Status::UpToDate(version) = status {
+    if let self_update::VersionStatus::UpToDate(version) = status {
         return Ok(format!("binary already up-to-date (v{version})"));
     }
 
@@ -48,7 +48,7 @@ pub(crate) fn run_binary_update(_timeout: Duration) -> anyhow::Result<String> {
 }
 
 #[cfg(feature = "github-update")]
-fn check_for_update() -> anyhow::Result<self_update::Status> {
+fn check_for_update() -> anyhow::Result<self_update::VersionStatus> {
     let target = asset_target();
     let status = self_update::backends::github::Update::configure()
         .repo_owner("alfanick")

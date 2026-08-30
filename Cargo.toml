@@ -1,6 +1,6 @@
 [package]
 name = "mini-film"
-version = "22.15.0"
+version = "22.15.1"
 description = "Review and publish RAW, JPEG, and HEIC photos with optional Lightroom-style film emulation profiles."
 repository = "https://github.com/alfanick/mini-film"
 homepage = "https://github.com/alfanick/mini-film"
@@ -29,7 +29,7 @@ exif = { package = "kamadak-exif", version = "0.6.1" }
 filetime = "0.2.29"
 anyhow = "1.0.103"
 clap = { version = "4.6.6", features = ["derive"] }
-flate2 = "1.1.9"
+flate2 = "1.1.10"
 handlebars = "6.4.4"
 image = "0.25.10"
 indicatif = "0.18.6"
@@ -46,7 +46,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 sha1 = "0.11.0"
 ttf-parser = "0.25.1"
 ttf2woff2 = { version = "=0.13.2", default-features = false }
-self_update = { version = "0.44.0", default-features = false, features = ["reqwest", "default-tls"], optional = true }
+self_update = { version = "1.2.0", default-features = false, features = ["reqwest", "native-tls", "github", "archive-tar", "compression-tar-gz"], optional = true }
 tar = "0.4.44"
 tempfile = "3.27.0"
 walkdir = "2.5.0"
