@@ -2,6 +2,7 @@
  * Lock the original metadata and navigation wire behavior independently of UI
  * rendering so the hook migration cannot silently rewrite photographers' data.
  */
+import { required } from "./required";
 import { expect, test } from "@playwright/test";
 import { parseTags } from "../review/session/use-edits";
 import {
@@ -21,7 +22,7 @@ test("tag parsing preserves duplicate tags, order, and numeric-looking strings",
 
 // JSON omission determines whether the server updates availability or publish selection.
 test("review payloads preserve metadata, explicit values, and omitted optional fields", (): void => {
-  const image = reviewFixture().images[0];
+  const image = required(reviewFixture().images[0]);
   const body = reviewRequestBody(image, { rating: 0, labels: [], notes: "", tags: ["007", "007"] });
   const serialized = JSON.parse(JSON.stringify(body)) as ReviewUpdateRequest;
   expect(serialized).toMatchObject({
@@ -55,10 +56,10 @@ test("review payloads preserve metadata, explicit values, and omitted optional f
 
 // Camera renditions remain available separately from creative-profile enablement.
 test("profile enablement excludes SOOC and filters retain the original normalization", (): void => {
-  const image = reviewFixture().images[0];
-  image.profiles.push({ ...image.profiles[0], profile_index: 1000000000, profile_stem: "sooc" });
+  const image = required(reviewFixture().images[0]);
+  image.profiles.push({ ...required(image.profiles[0]), profile_index: 1000000000, profile_stem: "sooc" });
   expect(toggleEnabledProfile(image, 0)).toEqual([1]);
-  image.profiles[1].enabled = false;
+  required(image.profiles[1]).enabled = false;
   expect(toggleEnabledProfile(image, 1)).toEqual([0, 1]);
   image.profile_bw_filters = [
     { profile_index: 1, filter: "yellow" },
@@ -75,7 +76,7 @@ test("profile enablement excludes SOOC and filters retain the original normaliza
 
 // Navigation and rating advance use published-profile preference, not mere profile presence.
 test("profile carry keeps published looks and falls back to the first selected publish variant", (): void => {
-  const image = reviewFixture().images[0];
+  const image = required(reviewFixture().images[0]);
   image.selected_profile_index = 1;
   image.publish_profile_indexes = [0];
   expect(carriedProfileIndex(image, 1)).toBe(0);

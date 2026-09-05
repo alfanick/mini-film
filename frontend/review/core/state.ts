@@ -12,7 +12,7 @@ export function createState(): ReviewState {
     mobileDrawer: null,
     pendingProfileSelections: new Map(),
     profileInfoProfileIndex: null,
-    profileInfoPp3: { key: null, text: null, error: null, loading: false },
+    profileInfoPp3: { status: "idle", key: null },
     commandInvocationOpen: false,
     histogramOpen: false,
     informationOpen: false,

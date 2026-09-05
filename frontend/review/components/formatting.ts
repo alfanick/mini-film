@@ -117,7 +117,7 @@ export function sidebarCameraModel(cameraModel: string | null | undefined): stri
   const nikon = /^(?:nikon(?:\s+corporation)?\s+)?z\s*(fc|f|\d+)(?:[\s_-]*(?:mark\s*)?(\d+|ii|iii|iv))?$/i.exec(
     original,
   );
-  if (nikon) {
+  if (nikon?.[1] !== undefined) {
     const generations: Record<string, string> = { 2: "ii", 3: "iii", 4: "iv", ii: "ii", iii: "iii", iv: "iv" };
     const generation = generations[(nikon[2] || "").toLowerCase()];
     const body = /^\d+$/.test(nikon[1]) ? nikon[1] : nikon[1].toLowerCase();

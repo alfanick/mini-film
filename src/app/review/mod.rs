@@ -1,3 +1,5 @@
+//! Coordinate the review daemon and its embedded browser API.
+
 mod db;
 mod diffusion_preview;
 mod gallery_download;
@@ -11,6 +13,7 @@ mod sampler;
 mod scheduler;
 mod server;
 mod store;
+mod wire;
 
 #[cfg(test)]
 mod tests;

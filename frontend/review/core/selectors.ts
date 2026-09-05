@@ -13,6 +13,7 @@ import type {
   ReviewProfile,
   ReviewProfileRender,
   ReviewState,
+  ReviewStateData,
 } from "./types";
 import { BW_FILTERS, COLOR_LABELS, COMPRESSED_REVIEW_PREVIEW_LONG_EDGE } from "./constants";
 
@@ -112,7 +113,10 @@ export function isSoocProfile(profile: ReviewProfileRender | null): boolean {
 }
 
 /** Resolve an enabled profile while retaining immediate optimistic selections. */
-export function selectedProfile(image: ReviewImage | null, state?: ReviewState): ReviewProfileRender | null {
+export function selectedProfile(
+  image: ReviewImage | null,
+  state?: Pick<ReviewState, "pendingProfileSelections">,
+): ReviewProfileRender | null {
   if (!image || isDirectCompressedImage(image)) return null;
   const profiles = image.profiles.filter((profile) => isSoocProfile(profile) || profile.enabled !== false);
   const index = state?.pendingProfileSelections.get(image.id) ?? image.selected_profile_index;
@@ -126,10 +130,13 @@ export function profileDisplayName(profile: ReviewProfileRender | ReviewProfile 
 }
 
 /** Keep the implicit neutral profile rail hidden unless there is a camera rendition. */
-export function profilesAreImplicitOnly(state: ReviewState, image: ReviewImage | null): boolean {
+export function profilesAreImplicitOnly(
+  state: { data: Pick<ReviewStateData, "profiles"> | null },
+  image: ReviewImage | null,
+): boolean {
   if (image?.profiles.some(isSoocProfile)) return false;
   const profiles = state.data?.profiles || [];
-  return profiles.length === 1 && !String(profiles[0].selector || "").trim();
+  return profiles.length === 1 && !String(profiles[0]?.selector || "").trim();
 }
 
 /** Return the published/enabled variants in their existing display order. */
@@ -171,7 +178,7 @@ export function mainImageSource(
   if (selected?.url) return { url: selected.url, updatedAt: selected.updated_at };
   if (isDirectCompressedImage(image) && image?.full_url && longEdge > COMPRESSED_REVIEW_PREVIEW_LONG_EDGE)
     return { url: image.full_url, updatedAt: image.preview_updated_at || image.updated_at };
-  return { url: image?.preview_url || null, updatedAt: image?.preview_updated_at || image?.updated_at };
+  return { url: image?.preview_url || null, updatedAt: image?.preview_updated_at || image?.updated_at || null };
 }
 
 /** Express queued/rendering/local-draft state without coupling it to markup. */
@@ -220,7 +227,7 @@ export function normalizeBwFilter(value: string | null | undefined): BwFilter {
 
 /** Format compact labels without locale-dependent title casing. */
 export function capitalize(value: string | null | undefined): string {
-  return value ? `${value[0].toUpperCase()}${value.slice(1)}` : "";
+  return value ? `${value.charAt(0).toUpperCase()}${value.slice(1)}` : "";
 }
 
 /** Match existing UI counts in statuses and selection summaries. */

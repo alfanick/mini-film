@@ -21,6 +21,8 @@ export function mergeSnapshot(previous: ReviewStateData | null, message: ReviewS
     "client_count",
     "codex",
     "publish_defaults",
+    "diffusion_default",
+    "profile_diffusion_settings",
     "publish_jobs",
     "capabilities",
     "panorama",
@@ -76,10 +78,29 @@ export function reconcileReview(state: ReviewState, message: ReviewStateMessage)
     data,
     labelFilters,
     pendingProfileSelections: pending,
-    localRetouchDirty: false,
     currentId: snapshot.ui.current_image_id,
   };
   const visible = filteredImages(next);
   if (!visible.some((image) => image.id === next.currentId)) next.currentId = visible[0]?.id || null;
-  return { data, labelFilters, pendingProfileSelections: pending, localRetouchDirty: false, currentId: next.currentId };
+  return { data, labelFilters, pendingProfileSelections: pending, currentId: next.currentId };
+}
+
+/** Retain equal catalog entities across complete responses so unrelated leaf subscriptions remain quiet. */
+export function retainSnapshotIdentity(previous: ReviewStateData | null, next: ReviewStateData): ReviewStateData {
+  if (!previous) return next;
+  const byId = new Map(previous.images.map((image) => [image.id, image]));
+  const images = next.images.map((image) => {
+    const old = byId.get(image.id);
+    return old === image || (old && JSON.stringify(old) === JSON.stringify(image)) ? old : image;
+  });
+  const unchangedImages =
+    images.length === previous.images.length && images.every((image, index) => image === previous.images[index]);
+  const data = { ...next, images: unchangedImages ? previous.images : images };
+  for (const key of Object.keys(next) as (keyof ReviewStateData)[]) {
+    if (key !== "images" && JSON.stringify(previous[key]) === JSON.stringify(next[key]))
+      Object.assign(data, { [key]: previous[key] });
+  }
+  return Object.keys(data).every((key) => data[key as keyof ReviewStateData] === previous[key as keyof ReviewStateData])
+    ? previous
+    : data;
 }

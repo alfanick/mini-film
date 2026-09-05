@@ -1,3 +1,6 @@
+//! Serve review routes through the shared Rust-owned JSON request and response contracts.
+
+use crate::review_contract as wire;
 use std::{
     convert::Infallible,
     path::{Path, PathBuf},
@@ -17,7 +20,7 @@ use axum::{
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
 
-use super::{gallery_download::build_gallery_archive, model::*, prelude::*, sampler::*};
+use super::{gallery_download::build_gallery_archive, model::*, prelude::*};
 
 pub(super) fn run_review_listener(
     listener: std::net::TcpListener,
@@ -41,6 +44,7 @@ fn review_router(handle: ReviewHandle) -> Router {
     Router::new().fallback(review_request).with_state(handle)
 }
 
+/// Preserve existing routing and status codes while decoding mutations through shared wire DTOs.
 async fn review_request(State(handle): State<ReviewHandle>, request: Request<Body>) -> Response {
     let (parts, body) = request.into_parts();
     let path = review_route_path(parts.uri.path());
@@ -137,15 +141,15 @@ pub(super) async fn route_request_with_headers(
             if let Err(error) = handle.ensure_database_healthy() {
                 return json_error(503, error).into_response();
             }
-            let previous = match handle.api_state_value() {
+            let previous = match handle.api_state_snapshot() {
                 Ok(state) => state,
                 Err(error) => return json_error(500, error).into_response(),
             };
-            let result = match serde_json::from_slice::<ReviewUpdateRequest>(&body)
+            let result = match serde_json::from_slice::<wire::ReviewUpdateRequest>(&body)
                 .context("parsing review update")
             {
                 Ok(update) => handle
-                    .apply_review_update_async(update)
+                    .apply_review_update_async(update.into())
                     .await
                     .and_then(|()| handle.api_state_patch_json_since(&previous)),
                 Err(error) => Err(error),
@@ -164,15 +168,15 @@ pub(super) async fn route_request_with_headers(
             if let Err(error) = handle.ensure_database_healthy() {
                 return json_error(503, error).into_response();
             }
-            let previous = match handle.api_state_value() {
+            let previous = match handle.api_state_snapshot() {
                 Ok(state) => state,
                 Err(error) => return json_error(500, error).into_response(),
             };
-            let result = match serde_json::from_slice::<ReviewUiUpdateRequest>(&body)
+            let result = match serde_json::from_slice::<wire::ReviewUiUpdateRequest>(&body)
                 .context("parsing review UI update")
             {
                 Ok(update) => handle
-                    .apply_ui_update_async(update)
+                    .apply_ui_update_async(update.into())
                     .await
                     .and_then(|()| handle.api_state_patch_json_since(&previous)),
                 Err(error) => Err(error),
@@ -195,15 +199,15 @@ pub(super) async fn route_request_with_headers(
             if burst_id.is_empty() || burst_id.contains('/') {
                 return json_error(404, anyhow!("review burst was not found")).into_response();
             }
-            let previous = match handle.api_state_value() {
+            let previous = match handle.api_state_snapshot() {
                 Ok(state) => state,
                 Err(error) => return json_error(500, error).into_response(),
             };
-            let result = match serde_json::from_slice::<ReviewBurstExpansionRequest>(&body)
+            let result = match serde_json::from_slice::<wire::ReviewBurstExpansionRequest>(&body)
                 .context("parsing burst expansion update")
             {
                 Ok(update) => handle
-                    .apply_burst_expansion_async(burst_id, update)
+                    .apply_burst_expansion_async(burst_id, update.into())
                     .await
                     .and_then(|()| handle.api_state_patch_json_since(&previous)),
                 Err(error) => Err(error),
@@ -219,7 +223,7 @@ pub(super) async fn route_request_with_headers(
             }
         }
         (Method::POST, "/api/publish") => {
-            let previous = match handle.api_state_value() {
+            let previous = match handle.api_state_snapshot() {
                 Ok(state) => state,
                 Err(error) => return json_error(500, error).into_response(),
             };
@@ -461,34 +465,43 @@ pub(super) fn review_route_path(path: &str) -> String {
     path.to_string()
 }
 
+/// Start a sampler job from its shared request and return only public snapshot fields.
 async fn sampler_start_response(body: &[u8], handle: &ReviewHandle) -> Response {
     if let Err(error) = handle.ensure_database_healthy() {
         return json_error(503, error).into_response();
     }
-    let result = serde_json::from_slice::<ReviewSamplerStartRequest>(body)
+    let result = serde_json::from_slice::<wire::ReviewSamplerStartRequest>(body)
         .context("parsing sampler request")
         .and_then(|request| handle.start_sampler_job(request.image_id))
-        .and_then(|snapshot| serde_json::to_string(&snapshot).context("serializing sampler job"));
+        .and_then(|snapshot| {
+            serde_json::to_string(&wire::ReviewSamplerJobSnapshot::from(&snapshot))
+                .context("serializing sampler job")
+        });
     match result {
         Ok(body) => text_response(202, "application/json; charset=utf-8", &body).into_response(),
         Err(error) => json_error(400, error).into_response(),
     }
 }
 
+/// Decode diffusion controls and return the public accepted-job representation.
 async fn diffusion_start_response(body: &[u8], handle: &ReviewHandle) -> Response {
     if let Err(error) = handle.ensure_database_healthy() {
         return json_error(503, error).into_response();
     }
-    let result = serde_json::from_slice::<ReviewDiffusionJobRequest>(body)
+    let result = serde_json::from_slice::<wire::ReviewDiffusionJobRequest>(body)
         .context("parsing diffusion preview request")
-        .and_then(|request| handle.start_diffusion_job(request))
-        .and_then(|job| serde_json::to_string(&job).context("serializing diffusion job"));
+        .and_then(|request| handle.start_diffusion_job(request.into()))
+        .and_then(|job| {
+            serde_json::to_string(&wire::ReviewDiffusionJob::from(&job))
+                .context("serializing diffusion job")
+        });
     match result {
         Ok(body) => text_response(202, "application/json; charset=utf-8", &body).into_response(),
         Err(error) => json_error(400, error).into_response(),
     }
 }
 
+/// Poll a diffusion job without exposing its internal preview filesystem paths.
 async fn diffusion_job_response(path: &str, handle: &ReviewHandle) -> Response {
     let job_id = path.trim_start_matches("/api/diffusion/jobs/");
     let Some(job_id) = (!job_id.is_empty() && !job_id.contains('/'))
@@ -498,10 +511,10 @@ async fn diffusion_job_response(path: &str, handle: &ReviewHandle) -> Response {
         return text_response(400, "text/plain; charset=utf-8", "bad diffusion job id")
             .into_response();
     };
-    match handle
-        .diffusion_job_snapshot(job_id)
-        .and_then(|job| serde_json::to_string(&job).context("serializing diffusion job"))
-    {
+    match handle.diffusion_job_snapshot(job_id).and_then(|job| {
+        serde_json::to_string(&wire::ReviewDiffusionJob::from(&job))
+            .context("serializing diffusion job")
+    }) {
         Ok(body) => text_response(200, "application/json; charset=utf-8", &body).into_response(),
         Err(error) => json_error(404, error).into_response(),
     }
@@ -530,6 +543,7 @@ async fn diffusion_preview_media_response(path: &str, handle: &ReviewHandle) -> 
     }
 }
 
+/// Apply or reset settings and return the established nonempty incremental state response.
 async fn diffusion_settings_response(
     method: Method,
     body: &[u8],
@@ -538,22 +552,22 @@ async fn diffusion_settings_response(
     if let Err(error) = handle.ensure_database_healthy() {
         return json_error(503, error).into_response();
     }
-    let previous = match handle.api_state_value() {
+    let previous = match handle.api_state_snapshot() {
         Ok(state) => state,
         Err(error) => return json_error(500, error).into_response(),
     };
     let result = match method {
-        Method::POST => match serde_json::from_slice::<ReviewDiffusionSettingsRequest>(body)
+        Method::POST => match serde_json::from_slice::<wire::ReviewDiffusionSettingsRequest>(body)
             .context("parsing diffusion settings")
         {
-            Ok(request) => handle.apply_diffusion_settings_async(request).await,
+            Ok(request) => handle.apply_diffusion_settings_async(request.into()).await,
             Err(error) => Err(error),
         },
         Method::DELETE => {
-            match serde_json::from_slice::<ReviewDiffusionSettingsResetRequest>(body)
+            match serde_json::from_slice::<wire::ReviewDiffusionSettingsResetRequest>(body)
                 .context("parsing diffusion settings reset")
             {
-                Ok(request) => handle.reset_diffusion_settings_async(request).await,
+                Ok(request) => handle.reset_diffusion_settings_async(request.into()).await,
                 Err(error) => Err(error),
             }
         }
@@ -568,6 +582,7 @@ async fn diffusion_settings_response(
     }
 }
 
+/// Poll or modify sampler selection/priority using the matching shared body contract.
 async fn sampler_job_response(
     method: Method,
     path: &str,
@@ -585,20 +600,20 @@ async fn sampler_job_response(
     let result = match (method, parts.as_slice()) {
         (Method::GET, [_]) => handle.sampler_job_snapshot(job_id),
         (Method::POST, [_, "priority"]) => {
-            match serde_json::from_slice::<ReviewSamplerPriorityRequest>(body)
+            match serde_json::from_slice::<wire::ReviewSamplerPriorityRequest>(body)
                 .context("parsing sampler priority update")
             {
-                Ok(request) => handle.prioritize_sampler_job(job_id, request),
+                Ok(request) => handle.prioritize_sampler_job(job_id, request.into()),
                 Err(error) => Err(error),
             }
         }
         (Method::POST, [_, "profiles", entry_key]) => {
-            match serde_json::from_slice::<ReviewSamplerSelectionRequest>(body)
+            match serde_json::from_slice::<wire::ReviewSamplerSelectionRequest>(body)
                 .context("parsing sampler profile selection")
             {
                 Ok(request) => {
                     handle
-                        .apply_sampler_selection_async(job_id, entry_key, request)
+                        .apply_sampler_selection_async(job_id, entry_key, request.into())
                         .await
                 }
                 Err(error) => Err(error),
@@ -606,9 +621,10 @@ async fn sampler_job_response(
         }
         _ => return text_response(404, "text/plain; charset=utf-8", "not found").into_response(),
     };
-    match result
-        .and_then(|snapshot| serde_json::to_string(&snapshot).context("serializing sampler job"))
-    {
+    match result.and_then(|snapshot| {
+        serde_json::to_string(&wire::ReviewSamplerJobSnapshot::from(&snapshot))
+            .context("serializing sampler job")
+    }) {
         Ok(body) => text_response(200, "application/json; charset=utf-8", &body).into_response(),
         Err(error) => json_error(400, error).into_response(),
     }
@@ -632,15 +648,16 @@ async fn sampler_media_response(path: &str, handle: &ReviewHandle) -> Response {
     }
 }
 
+/// Create a panorama project and expose its changes through the ordinary state patch protocol.
 async fn panorama_create_response(body: &[u8], handle: &ReviewHandle) -> Response {
-    let previous = match handle.api_state_value() {
+    let previous = match handle.api_state_snapshot() {
         Ok(state) => state,
         Err(error) => return json_error(500, error).into_response(),
     };
     let result = async {
-        let request = serde_json::from_slice::<ReviewPanoramaCreateRequest>(body)
+        let request = serde_json::from_slice::<wire::ReviewPanoramaCreateRequest>(body)
             .context("parsing panorama project")?;
-        handle.create_panorama_project_async(request).await?;
+        handle.create_panorama_project_async(request.into()).await?;
         handle.api_state_patch_json_since(&previous)
     }
     .await;
@@ -650,6 +667,7 @@ async fn panorama_create_response(body: &[u8], handle: &ReviewHandle) -> Respons
     }
 }
 
+/// Preserve panorama operation defaults, including empty preview/render request bodies.
 async fn panorama_project_response(
     method: Method,
     path: &str,
@@ -664,31 +682,33 @@ async fn panorama_project_response(
         return text_response(400, "text/plain; charset=utf-8", "bad panorama project id")
             .into_response();
     };
-    let previous = match handle.api_state_value() {
+    let previous = match handle.api_state_snapshot() {
         Ok(state) => state,
         Err(error) => return json_error(500, error).into_response(),
     };
     let result = match (method, parts.as_slice()) {
-        (Method::PATCH, [_]) => match serde_json::from_slice::<ReviewPanoramaUpdateRequest>(body)
-            .context("parsing panorama project update")
-        {
-            Ok(request) => {
-                handle
-                    .update_panorama_project_async(project_id, request)
-                    .await
+        (Method::PATCH, [_]) => {
+            match serde_json::from_slice::<wire::ReviewPanoramaUpdateRequest>(body)
+                .context("parsing panorama project update")
+            {
+                Ok(request) => {
+                    handle
+                        .update_panorama_project_async(project_id, request.into())
+                        .await
+                }
+                Err(error) => Err(error),
             }
-            Err(error) => Err(error),
-        },
+        }
         (Method::POST, [_, "previews"]) => {
             let request = if body.is_empty() {
-                Ok(ReviewPanoramaPreviewRequest::default())
+                Ok(wire::ReviewPanoramaPreviewRequest::default())
             } else {
                 serde_json::from_slice(body).context("parsing panorama preview request")
             };
             match request {
                 Ok(request) => {
                     handle
-                        .start_panorama_previews_async(project_id, request)
+                        .start_panorama_previews_async(project_id, request.into())
                         .await
                 }
                 Err(error) => Err(error),
@@ -696,14 +716,14 @@ async fn panorama_project_response(
         }
         (Method::POST, [_, "render"]) => {
             let request = if body.is_empty() {
-                Ok(ReviewPanoramaRenderRequest::default())
+                Ok(wire::ReviewPanoramaRenderRequest::default())
             } else {
                 serde_json::from_slice(body).context("parsing panorama render request")
             };
             match request {
                 Ok(request) => {
                     handle
-                        .start_panorama_render_async(project_id, request)
+                        .start_panorama_render_async(project_id, request.into())
                         .await
                 }
                 Err(error) => Err(error),
@@ -1062,13 +1082,17 @@ async fn serve_gallery_archive(path: PathBuf, download_name: &str) -> Response {
     response
 }
 
+/// Accept both the historical empty publish request and its shared optional JSON controls.
 pub(super) fn parse_publish_request(body: &[u8]) -> Result<PublishRequest> {
     if body.is_empty() {
-        return Ok(PublishRequest::default());
+        return Ok(wire::PublishRequest::default().into());
     }
-    serde_json::from_slice(body).context("parsing publish request")
+    serde_json::from_slice::<wire::PublishRequest>(body)
+        .map(Into::into)
+        .context("parsing publish request")
 }
 
+/// Stream untagged full state, tagged patches, and separately named keepalive events unchanged.
 fn event_stream_response(handle: ReviewHandle) -> Response {
     let mut receiver = handle.subscribe();
     let mut keepalive = tokio::time::interval(Duration::from_secs(5));
@@ -1092,12 +1116,12 @@ fn event_stream_response(handle: ReviewHandle) -> Response {
                     }
                 }
                 _ = keepalive.tick() => {
-                    let data = json!({
-                        "type": "keepalive",
-                        "datetime": chrono::Utc::now().to_rfc3339(),
-                        "version": env!("CARGO_PKG_VERSION"),
-                    });
-                    yield Ok(Event::default().event("keepalive").data(data.to_string()));
+                    let data = wire::ReviewKeepalive {
+                        kind: wire::ReviewKeepaliveType::Keepalive,
+                        datetime: chrono::Utc::now().to_rfc3339(),
+                        version: env!("CARGO_PKG_VERSION").to_owned(),
+                    };
+                    yield Ok(Event::default().event("keepalive").data(serde_json::to_string(&data).expect("serializing string-only keepalive")));
                 }
             }
         }
@@ -1135,11 +1159,15 @@ async fn serve_review_path(path: PathBuf) -> Response {
     }
 }
 
+/// Serialize the public error contract while retaining each route's established HTTP status.
 fn json_error(status: u16, error: anyhow::Error) -> HttpResponse {
     text_response(
         status,
         "application/json; charset=utf-8",
-        &json!({"error": error.to_string()}).to_string(),
+        &serde_json::to_string(&wire::ReviewError {
+            error: error.to_string(),
+        })
+        .expect("serializing string-only error"),
     )
 }
 

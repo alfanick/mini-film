@@ -39,12 +39,10 @@ export function reviewRequestBody(image: ReviewImage, patch: Partial<ReviewUpdat
     tags: patch.tags ?? image.tags ?? [],
     notes: patch.notes ?? image.notes ?? "",
     retouch: patch.retouch ?? image.retouch ?? defaultRetouch(),
-    selected_profile_index: patch.selected_profile_index,
-    publish_profile_indexes:
-      patch.enabled_profile_indexes === undefined
-        ? (patch.publish_profile_indexes ?? publishProfileIndexes(image))
-        : undefined,
-    enabled_profile_indexes: patch.enabled_profile_indexes,
+    ...(patch.selected_profile_index === undefined ? {} : { selected_profile_index: patch.selected_profile_index }),
+    ...(patch.enabled_profile_indexes === undefined
+      ? { publish_profile_indexes: patch.publish_profile_indexes ?? publishProfileIndexes(image) }
+      : { enabled_profile_indexes: patch.enabled_profile_indexes }),
     profile_bw_filters: patch.profile_bw_filters ?? profileBwFilters(image),
     advance_after_update: Boolean(patch.advance_after_update),
   };

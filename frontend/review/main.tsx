@@ -5,12 +5,15 @@
 import { render } from "preact";
 import { ReviewProvider } from "./core/context";
 import { ReviewApp } from "./ReviewApp";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 
 const root = document.getElementById("review-root");
 if (!root) throw new Error("Review application mount is missing");
 render(
   <ReviewProvider>
-    <ReviewApp />
+    <ErrorBoundary>
+      <ReviewApp />
+    </ErrorBoundary>
   </ReviewProvider>,
   root,
 );

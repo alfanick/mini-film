@@ -2,6 +2,7 @@
  * Lock down the legacy snapshot/patch and selector rules independently of browser rendering.
  * These regressions protect multi-client selection and user-owned metadata during live updates.
  */
+import { required } from "./required";
 import { expect, test } from "@playwright/test";
 import { reviewFixture } from "./fixtures";
 import { createState } from "../review/core/state";
@@ -28,14 +29,14 @@ test("incremental updates preserve unmentioned metadata and explicit image order
   const patched = mergeSnapshot(previous, {
     type: "patch",
     version: previous.version,
-    images: [{ ...previous.images[0], rating: 5 }],
+    images: [{ ...required(previous.images[0]), rating: 5 }],
     removed_image_ids: [2],
     image_ids: [3, 1],
   });
   expect(patched?.images.map((image) => image.id)).toEqual([3, 1]);
-  expect(patched?.images[1].notes).toBe(previous.images[0].notes);
-  expect(patched?.images[1].rating).toBe(5);
-  expect(previous.images[0].rating).not.toBe(5);
+  expect(required(patched?.images[1]).notes).toBe(required(previous.images[0]).notes);
+  expect(required(patched?.images[1]).rating).toBe(5);
+  expect(required(previous.images[0]).rating).not.toBe(5);
   expect(previous.images).toHaveLength(3);
 });
 
@@ -46,12 +47,12 @@ test("patches without an initial snapshot wait for a complete state", (): void =
 test("optimistic selection survives stale SSE until the exact selection is acknowledged", (): void => {
   const state = session();
   const data = reviewFixture();
-  const pending = data.images[0].profiles[1].profile_index;
+  const pending = required(required(data.images[0]).profiles[1]).profile_index;
   state.pendingProfileSelections.set(1, pending);
   const merged = { ...state, ...reconcileReview(state, data) };
-  expect(selectedProfile(merged.data?.images[0] || null, merged)?.profile_index).toBe(pending);
+  expect(selectedProfile(required(merged.data?.images[0]) || null, merged)?.profile_index).toBe(pending);
   expect(merged.pendingProfileSelections.get(1)).toBe(pending);
-  data.images[0].selected_profile_index = pending;
+  required(data.images[0]).selected_profile_index = pending;
   const acknowledged = reconcileReview(merged, data);
   expect(acknowledged.pendingProfileSelections?.has(1)).toBe(false);
 });
@@ -60,10 +61,14 @@ test("older snapshots cannot reverse a confirmed newer profile selection", (): v
   const state = session();
   const data = reviewFixture();
   if (!state.data) throw new Error("Fixture requires a snapshot");
-  const chosen = state.data.images[0].profiles[1].profile_index;
-  state.data.images[0] = { ...state.data.images[0], selected_profile_index: chosen, updated_at: "2026-09-06" };
-  data.images[0].updated_at = "2026-09-05";
-  expect(reconcileReview(state, data).data?.images[0].selected_profile_index).toBe(chosen);
+  const chosen = required(required(state.data.images[0]).profiles[1]).profile_index;
+  state.data.images[0] = {
+    ...required(state.data.images[0]),
+    selected_profile_index: chosen,
+    updated_at: "2026-09-06",
+  };
+  required(data.images[0]).updated_at = "2026-09-05";
+  expect(required(reconcileReview(state, data).data?.images[0]).selected_profile_index).toBe(chosen);
 });
 
 test("server removals choose the first remaining visible picture", (): void => {
@@ -92,8 +97,8 @@ test("neutral defaults and partial edits do not share mutable crop or adjustment
 });
 
 test("profile rendering statuses retain their original user-facing wording", (): void => {
-  const image = reviewFixture().images[0];
-  const profile = image.profiles[0];
+  const image = required(reviewFixture().images[0]);
+  const profile = required(image.profiles[0]);
   expect(profileDisplayState(image, null, true)).toEqual({
     state: "waiting",
     text: "waiting",

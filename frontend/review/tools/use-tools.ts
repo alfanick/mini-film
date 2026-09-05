@@ -1,11 +1,11 @@
 /** Compose independent tool hooks behind the small action interface consumed by the main review shell. */
 import { useReviewContext } from "../core/context";
 import type { ReviewImage } from "../core/types";
-import { useSampler, type SamplerActions } from "./use-sampler";
-import { useDiffusion, type DiffusionActions } from "./use-diffusion";
-import { useInformation, type InformationActions } from "./use-information";
-import { usePanorama, type PanoramaActions } from "./use-panorama";
-import { usePublish, type PublishActions } from "./use-publish";
+import { useSampler, type SamplerActions } from "../features/sampler/model";
+import { useDiffusion, type DiffusionActions } from "../features/diffusion/model";
+import { useInformation, type InformationActions } from "../features/information/model";
+import { usePanorama, type PanoramaActions } from "../features/panorama/model";
+import { usePublish, type PublishActions } from "../features/publish/model";
 import type { ToolSessionActions } from "./types";
 
 /** Combined tool commands plus the current-session selectors required by legacy-compatible view composition. */

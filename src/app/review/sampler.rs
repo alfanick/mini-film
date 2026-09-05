@@ -1,3 +1,5 @@
+//! Schedule sampler previews and retain runtime data behind explicit public snapshot adapters.
+
 use super::{
     handle::{
         profile_render_key_value_with_diffusion, queue_profile_retouch_render,
@@ -60,11 +62,6 @@ pub(super) enum ReviewSamplerScope {
 pub(super) struct ReviewSamplerSelectionRequest {
     pub(super) scope: ReviewSamplerScope,
     pub(super) enabled: bool,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-pub(super) struct ReviewSamplerStartRequest {
-    pub(super) image_id: u64,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]

@@ -3,14 +3,13 @@
  * The shell preserves embedded UI structure while hooks own requests, edits and browser capabilities.
  */
 import { Fragment, type ComponentChildren } from "preact";
-import { useEffect, useRef, useState } from "preact/hooks";
-import { useReviewContext } from "./core/context";
+import { useCallback, useEffect, useRef, useState } from "preact/hooks";
+import { useReviewContext, useReviewModel } from "./core/context";
 import { COLOR_LABELS, RATING_VALUES } from "./core/constants";
 import {
   capitalize,
   currentImage,
   defaultRetouch,
-  filteredImages,
   isCompressedImage,
   isDirectCompressedImage,
   isSoocProfile,
@@ -20,20 +19,19 @@ import {
   profilesAreImplicitOnly,
   selectedProfile,
 } from "./core/selectors";
-import type { ReviewImage, ReviewStateData } from "./core/types";
+import type { ReviewStateData } from "./core/types";
 import { Controls } from "./components/Controls";
 import { BwFilterControls, ImageList, ProfileList } from "./components/Browsing";
 import { formatImageExif, imageSourceInfoTitle } from "./components/formatting";
 import { ShortcutsOverlay } from "./components/Shortcuts";
-import { useReviewSession, type ReviewActions } from "./session/use-session";
+import { useReviewSession, type ReviewActions, type ReviewSession } from "./session/use-session";
 import { useReviewEdits, type ReviewEdits } from "./session/use-edits";
 import { useMediaQuery, usePanelSafeArea } from "./session/use-layout";
 import { useReviewShortcuts } from "./session/use-shortcuts";
 import { useOriginalShare } from "./session/use-original-share";
 import { Viewer } from "./viewer/Viewer";
-import { useTools } from "./tools/use-tools";
-import { ToolOverlays } from "./tools/overlays";
-import { publishProgressPercent } from "./tools/publish-helpers";
+import { ToolsProvider, useActiveTools, ToolOverlayHost } from "./tools/context";
+import { publishProgressPercent } from "./features/publish/helpers";
 
 /** Keep live pipeline progress phrased like the original compact sidebar summary. */
 function statusSummary(data: ReviewStateData | null, count: number, profileCount: number): string {
@@ -64,10 +62,34 @@ function statusSummary(data: ReviewStateData | null, count: number, profileCount
 
 /** Mount the single review application with stable feature components and controlled forms. */
 export function ReviewApp(): ComponentChildren {
-  const { state, update } = useReviewContext();
   const session = useReviewSession();
+  return (
+    <ToolsProvider session={session}>
+      <ReviewWorkspace session={session} />
+    </ToolsProvider>
+  );
+}
+
+/** Tool forms own a separate render boundary; the workspace reads only catalog and visible-shell state. */
+function ReviewWorkspace({ session }: { session: ReviewSession }): ComponentChildren {
+  const model = useReviewModel();
+  const { state, update } = useReviewContext([
+    "data",
+    "currentId",
+    "labelFilters",
+    "cropEditing",
+    "mobileDrawer",
+    "informationOpen",
+    "histogramOpen",
+    "profileInfoProfileIndex",
+    "commandInvocationOpen",
+    "diffusionOpen",
+    "samplerOpen",
+    "panoramaOpen",
+    "localRetouchDirty",
+  ]);
   const editSession = useReviewEdits(session);
-  const tools = useTools(session);
+  const tools = useActiveTools();
   const image = currentImage(state);
   const selected = selectedProfile(image, state);
   const direct = isDirectCompressedImage(image);
@@ -95,7 +117,7 @@ export function ReviewApp(): ComponentChildren {
       }
     },
   };
-  const images = filteredImages(state);
+  const images = model.visibleImages.value;
   const mobile = useMediaQuery("(max-width: 600px), (max-width: 950px) and (max-height: 520px)");
   const rail = useMediaQuery("(min-width: 901px) and (min-height: 620px)");
   const tuckedRail = useMediaQuery("(min-width: 901px) and (min-height: 620px) and (max-width: 1499.98px)");
@@ -113,34 +135,16 @@ export function ReviewApp(): ComponentChildren {
     ? `${original.label === "Open Photo" ? "Open" : "Save"} original ${image?.file_name || "photo"}`
     : undefined;
 
-  /** Flush a draft before changing which picture or profile receives subsequent actions. */
-  const actions: ReviewActions = {
-    ...session,
-    move: async (delta: number): Promise<void> => {
-      await edits.flush();
-      await session.move(delta);
-    },
-    rate: async (rating: number, advance = true): Promise<void> => {
-      await edits.flush();
-      await session.rate(rating, advance);
-    },
-    selectImage: async (next: ReviewImage): Promise<void> => {
-      await edits.flush();
-      await session.selectImage(next);
-    },
-    selectProfile: async (profile): Promise<void> => {
-      await edits.flush();
-      await session.selectProfile(profile);
-    },
-    stepProfile: async (delta: number): Promise<void> => {
-      await edits.flush();
-      await session.stepProfile(delta);
-    },
-    toggleLabel: async (label): Promise<void> => {
-      await edits.flush();
-      await session.toggleLabel(label);
-    },
-  };
+  // Actions capture identities synchronously; their session-owned queue then flushes that picture's draft.
+  const actions = session.actions;
+  const toggleProfile = useCallback<ReviewActions["toggleProfile"]>(
+    (profile) => actions.toggleProfile(profile),
+    [actions],
+  );
+  const soloProfile = useCallback<ReviewActions["toggleProfile"]>(
+    (profile) => actions.toggleProfile(profile, true),
+    [actions],
+  );
   const onWheel = useReviewShortcuts({
     actions,
     edits,
@@ -228,8 +232,8 @@ export function ReviewApp(): ComponentChildren {
       <ProfileList
         image={image}
         onSelect={actions.selectProfile}
-        onToggleEnabled={(item): Promise<void> => actions.toggleProfile(item)}
-        onSolo={(item): Promise<void> => actions.toggleProfile(item, true)}
+        onToggleEnabled={toggleProfile}
+        onSolo={soloProfile}
       />
     </div>
   );
@@ -240,16 +244,17 @@ export function ReviewApp(): ComponentChildren {
           <header class="sidebar-header">
             <div>
               <h1>Review</h1>
-              <div
+              <button
                 id="app-version"
                 class="app-version"
+                type="button"
                 onClick={(event): void => {
                   event.preventDefault();
                   tools.openCommandInvocation();
                 }}
               >
                 {`mini-film ${state.data?.version || ""}`.trim()}
-              </div>
+              </button>
             </div>
             <div class="header-actions">
               <button
@@ -321,6 +326,32 @@ export function ReviewApp(): ComponentChildren {
               {session.connectionError || statusSummary(state.data, images.length, configuredProfileCount)}
             </span>
           </div>
+          {edits.errors.map((error) => (
+            <div key={error.imageId} class="save-error" role="status" aria-live="polite">
+              {`Picture ${error.imageId}: ${error.message}. Edits are still unsaved. `}
+              <button
+                type="button"
+                onClick={(): void => {
+                  void edits.retry(error.imageId).catch(() => undefined);
+                }}
+              >
+                Retry save
+              </button>
+            </div>
+          ))}
+          {session.reviewFailures.map((failure): ComponentChildren => (
+            <div key={failure.key} class="save-error" role="status" aria-live="polite">
+              {`Picture ${failure.imageId}: ${failure.message}. Save could not be confirmed. `}
+              <button
+                type="button"
+                onClick={(): void => {
+                  void session.recover(failure);
+                }}
+              >
+                {failure.retryable ? "Refresh and retry" : "Check state"}
+              </button>
+            </div>
+          ))}
           <div id="image-list" class="image-list">
             <ImageList
               images={images}
@@ -524,10 +555,10 @@ export function ReviewApp(): ComponentChildren {
           </section>
           {rail ? profileList : null}
         </main>
-        <ToolOverlays tools={tools} placement="inside" />
+        <ToolOverlayHost placement="inside" />
       </div>
       <ShortcutsOverlay open={shortcutsOpen} onClose={(): void => setShortcutsOpen(false)} />
-      <ToolOverlays tools={tools} placement="outside" />
+      <ToolOverlayHost placement="outside" />
     </>
   );
 }

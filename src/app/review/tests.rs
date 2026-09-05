@@ -9,6 +9,9 @@ use super::{
 use mini_film::{DiffusionMethod, DiffusionSettings};
 use std::sync::Mutex;
 
+#[path = "contract_tests.rs"]
+mod contract_tests;
+
 fn profile(index: usize, stem: &str) -> ReviewProfile {
     ReviewProfile {
         index,

@@ -2,7 +2,11 @@
 # Node setup and native platform smoke builds match source-build prerequisites.
 name: CI
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -17,6 +21,7 @@ jobs:
   test-and-lint:
     name: Test and quality checks
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -61,11 +66,8 @@ jobs:
       - name: Verify isolated frontend builds
         run: npm run test:review-build
 
-      - name: Install browser test engines
-        run: npx playwright install --with-deps chromium webkit
-
-      - name: Test compiled review UI in browsers
-        run: npm run test:review
+      - name: Verify Rust-generated editor contracts
+        run: npm run contracts:check
 
       - name: Run unit tests (with report)
         id: unit-tests
@@ -212,9 +214,49 @@ jobs:
       - name: Verify source package builds with embedded frontend
         run: cargo package --locked --no-default-features
 
+  frontend-browsers:
+    name: Pinned browser, accessibility, and visual regressions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: mcr.microsoft.com/playwright:v1.63.0-noble
+      options: --ipc=host
+    env:
+      REVIEW_VISUAL: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install locked frontend tools
+        run: npm ci --ignore-scripts --include=dev --include=optional --no-audit --no-fund
+      - name: Generate ignored runtime validators
+        run: node scripts/review-contracts.mjs --runtime
+      - name: Generate temporary debug reference screenshots
+        run: >-
+          npm run test:review -- review.spec.ts --project=chromium-debug
+          --project=webkit-debug --update-snapshots=all
+      - name: Compare release and repeated debug renders with the references
+        run: npm run test:review -- --update-snapshots=none
+      - name: Upload browser failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: review-browser-failures
+          path: |
+            target/playwright-results
+            target/review-visual
+          retention-days: 14
+
   platform-builds:
     name: Build smoke (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -265,7 +307,9 @@ jobs:
   tag-on-version-bump:
     name: Tag release
     runs-on: ubuntu-latest
-    needs: [test-and-lint, platform-builds]
+    needs: [test-and-lint, platform-builds, frontend-browsers]
+    permissions:
+      contents: write
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.test-and-lint.result == 'success' && needs.platform-builds.result == 'success' }}
     steps:
       - name: Checkout

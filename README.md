@@ -222,7 +222,9 @@ end in `-gui` before the platform extension, and GUI builds update from matching
 `-gui` release assets.
 
 The review UI lives in `frontend/review/` as strict TypeScript and Preact TSX
-modules. To work on it independently of Rust:
+modules. Each `features/<tool>/` directory colocates its views, models, and
+helpers; `core/`, `session/`, and `viewer/` hold shared infrastructure.
+To work on it independently of Rust:
 
 ```sh
 npm ci --ignore-scripts --include=dev --include=optional
@@ -235,6 +237,24 @@ npx playwright install chromium webkit
 npm run test:review
 ```
 
+The review API's source of truth is a shared pure Rust wire-contract module.
+Cargo exports request and response JSON Schemas, generates fresh TypeScript and
+standalone response validators in `OUT_DIR`, and then checks and bundles the UI.
+The checked-in generated contracts are an editor/standalone-build mirror, not a
+substitute for Cargo generation. After changing a Rust wire DTO, run:
+
+```sh
+npm run contracts:generate
+npm run contracts:check
+```
+
+The lightweight exporter does not build the application or recursively invoke
+its build script. Request and response schemas intentionally differ: Serde
+defaults may make an input optional while its output remains required/nullable.
+Malformed HTTP or SSE data cannot replace the last valid review state. Runtime
+response validators are precompiled; no schema compiler, external schema fetch,
+or dynamic code generation is needed in the browser.
+
 The standalone build writes `target/review-frontend/review/app.js`; pass
 `-- --profile release` to minify it. Cargo uses the same build helper for
 `cargo build`, `cargo run`, tests, and release builds. GitHub CI installs Node 24
@@ -243,12 +263,41 @@ builds CLI and desktop binaries on Linux x64/ARM64, macOS ARM64, and Windows x64
 The desktop launcher, static galleries, sampler, and TV page retain their
 existing embedded assets.
 
+Browser checks cover debug and release bundles in Chromium and WebKit; pure
+contract, geometry, and state-model tests run once. Accessibility checks cover
+keyboard-only controls and WCAG AA scans. Visual comparisons use the pinned
+`mcr.microsoft.com/playwright:v1.63.0-noble` image in CI. Each run first generates
+temporary debug reference screenshots, then compares release and repeated debug
+renders against those same-browser references. This checks bundle parity and
+rendering determinism, not historical visual changes; behavior assertions remain
+the independent regression check. Screenshots and build artifacts are never
+checked into Git.
+With Docker (or `CONTAINER_ENGINE=podman`) installed, run the same environment:
+
+```sh
+npm run test:review:visual
+npm run test:review:visual -- review.spec.ts
+```
+
+The helper installs locked dependencies in an isolated workspace under
+`target/review-ci/run-*/`, leaving the source checkout read-only. Reference
+screenshots stay under `target/review-visual`; failures, diffs, and traces stay
+under `target/playwright-results`, relative to that workspace or the checkout
+when running Playwright directly. CI uploads these ignored artifacts on failure.
+Release JavaScript is capped at 80 KiB gzip and
+checked for external or computed dynamic imports. Scheduled npm advisory checks
+are separate from deterministic Cargo builds.
+
 The checked-in `tsconfig.json` files let TypeScript language servers discover
 the browser project, Node-based tests, and Playwright configuration directly.
 Neovim and other editors should use this checkout's installed TypeScript and
 ESLint packages after `npm ci`. ESLint uses TypeScript's project service and
 rejects unsafe values, unhandled promises, unused declarations, `any`, and
 imperative `h()` views. Hook order and effect dependencies are also checked.
+Unchecked indexed access, exact optional properties, exhaustive switches, and
+non-null assertions are checked too. Generated validator JavaScript is compiler
+output: it is formatted and freshness-tested rather than source-linted; its
+generated TypeScript declarations and all consuming code remain strictly checked.
 Cargo runs the same production lint and type checks;
 `npm run check:assets` additionally checks tests and developer helpers. Warnings
 fail the lint commands, and TypeScript/ESLint suppression comments are rejected.
@@ -256,6 +305,23 @@ Prettier uses a 120-column layout, and lint enforces that limit for TypeScript,
 TSX, and developer JavaScript. The pre-commit hook automatically formats staged
 frontend paths; formatting changes are left unstaged for review, preserving
 partial staging. `npm run format:assets` formats the complete frontend on demand.
+
+The review frontend uses provider-scoped Preact Signals for catalog, navigation,
+tool state, and per-picture drafts. Metadata keeps its 500 ms autosave delay;
+retouch keeps 1,200 ms. A shared navigation update does not discard another
+picture's pending edits. Failed saves retain an actionable error and require an
+explicit retry after refreshing server state; uncertain rating-and-advance or
+job-creation requests are not automatically replayed. This protects local edit
+ownership, not simultaneous writes from different browsers: the existing wire
+protocol has no conditional writes or causal revision ordering. Drafts remain
+in memory, not in a durable offline journal.
+
+Review dialogs contain keyboard focus and return it to the triggering control
+on close. Background rating/navigation shortcuts are suspended while a dialog
+is open. Focus the picture and press Enter/Space to toggle zoom, or Escape to
+exit. Crop frames and handles accept arrow keys for one displayed-pixel movement
+or resizing, and Shift+arrows for ten pixels, retaining crop bounds and aspect
+constraints. Profile availability checkboxes use their own normal Space action.
 
 Required external dependencies at startup for image-generation commands:
 

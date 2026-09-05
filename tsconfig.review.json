@@ -7,6 +7,15 @@
     "jsx": "react-jsx",
     "jsxImportSource": "preact",
     "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "noImplicitOverride": true,
+    "noUncheckedSideEffectImports": true,
+    "noImplicitReturns": true,
+    "erasableSyntaxOnly": true,
+    "allowUnreachableCode": false,
+    "allowUnusedLabels": false,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
@@ -16,6 +25,6 @@
     "noEmit": true,
     "types": []
   },
-  "include": ["frontend/review/**/*.ts", "frontend/review/**/*.tsx"],
+  "include": ["frontend/review/**/*.ts", "frontend/review/**/*.tsx", "frontend/review/**/*.mts"],
   "exclude": ["frontend/review/**/*.test.ts", "frontend/review/**/*.spec.ts"]
 }

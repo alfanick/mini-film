@@ -1,5 +1,6 @@
 /** Verify crop, autofocus, and zoom geometry independently of browser timing.
  * These bounds protect photo content when the review UI changes its rendering mechanism. */
+import { required } from "./required";
 import { expect, test } from "@playwright/test";
 import type { CropRect } from "../review/core/types";
 import { createState } from "../review/core/state";
@@ -32,7 +33,7 @@ test("rotation keeps the safe output rectangle inside the source photograph", ()
     [6000, 4000],
     [4000, 6000],
     [4000, 4000],
-  ]) {
+  ] as const) {
     for (const rotation of [-180, -135, -90, -45, -15, 0, 15, 45, 90, 135, 180]) {
       const safe = rotatedSafeDimensions(width, height, rotation);
       const radians = (rotation * Math.PI) / 180;
@@ -101,21 +102,21 @@ test("mouse and touch loupes remain inside the viewer at every corner", (): void
 });
 
 test("camera focus regions follow crop and rotation and disappear outside the crop", (): void => {
-  const image = reviewFixture().images[0];
-  const original = focusRegionPolygons(image, image.retouch)[0];
+  const image = required(reviewFixture().images[0]);
+  const original = required(focusRegionPolygons(image, image.retouch)[0]);
   image.retouch.rotation_degrees = 180;
-  const rotated = focusRegionPolygons(image, image.retouch)[0];
+  const rotated = required(focusRegionPolygons(image, image.retouch)[0]);
   expect(rotated.primary).toBe(original.primary);
   for (const [index, point] of rotated.points.entries()) {
-    expect(point.x).toBeCloseTo(1 - original.points[index].x);
-    expect(point.y).toBeCloseTo(1 - original.points[index].y);
+    expect(point.x).toBeCloseTo(1 - required(original.points[index]).x);
+    expect(point.y).toBeCloseTo(1 - required(original.points[index]).y);
   }
   image.retouch.rotation_degrees = 0;
   image.retouch.crop = { x: 0.25, y: 0.25, width: 0.5, height: 0.5 };
-  const cropped = focusRegionPolygons(image, image.retouch)[0];
+  const cropped = required(focusRegionPolygons(image, image.retouch)[0]);
   for (const [index, point] of cropped.points.entries()) {
-    expect(point.x).toBeCloseTo((original.points[index].x - 0.25) / 0.5);
-    expect(point.y).toBeCloseTo((original.points[index].y - 0.25) / 0.5);
+    expect(point.x).toBeCloseTo((required(original.points[index]).x - 0.25) / 0.5);
+    expect(point.y).toBeCloseTo((required(original.points[index]).y - 0.25) / 0.5);
   }
   image.retouch.crop = { x: 0.75, y: 0, width: 0.25, height: 1 };
   expect(focusRegionPolygons(image, image.retouch)).toEqual([]);
@@ -123,11 +124,11 @@ test("camera focus regions follow crop and rotation and disappear outside the cr
 
 test("histograms ignore transparent samples while counting the exact visible RGB and luma bins", (): void => {
   const bins = histogramBins(new Uint8ClampedArray([255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 0]));
-  expect(bins.red[255]).toBe(1);
-  expect(bins.green[255]).toBe(1);
-  expect(bins.blue[255]).toBe(0);
-  expect(bins.luma[54]).toBe(1);
-  expect(bins.luma[182]).toBe(1);
+  expect(required(bins.red[255])).toBe(1);
+  expect(required(bins.green[255])).toBe(1);
+  expect(required(bins.blue[255])).toBe(0);
+  expect(required(bins.luma[54])).toBe(1);
+  expect(required(bins.luma[182])).toBe(1);
   expect(bins.luma.reduce((sum, count) => sum + count, 0)).toBe(2);
 });
 
@@ -137,8 +138,8 @@ test("RAW browsing preloads both neighbors and respects optimistic profile selec
   state.pendingProfileSelections.set(3, 1);
   const urls = nearbyPreloadUrls(state, 2, 2560);
   expect(urls).toHaveLength(2);
-  expect(urls[0]).toContain(state.data.images[0].profiles[0].url);
-  expect(urls[1]).toContain(state.data.images[2].profiles[1].url);
+  expect(required(urls[0])).toContain(required(required(state.data.images[0]).profiles[0]).url);
+  expect(required(urls[1])).toContain(required(required(state.data.images[2]).profiles[1]).url);
 });
 
 test("compressed-only browsing preloads forward full media only on large viewports", (): void => {
@@ -150,7 +151,10 @@ test("compressed-only browsing preloads forward full media only on large viewpor
     processing_mode: "direct",
     full_url: `/media/${image.id}/full`,
   }));
-  expect(nearbyPreloadUrls(state, 1, 2560).map((url) => url.split("?")[0])).toEqual(["/media/2/full", "/media/3/full"]);
-  expect(nearbyPreloadUrls(state, 1, 2048)[0]).toContain(state.data.images[1].preview_url);
+  expect(nearbyPreloadUrls(state, 1, 2560).map((url) => required(url.split("?")[0]))).toEqual([
+    "/media/2/full",
+    "/media/3/full",
+  ]);
+  expect(required(nearbyPreloadUrls(state, 1, 2048)[0])).toContain(required(state.data.images[1]).preview_url);
   expect(nearbyPreloadUrls(state, 3, 2560)).toEqual([]);
 });

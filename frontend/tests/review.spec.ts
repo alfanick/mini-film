@@ -1,5 +1,6 @@
 // Browser behavior checks run unchanged against the old and compiled review UIs.
-// Optional local screenshot parity catches layout changes during the migration.
+// Versioned screenshots run in the pinned CI environment; optional legacy comparisons remain available locally.
+import { required } from "./required";
 import { expect, test } from "@playwright/test";
 import type { Page, TestInfo } from "@playwright/test";
 import { existsSync } from "node:fs";
@@ -48,7 +49,11 @@ async function screenshotDifference(page: Page, expected: Buffer, actual: Buffer
         let changed = false;
         let aboveOneLevel = false;
         for (let channel = 0; channel < 4; channel += 1) {
-          const difference = Math.abs(before.data[index + channel] - after.data[index + channel]);
+          const beforeChannel = before.data[index + channel];
+          const afterChannel = after.data[index + channel];
+          if (beforeChannel === undefined || afterChannel === undefined)
+            throw new Error("Incomplete screenshot pixels");
+          const difference = Math.abs(beforeChannel - afterChannel);
           changed ||= difference !== 0;
           aboveOneLevel ||= difference > 1;
           maximumChannelDifference = Math.max(maximumChannelDifference, difference);
@@ -58,7 +63,7 @@ async function screenshotDifference(page: Page, expected: Buffer, actual: Buffer
       }
       return { changedPixels, maximumChannelDifference, pixelsAboveOneLevel };
     },
-    [expected.toString("base64"), actual.toString("base64")],
+    [expected.toString("base64"), actual.toString("base64")] as const,
   );
 }
 
@@ -91,16 +96,20 @@ async function settledScreenshot(page: Page): Promise<Buffer> {
 
 /** Compare images only when explicitly requested, avoiding stale local baselines. */
 async function compareBaseline(page: Page, info: TestInfo, name: string): Promise<void> {
+  if (process.env["REVIEW_VISUAL"] === "1") {
+    await settledScreenshot(page);
+    await expect(page).toHaveScreenshot(`${name}.png`);
+  }
   const directory = resolve("target/review-parity", info.project.name);
   await mkdir(directory, { recursive: true });
   const baselinePath = resolve(directory, `${name}-legacy.png`);
   const actual = await settledScreenshot(page);
-  const legacy = process.env.REVIEW_LEGACY === "1";
-  if (legacy && process.env.REVIEW_COMPARE_LEGACY !== "1") {
+  const legacy = process.env["REVIEW_LEGACY"] === "1";
+  if (legacy && process.env["REVIEW_COMPARE_LEGACY"] !== "1") {
     await writeFile(baselinePath, actual);
   } else {
     await writeFile(resolve(directory, `${name}-${legacy ? "legacy-repeat" : "typescript"}.png`), actual);
-    if (process.env.REVIEW_COMPARE_LEGACY === "1") {
+    if (process.env["REVIEW_COMPARE_LEGACY"] === "1") {
       expect(existsSync(baselinePath), `${name} legacy screenshot exists`).toBe(true);
       const baseline = await readFile(baselinePath);
       if (!actual.equals(baseline)) {
@@ -112,7 +121,7 @@ async function compareBaseline(page: Page, info: TestInfo, name: string): Promis
         // Repeated original Chromium publish captures varied at 43 rounded-corner pixels, with 17 above one level
         // and a maximum delta of 6/255. Other native controls added at most 29 one-level pixels. Keep that measured
         // exception confined to this scene, never mask regions, and reject every larger text or layout change.
-        const nativePublishCorners = name === "publish-draft" && info.project.name === "chromium";
+        const nativePublishCorners = name === "publish-draft" && info.project.name.startsWith("chromium");
         expect(difference.maximumChannelDifference, `${name} channel difference`).toBeLessThanOrEqual(
           nativePublishCorners ? 6 : 1,
         );
@@ -142,15 +151,15 @@ test("initial state mounts once, keeps relative URLs, and renders desktop and mo
   await page.keyboard.press("Escape");
   expect(harness.errors).toEqual([]);
   expect(harness.requests.filter((request) => request.path === "state")).toHaveLength(1);
-  if (process.env.REVIEW_LEGACY !== "1") {
+  if (process.env["REVIEW_LEGACY"] !== "1") {
     expect(harness.scripts).toHaveLength(1);
-    expect(harness.scripts[0]).toContain("/nested/review/assets/app.js");
+    expect(required(harness.scripts[0])).toMatch(/\/nested\/review(?:-release)?\/assets\/app\.js$/);
   }
 });
 
 test("snapshots and SSE patches update ordering, selection, and removals", async ({ page }) => {
   const harness = await openReview(page);
-  const first = structuredClone(harness.data.images[0]);
+  const first = structuredClone(required(harness.data.images[0]));
   first.file_name = "updated.NEF";
   await sendState(page, {
     type: "patch",
@@ -173,18 +182,18 @@ test("metadata saves and rating/navigation shortcuts preserve save ordering", as
   const harness = await openReview(page);
   await page.locator("#notes").fill("Manual note");
   await page.locator("#notes").press("Tab");
-  await expect.poll(() => harness.data.images[0].notes).toBe("Manual note");
+  await expect.poll(() => required(harness.data.images[0]).notes).toBe("Manual note");
   await page.evaluate(() => {
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
   });
   await page.keyboard.press("5");
   await expect(page.locator("#image-title")).toHaveText("frame-2.NEF");
-  expect(harness.data.images[0].rating).toBe(5);
+  expect(required(harness.data.images[0]).rating).toBe(5);
   await page.keyboard.press("ArrowRight");
   await expect(page.locator("#image-title")).toHaveText("frame-3.NEF");
   await expect.poll(() => harness.data.ui.current_image_id).toBe(3);
   const saves = harness.requests.filter((request) => request.path === "review");
-  expect((saves[0].body as ReviewUpdateRequest).notes).toBe("Manual note");
+  expect((required(saves[0]).body as ReviewUpdateRequest).notes).toBe("Manual note");
   expect(saves.filter((request) => (request.body as ReviewUpdateRequest).advance_after_update)).toHaveLength(1);
   expect(harness.errors).toEqual([]);
 });
@@ -207,15 +216,16 @@ test("focus SVG visibility, histogram, zoom, and crop approve/cancel work", asyn
   await expect(page.locator("#crop-ratio")).toBeEnabled();
   await page.locator("#crop-ratio").selectOption("1:1");
   await page.locator("#crop-cancel").click();
-  expect(harness.data.images[0].retouch.crop).toBeNull();
+  expect(required(harness.data.images[0]).retouch.crop).toBeNull();
   await page.locator("#crop-toggle").click();
   await expect(page.locator("#crop-ratio")).toBeEnabled();
   await page.locator("#crop-ratio").selectOption("1:1");
   await page.locator("#crop-ok").click();
-  await expect.poll(() => harness.data.images[0].retouch.crop).not.toBeNull();
-  const crop = harness.data.images[0].retouch.crop;
+  await expect.poll(() => required(harness.data.images[0]).retouch.crop).not.toBeNull();
+  const crop = required(harness.data.images[0]).retouch.crop;
   expect(crop).not.toBeNull();
-  expect((crop!.width * 1200) / (crop!.height * 800)).toBeCloseTo(1, 4);
+  if (crop === null) throw new Error("Approved crop is missing");
+  expect((crop.width * 1200) / (crop.height * 800)).toBeCloseTo(1, 4);
   expect(harness.errors).toEqual([]);
 });
 
@@ -240,7 +250,7 @@ test("publish submits selected output and metadata settings", async ({ page }) =
   expect(harness.errors).toEqual([]);
 });
 
-test("sampler, diffusion empty responses, and panorama dialogs remain usable", async ({ page }) => {
+test("sampler, diffusion settings, and panorama dialogs remain usable", async ({ page }) => {
   const harness = await openReview(page);
   await page.locator("#sampler").click();
   await expect(page.locator("#sampler-overlay")).toContainText("Complete");
@@ -271,15 +281,15 @@ test("pending profile selection survives an older SSE response", async ({ page }
   await page.route("**/api/review", async (route) => {
     const update = route.request().postDataJSON() as ReviewUpdateRequest;
     await saveReady;
-    harness.data.images[0].selected_profile_index = update.selected_profile_index ?? 0;
-    await route.fulfill({ json: harness.data });
+    required(harness.data.images[0]).selected_profile_index = update.selected_profile_index ?? 0;
+    await route.fulfill({ json: { ...harness.data, type: "patch" } });
   });
   await page.keyboard.press("PageDown");
   await expect(page.locator("#profile-state")).toContainText("Soft");
   await sendState(page, structuredClone(harness.data));
   await expect(page.locator("#profile-state")).toContainText("Soft");
   completeSave?.();
-  await expect.poll(() => harness.data.images[0].selected_profile_index).toBe(1);
+  await expect.poll(() => required(harness.data.images[0]).selected_profile_index).toBe(1);
   await expect(page.locator("#profile-state")).toContainText("Soft");
   expect(harness.errors).toEqual([]);
 });
@@ -292,7 +302,7 @@ test("retouch Escape restores the slider draft without saving it", async ({ page
   await expect(slider).not.toHaveValue("0");
   await slider.press("Escape");
   await expect(slider).toHaveValue("0");
-  expect(harness.data.images[0].retouch.adjustments.exposure).toBe(0);
+  expect(required(harness.data.images[0]).retouch.adjustments.exposure).toBe(0);
   expect(harness.errors).toEqual([]);
 });
 
@@ -301,7 +311,7 @@ test("sampler polling stops on close and ignores a late initial response", async
   let polls = 0;
   await page.route(/\/api\/sampler\/jobs(?:\/|$)/, async (route) => {
     if (route.request().url().endsWith("/priority")) {
-      await route.fulfill({ status: 204 });
+      await route.fulfill({ json: { ...samplerFixture(), status: "rendering" } });
       return;
     }
     if (route.request().method() === "GET") polls += 1;

@@ -1,3 +1,5 @@
+//! Coordinate review processing and project runtime state into typed public API snapshots.
+
 use super::{
     db::*, diffusion_preview::*, gallery_download::*, history::*, model::*, prelude::*, preview::*,
     publish::*, sampler::*, scheduler::*, server::*, store::*,
@@ -9,6 +11,7 @@ use crate::app::cache::{
 use crate::app::panorama::{
     PanoramaPreview, PanoramaProgress, PanoramaProgressSink, render_final, render_preview_row,
 };
+use crate::review_contract as wire;
 use mini_film::{DiffusionSettings, apply_diffusion, write_rawtherapee_resize_profile};
 
 pub(super) const REVIEW_CODEX_WORKERS: usize = 2;
@@ -3612,11 +3615,13 @@ impl ReviewHandle {
         self.broadcast_state()
     }
 
+    /// Serialize the typed public snapshot used by schema generation.
     pub(super) fn api_state_json(&self) -> Result<String> {
-        serde_json::to_string(&self.api_state_value()?).context("serializing review API state")
+        serde_json::to_string(&self.api_state_snapshot()?).context("serializing review API state")
     }
 
-    pub(super) fn api_state_value(&self) -> Result<serde_json::Value> {
+    /// Project runtime state and available media into explicit public DTOs.
+    pub(super) fn api_state_snapshot(&self) -> Result<wire::ReviewStateSnapshot> {
         let client_count = self.client_count()?;
         let store = self.store_snapshot();
         let bursts = store.review_bursts();
@@ -3685,113 +3690,127 @@ impl ReviewHandle {
                         } else {
                             None
                         };
-                        json!({
-                            "profile_index": render.profile_index,
-                            "profile_stem": render.profile_stem,
-                            "display_name": render.display_name,
-                            "enabled": render.enabled,
-                            "status": render.status,
-                            "url": if render.status == ReviewRenderStatus::Done {
+                        wire::ReviewProfileRender {
+                            profile_index: render.profile_index,
+                            profile_stem: render.profile_stem.clone(),
+                            display_name: render.display_name.clone(),
+                            enabled: render.enabled,
+                            status: render.status.into(),
+                            url: if render.status == ReviewRenderStatus::Done {
                                 Some(format!("media/{}/{}", image.id, render.profile_index))
                             } else {
                                 None
                             },
-                            "base_url": if base_output_ready {
+                            base_url: if base_output_ready {
                                 Some(format!("media/{}/{}/base", image.id, render.profile_index))
                             } else {
                                 None
                             },
-                            "error": render.error,
-                            "duration_ms": render.duration_ms,
-                            "file_size_bytes": file_size_bytes,
-                            "width": render.width,
-                            "height": render.height,
-                            "retouch_pending": render.render_key.is_some(),
-                            "dcp_profile_filename": effective_dcp_profile_filename(image, render),
-                            "lcp_profile_filename": effective_lcp_profile_filename(image, render),
-                            "bw_filter_eligible": bw_filter_eligible,
-                            "bw_filter": bw_filter,
-                            "diffusion": {
-                                "settings": diffusion_settings,
-                                "source": diffusion_source,
+                            error: render.error.clone(),
+                            duration_ms: render.duration_ms,
+                            file_size_bytes,
+                            width: render.width,
+                            height: render.height,
+                            retouch_pending: render.render_key.is_some(),
+                            dcp_profile_filename: effective_dcp_profile_filename(image, render)
+                                .map(str::to_owned),
+                            lcp_profile_filename: effective_lcp_profile_filename(image, render)
+                                .map(str::to_owned),
+                            bw_filter_eligible,
+                            bw_filter: bw_filter.into(),
+                            diffusion: wire::ReviewEffectiveDiffusion {
+                                settings: (&diffusion_settings).into(),
+                                source: diffusion_source.into(),
                             },
-                            "diffusion_settings": diffusion_settings,
-                            "diffusion_source": diffusion_source,
-                            "updated_at": render.updated_at,
-                        })
+                            diffusion_settings: (&diffusion_settings).into(),
+                            diffusion_source: diffusion_source.into(),
+                            updated_at: render.updated_at.clone(),
+                        }
                     })
                     .collect::<Vec<_>>();
-                json!({
-                    "id": image.id,
-                    "source_type": if compressed { "compressed" } else { "raw" },
-                    "processing_mode": if profiled { "profiled" } else { "direct" },
-                    "relative_path": image.relative_path,
-                    "file_name": image.file_name,
-                    "source_file_size_bytes": image.exif.file_size_bytes,
-                    "source_width": image.exif.image_width,
-                    "source_height": image.exif.image_height,
-                    "exif": exif,
-                    "preview_status": image.preview.status,
-                    "thumbnail_url": if thumbnail_ready {
+                wire::ReviewImage {
+                    id: image.id,
+                    source_type: if compressed {
+                        wire::ReviewSourceType::Compressed
+                    } else {
+                        wire::ReviewSourceType::Raw
+                    },
+                    processing_mode: if profiled {
+                        wire::ReviewProcessingMode::Profiled
+                    } else {
+                        wire::ReviewProcessingMode::Direct
+                    },
+                    relative_path: image.relative_path.clone(),
+                    file_name: image.file_name.clone(),
+                    source_file_size_bytes: image.exif.file_size_bytes,
+                    source_width: image.exif.image_width,
+                    source_height: image.exif.image_height,
+                    exif: (&exif).into(),
+                    preview_status: image.preview.status.into(),
+                    thumbnail_url: if thumbnail_ready {
                         Some(format!("thumbnail/{}", image.id))
                     } else {
                         None
                     },
-                    "preview_url": if preview_ready {
+                    preview_url: if preview_ready {
                         Some(format!("preview/{}", image.id))
                     } else {
                         None
                     },
-                    "crop_source_url": if sidecar_crop_source_ready {
+                    crop_source_url: if sidecar_crop_source_ready {
                         Some(format!("crop-source/{}", image.id))
                     } else if preview_ready {
                         Some(format!("preview/{}", image.id))
                     } else {
                         None
                     },
-                    "crop_source_updated_at": if sidecar_crop_source_ready {
-                        &image.updated_at
+                    crop_source_updated_at: if sidecar_crop_source_ready {
+                        image.updated_at.clone()
                     } else {
-                        &image.preview.updated_at
+                        image.preview.updated_at.clone()
                     },
-                    "full_url": if full_source_ready && tiff {
+                    full_url: if full_source_ready && tiff {
                         Some(format!("full-preview/{}", image.id))
                     } else if full_source_ready {
                         Some(format!("original/{}", image.id))
                     } else {
                         None
                     },
-                    "preview_error": image.preview.error,
-                    "preview_duration_ms": image.preview.duration_ms,
-                    "preview_retouch_pending": image.preview.render_key.is_some(),
-                    "preview_updated_at": image.preview.updated_at,
-                    "selected_profile_index": image.selected_profile_index,
-                    "rating": image.rating,
-                    "label": image.label,
-                    "labels": image_review_labels(image),
-                    "tags": image.tags,
-                    "notes": image.notes,
-                    "rating_source": image.rating_source,
-                    "tags_source": image.tags_source,
-                    "notes_source": image.notes_source,
-                    "codex": {
-                        "status": image.codex.status,
-                        "flags": image.codex.flags,
-                        "model": image.codex.model,
-                        "error": image.codex.error,
-                        "updated_at": image.codex.updated_at,
+                    preview_error: image.preview.error.clone(),
+                    preview_duration_ms: image.preview.duration_ms,
+                    preview_retouch_pending: image.preview.render_key.is_some(),
+                    preview_updated_at: image.preview.updated_at.clone(),
+                    selected_profile_index: image.selected_profile_index,
+                    rating: image.rating,
+                    label: image.label.into(),
+                    labels: image_review_labels(image)
+                        .into_iter()
+                        .map(Into::into)
+                        .collect(),
+                    tags: image.tags.clone(),
+                    notes: image.notes.clone(),
+                    rating_source: image.rating_source.into(),
+                    tags_source: image.tags_source.into(),
+                    notes_source: image.notes_source.into(),
+                    codex: wire::ReviewImageCodex {
+                        status: image.codex.status.into(),
+                        flags: (&image.codex.flags).into(),
+                        model: image.codex.model.clone(),
+                        error: image.codex.error.clone(),
+                        updated_at: image.codex.updated_at.clone(),
                     },
-                    "retouch": image.retouch,
-                    "publish_profile_indexes": effective_publish_profile_indexes(image),
-                    "profile_bw_filters": image.profile_bw_filters,
-                    "profile_diffusion_settings": store
+                    retouch: (&image.retouch).into(),
+                    publish_profile_indexes: effective_publish_profile_indexes(image),
+                    profile_bw_filters: image.profile_bw_filters.iter().map(Into::into).collect(),
+                    profile_diffusion_settings: store
                         .image_profile_diffusion_settings
                         .iter()
                         .filter(|entry| entry.image_id == image.id)
+                        .map(Into::into)
                         .collect::<Vec<_>>(),
-                    "profiles": profiles,
-                    "updated_at": image.updated_at,
-                })
+                    profiles,
+                    updated_at: image.updated_at.clone(),
+                }
             })
             .collect::<Vec<_>>();
         let panorama_projects = self
@@ -3801,92 +3820,113 @@ impl ReviewHandle {
                 let previews = project
                     .previews
                     .iter()
-                    .map(|preview| {
-                        json!({
-                            "matching_mode": preview.matching_mode,
-                            "projection": preview.projection,
-                            "status": preview.status,
-                            "url": if preview.status == ReviewPanoramaPreviewStatus::Done
-                                && preview.path.as_ref().is_some_and(|path| path.is_file())
-                            {
-                                Some(format!(
-                                    "panorama-preview/{}/{}/{}",
-                                    project.id, preview.matching_mode, preview.projection
-                                ))
-                            } else {
-                                None
-                            },
-                            "duration_ms": preview.duration_ms,
-                            "error": preview.error,
-                            "updated_at": preview.updated_at,
-                        })
+                    .map(|preview| wire::ReviewPanoramaPreview {
+                        matching_mode: preview.matching_mode.into(),
+                        projection: preview.projection.into(),
+                        status: preview.status.into(),
+                        url: if preview.status == ReviewPanoramaPreviewStatus::Done
+                            && preview.path.as_ref().is_some_and(|path| path.is_file())
+                        {
+                            Some(format!(
+                                "panorama-preview/{}/{}/{}",
+                                project.id, preview.matching_mode, preview.projection
+                            ))
+                        } else {
+                            None
+                        },
+                        duration_ms: preview.duration_ms,
+                        error: preview.error.clone(),
+                        updated_at: preview.updated_at.clone(),
                     })
                     .collect::<Vec<_>>();
-                json!({
-                    "id": project.id,
-                    "name": project.name,
-                    "status": project.status,
-                    "matching_mode": project.matching_mode,
-                    "selected_projection": project.selected_projection,
-                    "output_file_name": project.output_path.as_ref().and_then(|path| path.file_name()).and_then(|name| name.to_str()),
-                    "result_image_id": project.result_image_id,
-                    "progress_stage": project.progress_stage,
-                    "progress_completed": project.progress_completed,
-                    "progress_total": project.progress_total,
-                    "error": project.error,
-                    "created_at": project.created_at,
-                    "updated_at": project.updated_at,
-                    "image_ids": project.image_ids,
-                    "previews": previews,
-                })
+                wire::ReviewPanoramaProject {
+                    id: project.id,
+                    name: project.name.clone(),
+                    status: project.status.into(),
+                    matching_mode: project.matching_mode.into(),
+                    selected_projection: project.selected_projection.map(Into::into),
+                    output_file_name: project
+                        .output_path
+                        .as_ref()
+                        .and_then(|path| path.file_name())
+                        .and_then(|name| name.to_str())
+                        .map(str::to_owned),
+                    result_image_id: project.result_image_id,
+                    progress_stage: project.progress_stage.clone(),
+                    progress_completed: project.progress_completed,
+                    progress_total: project.progress_total,
+                    error: project.error.clone(),
+                    created_at: project.created_at.clone(),
+                    updated_at: project.updated_at.clone(),
+                    image_ids: project.image_ids.clone(),
+                    previews,
+                }
             })
             .collect::<Vec<_>>();
 
-        Ok(json!({
-            "version": env!("CARGO_PKG_VERSION"),
-            "invocation": self.invocation,
-            "profiles": store.profiles,
-            "client_count": client_count,
-            "codex": {
-                "enabled": self.codex.is_some(),
-                "flags": self.codex.as_ref().map(|config| config.flags),
-                "model": self.codex.as_ref().map(|config| config.model.clone()),
-                "queued": codex_summary.queued,
-                "processing": codex_summary.processing,
-                "done": codex_summary.done,
-                "failed": codex_summary.failed,
+        Ok(wire::ReviewStateSnapshot {
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+            invocation: self.invocation.clone(),
+            profiles: store.profiles.iter().map(Into::into).collect(),
+            client_count,
+            codex: wire::ReviewCodexSummary {
+                enabled: self.codex.is_some(),
+                flags: self.codex.as_ref().map(|config| (&config.flags).into()),
+                model: self.codex.as_ref().map(|config| config.model.clone()),
+                queued: codex_summary.queued,
+                processing: codex_summary.processing,
+                done: codex_summary.done,
+                failed: codex_summary.failed,
             },
-            "publish_defaults": self.publish_defaults,
-            "diffusion_default": self.diffusion,
-            "profile_diffusion_settings": store.profile_diffusion_settings,
-            "publish_jobs": self.publish_jobs_snapshot()?,
-            "capabilities": {
-                "panorama": self.panorama_capability,
-                "sampler": self.sampler_available(),
-                "diffusion": true,
+            publish_defaults: (&self.publish_defaults).into(),
+            diffusion_default: (&self.diffusion).into(),
+            profile_diffusion_settings: store
+                .profile_diffusion_settings
+                .iter()
+                .map(Into::into)
+                .collect(),
+            publish_jobs: self
+                .publish_jobs_snapshot()?
+                .iter()
+                .map(Into::into)
+                .collect(),
+            capabilities: wire::ReviewCapabilities {
+                panorama: wire::PanoramaCapability {
+                    available: self.panorama_capability.available,
+                    reason: self.panorama_capability.reason.clone(),
+                },
+                sampler: self.sampler_available(),
+                diffusion: true,
             },
-            "panorama": {
-                "busy": self.panorama_operation.load(Ordering::Acquire),
-                "projects": panorama_projects,
+            panorama: wire::ReviewPanoramaState {
+                busy: self.panorama_operation.load(Ordering::Acquire),
+                projects: panorama_projects,
             },
-            "ui": {
-                "current_image_id": store.ui.current_image_id,
-                "min_rating": store.ui.min_rating,
-                "labels": store.ui.labels,
+            ui: wire::ReviewUiState {
+                current_image_id: store.ui.current_image_id,
+                min_rating: store.ui.min_rating,
+                labels: store.ui.labels.iter().copied().map(Into::into).collect(),
             },
-            "bursts": bursts,
-            "images": images,
-            "publish_root": self.publish_root().to_string_lossy(),
-        }))
+            bursts: bursts.iter().map(Into::into).collect(),
+            images,
+            publish_root: self.publish_root().to_string_lossy().into_owned(),
+        })
     }
 
+    /// Serialize only replacements changed since the supplied typed snapshot.
     pub(super) fn api_state_patch_json_since(
         &self,
-        previous: &serde_json::Value,
+        previous: &wire::ReviewStateSnapshot,
     ) -> Result<String> {
-        let current = self.api_state_value()?;
-        serde_json::to_string(&review_state_patch_value(previous, &current))
+        let current = self.api_state_snapshot()?;
+        serde_json::to_string(&wire::ReviewStatePatch::between(previous, &current))
             .context("serializing review API patch")
+    }
+
+    /// Keep the existing JSON-tree test assertions without weakening production boundaries.
+    #[cfg(test)]
+    pub(super) fn api_state_value(&self) -> Result<serde_json::Value> {
+        serde_json::to_value(self.api_state_snapshot()?).context("serializing test snapshot")
     }
 
     pub(super) fn media_path(&self, image_id: u64, profile_index: usize) -> Result<PathBuf> {
@@ -4496,13 +4536,14 @@ impl ReviewHandle {
         self.subscribers.subscribe()
     }
 
+    /// Broadcast a typed diff while retaining the existing per-handle snapshot cache.
     pub(super) fn broadcast_state(&self) -> Result<()> {
-        let current = self.api_state_value()?;
+        let current = self.api_state_snapshot()?;
         let previous = self.state_cache.load_full();
         let message = previous
             .as_deref()
-            .map(|previous| review_state_patch_value(previous, &current))
-            .unwrap_or_else(|| review_state_patch_value(&current, &current));
+            .map(|previous| wire::ReviewStatePatch::between(previous, &current))
+            .unwrap_or_else(|| wire::ReviewStatePatch::between(&current, &current));
         self.state_cache.store(Some(Arc::new(current)));
         let message =
             serde_json::to_string(&message).context("serializing review broadcast patch")?;
@@ -4510,8 +4551,9 @@ impl ReviewHandle {
         Ok(())
     }
 
+    /// Seed the typed broadcast cache without sending a client event.
     pub(super) fn refresh_state_cache(&self) -> Result<()> {
-        let state = self.api_state_value()?;
+        let state = self.api_state_snapshot()?;
         self.state_cache.store(Some(Arc::new(state)));
         Ok(())
     }
@@ -4627,112 +4669,6 @@ fn unique_panorama_output(
         }
     }
     unreachable!("panorama output suffix space is exhausted")
-}
-
-fn review_state_patch_value(
-    previous: &serde_json::Value,
-    current: &serde_json::Value,
-) -> serde_json::Value {
-    let mut patch = serde_json::Map::new();
-    patch.insert("type".to_string(), json!("patch"));
-    patch.insert(
-        "version".to_string(),
-        current
-            .get("version")
-            .cloned()
-            .unwrap_or(serde_json::Value::Null),
-    );
-
-    for key in [
-        "profiles",
-        "client_count",
-        "codex",
-        "publish_defaults",
-        "diffusion_default",
-        "profile_diffusion_settings",
-        "invocation",
-        "publish_jobs",
-        "capabilities",
-        "panorama",
-        "ui",
-        "bursts",
-        "publish_root",
-    ] {
-        if previous.get(key) != current.get(key)
-            && let Some(value) = current.get(key)
-        {
-            patch.insert(key.to_string(), value.clone());
-        }
-    }
-
-    let previous_images = image_map(previous);
-    let current_images = image_map(current);
-    let changed_images = current
-        .get("images")
-        .and_then(|images| images.as_array())
-        .into_iter()
-        .flatten()
-        .filter(|image| {
-            image.get("id").and_then(|id| id.as_u64()).is_none_or(|id| {
-                previous_images
-                    .get(&id)
-                    .is_none_or(|previous| *previous != *image)
-            })
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    let removed_image_ids = previous_images
-        .keys()
-        .filter(|id| !current_images.contains_key(id))
-        .map(|id| json!(id))
-        .collect::<Vec<_>>();
-
-    if !changed_images.is_empty() || !removed_image_ids.is_empty() {
-        patch.insert(
-            "image_ids".to_string(),
-            current
-                .get("images")
-                .and_then(|images| images.as_array())
-                .map(|images| {
-                    images
-                        .iter()
-                        .filter_map(|image| image.get("id").and_then(|id| id.as_u64()))
-                        .map(|id| json!(id))
-                        .collect::<Vec<_>>()
-                })
-                .map(serde_json::Value::Array)
-                .unwrap_or_else(|| json!([])),
-        );
-    }
-    if !changed_images.is_empty() {
-        patch.insert(
-            "images".to_string(),
-            serde_json::Value::Array(changed_images),
-        );
-    }
-    if !removed_image_ids.is_empty() {
-        patch.insert(
-            "removed_image_ids".to_string(),
-            serde_json::Value::Array(removed_image_ids),
-        );
-    }
-
-    serde_json::Value::Object(patch)
-}
-
-fn image_map(state: &serde_json::Value) -> HashMap<u64, &serde_json::Value> {
-    state
-        .get("images")
-        .and_then(|images| images.as_array())
-        .into_iter()
-        .flatten()
-        .filter_map(|image| {
-            image
-                .get("id")
-                .and_then(|id| id.as_u64())
-                .map(|id| (id, image))
-        })
-        .collect()
 }
 
 fn codex_analysis_key_for_image(image: &ReviewImage, config: &ReviewCodexConfig) -> Option<String> {

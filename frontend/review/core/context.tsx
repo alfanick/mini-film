@@ -4,11 +4,12 @@
  * and asynchronous actions can read the latest snapshot without stale closures.
  */
 import { createContext, type ComponentChildren } from "preact";
-import { useCallback, useContext, useMemo, useRef, useState } from "preact/hooks";
-import { createState } from "./state";
+import { useContext } from "preact/hooks";
+import { useModel } from "@preact/signals";
+import { ReviewModel, type ReviewModelValue, type ReviewStateUpdate } from "./model";
 import type { ReviewState } from "./types";
 
-export type ReviewStateUpdate = Partial<ReviewState> | ((state: ReviewState) => Partial<ReviewState>);
+export type { ReviewStateUpdate } from "./model";
 
 /** The only application-wide state interface; feature-local state stays in hooks. */
 export interface ReviewContextValue {
@@ -17,26 +18,25 @@ export interface ReviewContextValue {
   getState: () => ReviewState;
 }
 
-const ReviewContext = createContext<ReviewContextValue | null>(null);
+const ReviewContext = createContext<ReviewModelValue | null>(null);
 
 /** Provide one store per mounted review application, including isolated test mounts. */
 export function ReviewProvider({ children }: { children: ComponentChildren }): ComponentChildren {
-  const [state, setState] = useState<ReviewState>(createState);
-  const latest = useRef<ReviewState>(state);
-  const update = useCallback((patch: ReviewStateUpdate): void => {
-    const previous = latest.current;
-    const next = { ...previous, ...(typeof patch === "function" ? patch(previous) : patch) };
-    latest.current = next;
-    setState(next);
-  }, []);
-  const getState = useCallback((): ReviewState => latest.current, []);
-  const value = useMemo<ReviewContextValue>(() => ({ state, update, getState }), [state, update, getState]);
-  return <ReviewContext.Provider value={value}>{children}</ReviewContext.Provider>;
+  const model = useModel(ReviewModel);
+  return <ReviewContext.Provider value={model}>{children}</ReviewContext.Provider>;
 }
 
 /** Read the shared state and fail early if a feature is mounted outside the app. */
-export function useReviewContext(): ReviewContextValue {
-  const context = useContext(ReviewContext);
-  if (!context) throw new Error("Review features require ReviewProvider");
-  return context;
+export function useReviewModel(): ReviewModelValue {
+  const model = useContext(ReviewContext);
+  if (!model) throw new Error("Review features require ReviewProvider");
+  return model;
+}
+
+/** Subscribe only to listed client fields, or to the full snapshot for unmigrated consumers. */
+export function useReviewContext(keys?: readonly (keyof ReviewState)[]): ReviewContextValue {
+  const model = useReviewModel();
+  if (keys) for (const key of keys) void model.field(key).value;
+  else void model.state.value;
+  return { state: model.getState(), update: model.update, getState: model.getState };
 }

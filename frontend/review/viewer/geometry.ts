@@ -205,7 +205,7 @@ export function aspectLockedCrop(
 }
 
 /** Measure the center, scale, and angle of a two-pointer crop gesture. */
-export function cropGestureMetrics(points: T.Point[], rect: DOMRect): CropGestureMetrics {
+export function cropGestureMetrics(points: readonly [T.Point, T.Point], rect: DOMRect): CropGestureMetrics {
   const [first, second] = points;
   return {
     center: {

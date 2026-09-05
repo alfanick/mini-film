@@ -14,6 +14,7 @@ import { formatStagedAssets } from "./format-staged-assets.mjs";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const projects = [
   ["frontend/review/core/types.ts", "frontend/review/tsconfig.json", []],
+  ["frontend/review/generated/validators.d.mts", "frontend/review/tsconfig.json", []],
   ["frontend/tests/review.spec.ts", "frontend/tests/tsconfig.json", ["node"]],
   ["playwright.config.ts", "tsconfig.json", ["node"]],
 ];
@@ -32,6 +33,9 @@ test("TypeScript discovers browser, test, and Playwright projects with strict op
     assert.equal(parsed.options.strict, true);
     assert.equal(parsed.options.noUnusedLocals, true);
     assert.equal(parsed.options.noUnusedParameters, true);
+    assert.equal(parsed.options.noUncheckedIndexedAccess, true);
+    assert.equal(parsed.options.exactOptionalPropertyTypes, true);
+    assert.equal(parsed.options.noPropertyAccessFromIndexSignature, true);
     assert.deepEqual(parsed.options.types, types);
     assert.equal(parsed.options.jsx, ts.JsxEmit.ReactJSX);
     assert.equal(parsed.options.jsxImportSource, "preact");

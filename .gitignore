@@ -1,5 +1,12 @@
 /target/
 /node_modules/
 
+# Browser captures and compiled outputs are disposable, never source assets.
+/frontend/tests/__screenshots__/
+/playwright-report/
+/test-results/
+/dist/
+/frontend/review/generated/validators.mjs
+
 # Temporary scratch file occasionally produced by external tooling in this repo.
 resource

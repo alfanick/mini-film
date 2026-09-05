@@ -1,0 +1,164 @@
+[
+  {
+    "name": "state",
+    "method": "GET",
+    "path": "api/state",
+    "request": null,
+    "response": "state",
+    "allow_empty_request": false,
+    "transport": "http"
+  },
+  {
+    "name": "review",
+    "method": "POST",
+    "path": "api/review",
+    "request": "review",
+    "response": "patch",
+    "allow_empty_request": false,
+    "transport": "http"
+  },
+  {
+    "name": "ui",
+    "method": "POST",
+    "path": "api/ui",
+    "request": "ui",
+    "response": "patch",
+    "allow_empty_request": false,
+    "transport": "http"
+  },
+  {
+    "name": "burst",
+    "method": "PATCH",
+    "path": "api/bursts/{burst_id}",
+    "request": "burst",
+    "response": "patch",
+    "allow_empty_request": false,
+    "transport": "http"
+  },
+  {
+    "name": "publish",
+    "method": "POST",
+    "path": "api/publish",
+    "request": "publish",
+    "response": "patch",
+    "allow_empty_request": true,
+    "transport": "http"
+  },
+  {
+    "name": "sampler_create",
+    "method": "POST",
+    "path": "api/sampler/jobs",
+    "request": "sampler_create",
+    "response": "sampler_job",
+    "allow_empty_request": false,
+    "transport": "http"
+  },
+  {
+    "name": "sampler_get",
+    "method": "GET",
+    "path": "api/sampler/jobs/{job_id}",
+    "request": null,
+    "response": "sampler_job",
+    "allow_empty_request": false,
+    "transport": "http"
+  },
+  {
+    "name": "sampler_priority",
+    "method": "POST",
+    "path": "api/sampler/jobs/{job_id}/priority",
+    "request": "sampler_priority",
+    "response": "sampler_job",
+    "allow_empty_request": false,
+    "transport": "http"
+  },
+  {
+    "name": "sampler_select",
+    "method": "POST",
+    "path": "api/sampler/jobs/{job_id}/profiles/{entry_key}",
+    "request": "sampler_select",
+    "response": "sampler_job",
+    "allow_empty_request": false,
+    "transport": "http"
+  },
+  {
+    "name": "diffusion_create",
+    "method": "POST",
+    "path": "api/diffusion/jobs",
+    "request": "diffusion_create",
+    "response": "diffusion_job",
+    "allow_empty_request": false,
+    "transport": "http"
+  },
+  {
+    "name": "diffusion_get",
+    "method": "GET",
+    "path": "api/diffusion/jobs/{job_id}",
+    "request": null,
+    "response": "diffusion_job",
+    "allow_empty_request": false,
+    "transport": "http"
+  },
+  {
+    "name": "diffusion_apply",
+    "method": "POST",
+    "path": "api/diffusion/settings",
+    "request": "diffusion_apply",
+    "response": "patch",
+    "allow_empty_request": false,
+    "transport": "http"
+  },
+  {
+    "name": "diffusion_reset",
+    "method": "DELETE",
+    "path": "api/diffusion/settings",
+    "request": "diffusion_reset",
+    "response": "patch",
+    "allow_empty_request": false,
+    "transport": "http"
+  },
+  {
+    "name": "panorama_create",
+    "method": "POST",
+    "path": "api/panoramas",
+    "request": "panorama_create",
+    "response": "patch",
+    "allow_empty_request": false,
+    "transport": "http"
+  },
+  {
+    "name": "panorama_update",
+    "method": "PATCH",
+    "path": "api/panoramas/{project_id}",
+    "request": "panorama_update",
+    "response": "patch",
+    "allow_empty_request": false,
+    "transport": "http"
+  },
+  {
+    "name": "panorama_previews",
+    "method": "POST",
+    "path": "api/panoramas/{project_id}/previews",
+    "request": "panorama_previews",
+    "response": "patch",
+    "allow_empty_request": true,
+    "transport": "http"
+  },
+  {
+    "name": "panorama_render",
+    "method": "POST",
+    "path": "api/panoramas/{project_id}/render",
+    "request": "panorama_render",
+    "response": "patch",
+    "allow_empty_request": true,
+    "transport": "http"
+  },
+  {
+    "name": "events",
+    "method": "GET",
+    "path": "api/events",
+    "request": null,
+    "response": "message",
+    "allow_empty_request": false,
+    "transport": "sse"
+  }
+]

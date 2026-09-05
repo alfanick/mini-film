@@ -9,6 +9,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const legacy = process.env.REVIEW_LEGACY === "1";
 const assets = resolve(root, legacy ? "target/review-baseline" : "assets/review");
 const bundle = resolve(root, legacy ? "target/review-baseline/app.js" : "target/review-frontend/review/app.js");
+const releaseBundle = resolve(root, "target/review-release/review/app.js");
 const image = [
   '<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800">',
   '<rect width="1200" height="800" fill="#50657c"/>',
@@ -20,14 +21,15 @@ const image = [
 // Resolve only allowlisted assets so the fixture server cannot expose the checkout.
 const server = createServer(async (request, response) => {
   const url = new URL(request.url, "http://localhost");
-  const path = url.pathname.replace(/^\/nested\/review\//, "");
+  const release = url.pathname.startsWith("/nested/review-release/");
+  const path = url.pathname.replace(/^\/nested\/review(?:-release)?\//, "");
   let file;
   let type;
   if (path === "" || path === "index.html") {
     file = resolve(assets, "index.html");
     type = "text/html";
   } else if (path === "assets/app.js") {
-    file = bundle;
+    file = release ? releaseBundle : bundle;
     type = "application/javascript";
   } else if (path === "assets/styles.css") {
     file = resolve(assets, "styles.css");

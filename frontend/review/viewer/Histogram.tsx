@@ -32,11 +32,12 @@ export function histogramBins(pixels: Uint8ClampedArray): HistogramBins {
     const red = pixels[index];
     const green = pixels[index + 1];
     const blue = pixels[index + 2];
+    if (red === undefined || green === undefined || blue === undefined) continue;
     const luma = clamp(Math.round(red * 0.2126 + green * 0.7152 + blue * 0.0722), 0, 255);
-    bins.red[red] += 1;
-    bins.green[green] += 1;
-    bins.blue[blue] += 1;
-    bins.luma[luma] += 1;
+    bins.red[red] = (bins.red[red] ?? 0) + 1;
+    bins.green[green] = (bins.green[green] ?? 0) + 1;
+    bins.blue[blue] = (bins.blue[blue] ?? 0) + 1;
+    bins.luma[luma] = (bins.luma[luma] ?? 0) + 1;
   }
   return bins;
 }
@@ -74,9 +75,9 @@ function drawHistogram(canvas: HTMLCanvasElement, bins: HistogramBins): boolean 
     ctx.lineWidth = fill ? Math.max(1, width / 512) : Math.max(1.2, width / 380);
     ctx.beginPath();
     if (fill) ctx.moveTo(0, height);
-    for (let index = 0; index < channel.length; index += 1) {
+    for (const [index, count] of channel.entries()) {
       const x = (index / 255) * width;
-      const y = height - (channel[index] / max) * (height - 2);
+      const y = height - (count / max) * (height - 2);
       if (index === 0 && !fill) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     }

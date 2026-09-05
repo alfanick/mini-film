@@ -400,6 +400,25 @@ export function Viewer({
     }
   }
 
+  /** Give the photograph's keyboard control the same centered full-resolution zoom as a desktop double click. */
+  function keyboardZoom(event: JSX.TargetedKeyboardEvent<HTMLImageElement>): void {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    if (cropActive || shortcutsBlocked || !sourceUrl) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const wasFull = zoom?.kind === "full";
+    stopZoom();
+    if (!wasFull)
+      setZoom({
+        kind: "full",
+        point: {
+          clientX: layout.image.left + layout.image.width / 2,
+          clientY: layout.image.top + layout.image.height / 2,
+          pointerType: "keyboard",
+        },
+      });
+  }
+
   /** Close the crop editor before dispatching its single saved retouch operation. */
   function applyCrop(next: RetouchSettings): void {
     onCropActiveChange(false);
@@ -500,6 +519,13 @@ export function Viewer({
         ref={imageRef}
         src={sourceUrl || undefined}
         alt={image?.file_name || ""}
+        role="button"
+        tabIndex={cropActive || !sourceUrl ? -1 : 0}
+        aria-label={image ? `Zoom ${image.file_name}` : "Photo viewer"}
+        aria-pressed={zoom?.kind === "full"}
+        aria-disabled={cropActive || !sourceUrl}
+        aria-describedby="viewer-keyboard-help"
+        onKeyDown={keyboardZoom}
         draggable={false}
         decoding="async"
         fetchpriority="high"
@@ -510,6 +536,9 @@ export function Viewer({
           transform: filter ? `rotate(${retouch.rotation_degrees}deg)` : undefined,
         }}
       />
+      <span id="viewer-keyboard-help" class="visually-hidden">
+        Press Enter or Space to toggle full zoom. Press Escape to leave zoom.
+      </span>
       <svg
         id="focus-overlay"
         class="focus-overlay"
@@ -547,6 +576,8 @@ export function Viewer({
         id="gesture-feedback"
         class="gesture-feedback"
         hidden={!feedback.text}
+        role="status"
+        aria-live="polite"
         style={{
           left: layout.image.width > 0 ? layout.image.left - layout.viewer.left + layout.image.width / 2 : "50%",
           top: layout.image.height > 0 ? layout.image.top - layout.viewer.top + layout.image.height / 2 : "50%",

@@ -65,7 +65,7 @@ function ratioFor(choice: RatioChoice, source: Dimensions | null): number | null
   if (choice.key === "original") ratio = source ? source.width / source.height : 1;
   else if (choice.key === "a3-a4") ratio = Math.SQRT2;
   else {
-    const [width, height] = choice.key.split(":").map(Number);
+    const [width = 0, height = 0] = choice.key.split(":").map(Number);
     ratio = width > 0 && height > 0 ? width / height : 1;
   }
   return choice.rotated ? 1 / ratio : ratio;
@@ -244,13 +244,15 @@ export function CropEditor({
     }
     const rect = overlayRef.current.getBoundingClientRect();
     if (pointers.current.size >= 2) {
-      const metrics = cropGestureMetrics(Array.from(pointers.current.values()).slice(0, 2), rect);
+      const [first, second] = pointers.current.values();
+      if (!first || !second) return;
+      const metrics = cropGestureMetrics([first, second], rect);
       drag.current = null;
       touch.current = { distance: Math.max(1, metrics.distance), angle: metrics.angle, crop, rotation, rect };
     } else {
       drag.current = {
         pointerId: event.pointerId,
-        handle: event.target instanceof HTMLElement ? event.target.dataset.cropHandle || "move" : "move",
+        handle: event.target instanceof HTMLElement ? event.target.dataset["cropHandle"] || "move" : "move",
         start: { x: event.clientX, y: event.clientY },
         crop,
         rect,
@@ -268,7 +270,9 @@ export function CropEditor({
     let next: CropRect;
     let nextRotation = rotation;
     if (gesture && pointers.current.size >= 2) {
-      const metrics = cropGestureMetrics(Array.from(pointers.current.values()).slice(0, 2), gesture.rect);
+      const [first, second] = pointers.current.values();
+      if (!first || !second) return;
+      const metrics = cropGestureMetrics([first, second], gesture.rect);
       const ratio = metrics.distance / gesture.distance;
       nextRotation = normalizeRotation(gesture.rotation + ((metrics.angle - gesture.angle) * 180) / Math.PI);
       next = fitCropToRatio(
@@ -295,6 +299,34 @@ export function CropEditor({
     pointers.current.delete(event.pointerId);
     if (pointers.current.size < 2) touch.current = null;
     if (drag.current?.pointerId === event.pointerId) drag.current = null;
+  }
+
+  /** Move one displayed pixel per arrow, or ten with Shift, using the same constrained geometry as pointer edits. */
+  function keyboardCrop(event: JSX.TargetedKeyboardEvent<HTMLElement>, handle: string): void {
+    if (!sourceSize || !overlayRef.current || shortcutsBlocked || event.ctrlKey || event.metaKey || event.altKey)
+      return;
+    const horizontal = event.key === "ArrowLeft" ? -1 : event.key === "ArrowRight" ? 1 : 0;
+    const vertical = event.key === "ArrowUp" ? -1 : event.key === "ArrowDown" ? 1 : 0;
+    if (!horizontal && !vertical) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = overlayRef.current.getBoundingClientRect();
+    const step = event.shiftKey ? 10 : 1;
+    let dx = (horizontal * step) / Math.max(1, rect.width);
+    let dy = (vertical * step) / Math.max(1, rect.height);
+    if (handle !== "move" && targetRatio !== null && safe) {
+      // Couple both edges around the opposite corner so growing a locked crop is not limited by its unchanged edge.
+      const ratio = (targetRatio * safe.height) / safe.width;
+      const direction = (handle.includes("w") ? -1 : 1) * (handle.includes("n") ? -1 : 1);
+      if (horizontal) dy = (direction * dx) / ratio;
+      else dx = direction * dy * ratio;
+    }
+    const next =
+      handle === "move"
+        ? normalizeCropRect({ ...crop, x: crop.x + dx, y: crop.y + dy })
+        : aspectLockedCrop(crop, handle, dx, dy, sourceSize, rotation, targetRatio);
+    setCrop(next);
+    setMemory(remember(next, sourceSize, rotation));
   }
 
   let savedStyle: JSX.CSSProperties = {};
@@ -353,6 +385,11 @@ export function CropEditor({
             <div
               id="crop-box"
               class="crop-box"
+              role="group"
+              tabIndex={0}
+              aria-label="Move crop selection"
+              aria-describedby="crop-keyboard-help"
+              onKeyDown={(event): void => keyboardCrop(event, "move")}
               style={{
                 left: `${crop.x * 100}%`,
                 top: `${crop.y * 100}%`,
@@ -365,13 +402,25 @@ export function CropEditor({
               onPointerCancel={pointerEnd}
             >
               {(["nw", "ne", "sw", "se"] as const).map((handle) => (
-                <span key={handle} data-crop-handle={handle} />
+                <button
+                  key={handle}
+                  type="button"
+                  data-crop-handle={handle}
+                  aria-label={`Resize crop from ${handle.includes("n") ? "top" : "bottom"} ${
+                    handle.includes("w") ? "left" : "right"
+                  }`}
+                  aria-describedby="crop-keyboard-help"
+                  onKeyDown={(event): void => keyboardCrop(event, handle)}
+                />
               ))}
             </div>
           </div>
         </div>
       </div>
       <div id="crop-tools" class="crop-tools">
+        <span id="crop-keyboard-help" class="visually-hidden">
+          Arrow keys move the selection or resize the focused corner by one displayed pixel. Hold Shift for ten pixels.
+        </span>
         <button id="crop-rotate-left" type="button" onClick={(): void => rotate(rotation - 90)}>
           -90
         </button>

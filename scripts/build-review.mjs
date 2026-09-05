@@ -7,6 +7,8 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { gzipSync } from "node:zlib";
+import { contractInputs, generateContracts } from "./review-contracts.mjs";
 
 const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const inputFiles = [
@@ -15,6 +17,7 @@ const inputFiles = [
   "tsconfig.review.json",
   "eslint.config.mjs",
   "scripts/build-review.mjs",
+  "scripts/review-contracts.mjs",
 ];
 
 /** Run a build tool with inherited diagnostics, optionally collecting a version. */
@@ -99,7 +102,7 @@ async function writeIfChanged(path, contents) {
 }
 
 /** Stage, lint, type-check, and bundle one self-contained review application for Cargo. */
-export async function buildReview({ sourceDir = sourceRoot, outputDir, profile = "debug" }) {
+export async function buildReview({ sourceDir = sourceRoot, outputDir, profile = "debug", contractsDir }) {
   if (Number(process.versions.node.split(".")[0]) < 24) {
     throw new Error("building the review UI requires Node.js 24 or newer");
   }
@@ -108,6 +111,8 @@ export async function buildReview({ sourceDir = sourceRoot, outputDir, profile =
   const bundlePath = join(output, "review/app.js");
   const sources = [...inputFiles, ...(await filesUnder(sourceDir, "frontend/review"))];
   const contents = await Promise.all(sources.map((path) => readFile(join(sourceDir, path))));
+  const schemas = contractsDir ?? join(sourceDir, "frontend/review/generated");
+  const schemaContents = await Promise.all(contractInputs.map((path) => readFile(join(schemas, path))));
   const npmVersion = npm(["--version"], sourceDir, true);
   // Dependencies follow manifests and the host toolchain; source edits reuse
   // that install but invalidate the separately fingerprinted compiled bundle.
@@ -119,7 +124,12 @@ export async function buildReview({ sourceDir = sourceRoot, outputDir, profile =
     process.platform,
     process.arch,
   ]);
-  const buildHash = digest([dependencyHash, profile, ...sources.flatMap((path, index) => [path, contents[index]])]);
+  const buildHash = digest([
+    dependencyHash,
+    profile,
+    ...schemaContents,
+    ...sources.flatMap((path, index) => [path, contents[index]]),
+  ]);
   const dependencyMarker = join(workspace, ".dependencies.sha256");
   const buildMarker = join(workspace, ".build.sha256");
   const dependenciesReady =
@@ -149,14 +159,22 @@ export async function buildReview({ sourceDir = sourceRoot, outputDir, profile =
 
   console.error(`Checking and bundling the review UI (${profile})...`);
   const require = createRequire(join(workspace, "package.json"));
+  await generateContracts({
+    schemaDir: schemas,
+    outputDir: join(frontendPath, "generated"),
+    dependenciesDir: workspace,
+  });
   const eslint = join(dirname(require.resolve("eslint/package.json")), "bin/eslint.js");
-  run(process.execPath, [eslint, "--max-warnings", "0", "frontend/review/**/*.{ts,tsx}"], workspace);
+  run(process.execPath, [eslint, "--max-warnings", "0", "frontend/review/**/*.{ts,tsx,mts}"], workspace);
   run(process.execPath, [require.resolve("typescript/bin/tsc"), "--project", "tsconfig.review.json"], workspace);
   const { build } = require("esbuild");
-  const license = await readFile(join(workspace, "node_modules/preact/LICENSE"), "utf8");
   const result = await build({
     absWorkingDir: workspace,
-    entryPoints: ["frontend/review/main.tsx"],
+    entryPoints: [
+      profile !== "release" && existsSync(join(frontendPath, "debug.tsx"))
+        ? "frontend/review/debug.tsx"
+        : "frontend/review/main.tsx",
+    ],
     outfile: bundlePath,
     bundle: true,
     splitting: false,
@@ -166,7 +184,6 @@ export async function buildReview({ sourceDir = sourceRoot, outputDir, profile =
     minify: profile === "release",
     sourcemap: false,
     legalComments: "inline",
-    banner: { js: `/*! Preact\n${license.trim()}\n*/` },
     metafile: true,
     write: false,
     logLevel: "warning",
@@ -175,25 +192,75 @@ export async function buildReview({ sourceDir = sourceRoot, outputDir, profile =
   if (result.outputFiles.length !== 1 || outputs.some((item) => item.imports.length !== 0)) {
     throw new Error("review UI must compile to one JavaScript file without external imports");
   }
-  await writeIfChanged(bundlePath, result.outputFiles[0].contents);
+  const ts = require("typescript");
+  assertSelfContained(result.outputFiles[0].text, ts);
+  const licenses = await bundledLicenses(workspace, result.metafile.inputs);
+  const bundle = `${licenses}\n${result.outputFiles[0].text}`;
+  const gzipBytes = gzipSync(bundle, { level: 9 }).length;
+  if (profile === "release" && gzipBytes > 80 * 1024) {
+    throw new Error(`review UI exceeds its 80 KiB gzip budget: ${gzipBytes} bytes`);
+  }
+  console.error(`Review bundle: ${Buffer.byteLength(bundle)} bytes, ${gzipBytes} bytes gzip`);
+  await writeIfChanged(bundlePath, bundle);
   await writeIfChanged(buildMarker, buildHash);
   return { bundlePath, rebuilt: true, installed: !dependenciesReady };
+}
+
+/** Reject every remaining module load, including computed imports omitted from esbuild's import metadata. */
+export function assertSelfContained(source, ts) {
+  const file = ts.createSourceFile("app.js", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  /** Walk emitted syntax instead of matching strings that may occur inside comments or UI text. */
+  function visit(node) {
+    if (
+      ts.isImportDeclaration(node) ||
+      (ts.isExportDeclaration(node) && node.moduleSpecifier) ||
+      (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword)
+    ) {
+      throw new Error("review UI must compile to one JavaScript file without external imports");
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(file);
+}
+
+/** Retain licenses for exactly the runtime packages present in the embedded bundle. */
+async function bundledLicenses(workspace, inputs) {
+  const packages = new Set(
+    Object.keys(inputs).flatMap((path) => {
+      const match = /(?:^|\/)node_modules\/((?:@[^/]+\/)?[^/]+)/.exec(path);
+      return match ? [match[1]] : [];
+    }),
+  );
+  const licenses = [];
+  for (const name of [...packages].sort()) {
+    const directory = join(workspace, "node_modules", name);
+    const filename = (await readdir(directory)).find((file) => /^licen[sc]e(?:\.(?:txt|md))?$/i.test(file));
+    if (!filename) throw new Error(`Bundled dependency ${name} has no license file`);
+    const label = name === "preact" ? "Preact" : name;
+    licenses.push(`/*! ${label}\n${(await readFile(join(directory, filename), "utf8")).trim()}\n*/`);
+  }
+  return licenses.join("\n");
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     let outputDir;
+    let contractsDir;
     let profile = "debug";
     const args = process.argv.slice(2);
     while (args.length) {
       const option = args.shift();
       if (option === "--cargo-out-dir" || option === "--out-dir") outputDir = args.shift();
+      else if (option === "--contracts-dir") contractsDir = args.shift();
       else if (option === "--profile") profile = args.shift();
       else throw new Error(`unknown review build option: ${option}`);
-      if (!outputDir && option !== "--profile") throw new Error(`missing value for ${option}`);
+      if (!outputDir && (option === "--cargo-out-dir" || option === "--out-dir")) {
+        throw new Error(`missing value for ${option}`);
+      }
+      if (option === "--contracts-dir" && !contractsDir) throw new Error(`missing value for ${option}`);
       if (!profile) throw new Error(`missing value for ${option}`);
     }
-    await buildReview({ outputDir, profile });
+    await buildReview({ outputDir, profile, contractsDir });
   } catch (error) {
     console.error(`Review UI build failed: ${error.message}`);
     process.exitCode = 1;

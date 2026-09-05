@@ -1,12 +1,17 @@
 [package]
 name = "mini-film"
-version = "23.0.0"
+version = "23.1.0"
 description = "Review and publish RAW, JPEG, and HEIC photos with optional Lightroom-style film emulation profiles."
 repository = "https://github.com/alfanick/mini-film"
 homepage = "https://github.com/alfanick/mini-film"
 readme = "README.md"
 edition = "2024"
 license = "MIT"
+
+[workspace]
+members = [".", "tools/review-contract-export"]
+default-members = ["."]
+resolver = "3"
 
 [features]
 default = ["desktop-app"]
@@ -43,6 +48,7 @@ sea-orm-migration = { version = "=2.0.2", default-features = false, features = [
 sanitize-filename = "0.7.0-beta"
 serde_json = "1.0.151"
 serde = { version = "1.0.228", features = ["derive"] }
+schemars = "=1.2.2"
 sha1 = "0.11.0"
 ttf-parser = "0.25.1"
 ttf2woff2 = { version = "=0.13.2", default-features = false }
@@ -68,6 +74,9 @@ zbus = { version = "5.19.0", default-features = false, features = ["async-io", "
 
 [build-dependencies]
 tauri-build = { version = "2.6.3", optional = true }
+schemars = "=1.2.2"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.151"
 
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }

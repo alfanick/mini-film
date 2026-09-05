@@ -9,20 +9,21 @@ import tseslint from "typescript-eslint";
 
 export default [
   {
-    ignores: ["node_modules/**", "target/**", "assets/**/vendor/**"],
+    // Standalone validator JS is compiler output; freshness, formatting, typed declarations and runtime tests check it.
+    ignores: ["node_modules/**", "target/**", "assets/**/vendor/**", "frontend/review/generated/validators.mjs"],
   },
   js.configs.recommended,
   {
-    files: ["frontend/**/*.{ts,tsx,mjs}", "scripts/*.mjs", "*config*.{mjs,ts}"],
+    files: ["frontend/**/*.{ts,tsx,mts,mjs}", "scripts/*.mjs", "*config*.{mjs,ts}"],
     plugins: { "@stylistic": stylistic },
     rules: { "@stylistic/max-len": ["error", { code: 120, tabWidth: 2 }] },
   },
   ...tseslint.configs.recommendedTypeChecked.map((config) => ({
     ...config,
-    files: ["frontend/**/*.{ts,tsx}", "*config*.ts"],
+    files: ["frontend/**/*.{ts,tsx,mts}", "*config*.ts"],
   })),
   {
-    files: ["frontend/**/*.{ts,tsx}", "*config*.ts"],
+    files: ["frontend/**/*.{ts,tsx,mts}", "*config*.ts"],
     plugins: { "react-hooks": reactHooks },
     languageOptions: {
       parserOptions: {
@@ -47,6 +48,9 @@ export default [
       "@typescript-eslint/no-unsafe-member-access": "error",
       "@typescript-eslint/no-unsafe-return": "error",
       "@typescript-eslint/no-unused-vars": "error",
+      "@typescript-eslint/switch-exhaustiveness-check": "error",
+      "@typescript-eslint/no-non-null-assertion": "error",
+      "@typescript-eslint/no-unnecessary-type-assertion": "error",
       "@typescript-eslint/ban-ts-comment": [
         "error",
         { "ts-expect-error": true, "ts-ignore": true, "ts-nocheck": true, "ts-check": false },
@@ -66,7 +70,7 @@ export default [
     languageOptions: { globals: globals.node },
   },
   {
-    files: ["assets/**/*.js", "frontend/**/*.{ts,tsx}"],
+    files: ["assets/**/*.js", "frontend/**/*.{ts,tsx,mts}"],
     languageOptions: {
       ecmaVersion: 2023,
       sourceType: "module",

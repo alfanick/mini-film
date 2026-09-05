@@ -1,5 +1,8 @@
+//! Parse the CLI and dispatch workflows, sharing public JSON contracts with the asset build.
+
 mod app;
 mod cli;
+pub mod review_contract;
 mod updater;
 mod util;
 

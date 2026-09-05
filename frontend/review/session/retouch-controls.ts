@@ -10,7 +10,7 @@ export function retouchFromVisibleControls(
   image: ReviewImage | null,
 ): RetouchSettings {
   const retouch = normalizedRetouch(value);
-  const base = normalizedRetouch({ adjustments: profile?.retouch_base }).adjustments;
+  const base = normalizedRetouch(profile ? { adjustments: profile.retouch_base } : null).adjustments;
   for (const key of ["exposure", "contrast", "highlights", "shadows", "whites", "blacks", "clarity"] as const) {
     const limit = key === "exposure" ? 4 : 100;
     retouch.adjustments[key] = clamp(base[key] + retouch.adjustments[key], -limit, limit) - base[key];

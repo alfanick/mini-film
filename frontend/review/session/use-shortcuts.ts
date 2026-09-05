@@ -47,45 +47,46 @@ export function useReviewShortcuts(options: ShortcutOptions): (event: JSX.Target
   const { state, update } = useReviewContext();
   const wheel = useRef<WheelState>({ axis: null, amount: 0, lastAt: 0, lockedUntil: 0 });
   const { actions, edits, tools, shortcutsOpen, setShortcutsOpen, tagsRef, notesRef, mobile, appRef } = options;
-  const modal = state.diffusionOpen || state.samplerOpen || state.panoramaOpen || tools.publishOpen || shortcutsOpen;
+  const modal =
+    state.profileInfoProfileIndex !== null ||
+    state.commandInvocationOpen ||
+    state.diffusionOpen ||
+    state.samplerOpen ||
+    state.panoramaOpen ||
+    tools.publishOpen ||
+    shortcutsOpen;
   useLayoutEffect(() => {
     /** Route keyboard actions in modal-first order so typing never rates a picture accidentally. */
     const keydown = (event: KeyboardEvent): void => {
       if (event.defaultPrevented) return;
       const key = event.key.toLowerCase();
-      if (state.profileInfoProfileIndex !== null && event.key === "Escape") {
-        event.preventDefault();
-        tools.closeProfileInfo();
-        return;
-      }
-      if (state.commandInvocationOpen && event.key === "Escape") {
-        event.preventDefault();
-        tools.closeCommandInvocation();
-        return;
-      }
-      if (state.diffusionOpen || state.samplerOpen || state.panoramaOpen) {
-        if (event.key === "Escape") {
-          event.preventDefault();
-          if (state.diffusionOpen) tools.closeDiffusion();
-          else if (state.samplerOpen) tools.closeSampler();
-          else tools.closePanoramaWizard();
-        }
-        return;
-      }
-      if (tools.publishOpen) {
-        if (event.key === "Escape") {
-          event.preventDefault();
-          tools.togglePublishWizard(false);
-        }
-        if (event.target instanceof Element && event.target.closest(".publish-card")) return;
-      }
-      if (shortcutsOpen) {
-        if (event.key === "Escape" || event.key === "?" || (event.key === "/" && event.shiftKey)) {
+      // Native dialogs own Escape and focus. No application shortcut may act behind a modal.
+      if (modal) {
+        if (shortcutsOpen && (event.key === "?" || (event.key === "/" && event.shiftKey))) {
           event.preventDefault();
           setShortcutsOpen(false);
         }
         return;
       }
+      // Preserve native activation and editing while retaining deliberate color-filter letter shortcuts.
+      const target = event.target instanceof Element ? event.target : null;
+      if (
+        target?.closest("[contenteditable=true]") ||
+        (target?.closest("button, [role=button], a[href], input, select, textarea") &&
+          [
+            "Enter",
+            " ",
+            "ArrowLeft",
+            "ArrowRight",
+            "ArrowUp",
+            "ArrowDown",
+            "Home",
+            "End",
+            "PageUp",
+            "PageDown",
+          ].includes(event.key))
+      )
+        return;
       if (event.target instanceof Element && event.target.matches("#tags, #notes, #min-rating")) return;
       const plain = !event.ctrlKey && !event.metaKey && !event.altKey;
       const image = currentImage(state);

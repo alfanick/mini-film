@@ -1,0 +1,2287 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ResponseContracts",
+  "description": "Response schema catalog keeps complete output properties distinct from defaulted input properties.",
+  "type": "object",
+  "properties": {
+    "diffusion_job": {
+      "$ref": "#/definitions/ReviewDiffusionJob"
+    },
+    "error": {
+      "$ref": "#/definitions/ReviewError"
+    },
+    "keepalive": {
+      "$ref": "#/definitions/ReviewKeepalive"
+    },
+    "message": {
+      "$ref": "#/definitions/ReviewStateMessage"
+    },
+    "patch": {
+      "$ref": "#/definitions/ReviewStatePatch"
+    },
+    "sampler_job": {
+      "$ref": "#/definitions/ReviewSamplerJobSnapshot"
+    },
+    "state": {
+      "$ref": "#/definitions/ReviewStateSnapshot"
+    }
+  },
+  "required": ["state", "patch", "message", "sampler_job", "diffusion_job", "error", "keepalive"],
+  "definitions": {
+    "BasicRetouchAdjustments": {
+      "description": "JSON representation of BasicRetouchAdjustments; serialized spelling is part of the review protocol.",
+      "type": "object",
+      "properties": {
+        "blacks": {
+          "type": "number",
+          "format": "float",
+          "default": 0.0
+        },
+        "clarity": {
+          "type": "number",
+          "format": "float",
+          "default": 0.0
+        },
+        "contrast": {
+          "type": "number",
+          "format": "float",
+          "default": 0.0
+        },
+        "exposure": {
+          "type": "number",
+          "format": "float",
+          "default": 0.0
+        },
+        "highlights": {
+          "type": "number",
+          "format": "float",
+          "default": 0.0
+        },
+        "offset": {
+          "type": "number",
+          "format": "float",
+          "default": 0.0
+        },
+        "shadows": {
+          "type": "number",
+          "format": "float",
+          "default": 0.0
+        },
+        "temperature": {
+          "type": "number",
+          "format": "float",
+          "default": 0.0
+        },
+        "whites": {
+          "type": "number",
+          "format": "float",
+          "default": 0.0
+        }
+      },
+      "required": [
+        "exposure",
+        "contrast",
+        "highlights",
+        "shadows",
+        "whites",
+        "blacks",
+        "temperature",
+        "offset",
+        "clarity"
+      ]
+    },
+    "BwFilter": {
+      "description": "JSON representation of BwFilter; serialized spelling is part of the review protocol.",
+      "type": "string",
+      "enum": ["none", "yellow", "orange", "red", "green"]
+    },
+    "CodexAnalysisFlags": {
+      "description": "JSON representation of CodexAnalysisFlags; serialized spelling is part of the review protocol.",
+      "type": "object",
+      "properties": {
+        "note": {
+          "type": "boolean"
+        },
+        "rating": {
+          "type": "boolean"
+        },
+        "tags": {
+          "type": "boolean"
+        }
+      },
+      "required": ["tags", "note", "rating"]
+    },
+    "DiffusionMethod": {
+      "description": "JSON representation of DiffusionMethod; serialized spelling is part of the review protocol.",
+      "oneOf": [
+        {
+          "description": "Layered optical mist with a broad, resolution-normalized tail.",
+          "type": "string",
+          "const": "multi-scale-mist"
+        },
+        {
+          "description": "Edge-aware fine-detail reduction followed by neutral highlight glare.",
+          "type": "string",
+          "const": "edge-aware-glow"
+        }
+      ]
+    },
+    "DiffusionSettings": {
+      "description": "JSON representation of DiffusionSettings; serialized spelling is part of the review protocol.",
+      "type": "object",
+      "properties": {
+        "glow_radius_percent": {
+          "type": "integer",
+          "format": "uint16",
+          "default": 100,
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "highlight_glow": {
+          "type": "integer",
+          "format": "uint8",
+          "default": 0,
+          "maximum": 255,
+          "minimum": 0
+        },
+        "highlight_reach": {
+          "type": "integer",
+          "format": "uint8",
+          "default": 50,
+          "maximum": 255,
+          "minimum": 0
+        },
+        "intensity_percent": {
+          "type": "integer",
+          "format": "uint16",
+          "default": 100,
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "method": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/DiffusionMethod"
+            }
+          ],
+          "default": "multi-scale-mist"
+        },
+        "softness": {
+          "type": "integer",
+          "format": "uint8",
+          "default": 0,
+          "maximum": 255,
+          "minimum": 0
+        },
+        "softness_radius_percent": {
+          "type": "integer",
+          "format": "uint16",
+          "default": 100,
+          "maximum": 65535,
+          "minimum": 0
+        }
+      },
+      "required": [
+        "method",
+        "softness",
+        "highlight_glow",
+        "softness_radius_percent",
+        "glow_radius_percent",
+        "intensity_percent",
+        "highlight_reach"
+      ]
+    },
+    "GalleryExifData": {
+      "description": "Serialized GalleryExifData with only fields visible to review clients.",
+      "type": "object",
+      "properties": {
+        "active_d_lighting": {
+          "type": ["string", "null"]
+        },
+        "aperture": {
+          "type": ["string", "null"]
+        },
+        "auto_iso": {
+          "type": ["boolean", "null"]
+        },
+        "camera_model": {
+          "type": ["string", "null"]
+        },
+        "capture_subsecond": {
+          "type": ["string", "null"]
+        },
+        "capture_timestamp": {
+          "type": ["integer", "null"],
+          "format": "int64"
+        },
+        "exposure_compensation": {
+          "type": ["string", "null"]
+        },
+        "file_size_bytes": {
+          "type": ["integer", "null"],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "flash": {
+          "type": ["string", "null"]
+        },
+        "focal_length": {
+          "type": ["string", "null"]
+        },
+        "focus_frame_height": {
+          "type": ["integer", "null"],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "focus_frame_width": {
+          "type": ["integer", "null"],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "focus_regions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GalleryFocusRegion"
+          }
+        },
+        "image_height": {
+          "type": ["integer", "null"],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "image_width": {
+          "type": ["integer", "null"],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "iso": {
+          "type": ["string", "null"]
+        },
+        "iso_auto_hi_limit": {
+          "type": ["string", "null"]
+        },
+        "lens_model": {
+          "type": ["string", "null"]
+        },
+        "note": {
+          "type": ["string", "null"]
+        },
+        "rating": {
+          "type": ["integer", "null"],
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        },
+        "release_mode": {
+          "type": ["string", "null"]
+        },
+        "shooting_mode": {
+          "type": ["string", "null"]
+        },
+        "shutter_count": {
+          "type": ["integer", "null"],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "shutter_mode": {
+          "type": ["string", "null"]
+        },
+        "shutter_speed": {
+          "type": ["string", "null"]
+        },
+        "silent_photography": {
+          "type": ["boolean", "null"]
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "white_balance_mode": {
+          "type": ["string", "null"]
+        },
+        "white_balance_offset": {
+          "type": ["integer", "null"],
+          "format": "int32"
+        },
+        "white_balance_temperature": {
+          "type": ["integer", "null"],
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "capture_timestamp",
+        "capture_subsecond",
+        "rating",
+        "file_size_bytes",
+        "image_width",
+        "image_height",
+        "focus_frame_width",
+        "focus_frame_height",
+        "focus_regions",
+        "focal_length",
+        "aperture",
+        "shutter_speed",
+        "iso",
+        "auto_iso",
+        "iso_auto_hi_limit",
+        "white_balance_mode",
+        "white_balance_temperature",
+        "white_balance_offset",
+        "camera_model",
+        "shutter_count",
+        "shutter_mode",
+        "silent_photography",
+        "release_mode",
+        "lens_model",
+        "shooting_mode",
+        "exposure_compensation",
+        "flash",
+        "active_d_lighting",
+        "tags",
+        "note"
+      ]
+    },
+    "GalleryFocusRegion": {
+      "description": "Serialized GalleryFocusRegion with only fields visible to review clients.",
+      "type": "object",
+      "properties": {
+        "height": {
+          "type": "number",
+          "format": "float"
+        },
+        "primary": {
+          "type": "boolean"
+        },
+        "width": {
+          "type": "number",
+          "format": "float"
+        },
+        "x": {
+          "type": "number",
+          "format": "float"
+        },
+        "y": {
+          "type": "number",
+          "format": "float"
+        }
+      },
+      "required": ["x", "y", "width", "height", "primary"]
+    },
+    "PanoramaCapability": {
+      "description": "Whether the required panorama tools are available on the daemon host.",
+      "type": "object",
+      "properties": {
+        "available": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": ["string", "null"]
+        }
+      },
+      "required": ["available", "reason"]
+    },
+    "PanoramaMatchingMode": {
+      "description": "JSON representation of PanoramaMatchingMode; serialized spelling is part of the review protocol.",
+      "type": "string",
+      "enum": ["automatic", "sequential", "multi-row", "flat-mosaic"]
+    },
+    "PanoramaProjection": {
+      "description": "JSON representation of PanoramaProjection; serialized spelling is part of the review protocol.",
+      "type": "string",
+      "enum": ["rectilinear", "cylindrical", "equirectangular", "panini"]
+    },
+    "PatchField_Array_of_ReviewBurst": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ReviewBurst"
+      }
+    },
+    "PatchField_Array_of_ReviewImage": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ReviewImage"
+      }
+    },
+    "PatchField_Array_of_ReviewProfile": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ReviewProfile"
+      }
+    },
+    "PatchField_Array_of_ReviewProfileDiffusionSetting": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ReviewProfileDiffusionSetting"
+      }
+    },
+    "PatchField_Array_of_ReviewPublishJob": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ReviewPublishJob"
+      }
+    },
+    "PatchField_Array_of_uint64": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "format": "uint64",
+        "minimum": 0
+      }
+    },
+    "PatchField_DiffusionSettings": {
+      "$ref": "#/definitions/DiffusionSettings"
+    },
+    "PatchField_Nullable_string": {
+      "type": ["string", "null"]
+    },
+    "PatchField_ReviewCapabilities": {
+      "$ref": "#/definitions/ReviewCapabilities"
+    },
+    "PatchField_ReviewCodexSummary": {
+      "$ref": "#/definitions/ReviewCodexSummary"
+    },
+    "PatchField_ReviewPanoramaState": {
+      "$ref": "#/definitions/ReviewPanoramaState"
+    },
+    "PatchField_ReviewPublishDefaults": {
+      "$ref": "#/definitions/ReviewPublishDefaults"
+    },
+    "PatchField_ReviewUiState": {
+      "$ref": "#/definitions/ReviewUiState"
+    },
+    "PatchField_string": {
+      "type": "string"
+    },
+    "PatchField_uint": {
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0
+    },
+    "RetouchCrop": {
+      "description": "JSON representation of RetouchCrop; serialized spelling is part of the review protocol.",
+      "type": "object",
+      "properties": {
+        "height": {
+          "type": "number",
+          "format": "float",
+          "default": 1.0
+        },
+        "width": {
+          "type": "number",
+          "format": "float",
+          "default": 1.0
+        },
+        "x": {
+          "type": "number",
+          "format": "float",
+          "default": 0.0
+        },
+        "y": {
+          "type": "number",
+          "format": "float",
+          "default": 0.0
+        }
+      },
+      "required": ["x", "y", "width", "height"]
+    },
+    "RetouchSettings": {
+      "description": "JSON representation of RetouchSettings; serialized spelling is part of the review protocol.",
+      "type": "object",
+      "properties": {
+        "adjustments": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/BasicRetouchAdjustments"
+            }
+          ],
+          "default": {
+            "blacks": 0.0,
+            "clarity": 0.0,
+            "contrast": 0.0,
+            "exposure": 0.0,
+            "highlights": 0.0,
+            "offset": 0.0,
+            "shadows": 0.0,
+            "temperature": 0.0,
+            "whites": 0.0
+          }
+        },
+        "crop": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RetouchCrop"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "rotation_degrees": {
+          "type": "number",
+          "format": "float",
+          "default": 0.0
+        }
+      },
+      "required": ["adjustments", "crop", "rotation_degrees"]
+    },
+    "ReviewBurst": {
+      "description": "Serialized ReviewBurst with only fields visible to review clients.",
+      "type": "object",
+      "properties": {
+        "expanded": {
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        },
+        "image_ids": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          }
+        }
+      },
+      "required": ["id", "image_ids", "expanded"]
+    },
+    "ReviewCapabilities": {
+      "description": "Feature availability advertised to the current client.",
+      "type": "object",
+      "properties": {
+        "diffusion": {
+          "type": "boolean"
+        },
+        "panorama": {
+          "$ref": "#/definitions/PanoramaCapability"
+        },
+        "sampler": {
+          "type": "boolean"
+        }
+      },
+      "required": ["panorama", "sampler", "diffusion"]
+    },
+    "ReviewCodexStatus": {
+      "description": "JSON representation of ReviewCodexStatus; serialized spelling is part of the review protocol.",
+      "type": "string",
+      "enum": ["missing", "queued", "processing", "done", "failed", "skipped"]
+    },
+    "ReviewCodexSummary": {
+      "description": "Analysis configuration and queue counts for the review session.",
+      "type": "object",
+      "properties": {
+        "done": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "failed": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "flags": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CodexAnalysisFlags"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "model": {
+          "type": ["string", "null"]
+        },
+        "processing": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "queued": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": ["enabled", "flags", "model", "queued", "processing", "done", "failed"]
+    },
+    "ReviewDiffusionDetailArea": {
+      "description": "Serialized ReviewDiffusionDetailArea with only fields visible to review clients.",
+      "type": "object",
+      "properties": {
+        "height": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "kind": {
+          "$ref": "#/definitions/ReviewDiffusionDetailAreaKind"
+        },
+        "width": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "x": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "y": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": ["kind", "x", "y", "width", "height"]
+    },
+    "ReviewDiffusionDetailAreaKind": {
+      "description": "JSON representation of ReviewDiffusionDetailAreaKind; serialized spelling is part of the review protocol.",
+      "type": "string",
+      "enum": ["focus", "high-contrast-highlight", "broad-highlight"]
+    },
+    "ReviewDiffusionFocusSource": {
+      "description": "JSON representation of ReviewDiffusionFocusSource; serialized spelling is part of the review protocol.",
+      "type": "string",
+      "enum": ["camera-focus", "center-fallback"]
+    },
+    "ReviewDiffusionJob": {
+      "description": "Serialized ReviewDiffusionJob with only fields visible to review clients.",
+      "type": "object",
+      "properties": {
+        "after_updated_at": {
+          "type": ["string", "null"]
+        },
+        "after_url": {
+          "type": ["string", "null"]
+        },
+        "before_updated_at": {
+          "type": ["string", "null"]
+        },
+        "before_url": {
+          "type": ["string", "null"]
+        },
+        "detail_areas": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ReviewDiffusionDetailArea"
+          }
+        },
+        "error": {
+          "type": ["string", "null"]
+        },
+        "focus_source": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ReviewDiffusionFocusSource"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "image_id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "preview_height": {
+          "type": ["integer", "null"],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "preview_url": {
+          "type": ["string", "null"]
+        },
+        "preview_width": {
+          "type": ["integer", "null"],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "profile_index": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "result_url": {
+          "type": ["string", "null"]
+        },
+        "settings": {
+          "$ref": "#/definitions/DiffusionSettings"
+        },
+        "source_height": {
+          "type": ["integer", "null"],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "source_url": {
+          "type": ["string", "null"]
+        },
+        "source_width": {
+          "type": ["integer", "null"],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "status": {
+          "$ref": "#/definitions/ReviewDiffusionJobStatus"
+        },
+        "updated_at": {
+          "type": ["string", "null"]
+        }
+      },
+      "required": [
+        "id",
+        "status",
+        "image_id",
+        "profile_index",
+        "settings",
+        "before_url",
+        "after_url",
+        "preview_width",
+        "preview_height",
+        "focus_source",
+        "detail_areas",
+        "error"
+      ]
+    },
+    "ReviewDiffusionJobStatus": {
+      "description": "JSON representation of ReviewDiffusionJobStatus; serialized spelling is part of the review protocol.",
+      "type": "string",
+      "enum": ["queued", "processing", "done", "failed", "cancelled"]
+    },
+    "ReviewDiffusionSettingSource": {
+      "description": "JSON representation of ReviewDiffusionSettingSource; serialized spelling is part of the review protocol.",
+      "type": "string",
+      "enum": ["current", "all", "daemon"]
+    },
+    "ReviewEffectiveDiffusion": {
+      "description": "Effective diffusion controls and their inheritance source.",
+      "type": "object",
+      "properties": {
+        "settings": {
+          "$ref": "#/definitions/DiffusionSettings"
+        },
+        "source": {
+          "$ref": "#/definitions/ReviewDiffusionSettingSource"
+        }
+      },
+      "required": ["settings", "source"]
+    },
+    "ReviewError": {
+      "description": "Ordinary JSON error responses; some routing errors intentionally remain plain text.",
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": ["error"]
+    },
+    "ReviewImage": {
+      "description": "One complete public image record, including legacy parallel label/profile fields.",
+      "type": "object",
+      "properties": {
+        "codex": {
+          "$ref": "#/definitions/ReviewImageCodex"
+        },
+        "crop_source_updated_at": {
+          "type": "string"
+        },
+        "crop_source_url": {
+          "type": ["string", "null"]
+        },
+        "exif": {
+          "$ref": "#/definitions/GalleryExifData"
+        },
+        "file_name": {
+          "type": "string"
+        },
+        "full_url": {
+          "type": ["string", "null"]
+        },
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "label": {
+          "$ref": "#/definitions/ReviewLabel"
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ReviewLabel"
+          }
+        },
+        "notes": {
+          "type": "string"
+        },
+        "notes_source": {
+          "$ref": "#/definitions/ReviewMetadataSource"
+        },
+        "preview_duration_ms": {
+          "type": ["integer", "null"],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "preview_error": {
+          "type": ["string", "null"]
+        },
+        "preview_retouch_pending": {
+          "type": "boolean"
+        },
+        "preview_status": {
+          "$ref": "#/definitions/ReviewRenderStatus"
+        },
+        "preview_updated_at": {
+          "type": "string"
+        },
+        "preview_url": {
+          "type": ["string", "null"]
+        },
+        "processing_mode": {
+          "$ref": "#/definitions/ReviewProcessingMode"
+        },
+        "profile_bw_filters": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ReviewProfileBwFilter"
+          }
+        },
+        "profile_diffusion_settings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ReviewImageProfileDiffusionSetting"
+          }
+        },
+        "profiles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ReviewProfileRender"
+          }
+        },
+        "publish_profile_indexes": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          }
+        },
+        "rating": {
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        },
+        "rating_source": {
+          "$ref": "#/definitions/ReviewMetadataSource"
+        },
+        "relative_path": {
+          "type": "string"
+        },
+        "retouch": {
+          "$ref": "#/definitions/RetouchSettings"
+        },
+        "selected_profile_index": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "source_file_size_bytes": {
+          "type": ["integer", "null"],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "source_height": {
+          "type": ["integer", "null"],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "source_type": {
+          "$ref": "#/definitions/ReviewSourceType"
+        },
+        "source_width": {
+          "type": ["integer", "null"],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tags_source": {
+          "$ref": "#/definitions/ReviewMetadataSource"
+        },
+        "thumbnail_url": {
+          "type": ["string", "null"]
+        },
+        "updated_at": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "source_type",
+        "processing_mode",
+        "relative_path",
+        "file_name",
+        "source_file_size_bytes",
+        "source_width",
+        "source_height",
+        "exif",
+        "preview_status",
+        "thumbnail_url",
+        "preview_url",
+        "crop_source_url",
+        "crop_source_updated_at",
+        "full_url",
+        "preview_error",
+        "preview_duration_ms",
+        "preview_retouch_pending",
+        "preview_updated_at",
+        "selected_profile_index",
+        "rating",
+        "label",
+        "labels",
+        "tags",
+        "notes",
+        "rating_source",
+        "tags_source",
+        "notes_source",
+        "codex",
+        "retouch",
+        "publish_profile_indexes",
+        "profile_bw_filters",
+        "profile_diffusion_settings",
+        "profiles",
+        "updated_at"
+      ]
+    },
+    "ReviewImageCodex": {
+      "description": "User-visible analysis progress; internal analysis cache keys remain private.",
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": ["string", "null"]
+        },
+        "flags": {
+          "$ref": "#/definitions/CodexAnalysisFlags"
+        },
+        "model": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/ReviewCodexStatus"
+        },
+        "updated_at": {
+          "type": "string"
+        }
+      },
+      "required": ["status", "flags", "model", "error", "updated_at"]
+    },
+    "ReviewImageProfileDiffusionSetting": {
+      "description": "JSON representation of ReviewImageProfileDiffusionSetting; serialized spelling is part of the review protocol.",
+      "type": "object",
+      "properties": {
+        "image_id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "profile_index": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "settings": {
+          "$ref": "#/definitions/DiffusionSettings"
+        }
+      },
+      "required": ["image_id", "profile_index", "settings"]
+    },
+    "ReviewKeepalive": {
+      "description": "Payload of the named keepalive SSE event.",
+      "type": "object",
+      "properties": {
+        "datetime": {
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/definitions/ReviewKeepaliveType"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": ["type", "datetime", "version"]
+    },
+    "ReviewKeepaliveType": {
+      "description": "Existing SSE keepalive tag, distinct from ordinary state messages.",
+      "type": "string",
+      "enum": ["keepalive"]
+    },
+    "ReviewLabel": {
+      "description": "JSON representation of ReviewLabel; serialized spelling is part of the review protocol.",
+      "type": "string",
+      "enum": ["none", "red", "yellow", "green", "blue", "purple"]
+    },
+    "ReviewMetadataSource": {
+      "description": "JSON representation of ReviewMetadataSource; serialized spelling is part of the review protocol.",
+      "type": "string",
+      "enum": ["default", "camera", "codex", "manual"]
+    },
+    "ReviewPanoramaPreview": {
+      "description": "A panorama preview replaces its private cached path with a nullable public URL.",
+      "type": "object",
+      "properties": {
+        "duration_ms": {
+          "type": ["integer", "null"],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "error": {
+          "type": ["string", "null"]
+        },
+        "matching_mode": {
+          "$ref": "#/definitions/PanoramaMatchingMode"
+        },
+        "projection": {
+          "$ref": "#/definitions/PanoramaProjection"
+        },
+        "status": {
+          "$ref": "#/definitions/ReviewPanoramaPreviewStatus"
+        },
+        "updated_at": {
+          "type": "string"
+        },
+        "url": {
+          "type": ["string", "null"]
+        }
+      },
+      "required": ["matching_mode", "projection", "status", "url", "duration_ms", "error", "updated_at"]
+    },
+    "ReviewPanoramaPreviewStatus": {
+      "description": "JSON representation of ReviewPanoramaPreviewStatus; serialized spelling is part of the review protocol.",
+      "type": "string",
+      "enum": ["queued", "processing", "done", "failed", "cancelled"]
+    },
+    "ReviewPanoramaProject": {
+      "description": "Panorama project progress with a display filename instead of an output path.",
+      "type": "object",
+      "properties": {
+        "created_at": {
+          "type": "string"
+        },
+        "error": {
+          "type": ["string", "null"]
+        },
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "image_ids": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "matching_mode": {
+          "$ref": "#/definitions/PanoramaMatchingMode"
+        },
+        "name": {
+          "type": "string"
+        },
+        "output_file_name": {
+          "type": ["string", "null"]
+        },
+        "previews": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ReviewPanoramaPreview"
+          }
+        },
+        "progress_completed": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "progress_stage": {
+          "type": ["string", "null"]
+        },
+        "progress_total": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "result_image_id": {
+          "type": ["integer", "null"],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "selected_projection": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PanoramaProjection"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "$ref": "#/definitions/ReviewPanoramaStatus"
+        },
+        "updated_at": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "status",
+        "matching_mode",
+        "selected_projection",
+        "output_file_name",
+        "result_image_id",
+        "progress_stage",
+        "progress_completed",
+        "progress_total",
+        "error",
+        "created_at",
+        "updated_at",
+        "image_ids",
+        "previews"
+      ]
+    },
+    "ReviewPanoramaState": {
+      "description": "Current panorama projects and the daemon-wide operation lock.",
+      "type": "object",
+      "properties": {
+        "busy": {
+          "type": "boolean"
+        },
+        "projects": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ReviewPanoramaProject"
+          }
+        }
+      },
+      "required": ["busy", "projects"]
+    },
+    "ReviewPanoramaStatus": {
+      "description": "JSON representation of ReviewPanoramaStatus; serialized spelling is part of the review protocol.",
+      "type": "string",
+      "enum": ["draft", "previewing", "ready", "rendering", "complete", "failed", "interrupted", "cancelled"]
+    },
+    "ReviewPatchType": {
+      "description": "The existing incremental-state tag.",
+      "type": "string",
+      "enum": ["patch"]
+    },
+    "ReviewProcessingMode": {
+      "description": "Whether review renders configured profiles or directly displays compressed input.",
+      "type": "string",
+      "enum": ["profiled", "direct"]
+    },
+    "ReviewProfile": {
+      "description": "Serialized ReviewProfile with only fields visible to review clients.",
+      "type": "object",
+      "properties": {
+        "configured_from_cli": {
+          "type": "boolean"
+        },
+        "enabled_by_default": {
+          "type": "boolean"
+        },
+        "identity": {
+          "type": "string"
+        },
+        "index": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "metadata": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ReviewProfileMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "retouch_base": {
+          "$ref": "#/definitions/BasicRetouchAdjustments"
+        },
+        "sampler_added": {
+          "type": "boolean"
+        },
+        "selector": {
+          "type": "string"
+        },
+        "stem": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "index",
+        "identity",
+        "selector",
+        "stem",
+        "sampler_added",
+        "enabled_by_default",
+        "configured_from_cli",
+        "retouch_base",
+        "metadata"
+      ]
+    },
+    "ReviewProfileAdjustments": {
+      "description": "Serialized ReviewProfileAdjustments with only fields visible to review clients.",
+      "type": "object",
+      "properties": {
+        "blacks": {
+          "type": "number",
+          "format": "float"
+        },
+        "calibration": {
+          "$ref": "#/definitions/ReviewProfileCalibration"
+        },
+        "clarity": {
+          "type": "number",
+          "format": "float"
+        },
+        "contrast": {
+          "type": "number",
+          "format": "float"
+        },
+        "exposure": {
+          "type": "number",
+          "format": "float"
+        },
+        "highlights": {
+          "type": "number",
+          "format": "float"
+        },
+        "hsl": {
+          "$ref": "#/definitions/ReviewProfileHslAdjustments"
+        },
+        "parametric": {
+          "$ref": "#/definitions/ReviewProfileParametricTone"
+        },
+        "saturation": {
+          "type": "number",
+          "format": "float"
+        },
+        "shadows": {
+          "type": "number",
+          "format": "float"
+        },
+        "tone_curve": {
+          "$ref": "#/definitions/ReviewProfileToneCurves"
+        },
+        "vibrance": {
+          "type": "number",
+          "format": "float"
+        },
+        "whites": {
+          "type": "number",
+          "format": "float"
+        }
+      },
+      "required": [
+        "exposure",
+        "contrast",
+        "highlights",
+        "shadows",
+        "whites",
+        "blacks",
+        "saturation",
+        "vibrance",
+        "clarity",
+        "parametric",
+        "hsl",
+        "calibration",
+        "tone_curve"
+      ]
+    },
+    "ReviewProfileBwFilter": {
+      "description": "JSON representation of ReviewProfileBwFilter; serialized spelling is part of the review protocol.",
+      "type": "object",
+      "properties": {
+        "filter": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/BwFilter"
+            }
+          ],
+          "default": "none"
+        },
+        "profile_index": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "required": ["profile_index", "filter"]
+    },
+    "ReviewProfileCalibration": {
+      "description": "Serialized ReviewProfileCalibration with only fields visible to review clients.",
+      "type": "object",
+      "properties": {
+        "blue_hue": {
+          "type": "number",
+          "format": "float"
+        },
+        "blue_saturation": {
+          "type": "number",
+          "format": "float"
+        },
+        "green_hue": {
+          "type": "number",
+          "format": "float"
+        },
+        "green_saturation": {
+          "type": "number",
+          "format": "float"
+        },
+        "red_hue": {
+          "type": "number",
+          "format": "float"
+        },
+        "red_saturation": {
+          "type": "number",
+          "format": "float"
+        }
+      },
+      "required": ["red_hue", "red_saturation", "green_hue", "green_saturation", "blue_hue", "blue_saturation"]
+    },
+    "ReviewProfileDiffusionSetting": {
+      "description": "JSON representation of ReviewProfileDiffusionSetting; serialized spelling is part of the review protocol.",
+      "type": "object",
+      "properties": {
+        "profile_index": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "settings": {
+          "$ref": "#/definitions/DiffusionSettings"
+        }
+      },
+      "required": ["profile_index", "settings"]
+    },
+    "ReviewProfileGrain": {
+      "description": "Serialized ReviewProfileGrain with only fields visible to review clients.",
+      "type": "object",
+      "properties": {
+        "amount": {
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        },
+        "frequency": {
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        },
+        "size": {
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        }
+      },
+      "required": ["amount", "size", "frequency"]
+    },
+    "ReviewProfileHslAdjustments": {
+      "description": "Serialized ReviewProfileHslAdjustments with only fields visible to review clients.",
+      "type": "object",
+      "properties": {
+        "hue": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "format": "float"
+          }
+        },
+        "luminance": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "format": "float"
+          }
+        },
+        "saturation": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "format": "float"
+          }
+        }
+      },
+      "required": ["hue", "saturation", "luminance"]
+    },
+    "ReviewProfileMetadata": {
+      "description": "Serialized ReviewProfileMetadata with only fields visible to review clients.",
+      "type": "object",
+      "properties": {
+        "emulation_adjustments": {
+          "$ref": "#/definitions/ReviewProfileAdjustments"
+        },
+        "emulation_sharpening": {
+          "$ref": "#/definitions/ReviewProfileSharpening"
+        },
+        "grain": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ReviewProfileGrain"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "has_camera_raw_settings": {
+          "type": "boolean"
+        },
+        "has_hald": {
+          "type": "boolean"
+        },
+        "has_pp3": {
+          "type": "boolean"
+        },
+        "look_name": {
+          "type": ["string", "null"]
+        },
+        "look_uuid": {
+          "type": ["string", "null"]
+        },
+        "pp3_adjustments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ReviewProfilePp3Section"
+          }
+        },
+        "pp3_name": {
+          "type": ["string", "null"]
+        },
+        "profile_name": {
+          "type": "string"
+        },
+        "profile_uuid": {
+          "type": ["string", "null"]
+        },
+        "source_adjustments": {
+          "$ref": "#/definitions/ReviewProfileAdjustments"
+        },
+        "source_profile_name": {
+          "type": ["string", "null"]
+        },
+        "source_profile_uuid": {
+          "type": ["string", "null"]
+        },
+        "source_sharpening": {
+          "$ref": "#/definitions/ReviewProfileSharpening"
+        }
+      },
+      "required": [
+        "profile_name",
+        "profile_uuid",
+        "look_name",
+        "look_uuid",
+        "source_profile_name",
+        "source_profile_uuid",
+        "source_adjustments",
+        "source_sharpening",
+        "emulation_adjustments",
+        "emulation_sharpening",
+        "has_camera_raw_settings",
+        "grain",
+        "has_hald",
+        "has_pp3",
+        "pp3_name",
+        "pp3_adjustments"
+      ]
+    },
+    "ReviewProfileParametricTone": {
+      "description": "Serialized ReviewProfileParametricTone with only fields visible to review clients.",
+      "type": "object",
+      "properties": {
+        "darks": {
+          "type": "number",
+          "format": "float"
+        },
+        "highlight_split": {
+          "type": "number",
+          "format": "float"
+        },
+        "highlights": {
+          "type": "number",
+          "format": "float"
+        },
+        "lights": {
+          "type": "number",
+          "format": "float"
+        },
+        "midtone_split": {
+          "type": "number",
+          "format": "float"
+        },
+        "shadow_split": {
+          "type": "number",
+          "format": "float"
+        },
+        "shadows": {
+          "type": "number",
+          "format": "float"
+        }
+      },
+      "required": ["shadows", "darks", "lights", "highlights", "shadow_split", "midtone_split", "highlight_split"]
+    },
+    "ReviewProfilePp3Entry": {
+      "description": "Serialized ReviewProfilePp3Entry with only fields visible to review clients.",
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": ["key", "value"]
+    },
+    "ReviewProfilePp3Section": {
+      "description": "Serialized ReviewProfilePp3Section with only fields visible to review clients.",
+      "type": "object",
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ReviewProfilePp3Entry"
+          }
+        },
+        "section": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "required": ["source", "section", "entries"]
+    },
+    "ReviewProfileRender": {
+      "description": "A profile render's public progress, metadata, and currently available media URLs.",
+      "type": "object",
+      "properties": {
+        "base_url": {
+          "type": ["string", "null"]
+        },
+        "bw_filter": {
+          "$ref": "#/definitions/BwFilter"
+        },
+        "bw_filter_eligible": {
+          "type": "boolean"
+        },
+        "dcp_profile_filename": {
+          "type": ["string", "null"]
+        },
+        "diffusion": {
+          "$ref": "#/definitions/ReviewEffectiveDiffusion"
+        },
+        "diffusion_settings": {
+          "$ref": "#/definitions/DiffusionSettings"
+        },
+        "diffusion_source": {
+          "$ref": "#/definitions/ReviewDiffusionSettingSource"
+        },
+        "display_name": {
+          "type": ["string", "null"]
+        },
+        "duration_ms": {
+          "type": ["integer", "null"],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": ["string", "null"]
+        },
+        "file_size_bytes": {
+          "type": ["integer", "null"],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "height": {
+          "type": ["integer", "null"],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "lcp_profile_filename": {
+          "type": ["string", "null"]
+        },
+        "profile_index": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "profile_stem": {
+          "type": "string"
+        },
+        "retouch_pending": {
+          "type": "boolean"
+        },
+        "status": {
+          "$ref": "#/definitions/ReviewRenderStatus"
+        },
+        "updated_at": {
+          "type": "string"
+        },
+        "url": {
+          "type": ["string", "null"]
+        },
+        "width": {
+          "type": ["integer", "null"],
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "profile_index",
+        "profile_stem",
+        "display_name",
+        "enabled",
+        "status",
+        "url",
+        "base_url",
+        "error",
+        "duration_ms",
+        "file_size_bytes",
+        "width",
+        "height",
+        "retouch_pending",
+        "dcp_profile_filename",
+        "lcp_profile_filename",
+        "bw_filter_eligible",
+        "bw_filter",
+        "diffusion",
+        "diffusion_settings",
+        "diffusion_source",
+        "updated_at"
+      ]
+    },
+    "ReviewProfileSharpening": {
+      "description": "Serialized ReviewProfileSharpening with only fields visible to review clients.",
+      "type": "object",
+      "properties": {
+        "amount": {
+          "type": "number",
+          "format": "float"
+        },
+        "detail": {
+          "type": "number",
+          "format": "float"
+        },
+        "masking": {
+          "type": "number",
+          "format": "float"
+        },
+        "present": {
+          "type": "boolean"
+        },
+        "radius": {
+          "type": "number",
+          "format": "float"
+        }
+      },
+      "required": ["present", "amount", "radius", "detail", "masking"]
+    },
+    "ReviewProfileToneCurves": {
+      "description": "Serialized ReviewProfileToneCurves with only fields visible to review clients.",
+      "type": "object",
+      "properties": {
+        "blue": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "float"
+            },
+            "maxItems": 2,
+            "minItems": 2
+          }
+        },
+        "composite": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "float"
+            },
+            "maxItems": 2,
+            "minItems": 2
+          }
+        },
+        "green": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "float"
+            },
+            "maxItems": 2,
+            "minItems": 2
+          }
+        },
+        "red": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "float"
+            },
+            "maxItems": 2,
+            "minItems": 2
+          }
+        }
+      },
+      "required": ["composite", "red", "green", "blue"]
+    },
+    "ReviewPublishDefaults": {
+      "description": "Serialized ReviewPublishDefaults with only fields visible to review clients.",
+      "type": "object",
+      "properties": {
+        "album": {
+          "type": "string"
+        },
+        "gallery": {
+          "type": ["string", "null"]
+        },
+        "gallery_columns": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "gallery_thumbnail_long_edge": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "grain_engine": {
+          "type": "string"
+        },
+        "jpeg_subsampling": {
+          "type": "string"
+        },
+        "jpg_quality": {
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        },
+        "long_edge": {
+          "type": ["integer", "null"],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_height": {
+          "type": ["integer", "null"],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_width": {
+          "type": ["integer", "null"],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "normalize_grain_mpix": {
+          "type": ["number", "null"],
+          "format": "double"
+        },
+        "output_format": {
+          "type": "string"
+        },
+        "progressive_jpeg": {
+          "type": "boolean"
+        },
+        "resize": {
+          "type": ["string", "null"]
+        },
+        "strip_metadata": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "album",
+        "output_format",
+        "jpg_quality",
+        "resize",
+        "long_edge",
+        "max_width",
+        "max_height",
+        "jpeg_subsampling",
+        "strip_metadata",
+        "progressive_jpeg",
+        "gallery",
+        "gallery_thumbnail_long_edge",
+        "gallery_columns",
+        "grain_engine",
+        "normalize_grain_mpix"
+      ]
+    },
+    "ReviewPublishJob": {
+      "description": "Serialized ReviewPublishJob with only fields visible to review clients.",
+      "type": "object",
+      "properties": {
+        "album": {
+          "type": "string"
+        },
+        "current": {
+          "type": ["string", "null"]
+        },
+        "error": {
+          "type": ["string", "null"]
+        },
+        "finished_at": {
+          "type": ["string", "null"]
+        },
+        "galleries": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "gallery_urls": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "linked": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "processed": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "skipped": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "started_at": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/ReviewPublishJobStatus"
+        },
+        "step": {
+          "type": "string"
+        },
+        "total": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id",
+        "album",
+        "status",
+        "started_at",
+        "finished_at",
+        "processed",
+        "total",
+        "step",
+        "current",
+        "linked",
+        "skipped",
+        "galleries",
+        "gallery_urls",
+        "error"
+      ]
+    },
+    "ReviewPublishJobStatus": {
+      "description": "JSON representation of ReviewPublishJobStatus; serialized spelling is part of the review protocol.",
+      "type": "string",
+      "enum": ["running", "done", "failed"]
+    },
+    "ReviewRenderStatus": {
+      "description": "JSON representation of ReviewRenderStatus; serialized spelling is part of the review protocol.",
+      "type": "string",
+      "enum": ["missing", "queued", "processing", "done", "failed"]
+    },
+    "ReviewSamplerEntrySnapshot": {
+      "description": "Serialized ReviewSamplerEntrySnapshot with only fields visible to review clients.",
+      "type": "object",
+      "properties": {
+        "all_enabled": {
+          "type": "boolean"
+        },
+        "configured_from_cli": {
+          "type": "boolean"
+        },
+        "current_enabled": {
+          "type": "boolean"
+        },
+        "duration_ms": {
+          "type": ["integer", "null"],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "error": {
+          "type": ["string", "null"]
+        },
+        "filename": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "parts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "selected": {
+          "type": "boolean"
+        },
+        "status": {
+          "$ref": "#/definitions/ReviewSamplerEntryStatus"
+        },
+        "thumbnail_url": {
+          "type": ["string", "null"]
+        }
+      },
+      "required": [
+        "key",
+        "name",
+        "filename",
+        "parts",
+        "status",
+        "thumbnail_url",
+        "duration_ms",
+        "error",
+        "current_enabled",
+        "all_enabled",
+        "configured_from_cli",
+        "selected"
+      ]
+    },
+    "ReviewSamplerEntryStatus": {
+      "description": "JSON representation of ReviewSamplerEntryStatus; serialized spelling is part of the review protocol.",
+      "type": "string",
+      "enum": ["queued", "rendering", "done", "failed"]
+    },
+    "ReviewSamplerJobSnapshot": {
+      "description": "Serialized ReviewSamplerJobSnapshot with only fields visible to review clients.",
+      "type": "object",
+      "properties": {
+        "completed": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ReviewSamplerEntrySnapshot"
+          }
+        },
+        "error": {
+          "type": ["string", "null"]
+        },
+        "failed": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "file_name": {
+          "type": "string"
+        },
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "image_id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "source_height": {
+          "type": ["integer", "null"],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "source_url": {
+          "type": ["string", "null"]
+        },
+        "source_width": {
+          "type": ["integer", "null"],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "status": {
+          "$ref": "#/definitions/ReviewSamplerJobStatus"
+        },
+        "total": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "workers": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id",
+        "image_id",
+        "file_name",
+        "status",
+        "source_url",
+        "source_width",
+        "source_height",
+        "completed",
+        "total",
+        "failed",
+        "workers",
+        "error",
+        "entries"
+      ]
+    },
+    "ReviewSamplerJobStatus": {
+      "description": "JSON representation of ReviewSamplerJobStatus; serialized spelling is part of the review protocol.",
+      "type": "string",
+      "enum": ["preparing", "rendering", "done", "failed"]
+    },
+    "ReviewSourceType": {
+      "description": "The two source categories emitted by the current review projection.",
+      "type": "string",
+      "enum": ["raw", "compressed"]
+    },
+    "ReviewStateMessage": {
+      "description": "Ordinary SSE data preserves the historical untagged snapshot/tagged patch union.",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ReviewStateSnapshot"
+        },
+        {
+          "$ref": "#/definitions/ReviewStatePatch"
+        }
+      ]
+    },
+    "ReviewStatePatch": {
+      "description": "A server patch has complete changed images and optional top-level replacements.",
+      "type": "object",
+      "properties": {
+        "bursts": {
+          "$ref": "#/definitions/PatchField_Array_of_ReviewBurst"
+        },
+        "capabilities": {
+          "$ref": "#/definitions/PatchField_ReviewCapabilities"
+        },
+        "client_count": {
+          "$ref": "#/definitions/PatchField_uint"
+        },
+        "codex": {
+          "$ref": "#/definitions/PatchField_ReviewCodexSummary"
+        },
+        "diffusion_default": {
+          "$ref": "#/definitions/PatchField_DiffusionSettings"
+        },
+        "image_ids": {
+          "$ref": "#/definitions/PatchField_Array_of_uint64"
+        },
+        "images": {
+          "$ref": "#/definitions/PatchField_Array_of_ReviewImage"
+        },
+        "invocation": {
+          "$ref": "#/definitions/PatchField_Nullable_string"
+        },
+        "panorama": {
+          "$ref": "#/definitions/PatchField_ReviewPanoramaState"
+        },
+        "profile_diffusion_settings": {
+          "$ref": "#/definitions/PatchField_Array_of_ReviewProfileDiffusionSetting"
+        },
+        "profiles": {
+          "$ref": "#/definitions/PatchField_Array_of_ReviewProfile"
+        },
+        "publish_defaults": {
+          "$ref": "#/definitions/PatchField_ReviewPublishDefaults"
+        },
+        "publish_jobs": {
+          "$ref": "#/definitions/PatchField_Array_of_ReviewPublishJob"
+        },
+        "publish_root": {
+          "$ref": "#/definitions/PatchField_string"
+        },
+        "removed_image_ids": {
+          "$ref": "#/definitions/PatchField_Array_of_uint64"
+        },
+        "type": {
+          "$ref": "#/definitions/ReviewPatchType"
+        },
+        "ui": {
+          "$ref": "#/definitions/PatchField_ReviewUiState"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": ["type", "version"]
+    },
+    "ReviewStateSnapshot": {
+      "description": "Complete untagged snapshot, retaining every existing top-level JSON field.",
+      "type": "object",
+      "properties": {
+        "bursts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ReviewBurst"
+          }
+        },
+        "capabilities": {
+          "$ref": "#/definitions/ReviewCapabilities"
+        },
+        "client_count": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "codex": {
+          "$ref": "#/definitions/ReviewCodexSummary"
+        },
+        "diffusion_default": {
+          "$ref": "#/definitions/DiffusionSettings"
+        },
+        "images": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ReviewImage"
+          }
+        },
+        "invocation": {
+          "type": ["string", "null"]
+        },
+        "panorama": {
+          "$ref": "#/definitions/ReviewPanoramaState"
+        },
+        "profile_diffusion_settings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ReviewProfileDiffusionSetting"
+          }
+        },
+        "profiles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ReviewProfile"
+          }
+        },
+        "publish_defaults": {
+          "$ref": "#/definitions/ReviewPublishDefaults"
+        },
+        "publish_jobs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ReviewPublishJob"
+          }
+        },
+        "publish_root": {
+          "type": "string"
+        },
+        "ui": {
+          "$ref": "#/definitions/ReviewUiState"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "invocation",
+        "profiles",
+        "client_count",
+        "codex",
+        "publish_defaults",
+        "diffusion_default",
+        "profile_diffusion_settings",
+        "publish_jobs",
+        "capabilities",
+        "panorama",
+        "ui",
+        "bursts",
+        "images",
+        "publish_root"
+      ]
+    },
+    "ReviewUiState": {
+      "description": "Persisted review navigation shared between clients.",
+      "type": "object",
+      "properties": {
+        "current_image_id": {
+          "type": ["integer", "null"],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ReviewLabel"
+          }
+        },
+        "min_rating": {
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        }
+      },
+      "required": ["current_image_id", "min_rating", "labels"]
+    }
+  }
+}

@@ -1,24 +1,26 @@
-// Wire types mirror the JSON projections in review/handle.rs and review/model.rs.
+/** Separate Rust-generated wire contracts from browser-only geometry, drafts, and feature state. */
+import type * as Wire from "../generated/responses";
+import type * as Requests from "../generated/requests";
 /** Supported color labels shared by camera metadata, review filters, and publish selection. */
-export type ColorLabel = "red" | "yellow" | "green" | "blue" | "purple";
+export type ColorLabel = Exclude<Wire.ReviewLabel, "none">;
 /** The unlabelled review value alongside the supported camera color labels. */
-export type ReviewLabel = "none" | ColorLabel;
+export type ReviewLabel = Wire.ReviewLabel;
 /** Monochrome filters accepted by the review endpoint. */
-export type BwFilter = "none" | "yellow" | "orange" | "red" | "green";
+export type BwFilter = Wire.BwFilter;
 /** Lifecycle states emitted for a single rendered profile. */
-export type RenderStatus = "missing" | "queued" | "processing" | "done" | "failed";
+export type RenderStatus = Wire.ReviewRenderStatus;
 /** Provenance used to keep manual and camera metadata authoritative. */
-export type MetadataSource = "default" | "camera" | "codex" | "manual";
+export type MetadataSource = Wire.ReviewMetadataSource;
 /** Inheritance source reported for a profile diffusion setting. */
-export type DiffusionSource = "current" | "all" | "daemon";
+export type DiffusionSource = Wire.ReviewDiffusionSettingSource;
 /** Named diffusion algorithms supported by the daemon. */
-export type DiffusionMethod = "multi-scale-mist" | "edge-aware-glow";
+export type DiffusionMethod = Wire.DiffusionMethod;
 /** Target scope for applying or resetting profile settings. */
-export type DiffusionScope = "current" | "all";
+export type DiffusionScope = Requests.ReviewDiffusionScope;
 /** Source-matching strategies exposed by the panorama API. */
-export type PanoramaMatching = "automatic" | "sequential" | "multi-row" | "flat-mosaic";
+export type PanoramaMatching = Wire.PanoramaMatchingMode;
 /** Projection choices available for panorama previews and final renders. */
-export type PanoramaProjection = "rectilinear" | "cylindrical" | "equirectangular" | "panini";
+export type PanoramaProjection = Wire.PanoramaProjection;
 
 /** A two-dimensional point used by normalized crop and focus geometry. */
 export interface Point {
@@ -38,385 +40,97 @@ export interface ImageSource {
   updatedAt?: string | null;
 }
 /** A camera focus rectangle with its primary-subject marker. */
-export interface FocusRegion extends CropRect {
-  primary: boolean;
-}
+export type FocusRegion = Wire.GalleryFocusRegion;
 
 /** Editable basic adjustments sent to the shared RAW rendering pipeline. */
-export interface BasicRetouchAdjustments {
-  exposure: number;
-  contrast: number;
-  highlights: number;
-  shadows: number;
-  whites: number;
-  blacks: number;
-  temperature: number;
-  offset: number;
-  clarity: number;
-}
+export type BasicRetouchAdjustments = Wire.BasicRetouchAdjustments;
 
 /** Non-destructive review adjustments, crop, and rotation stored by the server. */
-export interface RetouchSettings {
-  adjustments: BasicRetouchAdjustments;
-  crop: CropRect | null;
-  rotation_degrees: number;
-}
+export type RetouchSettings = Wire.RetouchSettings;
 
 /** Parametric tone settings projected from the configured profile. */
-export interface ReviewProfileParametricTone {
-  shadows: number;
-  darks: number;
-  lights: number;
-  highlights: number;
-  shadow_split: number;
-  midtone_split: number;
-  highlight_split: number;
-}
+export type ReviewProfileParametricTone = Wire.ReviewProfileParametricTone;
 
 /** Per-channel calibration values displayed in profile information. */
-export interface ReviewProfileCalibration {
-  red_hue: number;
-  red_saturation: number;
-  green_hue: number;
-  green_saturation: number;
-  blue_hue: number;
-  blue_saturation: number;
-}
+export type ReviewProfileCalibration = Wire.ReviewProfileCalibration;
 
 /** Control points for the profile composite and individual channel curves. */
-export interface ReviewProfileToneCurves {
-  composite: [number, number][];
-  red: [number, number][];
-  green: [number, number][];
-  blue: [number, number][];
-}
+export type ReviewProfileToneCurves = Wire.ReviewProfileToneCurves;
 
 /** Color and tonal profile metadata used by the information dialog. */
-export interface ReviewProfileAdjustments {
-  exposure: number;
-  contrast: number;
-  highlights: number;
-  shadows: number;
-  whites: number;
-  blacks: number;
-  saturation: number;
-  vibrance: number;
-  clarity: number;
-  parametric: ReviewProfileParametricTone;
-  hsl: { hue: number[]; saturation: number[]; luminance: number[] };
-  calibration: ReviewProfileCalibration;
-  tone_curve: ReviewProfileToneCurves;
-}
+export type ReviewProfileAdjustments = Wire.ReviewProfileAdjustments;
 
 /** Source or emulation sharpening metadata, including whether it was supplied. */
-export interface ReviewProfileSharpening {
-  present: boolean;
-  amount: number;
-  radius: number;
-  detail: number;
-  masking: number;
-}
+export type ReviewProfileSharpening = Wire.ReviewProfileSharpening;
 
 /** A literal key/value pair from a generated RawTherapee profile section. */
-export interface ReviewProfilePp3Entry {
-  key: string;
-  value: string;
-}
+export type ReviewProfilePp3Entry = Wire.ReviewProfilePp3Entry;
 /** A named PP3 section and its source provenance for inspection. */
-export interface ReviewProfilePp3Section {
-  source: string;
-  section: string;
-  entries: ReviewProfilePp3Entry[];
-}
+export type ReviewProfilePp3Section = Wire.ReviewProfilePp3Section;
 
 /** Detailed configured-profile metadata projected by the Rust review server. */
-export interface ReviewProfileMetadata {
-  profile_name: string;
-  profile_uuid: string | null;
-  look_name: string | null;
-  look_uuid: string | null;
-  source_profile_name: string | null;
-  source_profile_uuid: string | null;
-  source_adjustments: ReviewProfileAdjustments;
-  source_sharpening: ReviewProfileSharpening;
-  emulation_adjustments: ReviewProfileAdjustments;
-  emulation_sharpening: ReviewProfileSharpening;
-  has_camera_raw_settings: boolean;
-  grain: { amount: number; size: number; frequency: number } | null;
-  has_hald: boolean;
-  has_pp3: boolean;
-  pp3_name: string | null;
-  pp3_adjustments: ReviewProfilePp3Section[];
-}
+export type ReviewProfileMetadata = Wire.ReviewProfileMetadata;
 
 /** A configured creative profile available to the current review session. */
-export interface ReviewProfile {
-  index: number;
-  identity: string;
-  selector: string;
-  stem: string;
-  sampler_added: boolean;
-  enabled_by_default: boolean;
-  configured_from_cli: boolean;
-  retouch_base: BasicRetouchAdjustments;
-  metadata: ReviewProfileMetadata | null;
-}
+export type ReviewProfile = Wire.ReviewProfile;
 
 /** Normalized diffusion controls accepted by preview and settings endpoints. */
-export interface DiffusionSettings {
-  method: DiffusionMethod;
-  softness: number;
-  highlight_glow: number;
-  softness_radius_percent: number;
-  glow_radius_percent: number;
-  intensity_percent: number;
-  highlight_reach: number;
-}
+export type DiffusionSettings = Wire.DiffusionSettings;
 
 /** A profile-wide diffusion override applied across reviewed pictures. */
-export interface ProfileDiffusionSetting {
-  profile_index: number;
-  settings: DiffusionSettings;
-}
+export type ProfileDiffusionSetting = Wire.ReviewProfileDiffusionSetting;
 /** A picture-specific override of inherited profile diffusion. */
-export interface ImageProfileDiffusionSetting extends ProfileDiffusionSetting {
-  image_id: number;
-}
+export type ImageProfileDiffusionSetting = Wire.ReviewImageProfileDiffusionSetting;
 /** A monochrome filter override bound to one profile identity. */
-export interface ProfileBwFilter {
-  profile_index: number;
-  filter: BwFilter;
-}
+export type ProfileBwFilter = Wire.ReviewProfileBwFilter;
 
 /** Per-picture profile availability, render progress, media, and effective settings. */
-export interface ReviewProfileRender {
-  profile_index: number;
-  profile_stem: string;
-  display_name: string | null;
-  enabled: boolean;
-  status: RenderStatus;
-  url: string | null;
-  base_url: string | null;
-  error: string | null;
-  duration_ms: number | null;
-  file_size_bytes: number | null;
-  width: number | null;
-  height: number | null;
-  retouch_pending: boolean;
-  dcp_profile_filename: string | null;
-  lcp_profile_filename: string | null;
-  bw_filter_eligible: boolean;
-  bw_filter: BwFilter;
-  diffusion: { settings: DiffusionSettings; source: DiffusionSource };
-  diffusion_settings: DiffusionSettings;
-  diffusion_source: DiffusionSource;
-  updated_at: string;
-}
+export type ReviewProfileRender = Wire.ReviewProfileRender;
 
 /** Camera and file metadata projected for review without inventing missing values. */
-export interface ReviewExif {
-  capture_timestamp: number | null;
-  capture_subsecond: string | null;
-  rating: number | null;
-  file_size_bytes: number | null;
-  image_width: number | null;
-  image_height: number | null;
-  focus_frame_width: number | null;
-  focus_frame_height: number | null;
-  focus_regions: FocusRegion[];
-  focal_length: string | null;
-  aperture: string | null;
-  shutter_speed: string | null;
-  iso: string | null;
-  auto_iso: boolean | null;
-  iso_auto_hi_limit: string | null;
-  white_balance_mode: string | null;
-  white_balance_temperature: number | null;
-  white_balance_offset: number | null;
-  camera_model: string | null;
-  shutter_count: number | null;
-  shutter_mode: string | null;
-  silent_photography: boolean | null;
-  release_mode: string | null;
-  lens_model: string | null;
-  shooting_mode: string | null;
-  exposure_compensation: string | null;
-  flash: string | null;
-  active_d_lighting: string | null;
-  tags: string[];
-  note: string | null;
-}
+export type ReviewExif = Wire.GalleryExifData;
 
 /** Analysis capabilities enabled by the current daemon invocation. */
-export interface CodexFlags {
-  tags: boolean;
-  note: boolean;
-  rating: boolean;
-}
+export type CodexFlags = Wire.CodexAnalysisFlags;
 /** A reviewed picture with user-owned metadata and all available profile renders. */
-export interface ReviewImage {
-  id: number;
-  capture_time?: string;
-  source_type: "compressed" | "raw";
-  processing_mode: "profiled" | "direct";
-  relative_path: string;
-  file_name: string;
-  source_file_size_bytes: number | null;
-  source_width: number | null;
-  source_height: number | null;
-  exif: ReviewExif;
-  preview_status: RenderStatus;
-  thumbnail_url: string | null;
-  preview_url: string | null;
-  crop_source_url: string | null;
-  crop_source_updated_at: string;
-  full_url: string | null;
-  preview_error: string | null;
-  preview_duration_ms: number | null;
-  preview_retouch_pending: boolean;
-  preview_updated_at: string;
-  selected_profile_index: number;
-  rating: number;
-  label: ReviewLabel;
-  labels: ReviewLabel[];
-  tags: string[];
-  notes: string;
-  rating_source: MetadataSource;
-  tags_source: MetadataSource;
-  notes_source: MetadataSource;
-  codex: {
-    status: RenderStatus | "skipped";
-    flags: CodexFlags;
-    model: string;
-    error: string | null;
-    updated_at: string;
-  };
-  retouch: RetouchSettings;
-  publish_profile_indexes: number[];
-  profile_bw_filters: ProfileBwFilter[];
-  profile_diffusion_settings: ImageProfileDiffusionSetting[];
-  profiles: ReviewProfileRender[];
-  updated_at: string;
-}
+export type ReviewImage = Wire.ReviewImage;
 
 /** One panorama projection preview and its processing outcome. */
-export interface ReviewPanoramaPreview {
-  matching_mode: PanoramaMatching;
-  projection: PanoramaProjection;
-  status: "queued" | "processing" | "done" | "failed" | "cancelled";
-  url: string | null;
-  duration_ms: number | null;
-  error: string | null;
-  updated_at: string;
-}
+export type ReviewPanoramaPreview = Wire.ReviewPanoramaPreview;
 
 /** Server-owned panorama sources, choices, progress, and final-image identity. */
-export interface ReviewPanoramaProject {
-  id: number;
-  name: string;
-  status: "draft" | "previewing" | "ready" | "rendering" | "complete" | "failed" | "interrupted" | "cancelled";
-  matching_mode: PanoramaMatching;
-  selected_projection: PanoramaProjection | null;
-  output_file_name: string | null;
-  result_image_id: number | null;
-  progress_stage: string | null;
-  progress_completed: number;
-  progress_total: number;
-  error: string | null;
-  created_at: string;
-  updated_at: string;
-  image_ids: number[];
-  previews: ReviewPanoramaPreview[];
-}
+export type ReviewPanoramaProject = Wire.ReviewPanoramaProject;
 
 /** Daemon export defaults used to initialize each publish form. */
-export interface ReviewPublishDefaults {
-  album: string;
-  output_format: string;
-  jpg_quality: number;
-  resize: string | null;
-  long_edge: number | null;
-  max_width: number | null;
-  max_height: number | null;
-  jpeg_subsampling: string;
-  strip_metadata: boolean;
-  progressive_jpeg: boolean;
-  gallery: string | null;
-  gallery_thumbnail_long_edge: number;
-  gallery_columns: number;
-  grain_engine: string;
-  normalize_grain_mpix: number | null;
-}
+export type ReviewPublishDefaults = Wire.ReviewPublishDefaults;
 
 /** Progress and output links for an asynchronous publish operation. */
-export interface ReviewPublishJob {
-  id: number;
-  album: string;
-  status: "running" | "done" | "failed";
-  started_at: string;
-  finished_at: string | null;
-  processed: number;
-  total: number;
-  step: string;
-  current: string | null;
-  linked: number;
-  skipped: number;
-  galleries: number;
-  gallery_urls: string[];
-  error: string | null;
-}
+export type ReviewPublishJob = Wire.ReviewPublishJob;
 
 /** A server-grouped sequence of picture identities and its shared expansion state. */
-export interface ReviewBurst {
-  id: string;
-  image_ids: number[];
-  expanded: boolean;
-}
+export type ReviewBurst = Wire.ReviewBurst;
 /** Navigation and filtering choices synchronized across connected review clients. */
-export interface ReviewUiState {
-  current_image_id: number | null;
-  min_rating: number;
-  labels: ReviewLabel[];
-}
+export type ReviewUiState = Wire.ReviewUiState;
 /** The complete review JSON snapshot emitted by the state endpoint and SSE. */
-export interface ReviewStateData {
-  version: string;
-  invocation: string | null;
-  profiles: ReviewProfile[];
-  client_count: number;
-  codex: {
-    enabled: boolean;
-    flags: CodexFlags | null;
-    model: string | null;
-    queued: number;
-    processing: number;
-    done: number;
-    failed: number;
-  };
-  publish_defaults: ReviewPublishDefaults;
-  diffusion_default: DiffusionSettings;
-  profile_diffusion_settings: ProfileDiffusionSetting[];
-  publish_jobs: ReviewPublishJob[];
-  capabilities: { panorama: { available: boolean; reason: string | null }; sampler: boolean; diffusion: boolean };
-  panorama: { busy: boolean; projects: ReviewPanoramaProject[] };
-  ui: ReviewUiState;
-  bursts: ReviewBurst[];
-  images: ReviewImage[];
-  publish_root: string;
-}
+export type ReviewStateData = Wire.ReviewStateSnapshot;
 
 /** An incremental SSE projection with explicit image ordering and removals. */
-export interface ReviewStatePatch extends Partial<ReviewStateData> {
-  type: "patch";
-  version: string;
-  image_ids?: number[];
-  removed_image_ids?: number[];
-}
+export type ReviewStatePatch = Wire.ReviewStatePatch;
 /** Either a complete state replacement or an incremental server update. */
-export type ReviewStateMessage = ReviewStateData | ReviewStatePatch;
+export type ReviewStateMessage = Wire.ReviewStateMessage;
 
 /** The review write contract; optional fields preserve server-side omission semantics. */
-export interface ReviewUpdateRequest {
+export interface ReviewUpdateRequest extends Omit<
+  Requests.ReviewUpdateRequest,
+  | "label"
+  | "labels"
+  | "notes"
+  | "retouch"
+  | "selected_profile_index"
+  | "publish_profile_indexes"
+  | "enabled_profile_indexes"
+  | "profile_bw_filters"
+> {
   image_id: number;
   rating: number;
   label: ReviewLabel;
@@ -431,96 +145,31 @@ export interface ReviewUpdateRequest {
   advance_after_update?: boolean;
 }
 
+/** Expose nested JSON observations without granting consumers mutation ownership. */
+export type ReadonlyData<T> = T extends readonly (infer Item)[]
+  ? readonly ReadonlyData<Item>[]
+  : T extends object
+    ? { readonly [Key in keyof T]: ReadonlyData<T[Key]> }
+    : T;
+
 /** Export selection and encoding options sent by the publish wizard. */
-export interface PublishRequest {
-  min_rating: number;
-  labels: ReviewLabel[];
-  tags: string[];
-  main_profile_only: boolean;
-  album?: string;
-  output_format?: string;
-  gallery?: string;
-  jpg_quality?: number;
-  size_mode?: string;
-  resize?: string;
-  long_edge?: number | null;
-  max_width?: number | null;
-  max_height?: number | null;
-  jpeg_subsampling?: string;
-  strip_metadata?: boolean;
-  progressive_jpeg?: boolean;
-  gallery_thumbnail_long_edge?: number;
-  gallery_columns?: number;
-  grain_engine?: string;
-  normalize_grain?: boolean;
-  normalize_grain_mpix?: number | null;
-}
+export type PublishRequest = Requests.PublishRequest &
+  Required<Pick<Requests.PublishRequest, "min_rating" | "labels" | "tags" | "main_profile_only">>;
 
 /** One catalog profile preview and its current/global enablement state. */
-export interface SamplerEntry {
-  key: string;
-  name: string;
-  filename: string;
-  parts: string[];
-  status: "queued" | "rendering" | "done" | "failed";
-  thumbnail_url: string | null;
-  duration_ms: number | null;
-  error: string | null;
-  current_enabled: boolean;
-  all_enabled: boolean;
-  configured_from_cli: boolean;
-  selected: boolean;
-}
+export type SamplerEntry = Wire.ReviewSamplerEntrySnapshot;
 
 /** A sampler catalog with asynchronous rendering progress for its entries. */
-export interface SamplerJob {
-  id: number;
-  image_id: number;
-  file_name: string;
-  status: "preparing" | "rendering" | "done" | "failed";
-  source_url: string | null;
-  source_width: number | null;
-  source_height: number | null;
-  completed: number;
-  total: number;
-  failed: number;
-  workers: number;
-  error: string | null;
-  entries: SamplerEntry[];
-}
+export type SamplerJob = Wire.ReviewSamplerJobSnapshot;
 
 /** The subject or highlight category used to explain a preview detail crop. */
-export type DiffusionDetailKind = "focus" | "high-contrast-highlight" | "broad-highlight";
+export type DiffusionDetailKind = Wire.ReviewDiffusionDetailAreaKind;
 /** Whether preview subject framing came from the camera or center fallback. */
-export type DiffusionFocusSource = "camera-focus" | "center-fallback";
+export type DiffusionFocusSource = Wire.ReviewDiffusionFocusSource;
 /** A normalized preview-detail crop carrying its selection category. */
-export interface DiffusionDetailArea extends CropRect {
-  kind: DiffusionDetailKind;
-}
+export type DiffusionDetailArea = Wire.ReviewDiffusionDetailArea;
 /** Asynchronous preview output, with legacy response aliases retained for compatibility. */
-export interface DiffusionJob {
-  id: number;
-  status: "queued" | "processing" | "done" | "failed" | "cancelled";
-  image_id: number;
-  profile_index: number;
-  settings: DiffusionSettings;
-  before_url: string | null;
-  after_url: string | null;
-  preview_width: number | null;
-  preview_height: number | null;
-  focus_source: DiffusionFocusSource | null;
-  detail_areas: DiffusionDetailArea[];
-  error: string | null;
-  // Preserve the existing client's accepted preview response aliases.
-  source_url?: string | null;
-  source_width?: number | null;
-  source_height?: number | null;
-  preview_url?: string | null;
-  result_url?: string | null;
-  updated_at?: string | null;
-  before_updated_at?: string | null;
-  after_updated_at?: string | null;
-}
+export type DiffusionJob = Wire.ReviewDiffusionJob;
 
 /** Remembered preview geometry that prevents layout shifts between slider changes. */
 export interface DiffusionPreviewContext extends Dimensions {
@@ -528,12 +177,11 @@ export interface DiffusionPreviewContext extends Dimensions {
   areas: DiffusionDetailArea[];
 }
 /** On-demand PP3 text and loading outcome for the currently inspected profile. */
-export interface ProfileInfoPp3 {
-  key: string | null;
-  text: string | null;
-  error: string | null;
-  loading: boolean;
-}
+export type ProfileInfoPp3 =
+  | { status: "idle"; key: null }
+  | { status: "loading"; key: string }
+  | { status: "ready"; key: string; text: string }
+  | { status: "failed"; key: string; error: string };
 
 /** Reactive session and tool state; timers, requests, and gestures stay in their owning hooks. */
 export interface ReviewState {

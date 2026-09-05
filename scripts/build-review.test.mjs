@@ -7,7 +7,9 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { buildReview } from "./build-review.mjs";
+import { assertSelfContained, buildReview } from "./build-review.mjs";
+import { contractInputs } from "./review-contracts.mjs";
+import ts from "typescript";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -19,14 +21,21 @@ test("Cargo staging installs, invalidates, checks types, and emits one runtime f
   const outputDir = join(temporary, "cargo output");
   await mkdir(join(sourceDir, "frontend/review"), { recursive: true });
   await mkdir(join(sourceDir, "scripts"));
+  await mkdir(join(sourceDir, "frontend/review/core"));
+  await mkdir(join(sourceDir, "frontend/review/generated"));
   for (const path of [
     "package.json",
     "package-lock.json",
     "tsconfig.review.json",
     "eslint.config.mjs",
     "scripts/build-review.mjs",
+    "scripts/review-contracts.mjs",
+    "frontend/review/core/transport.ts",
   ]) {
     await copyFile(join(root, path), join(sourceDir, path));
+  }
+  for (const file of contractInputs) {
+    await copyFile(join(root, "frontend/review/generated", file), join(sourceDir, "frontend/review/generated", file));
   }
   await copyFile(join(root, "frontend/review/tsconfig.json"), join(sourceDir, "frontend/review/tsconfig.json"));
   const entry = join(sourceDir, "frontend/review/main.tsx");
@@ -118,4 +127,11 @@ test("Cargo staging installs, invalidates, checks types, and emits one runtime f
   const mismatchedManifest = { ...manifest, dependencies: { preact: "0.0.0-invalid-fixture" } };
   await writeFile(packagePath, JSON.stringify(mismatchedManifest));
   await assert.rejects(buildReview(options), /failed/);
+});
+
+// Import metadata alone misses computed dynamic imports; the final emitted syntax must also be checked.
+test("single-file validation rejects computed imports but accepts import-like UI strings", () => {
+  assert.throws(() => assertSelfContained("const path = location.hash; void import(path);", ts), /external imports/);
+  assert.throws(() => assertSelfContained('export { view } from "./chunk.js";', ts), /external imports/);
+  assert.doesNotThrow(() => assertSelfContained('const text = "import(path)"; document.title = text;', ts));
 });

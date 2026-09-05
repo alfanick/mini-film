@@ -1,5 +1,6 @@
 /** Render keyboard help as an accessible state-controlled dialog so shortcuts stay discoverable. */
 import type { ComponentChildren } from "preact";
+import { Dialog } from "./Dialog";
 
 /** Keep the established shortcut descriptions beside their declarative help UI. */
 export function ShortcutsOverlay({ open, onClose }: { open: boolean; onClose: () => void }): ComponentChildren {
@@ -13,6 +14,18 @@ export function ShortcutsOverlay({ open, onClose }: { open: boolean; onClose: ()
     ],
     ["Histogram", [[["h"], "Show or hide the luma and RGB histogram."]]],
     ["Information", [[["i"], "Show or hide camera focus points on the picture."]]],
+    [
+      "Keyboard controls",
+      [
+        [["Tab"], "Focus buttons, fields, the photo viewer, and crop controls."],
+        [["Enter", "Space"], "Activate the focused control; toggle full zoom when the photo has focus."],
+        [["Esc"], "Close a dialog or full zoom. Dialogs keep focus inside and return it to the opening control."],
+        [
+          ["Crop arrows"],
+          "Move the focused crop frame or resize its corner by one displayed pixel; hold Shift for ten.",
+        ],
+      ],
+    ],
     [
       "Touch / Mouse",
       [
@@ -86,16 +99,13 @@ export function ShortcutsOverlay({ open, onClose }: { open: boolean; onClose: ()
     ],
   ];
   return (
-    <div
+    <Dialog
       id={"shortcuts-overlay"}
-      class={"shortcuts-overlay"}
-      role={"dialog"}
-      aria-modal={"true"}
-      aria-labelledby={"shortcuts-title"}
-      hidden={!open}
-      onClick={(event): void => {
-        if (event.target === event.currentTarget) onClose();
-      }}
+      className="shortcuts-overlay"
+      labelledBy="shortcuts-title"
+      label="Shortcuts"
+      open={open}
+      onClose={onClose}
     >
       <section class={"shortcuts-card"}>
         <header class={"shortcuts-header"}>
@@ -122,6 +132,6 @@ export function ShortcutsOverlay({ open, onClose }: { open: boolean; onClose: ()
           ))}
         </div>
       </section>
-    </div>
+    </Dialog>
   );
 }

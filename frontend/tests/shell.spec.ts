@@ -1,5 +1,6 @@
 /** Compare subtle shell and editing contracts against both the legacy and compiled review applications.
  * These cases protect focus ownership and portable slider deltas that broad screenshots cannot establish. */
+import { required } from "./required";
 import { expect, test } from "@playwright/test";
 import type { ReviewUpdateRequest } from "../review/core/types";
 import { openReview, sendState } from "./harness";
@@ -7,14 +8,18 @@ import { openReview, sendState } from "./harness";
 test("crop tools advertise saved adjustments and do not open without usable source media", async ({ page }) => {
   const harness = await openReview(page);
   const data = structuredClone(harness.data);
-  data.images[0].retouch.rotation_degrees = 15;
+  required(data.images[0]).retouch.rotation_degrees = 15;
   await sendState(page, data);
   await expect(page.locator("#crop-toggle")).toHaveClass(/active/);
   await expect(page.locator("#crop-toggle")).toHaveAttribute("title", "Crop or rotation adjustment active");
-  data.images[0].retouch.rotation_degrees = 0;
-  data.images[0].crop_source_url = null;
-  data.images[0].preview_url = null;
-  data.images[0].profiles = data.images[0].profiles.map((profile) => ({ ...profile, url: null, base_url: null }));
+  required(data.images[0]).retouch.rotation_degrees = 0;
+  required(data.images[0]).crop_source_url = null;
+  required(data.images[0]).preview_url = null;
+  required(data.images[0]).profiles = required(data.images[0]).profiles.map((profile) => ({
+    ...profile,
+    url: null,
+    base_url: null,
+  }));
   await sendState(page, data);
   await expect(page.locator("#crop-toggle")).toHaveAttribute("title", "Crop/rotate");
   await page.locator("#crop-toggle").click();
@@ -41,7 +46,7 @@ test("focused retouch inputs survive autosave acknowledgements and later server 
   await expect(exposure).toHaveValue("0.8");
   await expect.poll(() => harness.requests.filter((request) => request.path === "review").length).toBeGreaterThan(0);
   const data = structuredClone(harness.data);
-  data.images[0].retouch.adjustments.exposure = 2;
+  required(data.images[0]).retouch.adjustments.exposure = 2;
   await sendState(page, data);
   await expect(exposure).toBeFocused();
   await expect(exposure).toHaveValue("0.8");
@@ -51,7 +56,7 @@ test("focused retouch inputs survive autosave acknowledgements and later server 
     .poll(() => harness.requests.filter((request) => request.path === "review").length)
     .toBeGreaterThan(beforeCommit);
   const requests = harness.requests.filter((request) => request.path === "review");
-  const committed = requests[requests.length - 1].body as ReviewUpdateRequest;
+  const committed = required(requests[requests.length - 1]).body as ReviewUpdateRequest;
   expect(committed.retouch?.adjustments.exposure).toBe(0.8);
   expect(harness.errors).toEqual([]);
 });
@@ -61,8 +66,8 @@ test("editing one slider normalizes every displayed delta clipped by the selecte
 }) => {
   const harness = await openReview(page);
   const data = structuredClone(harness.data);
-  data.profiles[0].retouch_base.exposure = 3;
-  data.images[0].retouch.adjustments.exposure = 3;
+  required(data.profiles[0]).retouch_base.exposure = 3;
+  required(data.images[0]).retouch.adjustments.exposure = 3;
   await sendState(page, data);
   await expect(page.locator("#retouch-exposure")).toHaveValue("4");
   await page.locator("#retouch-contrast").focus();

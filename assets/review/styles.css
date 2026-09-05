@@ -1,3 +1,4 @@
+/* Preserve the embedded review layout while native dialogs and focus affordances provide keyboard access. */
 :root {
   color-scheme: light;
   font-family:
@@ -88,8 +89,15 @@ select {
 }
 
 .app-version {
+  display: block;
   margin-top: 2px;
-  color: #77776f;
+  padding: 0;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  text-align: inherit;
+  color: #73736b;
   font-size: 9px;
   white-space: nowrap;
   cursor: pointer;
@@ -97,6 +105,7 @@ select {
 
 .app-version:hover,
 .app-version:focus-visible {
+  background: none;
   color: #3f3f38;
   outline: 1px solid rgba(63, 63, 56, 0.16);
   outline-offset: 1px;
@@ -164,7 +173,7 @@ button:disabled {
 }
 
 .sidebar-tools-title {
-  color: #77776f;
+  color: #73736b;
   font-size: 9px;
   font-weight: 700;
   text-transform: uppercase;
@@ -331,13 +340,13 @@ button:disabled {
   max-width: 45%;
   flex: 0 1 auto;
   overflow: hidden;
-  color: #77776f;
+  color: #73736b;
   text-overflow: ellipsis;
 }
 
 .image-row-capture-time {
   display: none;
-  color: #65655d;
+  color: #606058;
   font-size: 9px;
   line-height: 10px;
   white-space: nowrap;
@@ -354,7 +363,7 @@ button:disabled {
   grid-template-columns: 56px minmax(0, 1fr);
   align-items: center;
   gap: 4px;
-  color: #6e6e65;
+  color: #606058;
   font-size: 9px;
   line-height: 11px;
   white-space: nowrap;
@@ -389,6 +398,10 @@ button:disabled {
   align-items: center;
   height: 11px;
   min-width: 0;
+}
+
+.image-row.active .image-row-camera-model {
+  color: #606058;
 }
 
 .image-row-indicator {
@@ -964,33 +977,37 @@ button:disabled {
   inset: 66.666% 0 auto;
 }
 
-.crop-box span {
+.crop-box [data-crop-handle] {
   position: absolute;
   width: 18px;
   height: 18px;
+  min-height: 18px;
+  padding: 0;
+  margin: 0;
   border: 2px solid #fff;
+  border-radius: 0;
   background: rgba(20, 20, 20, 0.52);
 }
 
-.crop-box span[data-crop-handle="nw"] {
+.crop-box [data-crop-handle="nw"] {
   left: -9px;
   top: -9px;
   cursor: nwse-resize;
 }
 
-.crop-box span[data-crop-handle="ne"] {
+.crop-box [data-crop-handle="ne"] {
   right: -9px;
   top: -9px;
   cursor: nesw-resize;
 }
 
-.crop-box span[data-crop-handle="sw"] {
+.crop-box [data-crop-handle="sw"] {
   left: -9px;
   bottom: -9px;
   cursor: nesw-resize;
 }
 
-.crop-box span[data-crop-handle="se"] {
+.crop-box [data-crop-handle="se"] {
   right: -9px;
   bottom: -9px;
   cursor: nwse-resize;
@@ -1166,7 +1183,7 @@ button:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #66665f;
+  color: #5f5f58;
   font-size: 10px;
   line-height: 1.18;
 }
@@ -1177,7 +1194,7 @@ button:disabled {
 
 .image-subtitle,
 .profile-state {
-  color: #66665f;
+  color: #5f5f58;
   font-size: 10px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1329,8 +1346,8 @@ button:disabled {
 
 .profile-availability {
   position: absolute;
-  top: 7px;
-  right: 7px;
+  top: 8px;
+  right: 8px;
   z-index: 2;
   width: 24px;
   height: 24px;
@@ -1338,6 +1355,10 @@ button:disabled {
   accent-color: #198754;
   cursor: pointer;
   filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.42));
+}
+
+.profile-card.availability-disabled + .profile-availability {
+  opacity: 0.56;
 }
 
 .profile-download {
@@ -1416,6 +1437,10 @@ button:disabled {
   color: #6e6e65;
 }
 
+.profile-card.active .profile-status {
+  color: #b6b6ad;
+}
+
 .controls {
   display: grid;
   grid-template-columns: auto minmax(160px, auto) minmax(150px, 0.75fr) minmax(180px, 1fr);
@@ -1489,7 +1514,7 @@ button:disabled {
 
 .tags span,
 .notes span {
-  color: #66665f;
+  color: #5f5f58;
   font-size: 10px;
 }
 
@@ -1547,7 +1572,7 @@ button:disabled {
   align-items: center;
   min-width: 0;
   min-height: 24px;
-  color: #66665f;
+  color: #5f5f58;
   font-size: 10px;
 }
 
@@ -1603,6 +1628,45 @@ button:disabled {
   padding: 24px;
   background: rgba(18, 18, 17, 0.52);
   backdrop-filter: blur(6px);
+}
+
+/* Reset only the native dialog box; existing overlay classes still own spacing, colors, and responsive layout. */
+.review-dialog {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  border: 0;
+  color: inherit;
+}
+
+.review-dialog::backdrop {
+  background: transparent;
+}
+
+.review-dialog:not([open]) {
+  display: none;
+}
+
+/* Explain image controls without changing their established visual layout. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+#main-image:focus-visible,
+.crop-box:focus-visible,
+.crop-box [data-crop-handle]:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 3px;
 }
 
 .shortcuts-overlay[hidden] {
@@ -2169,7 +2233,7 @@ button:disabled {
 }
 
 .diffusion-details-header p {
-  color: #77776f;
+  color: #73736b;
   font-size: 9px;
 }
 
@@ -2330,6 +2394,7 @@ button:disabled {
 .diffusion-preset-tile.active {
   border-color: #171717;
   background: #f1f1ec;
+  color: #292925;
   box-shadow: inset 0 0 0 1px #171717;
 }
 
@@ -2625,7 +2690,7 @@ button:disabled {
 
 .sampler-section-count {
   float: right;
-  color: #77776f;
+  color: #73736b;
   font-size: 10px;
   font-variant-numeric: tabular-nums;
 }
@@ -3089,6 +3154,13 @@ button:disabled {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
+}
+
+/* Yellow keeps its familiar swatch; dark lettering supplies the contrast white cannot provide on this color. */
+.publish-labels label[data-publish-label="yellow"] span,
+.labels button[data-label="yellow"]:hover,
+.labels button[data-label="yellow"].active {
+  color: #161616;
 }
 
 .publish-sizes input[hidden] {
@@ -3933,8 +4005,8 @@ kbd {
   .profile-availability {
     width: 28px;
     height: 28px;
-    top: 6px;
-    right: 6px;
+    top: 7px;
+    right: 7px;
   }
 
   .profile-download {

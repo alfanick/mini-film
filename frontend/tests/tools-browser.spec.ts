@@ -1,4 +1,5 @@
 /** Verify tool request lifecycles against both implementations so reactive editing preserves export behavior. */
+import { required } from "./required";
 import { expect, test } from "@playwright/test";
 import type { ReviewPanoramaProject } from "../review/core/types";
 import { openReview } from "./harness";
@@ -47,7 +48,7 @@ test("panorama source order and choices survive project creation, previews, and 
     previews: [],
   };
   await page.route(/\/api\/panoramas(?:\/|$)/, async (route) => {
-    const path = new URL(route.request().url()).pathname.split("/api/")[1];
+    const path = required(new URL(route.request().url()).pathname.split("/api/")[1]);
     const body: unknown = route.request().postDataJSON();
     requests.push({ method: route.request().method(), path, body });
     if (path.endsWith("/previews")) {
@@ -57,7 +58,7 @@ test("panorama source order and choices survive project creation, previews, and 
           matching_mode: "sequential",
           projection: "cylindrical",
           status: "done",
-          url: harness.data.images[0].preview_url,
+          url: required(harness.data.images[0]).preview_url,
           duration_ms: 100,
           error: null,
           updated_at: project.updated_at,
@@ -68,7 +69,7 @@ test("panorama source order and choices survive project creation, previews, and 
       project.result_image_id = 3;
     }
     harness.data.panorama.projects = [project];
-    await route.fulfill({ json: harness.data });
+    await route.fulfill({ json: { ...harness.data, type: "patch" } });
   });
   await page.locator("#panorama").click();
   await page.getByLabel("Name", { exact: true }).fill("Mountain panorama");
@@ -87,7 +88,7 @@ test("panorama source order and choices survive project creation, previews, and 
   ]);
   await page.getByRole("button", { name: "Render full TIFF", exact: true }).click();
   await expect(page.getByRole("button", { name: "Open result", exact: true })).toBeVisible();
-  expect(requests[requests.length - 1]).toEqual({
+  expect(required(requests[requests.length - 1])).toEqual({
     method: "POST",
     path: "panoramas/7/render",
     body: { name: "Mountain panorama", projection: "cylindrical" },

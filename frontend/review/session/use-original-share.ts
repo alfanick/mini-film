@@ -38,7 +38,7 @@ export function useOriginalShare(image: ReviewImage | null, onFeedback: (text: s
     entry.promise = (async (): Promise<File> => {
       const response = await fetch(reviewUrl(`original/${current.id}`), { cache: "no-store" });
       if (!response.ok) throw new Error(`original ${response.status}`);
-      const contentType = (response.headers.get("content-type") || "").split(";", 1)[0].trim().toLowerCase();
+      const contentType = (response.headers.get("content-type")?.split(";", 1)[0] ?? "").trim().toLowerCase();
       if (!["image/jpeg", "image/heic", "image/heif"].includes(contentType))
         throw new Error(`unexpected original content type: ${contentType || "missing"}`);
       return new File(

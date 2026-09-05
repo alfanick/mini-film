@@ -1,3 +1,5 @@
+//! Persist review processing state separately from its public wire projections.
+
 use super::prelude::*;
 use super::scheduler::{ReviewMediaScheduler, ReviewRetouchScheduler};
 use super::store::now_string;
@@ -419,7 +421,7 @@ impl From<&ToneCurves> for ReviewProfileToneCurves {
 pub(crate) struct ReviewHandle {
     pub(super) state: Arc<ArcSwap<ReviewStore>>,
     pub(super) subscribers: Arc<broadcast::Sender<String>>,
-    pub(super) state_cache: Arc<ArcSwapOption<serde_json::Value>>,
+    pub(super) state_cache: Arc<ArcSwapOption<crate::review_contract::ReviewStateSnapshot>>,
     pub(super) state_path: PathBuf,
     pub(super) database: super::db::ReviewDatabase,
     pub(super) database_runtime: Arc<tokio::runtime::Runtime>,

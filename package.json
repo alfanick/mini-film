@@ -1,6 +1,6 @@
 {
   "name": "mini-film",
-  "version": "23.0.0",
+  "version": "23.1.0",
   "private": true,
   "description": "Build and check the embedded mini-film review and gallery UIs.",
   "engines": {
@@ -8,27 +8,36 @@
   },
   "scripts": {
     "build:review": "node scripts/build-review.mjs",
+    "contracts:generate": "node scripts/review-contracts.mjs --generate",
+    "contracts:check": "node scripts/review-contracts.mjs --check",
+    "contracts:runtime": "node scripts/review-contracts.mjs --runtime",
     "typecheck:review": "tsc --project tsconfig.review.json",
     "typecheck:review-tests": "tsc --project tsconfig.review-tests.json",
     "test:review": "playwright test",
-    "test:review-build": "node --test scripts/build-review.test.mjs scripts/frontend-tooling.test.mjs",
-    "format:assets": "prettier --write \"assets/**/*.{html,css,js}\" \"frontend/**/*.{ts,tsx,mjs}\" \"scripts/*.mjs\" \"*config*.{json,mjs,ts}\"",
+    "pretest:review": "npm run contracts:runtime",
+    "test:review:visual": "node scripts/review-visual.mjs",
+    "test:review-build": "node --test scripts/build-review.test.mjs scripts/frontend-tooling.test.mjs scripts/review-contracts.test.mjs",
+    "format:assets": "prettier --write \"assets/**/*.{html,css,js}\" \"frontend/**/*.{ts,tsx,mts,mjs,json}\" \"scripts/*.mjs\" \"*config*.{json,mjs,ts}\"",
     "format:staged": "node scripts/format-staged-assets.mjs",
-    "format:assets:check": "prettier --check \"assets/**/*.{html,css,js}\" \"frontend/**/*.{ts,tsx,mjs}\" \"scripts/*.mjs\" \"*config*.{json,mjs,ts}\"",
-    "lint:review": "eslint --max-warnings 0 \"frontend/review/**/*.{ts,tsx}\"",
-    "lint:assets": "eslint --max-warnings 0 \"assets/**/*.js\" \"frontend/**/*.{ts,tsx,mjs}\" \"scripts/*.mjs\" \"*config*.{mjs,ts}\" && stylelint --max-warnings 0 \"assets/**/*.css\" && htmlhint \"assets/**/*.html\"",
+    "format:assets:check": "prettier --check \"assets/**/*.{html,css,js}\" \"frontend/**/*.{ts,tsx,mts,mjs,json}\" \"scripts/*.mjs\" \"*config*.{json,mjs,ts}\"",
+    "lint:review": "eslint --max-warnings 0 \"frontend/review/**/*.{ts,tsx,mts}\"",
+    "lint:assets": "eslint --max-warnings 0 \"assets/**/*.js\" \"frontend/**/*.{ts,tsx,mts,mjs}\" \"scripts/*.mjs\" \"*config*.{mjs,ts}\" && stylelint --max-warnings 0 \"assets/**/*.css\" && htmlhint \"assets/**/*.html\"",
     "check:assets": "npm run format:assets:check && npm run lint:assets && npm run typecheck:review && npm run typecheck:review-tests"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
     "@eslint/js": "10.0.1",
     "@stylistic/eslint-plugin": "5.10.0",
     "@playwright/test": "1.63.0",
     "@types/node": "24.13.3",
+    "ajv": "8.20.0",
     "esbuild": "0.28.2",
     "eslint": "10.8.0",
     "eslint-plugin-react-hooks": "7.1.1",
+    "fast-check": "4.9.0",
     "globals": "17.9.0",
     "htmlhint": "1.9.2",
+    "json-schema-to-typescript": "16.0.0",
     "prettier": "3.9.6",
     "stylelint": "17.14.1",
     "stylelint-config-standard": "40.0.0",
@@ -36,6 +45,7 @@
     "typescript-eslint": "8.69.0"
   },
   "dependencies": {
+    "@preact/signals": "2.11.2",
     "preact": "10.29.8"
   }
 }

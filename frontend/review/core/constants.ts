@@ -38,27 +38,27 @@ export const WHEEL_NAV_RESET_MS = 220;
 
 export const WHEEL_NAV_COOLDOWN_MS = 260;
 
-export const RATING_VALUES = [0, 1, 2, 3, 4, 5];
+export const RATING_VALUES = [0, 1, 2, 3, 4, 5] as const;
 
-export const COLOR_LABELS: ColorLabel[] = ["red", "yellow", "green", "blue", "purple"];
+export const COLOR_LABELS = ["red", "yellow", "green", "blue", "purple"] as const satisfies readonly ColorLabel[];
 
-export const BW_FILTERS: BwFilter[] = ["none", "yellow", "orange", "red", "green"];
+export const BW_FILTERS = ["none", "yellow", "orange", "red", "green"] as const satisfies readonly BwFilter[];
 
-export const BW_FILTER_LABELS = new Map<BwFilter, string>([
-  ["none", "None"],
-  ["yellow", "Y"],
-  ["orange", "O"],
-  ["red", "R"],
-  ["green", "G"],
-]);
+export const BW_FILTER_LABELS = {
+  none: "None",
+  yellow: "Y",
+  orange: "O",
+  red: "R",
+  green: "G",
+} as const satisfies Readonly<Record<BwFilter, string>>;
 
-export const BW_FILTER_NAMES = new Map<BwFilter, string>([
-  ["none", "No"],
-  ["yellow", "Yellow"],
-  ["orange", "Orange"],
-  ["red", "Red"],
-  ["green", "Green"],
-]);
+export const BW_FILTER_NAMES = {
+  none: "No",
+  yellow: "Yellow",
+  orange: "Orange",
+  red: "Red",
+  green: "Green",
+} as const satisfies Readonly<Record<BwFilter, string>>;
 
 export const CROP_RATIO_PRESETS: [string, string, string?][] = [
   ["original", "Original"],

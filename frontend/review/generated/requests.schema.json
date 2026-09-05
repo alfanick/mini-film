@@ -1,0 +1,767 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "RequestContracts",
+  "description": "Request schema catalog; property names are stable generator entry points, not wire envelopes.",
+  "type": "object",
+  "properties": {
+    "burst": {
+      "$ref": "#/definitions/ReviewBurstExpansionRequest"
+    },
+    "diffusion_apply": {
+      "$ref": "#/definitions/ReviewDiffusionSettingsRequest"
+    },
+    "diffusion_create": {
+      "$ref": "#/definitions/ReviewDiffusionJobRequest"
+    },
+    "diffusion_reset": {
+      "$ref": "#/definitions/ReviewDiffusionSettingsResetRequest"
+    },
+    "panorama_create": {
+      "$ref": "#/definitions/ReviewPanoramaCreateRequest"
+    },
+    "panorama_previews": {
+      "$ref": "#/definitions/ReviewPanoramaPreviewRequest"
+    },
+    "panorama_render": {
+      "$ref": "#/definitions/ReviewPanoramaRenderRequest"
+    },
+    "panorama_update": {
+      "$ref": "#/definitions/ReviewPanoramaUpdateRequest"
+    },
+    "publish": {
+      "$ref": "#/definitions/PublishRequest"
+    },
+    "review": {
+      "$ref": "#/definitions/ReviewUpdateRequest"
+    },
+    "sampler_create": {
+      "$ref": "#/definitions/ReviewSamplerStartRequest"
+    },
+    "sampler_priority": {
+      "$ref": "#/definitions/ReviewSamplerPriorityRequest"
+    },
+    "sampler_select": {
+      "$ref": "#/definitions/ReviewSamplerSelectionRequest"
+    },
+    "ui": {
+      "$ref": "#/definitions/ReviewUiUpdateRequest"
+    }
+  },
+  "required": [
+    "review",
+    "ui",
+    "burst",
+    "publish",
+    "sampler_create",
+    "sampler_priority",
+    "sampler_select",
+    "diffusion_create",
+    "diffusion_apply",
+    "diffusion_reset",
+    "panorama_create",
+    "panorama_update",
+    "panorama_previews",
+    "panorama_render"
+  ],
+  "definitions": {
+    "BasicRetouchAdjustments": {
+      "description": "JSON representation of BasicRetouchAdjustments; serialized spelling is part of the review protocol.",
+      "type": "object",
+      "properties": {
+        "blacks": {
+          "type": "number",
+          "format": "float",
+          "default": 0.0
+        },
+        "clarity": {
+          "type": "number",
+          "format": "float",
+          "default": 0.0
+        },
+        "contrast": {
+          "type": "number",
+          "format": "float",
+          "default": 0.0
+        },
+        "exposure": {
+          "type": "number",
+          "format": "float",
+          "default": 0.0
+        },
+        "highlights": {
+          "type": "number",
+          "format": "float",
+          "default": 0.0
+        },
+        "offset": {
+          "type": "number",
+          "format": "float",
+          "default": 0.0
+        },
+        "shadows": {
+          "type": "number",
+          "format": "float",
+          "default": 0.0
+        },
+        "temperature": {
+          "type": "number",
+          "format": "float",
+          "default": 0.0
+        },
+        "whites": {
+          "type": "number",
+          "format": "float",
+          "default": 0.0
+        }
+      }
+    },
+    "BwFilter": {
+      "description": "JSON representation of BwFilter; serialized spelling is part of the review protocol.",
+      "type": "string",
+      "enum": ["none", "yellow", "orange", "red", "green"]
+    },
+    "DiffusionMethod": {
+      "description": "JSON representation of DiffusionMethod; serialized spelling is part of the review protocol.",
+      "oneOf": [
+        {
+          "description": "Layered optical mist with a broad, resolution-normalized tail.",
+          "type": "string",
+          "const": "multi-scale-mist"
+        },
+        {
+          "description": "Edge-aware fine-detail reduction followed by neutral highlight glare.",
+          "type": "string",
+          "const": "edge-aware-glow"
+        }
+      ]
+    },
+    "DiffusionSettings": {
+      "description": "JSON representation of DiffusionSettings; serialized spelling is part of the review protocol.",
+      "type": "object",
+      "properties": {
+        "glow_radius_percent": {
+          "type": "integer",
+          "format": "uint16",
+          "default": 100,
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "highlight_glow": {
+          "type": "integer",
+          "format": "uint8",
+          "default": 0,
+          "maximum": 255,
+          "minimum": 0
+        },
+        "highlight_reach": {
+          "type": "integer",
+          "format": "uint8",
+          "default": 50,
+          "maximum": 255,
+          "minimum": 0
+        },
+        "intensity_percent": {
+          "type": "integer",
+          "format": "uint16",
+          "default": 100,
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "method": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/DiffusionMethod"
+            }
+          ],
+          "default": "multi-scale-mist"
+        },
+        "softness": {
+          "type": "integer",
+          "format": "uint8",
+          "default": 0,
+          "maximum": 255,
+          "minimum": 0
+        },
+        "softness_radius_percent": {
+          "type": "integer",
+          "format": "uint16",
+          "default": 100,
+          "maximum": 65535,
+          "minimum": 0
+        }
+      }
+    },
+    "PanoramaMatchingMode": {
+      "description": "JSON representation of PanoramaMatchingMode; serialized spelling is part of the review protocol.",
+      "type": "string",
+      "enum": ["automatic", "sequential", "multi-row", "flat-mosaic"]
+    },
+    "PanoramaProjection": {
+      "description": "JSON representation of PanoramaProjection; serialized spelling is part of the review protocol.",
+      "type": "string",
+      "enum": ["rectilinear", "cylindrical", "equirectangular", "panini"]
+    },
+    "PublishRequest": {
+      "description": "Accepted JSON body for PublishRequest.",
+      "type": "object",
+      "properties": {
+        "album": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "gallery": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "gallery_columns": {
+          "type": ["integer", "null"],
+          "format": "uint32",
+          "default": null,
+          "minimum": 0
+        },
+        "gallery_thumbnail_long_edge": {
+          "type": ["integer", "null"],
+          "format": "uint32",
+          "default": null,
+          "minimum": 0
+        },
+        "grain_engine": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "jpeg_subsampling": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "jpg_quality": {
+          "type": ["integer", "null"],
+          "format": "uint8",
+          "default": null,
+          "maximum": 255,
+          "minimum": 0
+        },
+        "labels": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ReviewLabel"
+          }
+        },
+        "long_edge": {
+          "type": ["integer", "null"],
+          "format": "uint32",
+          "default": null,
+          "minimum": 0
+        },
+        "main_profile_only": {
+          "type": "boolean",
+          "default": false
+        },
+        "max_height": {
+          "type": ["integer", "null"],
+          "format": "uint32",
+          "default": null,
+          "minimum": 0
+        },
+        "max_width": {
+          "type": ["integer", "null"],
+          "format": "uint32",
+          "default": null,
+          "minimum": 0
+        },
+        "min_rating": {
+          "type": "integer",
+          "format": "uint8",
+          "default": 0,
+          "maximum": 255,
+          "minimum": 0
+        },
+        "normalize_grain": {
+          "type": ["boolean", "null"],
+          "default": null
+        },
+        "normalize_grain_mpix": {
+          "type": ["number", "null"],
+          "format": "double",
+          "default": null
+        },
+        "output_format": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "progressive_jpeg": {
+          "type": ["boolean", "null"],
+          "default": null
+        },
+        "resize": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "size_mode": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "strip_metadata": {
+          "type": ["boolean", "null"],
+          "default": null
+        },
+        "tags": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "RetouchCrop": {
+      "description": "JSON representation of RetouchCrop; serialized spelling is part of the review protocol.",
+      "type": "object",
+      "properties": {
+        "height": {
+          "type": "number",
+          "format": "float",
+          "default": 1.0
+        },
+        "width": {
+          "type": "number",
+          "format": "float",
+          "default": 1.0
+        },
+        "x": {
+          "type": "number",
+          "format": "float",
+          "default": 0.0
+        },
+        "y": {
+          "type": "number",
+          "format": "float",
+          "default": 0.0
+        }
+      }
+    },
+    "RetouchSettings": {
+      "description": "JSON representation of RetouchSettings; serialized spelling is part of the review protocol.",
+      "type": "object",
+      "properties": {
+        "adjustments": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/BasicRetouchAdjustments"
+            }
+          ],
+          "default": {
+            "blacks": 0.0,
+            "clarity": 0.0,
+            "contrast": 0.0,
+            "exposure": 0.0,
+            "highlights": 0.0,
+            "offset": 0.0,
+            "shadows": 0.0,
+            "temperature": 0.0,
+            "whites": 0.0
+          }
+        },
+        "crop": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RetouchCrop"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "rotation_degrees": {
+          "type": "number",
+          "format": "float",
+          "default": 0.0
+        }
+      }
+    },
+    "ReviewBurstExpansionRequest": {
+      "description": "Accepted JSON body for ReviewBurstExpansionRequest.",
+      "type": "object",
+      "properties": {
+        "expanded": {
+          "type": "boolean"
+        }
+      },
+      "required": ["expanded"]
+    },
+    "ReviewDiffusionJobRequest": {
+      "description": "Accepted JSON body for ReviewDiffusionJobRequest.",
+      "type": "object",
+      "properties": {
+        "image_id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "profile_index": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "settings": {
+          "$ref": "#/definitions/DiffusionSettings"
+        }
+      },
+      "required": ["image_id", "profile_index", "settings"]
+    },
+    "ReviewDiffusionScope": {
+      "description": "JSON representation of ReviewDiffusionScope; serialized spelling is part of the review protocol.",
+      "type": "string",
+      "enum": ["current", "all"]
+    },
+    "ReviewDiffusionSettingsRequest": {
+      "description": "Accepted JSON body for ReviewDiffusionSettingsRequest.",
+      "type": "object",
+      "properties": {
+        "image_id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "profile_index": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "scope": {
+          "$ref": "#/definitions/ReviewDiffusionScope"
+        },
+        "settings": {
+          "$ref": "#/definitions/DiffusionSettings"
+        }
+      },
+      "required": ["scope", "image_id", "profile_index", "settings"]
+    },
+    "ReviewDiffusionSettingsResetRequest": {
+      "description": "Accepted JSON body for ReviewDiffusionSettingsResetRequest.",
+      "type": "object",
+      "properties": {
+        "image_id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "profile_index": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "scope": {
+          "$ref": "#/definitions/ReviewDiffusionScope"
+        }
+      },
+      "required": ["scope", "image_id", "profile_index"]
+    },
+    "ReviewLabel": {
+      "description": "JSON representation of ReviewLabel; serialized spelling is part of the review protocol.",
+      "type": "string",
+      "enum": ["none", "red", "yellow", "green", "blue", "purple"]
+    },
+    "ReviewPanoramaCreateRequest": {
+      "description": "Accepted JSON body for ReviewPanoramaCreateRequest.",
+      "type": "object",
+      "properties": {
+        "image_ids": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "matching_mode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/PanoramaMatchingMode"
+            }
+          ],
+          "default": "automatic"
+        },
+        "name": {
+          "type": ["string", "null"],
+          "default": null
+        }
+      },
+      "required": ["image_ids"]
+    },
+    "ReviewPanoramaPreviewRequest": {
+      "description": "Accepted JSON body for ReviewPanoramaPreviewRequest.",
+      "type": "object",
+      "properties": {
+        "image_ids": {
+          "type": ["array", "null"],
+          "default": null,
+          "items": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "matching_mode": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PanoramaMatchingMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      }
+    },
+    "ReviewPanoramaRenderRequest": {
+      "description": "Accepted JSON body for ReviewPanoramaRenderRequest.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "projection": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PanoramaProjection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      }
+    },
+    "ReviewPanoramaUpdateRequest": {
+      "description": "Accepted JSON body for ReviewPanoramaUpdateRequest.",
+      "type": "object",
+      "properties": {
+        "image_ids": {
+          "type": ["array", "null"],
+          "default": null,
+          "items": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "matching_mode": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PanoramaMatchingMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "name": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "selected_projection": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PanoramaProjection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      }
+    },
+    "ReviewProfileBwFilter": {
+      "description": "JSON representation of ReviewProfileBwFilter; serialized spelling is part of the review protocol.",
+      "type": "object",
+      "properties": {
+        "filter": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/BwFilter"
+            }
+          ],
+          "default": "none"
+        },
+        "profile_index": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "required": ["profile_index"]
+    },
+    "ReviewSamplerPriorityRequest": {
+      "description": "Accepted JSON body for ReviewSamplerPriorityRequest.",
+      "type": "object",
+      "properties": {
+        "expanded_keys": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "visible_keys": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "ReviewSamplerScope": {
+      "description": "JSON representation of ReviewSamplerScope; serialized spelling is part of the review protocol.",
+      "type": "string",
+      "enum": ["current", "all"]
+    },
+    "ReviewSamplerSelectionRequest": {
+      "description": "Accepted JSON body for ReviewSamplerSelectionRequest.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "scope": {
+          "$ref": "#/definitions/ReviewSamplerScope"
+        }
+      },
+      "required": ["scope", "enabled"]
+    },
+    "ReviewSamplerStartRequest": {
+      "description": "Accepted JSON body for ReviewSamplerStartRequest.",
+      "type": "object",
+      "properties": {
+        "image_id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": ["image_id"]
+    },
+    "ReviewUiUpdateRequest": {
+      "description": "Accepted JSON body for ReviewUiUpdateRequest.",
+      "type": "object",
+      "properties": {
+        "current_image_id": {
+          "type": ["integer", "null"],
+          "format": "uint64",
+          "default": null,
+          "minimum": 0
+        },
+        "labels": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ReviewLabel"
+          }
+        },
+        "min_rating": {
+          "type": "integer",
+          "format": "uint8",
+          "default": 0,
+          "maximum": 255,
+          "minimum": 0
+        }
+      }
+    },
+    "ReviewUpdateRequest": {
+      "description": "Accepted JSON body for ReviewUpdateRequest.",
+      "type": "object",
+      "properties": {
+        "advance_after_update": {
+          "type": "boolean",
+          "default": false
+        },
+        "enabled_profile_indexes": {
+          "type": ["array", "null"],
+          "default": null,
+          "items": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          }
+        },
+        "image_id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "label": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ReviewLabel"
+            }
+          ],
+          "default": "none"
+        },
+        "labels": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ReviewLabel"
+          }
+        },
+        "notes": {
+          "type": "string",
+          "default": ""
+        },
+        "profile_bw_filters": {
+          "type": ["array", "null"],
+          "default": null,
+          "items": {
+            "$ref": "#/definitions/ReviewProfileBwFilter"
+          }
+        },
+        "publish_profile_indexes": {
+          "type": ["array", "null"],
+          "default": null,
+          "items": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          }
+        },
+        "rating": {
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        },
+        "retouch": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RetouchSettings"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "selected_profile_index": {
+          "type": ["integer", "null"],
+          "format": "uint",
+          "default": null,
+          "minimum": 0
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": ["image_id", "rating", "tags"]
+    }
+  }
+}

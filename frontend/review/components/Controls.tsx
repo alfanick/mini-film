@@ -82,7 +82,7 @@ function RetouchSlider({
   const camera = key === "temperature" || key === "offset";
   const baseline = camera
     ? cameraBaseline(image, key)
-    : normalizedRetouch({ adjustments: profile?.retouch_base }).adjustments[key];
+    : normalizedRetouch(profile?.retouch_base ? { adjustments: profile.retouch_base } : {}).adjustments[key];
   const min = (camera ? baseline : 0) - limit;
   const max = (camera ? baseline : 0) + limit;
   const value = clamp(baseline + edits.retouch.adjustments[key], min, max);
@@ -199,6 +199,8 @@ export function Controls({
             data-rating={rating}
             type="button"
             class={(image?.rating || 0) === rating ? "active" : undefined}
+            aria-pressed={(image?.rating || 0) === rating}
+            aria-label={`Rate ${rating} ${rating === 1 ? "star" : "stars"}`}
             onClick={(): void => {
               void onRate(rating).catch(console.error);
             }}
@@ -216,6 +218,7 @@ export function Controls({
             title={capitalize(label)}
             aria-label={`${capitalize(label)} label`}
             class={labels.includes(label) ? "active" : undefined}
+            aria-pressed={labels.includes(label)}
             onClick={(): void => {
               void onLabel(label).catch(console.error);
             }}

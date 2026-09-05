@@ -22,7 +22,7 @@ function isFrontendSource(path) {
   if (path.includes("/vendor/")) return false;
   return (
     /^assets\/.*\.(?:html|css|js)$/.test(path) ||
-    /^frontend\/.*\.(?:ts|tsx|mjs|json)$/.test(path) ||
+    /^frontend\/.*\.(?:ts|tsx|mts|mjs|json)$/.test(path) ||
     /^scripts\/[^/]+\.mjs$/.test(path) ||
     /^(?:[^/]*config[^/]*\.(?:json|mjs|ts)|\.prettierrc\.json|package\.json)$/.test(path)
   );

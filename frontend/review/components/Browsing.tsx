@@ -1,9 +1,11 @@
 /** Reactive picture browsing and profile selection components.
  * Stable component identities keep focus, scrolling, and image loads intact as live review state changes. */
 import type { ComponentChildren } from "preact";
+import { useComputed } from "@preact/signals";
+import { memo } from "preact/compat";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import type { ReviewImage, ReviewProfileRender, ReviewBurst, BwFilter } from "../core/types";
-import { useReviewContext } from "../core/context";
+import { useReviewModel } from "../core/context";
 import { BW_FILTERS, BW_FILTER_LABELS, BW_FILTER_NAMES } from "../core/constants";
 import {
   imageLabels,
@@ -38,9 +40,14 @@ export interface ImageListProps {
   onToggleBurst: (id: string, expanded: boolean) => Promise<unknown>;
 }
 
+/** Keep formatted browsing captions outside the Rust-owned wire image contract. */
+interface ImageListEntry extends ReviewImage {
+  capture_time: string;
+}
+
 /** Typed callbacks keep review mutations in the owning session. */
 export interface VisibleBurst extends ReviewBurst {
-  members: ReviewImage[];
+  members: ImageListEntry[];
   total: number;
 }
 
@@ -54,12 +61,13 @@ export interface BurstGroupProps {
 
 /** Typed callbacks keep review mutations in the owning session. */
 export interface ImageRowProps {
-  image: ReviewImage;
+  image: ImageListEntry;
   currentId: ImageListProps["currentId"];
   onSelect: ImageListProps["onSelect"];
   className?: string;
   burstCount?: string | null;
   isolateActivation?: boolean;
+  captureTime?: string;
 }
 
 /** Typed callbacks keep review mutations in the owning session. */
@@ -78,14 +86,30 @@ export interface BwFilterControlsProps {
 }
 
 /** Render the filtered photo sequence and preserve camera-defined burst membership. */
-export function ImageList({ images, bursts, currentId, onSelect, onToggleBurst }: ImageListProps): ComponentChildren {
-  const displayImages = useMemo((): ReviewImage[] => {
+export const ImageList = memo(function ImageList({
+  images,
+  bursts,
+  currentId,
+  onSelect,
+  onToggleBurst,
+}: ImageListProps): ComponentChildren {
+  const displayCache = useRef<Map<number, { source: ReviewImage; entry: ImageListEntry }>>(new Map());
+  const displayImages = useMemo((): ImageListEntry[] => {
     let day: string | null = null;
-    return images.map((image): ReviewImage => {
+    const nextCache = new Map<number, { source: ReviewImage; entry: ImageListEntry }>();
+    const entries = images.map((image): ImageListEntry => {
       const display = imageCaptureDisplay(image, day);
       day = display.day;
-      return { ...image, capture_time: image.capture_time ?? display.text };
+      const cached = displayCache.current.get(image.id);
+      const entry =
+        cached?.source === image && cached.entry.capture_time === display.text
+          ? cached.entry
+          : { ...image, capture_time: display.text };
+      nextCache.set(image.id, { source: image, entry });
+      return entry;
     });
+    displayCache.current = nextCache;
+    return entries;
   }, [images]);
   const imageById = new Map(displayImages.map((image) => [String(image.id), image]));
   const burstByImageId = new Map<string, VisibleBurst>();
@@ -96,7 +120,7 @@ export function ImageList({ images, bursts, currentId, onSelect, onToggleBurst }
     const members = memberIds
       .filter((imageId) => !burstByImageId.has(imageId))
       .map((imageId) => imageById.get(imageId))
-      .filter((image): image is ReviewImage => Boolean(image));
+      .filter((image): image is ImageListEntry => Boolean(image));
     if (members.length < 2) continue;
     const visibleBurst = {
       ...burst,
@@ -126,12 +150,19 @@ export function ImageList({ images, bursts, currentId, onSelect, onToggleBurst }
       />,
     ];
   });
-}
+});
 
 /** Keep each burst expandable without changing the independent review state of its members. */
-export function BurstGroup({ burst, currentId, onSelect, onToggleBurst }: BurstGroupProps): ComponentChildren {
+export const BurstGroup = memo(function BurstGroup({
+  burst,
+  currentId,
+  onSelect,
+  onToggleBurst,
+}: BurstGroupProps): ComponentChildren {
+  const firstMember = burst.members[0];
+  if (!firstMember) return null;
   const currentMember = burst.members.find((image) => image.id === currentId);
-  const displayed = currentMember || burst.members[0];
+  const displayed = currentMember || firstMember;
   const visibleCount = burst.members.length;
   const count = `${visibleCount}/${burst.total}`;
   const expanded = Boolean(burst.expanded);
@@ -176,11 +207,12 @@ export function BurstGroup({ burst, currentId, onSelect, onToggleBurst }: BurstG
       {expanded ? (
         <div class={"burst-members"}>
           {burst.members.map((image, index) => {
-            const relativeCaptureTime = index > 0 ? burstCaptureDeltaDisplay(burst.members[0], image) : "";
+            const relativeCaptureTime = index > 0 ? burstCaptureDeltaDisplay(firstMember, image) : "";
             return (
               <ImageRow
                 key={`burst:${burst.id}:image:${image.id}`}
-                image={relativeCaptureTime ? { ...image, capture_time: relativeCaptureTime } : image}
+                image={image}
+                captureTime={relativeCaptureTime || image.capture_time}
                 currentId={currentId}
                 onSelect={onSelect}
                 className={"burst-member"}
@@ -191,18 +223,37 @@ export function BurstGroup({ burst, currentId, onSelect, onToggleBurst }: BurstG
       ) : null}
     </section>
   );
+}, equalBurstProps);
+
+/** Only membership, local selection, expansion, or changed source data can alter a burst's visible rows. */
+function equalBurstProps(previous: BurstGroupProps, next: BurstGroupProps): boolean {
+  const previousSelection = previous.burst.members.find((image) => image.id === previous.currentId)?.id;
+  const nextSelection = next.burst.members.find((image) => image.id === next.currentId)?.id;
+  return (
+    previousSelection === nextSelection &&
+    previous.onSelect === next.onSelect &&
+    previous.onToggleBurst === next.onToggleBurst &&
+    previous.burst.id === next.burst.id &&
+    previous.burst.expanded === next.burst.expanded &&
+    previous.burst.total === next.burst.total &&
+    previous.burst.members.length === next.burst.members.length &&
+    previous.burst.members.every((image, index) => image === next.burst.members[index])
+  );
 }
 
 /** Display one picture and scroll the active row into view through a ref effect. */
-export function ImageRow({
+export const ImageRow = memo(function ImageRow({
   image,
   currentId,
   onSelect,
   className = "",
   burstCount = null,
   isolateActivation = false,
+  captureTime = image.capture_time,
 }: ImageRowProps): ComponentChildren {
-  const { state } = useReviewContext();
+  const model = useReviewModel();
+  const dirty = useComputed((): boolean => model.dirtyRetouchIds.value.has(image.id));
+  const catalogProfiles = useComputed(() => model.field("data").value?.profiles || null);
   const rowRef = useRef<HTMLButtonElement>(null);
   const isActive = image.id === currentId;
   useEffect((): (() => void) | undefined => {
@@ -214,8 +265,8 @@ export function ImageRow({
   }, [isActive, currentId]);
   const progress = renderProgressSummary(
     image,
-    state.localRetouchDirty && image.id === state.currentId,
-    profilesAreImplicitOnly(state, image),
+    dirty.value,
+    profilesAreImplicitOnly({ data: catalogProfiles.value ? { profiles: catalogProfiles.value } : null }, image),
   );
   const labels = imageLabels(image);
   const thumbnailUrl = image.thumbnail_url || image.preview_url;
@@ -254,9 +305,9 @@ export function ImageRow({
           </span>
         ) : null}
       </div>
-      {image.capture_time ? (
-        <span class={"image-row-capture-time"} title={image.capture_time}>
-          {image.capture_time}
+      {captureTime ? (
+        <span class={"image-row-capture-time"} title={captureTime}>
+          {captureTime}
         </span>
       ) : null}
       <div class={"image-row-meta"}>
@@ -271,6 +322,19 @@ export function ImageRow({
       <span class={`image-row-indicator ${progress.state}`} title={progress.title} aria-label={progress.title} />
     </button>
   );
+}, equalImageRowProps);
+
+/** A selected ID changes at most the previous and next active rows, including collapsed burst summaries. */
+function equalImageRowProps(previous: ImageRowProps, next: ImageRowProps): boolean {
+  return (
+    previous.image === next.image &&
+    (previous.currentId === previous.image.id) === (next.currentId === next.image.id) &&
+    previous.onSelect === next.onSelect &&
+    previous.className === next.className &&
+    previous.burstCount === next.burstCount &&
+    previous.isolateActivation === next.isolateActivation &&
+    previous.captureTime === next.captureTime
+  );
 }
 
 /** Offer the existing monochrome filters through the parent review action. */
@@ -283,7 +347,7 @@ export function BwFilterControls({ profile, onChange }: BwFilterControlsProps): 
           key={filter}
           type={"button"}
           class={normalizeBwFilter(filter) === active ? "active" : ""}
-          title={`${BW_FILTER_NAMES.get(filter)} black-and-white filter`}
+          title={`${BW_FILTER_NAMES[filter]} black-and-white filter`}
           aria-label={filter === "none" ? "No black-and-white filter" : `${filter} black-and-white filter`}
           aria-pressed={normalizeBwFilter(filter) === active ? "true" : "false"}
           onClick={(event) => {
@@ -293,7 +357,7 @@ export function BwFilterControls({ profile, onChange }: BwFilterControlsProps): 
             if (onChange) void onChange(profile, filter).catch((error: unknown): void => console.error(error));
           }}
         >
-          {BW_FILTER_LABELS.get(filter)}
+          {BW_FILTER_LABELS[filter]}
         </button>
       ))}
     </span>
@@ -301,12 +365,18 @@ export function BwFilterControls({ profile, onChange }: BwFilterControlsProps): 
 }
 
 /** Render selected profile variants with reactive availability and touch double-tap tracking. */
-export function ProfileList({ image, onSelect, onToggleEnabled, onSolo }: ProfileListProps): ComponentChildren {
-  const { state } = useReviewContext();
+export const ProfileList = memo(function ProfileList({
+  image,
+  onSelect,
+  onToggleEnabled,
+  onSolo,
+}: ProfileListProps): ComponentChildren {
+  const model = useReviewModel();
+  const dirty = useComputed((): boolean => image !== null && model.dirtyRetouchIds.value.has(image.id));
   const profileDoubleTap = useRef<{ profileIndex: number | null; at: number }>({ profileIndex: null, at: 0 });
   const [portraitProfiles, setPortraitProfiles] = useState<Record<string, boolean>>({});
   if (!image) return null;
-  const previewProfile = selectedProfile(image, state);
+  const previewProfile = selectedProfile(image);
   const profiles = image.profiles || [];
   const canSolo = profiles.length > 1;
   return profiles.map((profile) => {
@@ -314,7 +384,7 @@ export function ProfileList({ image, onSelect, onToggleEnabled, onSolo }: Profil
     const downloadTitle = profileDownloadTitle(profile, displayName);
     const cardUrl = profile.url || image.preview_url;
     const available = isSoocProfile(profile) || profile.enabled !== false;
-    const display = profileDisplayState(image, profile, state.localRetouchDirty && image.id === state.currentId);
+    const display = profileDisplayState(image, profile, dirty.value);
     const portraitKey = `${image.id}:${profile.profile_index}:${profile.updated_at}`;
     const isPortrait = portraitProfiles[portraitKey] ?? isPortraitRenderProfile(profile);
     const sourceStatus = profile.url ? display.text : `${display.text} | preview`;
@@ -333,6 +403,7 @@ export function ProfileList({ image, onSelect, onToggleEnabled, onSolo }: Profil
         <button
           type={"button"}
           class={classes}
+          aria-pressed={profile.profile_index === previewProfile?.profile_index}
           onClick={(): void => {
             void onSelect(profile).catch((error: unknown): void => console.error(error));
           }}
@@ -353,25 +424,6 @@ export function ProfileList({ image, onSelect, onToggleEnabled, onSolo }: Profil
             onSolo(profile).catch((error) => console.error(error));
           }}
         >
-          <input
-            type={"checkbox"}
-            class={"profile-availability"}
-            checked={available}
-            disabled={isSoocProfile(profile)}
-            title={
-              isSoocProfile(profile)
-                ? "SOOC remains available"
-                : available
-                  ? "Available for this picture"
-                  : "Disabled for this picture"
-            }
-            aria-label={`Enable ${displayName}`}
-            onClick={(event) => event.stopPropagation()}
-            onChange={(event) => {
-              event.stopPropagation();
-              onToggleEnabled(profile).catch((error) => console.error(error));
-            }}
-          />
           {cardUrl ? (
             <img
               src={versionedUrl(cardUrl, profile.url ? profile.updated_at : image.preview_updated_at)}
@@ -393,6 +445,23 @@ export function ProfileList({ image, onSelect, onToggleEnabled, onSolo }: Profil
             {`${sourceStatus} | ${available ? "available" : "off"}`}
           </div>
         </button>
+        <input
+          type="checkbox"
+          class="profile-availability"
+          checked={available}
+          disabled={isSoocProfile(profile)}
+          title={
+            isSoocProfile(profile)
+              ? "SOOC remains available"
+              : available
+                ? "Available for this picture"
+                : "Disabled for this picture"
+          }
+          aria-label={`Enable ${displayName}`}
+          onChange={(): void => {
+            void onToggleEnabled(profile).catch((error: unknown): void => console.error(error));
+          }}
+        />
         {profile.url ? (
           <a
             class={"profile-download"}
@@ -408,7 +477,7 @@ export function ProfileList({ image, onSelect, onToggleEnabled, onSolo }: Profil
       </div>
     );
   });
-}
+});
 
 /** Render compact color labels consistently across metadata and picture rows. */
 export function LabelBadges({ labels }: { labels: string[] }): ComponentChildren {

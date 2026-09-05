@@ -1,0 +1,664 @@
+{
+  "state": {
+    "version": "fixture",
+    "invocation": "mini-film review fixture",
+    "profiles": [
+      {
+        "index": 0,
+        "identity": "fixture:neutral",
+        "selector": "neutral.xmp",
+        "stem": "neutral",
+        "sampler_added": false,
+        "enabled_by_default": true,
+        "configured_from_cli": true,
+        "retouch_base": {
+          "exposure": 0.0,
+          "contrast": 0.0,
+          "highlights": 0.0,
+          "shadows": 0.0,
+          "whites": 0.0,
+          "blacks": 0.0,
+          "temperature": 0.0,
+          "offset": 0.0,
+          "clarity": 0.0
+        },
+        "metadata": {
+          "profile_name": "Neutral",
+          "profile_uuid": null,
+          "look_name": null,
+          "look_uuid": null,
+          "source_profile_name": "Camera Neutral",
+          "source_profile_uuid": null,
+          "source_adjustments": {
+            "exposure": 0.25,
+            "contrast": 10.0,
+            "highlights": -10.0,
+            "shadows": 5.0,
+            "whites": 0.0,
+            "blacks": 0.0,
+            "saturation": 0.0,
+            "vibrance": 0.0,
+            "clarity": 0.0,
+            "parametric": {
+              "shadows": 0.0,
+              "darks": 0.0,
+              "lights": 0.0,
+              "highlights": 0.0,
+              "shadow_split": 25.0,
+              "midtone_split": 50.0,
+              "highlight_split": 75.0
+            },
+            "hsl": {
+              "hue": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+              "saturation": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+              "luminance": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+            },
+            "calibration": {
+              "red_hue": 0.0,
+              "red_saturation": 0.0,
+              "green_hue": 0.0,
+              "green_saturation": 0.0,
+              "blue_hue": 0.0,
+              "blue_saturation": 0.0
+            },
+            "tone_curve": {
+              "composite": [
+                [0.0, 0.0],
+                [1.0, 1.0]
+              ],
+              "red": [],
+              "green": [],
+              "blue": []
+            }
+          },
+          "source_sharpening": {
+            "present": true,
+            "amount": 25.0,
+            "radius": 1.0,
+            "detail": 25.0,
+            "masking": 0.0
+          },
+          "emulation_adjustments": {
+            "exposure": 0.25,
+            "contrast": 10.0,
+            "highlights": -10.0,
+            "shadows": 5.0,
+            "whites": 0.0,
+            "blacks": 0.0,
+            "saturation": 0.0,
+            "vibrance": 0.0,
+            "clarity": 0.0,
+            "parametric": {
+              "shadows": 0.0,
+              "darks": 0.0,
+              "lights": 0.0,
+              "highlights": 0.0,
+              "shadow_split": 25.0,
+              "midtone_split": 50.0,
+              "highlight_split": 75.0
+            },
+            "hsl": {
+              "hue": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+              "saturation": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+              "luminance": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+            },
+            "calibration": {
+              "red_hue": 0.0,
+              "red_saturation": 0.0,
+              "green_hue": 0.0,
+              "green_saturation": 0.0,
+              "blue_hue": 0.0,
+              "blue_saturation": 0.0
+            },
+            "tone_curve": {
+              "composite": [
+                [0.0, 0.0],
+                [1.0, 1.0]
+              ],
+              "red": [],
+              "green": [],
+              "blue": []
+            }
+          },
+          "emulation_sharpening": {
+            "present": true,
+            "amount": 25.0,
+            "radius": 1.0,
+            "detail": 25.0,
+            "masking": 0.0
+          },
+          "has_camera_raw_settings": true,
+          "grain": {
+            "amount": 10,
+            "size": 20,
+            "frequency": 30
+          },
+          "has_hald": true,
+          "has_pp3": true,
+          "pp3_name": "neutral.pp3",
+          "pp3_adjustments": [
+            {
+              "source": "profile",
+              "section": "Exposure",
+              "entries": [
+                {
+                  "key": "Compensation",
+                  "value": "0.25"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "client_count": 1,
+    "codex": {
+      "enabled": false,
+      "flags": null,
+      "model": null,
+      "queued": 0,
+      "processing": 0,
+      "done": 0,
+      "failed": 0
+    },
+    "publish_defaults": {
+      "album": "published",
+      "output_format": "jpg",
+      "jpg_quality": 90,
+      "resize": null,
+      "long_edge": null,
+      "max_width": null,
+      "max_height": null,
+      "jpeg_subsampling": "444",
+      "strip_metadata": false,
+      "progressive_jpeg": false,
+      "gallery": "modern",
+      "gallery_thumbnail_long_edge": 1024,
+      "gallery_columns": 4,
+      "grain_engine": "fft",
+      "normalize_grain_mpix": 12.0
+    },
+    "diffusion_default": {
+      "method": "multi-scale-mist",
+      "softness": 0,
+      "highlight_glow": 0,
+      "softness_radius_percent": 100,
+      "glow_radius_percent": 100,
+      "intensity_percent": 100,
+      "highlight_reach": 50
+    },
+    "profile_diffusion_settings": [],
+    "publish_jobs": [
+      {
+        "id": 1,
+        "album": "published",
+        "status": "done",
+        "started_at": "2026-09-05T12:00:00+00:00",
+        "finished_at": "2026-09-05T12:00:00+00:00",
+        "processed": 1,
+        "total": 1,
+        "step": "done",
+        "current": null,
+        "linked": 1,
+        "skipped": 0,
+        "galleries": 1,
+        "gallery_urls": ["outputs/published/index.html"],
+        "error": null
+      }
+    ],
+    "capabilities": {
+      "panorama": {
+        "available": true,
+        "reason": null
+      },
+      "sampler": true,
+      "diffusion": true
+    },
+    "panorama": {
+      "busy": false,
+      "projects": [
+        {
+          "id": 1,
+          "name": "Fixture panorama",
+          "status": "ready",
+          "matching_mode": "automatic",
+          "selected_projection": "cylindrical",
+          "output_file_name": null,
+          "result_image_id": null,
+          "progress_stage": "previews",
+          "progress_completed": 1,
+          "progress_total": 1,
+          "error": null,
+          "created_at": "2026-09-05T12:00:00+00:00",
+          "updated_at": "2026-09-05T12:00:00+00:00",
+          "image_ids": [1],
+          "previews": [
+            {
+              "matching_mode": "automatic",
+              "projection": "cylindrical",
+              "status": "done",
+              "url": "panorama-preview/1/automatic/cylindrical",
+              "duration_ms": 100,
+              "error": null,
+              "updated_at": "2026-09-05T12:00:00+00:00"
+            }
+          ]
+        }
+      ]
+    },
+    "ui": {
+      "current_image_id": 1,
+      "min_rating": 0,
+      "labels": ["red"]
+    },
+    "bursts": [],
+    "images": [
+      {
+        "id": 1,
+        "source_type": "raw",
+        "processing_mode": "profiled",
+        "relative_path": "fixture.nef",
+        "file_name": "fixture.nef",
+        "source_file_size_bytes": 12345,
+        "source_width": 6000,
+        "source_height": 4000,
+        "exif": {
+          "capture_timestamp": 1788609600,
+          "capture_subsecond": "125",
+          "rating": 3,
+          "file_size_bytes": 12345,
+          "image_width": 6000,
+          "image_height": 4000,
+          "focus_frame_width": 6000,
+          "focus_frame_height": 4000,
+          "focus_regions": [
+            {
+              "x": 0.4,
+              "y": 0.4,
+              "width": 0.2,
+              "height": 0.2,
+              "primary": true
+            }
+          ],
+          "focal_length": "50 mm",
+          "aperture": "f/2.8",
+          "shutter_speed": "1/250",
+          "iso": "100",
+          "auto_iso": false,
+          "iso_auto_hi_limit": null,
+          "white_balance_mode": "Daylight",
+          "white_balance_temperature": 5500,
+          "white_balance_offset": 0,
+          "camera_model": "Fixture camera",
+          "shutter_count": 10,
+          "shutter_mode": null,
+          "silent_photography": false,
+          "release_mode": null,
+          "lens_model": "Fixture 50 mm",
+          "shooting_mode": "Manual",
+          "exposure_compensation": "0",
+          "flash": null,
+          "active_d_lighting": null,
+          "tags": ["fixture"],
+          "note": null
+        },
+        "preview_status": "done",
+        "thumbnail_url": null,
+        "preview_url": "preview/1",
+        "crop_source_url": "preview/1",
+        "crop_source_updated_at": "2026-09-05T12:00:00+00:00",
+        "full_url": null,
+        "preview_error": null,
+        "preview_duration_ms": 100,
+        "preview_retouch_pending": false,
+        "preview_updated_at": "2026-09-05T12:00:00+00:00",
+        "selected_profile_index": 0,
+        "rating": 3,
+        "label": "red",
+        "labels": ["red"],
+        "tags": ["fixture"],
+        "notes": "Fixture note",
+        "rating_source": "camera",
+        "tags_source": "manual",
+        "notes_source": "manual",
+        "codex": {
+          "status": "skipped",
+          "flags": {
+            "tags": false,
+            "note": false,
+            "rating": false
+          },
+          "model": "",
+          "error": null,
+          "updated_at": "2026-09-05T12:00:00+00:00"
+        },
+        "retouch": {
+          "adjustments": {
+            "exposure": 0.0,
+            "contrast": 0.0,
+            "highlights": 0.0,
+            "shadows": 0.0,
+            "whites": 0.0,
+            "blacks": 0.0,
+            "temperature": 0.0,
+            "offset": 0.0,
+            "clarity": 0.0
+          },
+          "crop": {
+            "x": 0.1,
+            "y": 0.1,
+            "width": 0.8,
+            "height": 0.8
+          },
+          "rotation_degrees": 1.5
+        },
+        "publish_profile_indexes": [0],
+        "profile_bw_filters": [
+          {
+            "profile_index": 0,
+            "filter": "none"
+          }
+        ],
+        "profile_diffusion_settings": [],
+        "profiles": [
+          {
+            "profile_index": 0,
+            "profile_stem": "neutral",
+            "display_name": null,
+            "enabled": true,
+            "status": "done",
+            "url": "media/1/0",
+            "base_url": "media/1/0/base",
+            "error": null,
+            "duration_ms": 100,
+            "file_size_bytes": 1000,
+            "width": 3000,
+            "height": 2000,
+            "retouch_pending": false,
+            "dcp_profile_filename": "camera.dcp",
+            "lcp_profile_filename": null,
+            "bw_filter_eligible": false,
+            "bw_filter": "none",
+            "diffusion": {
+              "settings": {
+                "method": "multi-scale-mist",
+                "softness": 0,
+                "highlight_glow": 0,
+                "softness_radius_percent": 100,
+                "glow_radius_percent": 100,
+                "intensity_percent": 100,
+                "highlight_reach": 50
+              },
+              "source": "daemon"
+            },
+            "diffusion_settings": {
+              "method": "multi-scale-mist",
+              "softness": 0,
+              "highlight_glow": 0,
+              "softness_radius_percent": 100,
+              "glow_radius_percent": 100,
+              "intensity_percent": 100,
+              "highlight_reach": 50
+            },
+            "diffusion_source": "daemon",
+            "updated_at": "2026-09-05T12:00:00+00:00"
+          }
+        ],
+        "updated_at": "2026-09-05T12:00:00+00:00"
+      }
+    ],
+    "publish_root": "published"
+  },
+  "patch": {
+    "type": "patch",
+    "version": "fixture",
+    "invocation": null,
+    "diffusion_default": {
+      "method": "multi-scale-mist",
+      "softness": 31,
+      "highlight_glow": 0,
+      "softness_radius_percent": 100,
+      "glow_radius_percent": 100,
+      "intensity_percent": 100,
+      "highlight_reach": 50
+    },
+    "profile_diffusion_settings": [
+      {
+        "profile_index": 0,
+        "settings": {
+          "method": "multi-scale-mist",
+          "softness": 31,
+          "highlight_glow": 0,
+          "softness_radius_percent": 100,
+          "glow_radius_percent": 100,
+          "intensity_percent": 100,
+          "highlight_reach": 50
+        }
+      }
+    ],
+    "images": [
+      {
+        "id": 1,
+        "source_type": "raw",
+        "processing_mode": "profiled",
+        "relative_path": "fixture.nef",
+        "file_name": "fixture.nef",
+        "source_file_size_bytes": 12345,
+        "source_width": 6000,
+        "source_height": 4000,
+        "exif": {
+          "capture_timestamp": 1788609600,
+          "capture_subsecond": "125",
+          "rating": 3,
+          "file_size_bytes": 12345,
+          "image_width": 6000,
+          "image_height": 4000,
+          "focus_frame_width": 6000,
+          "focus_frame_height": 4000,
+          "focus_regions": [
+            {
+              "x": 0.4,
+              "y": 0.4,
+              "width": 0.2,
+              "height": 0.2,
+              "primary": true
+            }
+          ],
+          "focal_length": "50 mm",
+          "aperture": "f/2.8",
+          "shutter_speed": "1/250",
+          "iso": "100",
+          "auto_iso": false,
+          "iso_auto_hi_limit": null,
+          "white_balance_mode": "Daylight",
+          "white_balance_temperature": 5500,
+          "white_balance_offset": 0,
+          "camera_model": "Fixture camera",
+          "shutter_count": 10,
+          "shutter_mode": null,
+          "silent_photography": false,
+          "release_mode": null,
+          "lens_model": "Fixture 50 mm",
+          "shooting_mode": "Manual",
+          "exposure_compensation": "0",
+          "flash": null,
+          "active_d_lighting": null,
+          "tags": ["fixture"],
+          "note": null
+        },
+        "preview_status": "done",
+        "thumbnail_url": null,
+        "preview_url": "preview/1",
+        "crop_source_url": "preview/1",
+        "crop_source_updated_at": "2026-09-05T12:00:00+00:00",
+        "full_url": null,
+        "preview_error": null,
+        "preview_duration_ms": 100,
+        "preview_retouch_pending": false,
+        "preview_updated_at": "2026-09-05T12:00:00+00:00",
+        "selected_profile_index": 0,
+        "rating": 3,
+        "label": "red",
+        "labels": ["red"],
+        "tags": ["fixture"],
+        "notes": "Updated fixture note",
+        "rating_source": "camera",
+        "tags_source": "manual",
+        "notes_source": "manual",
+        "codex": {
+          "status": "skipped",
+          "flags": {
+            "tags": false,
+            "note": false,
+            "rating": false
+          },
+          "model": "",
+          "error": null,
+          "updated_at": "2026-09-05T12:00:00+00:00"
+        },
+        "retouch": {
+          "adjustments": {
+            "exposure": 0.0,
+            "contrast": 0.0,
+            "highlights": 0.0,
+            "shadows": 0.0,
+            "whites": 0.0,
+            "blacks": 0.0,
+            "temperature": 0.0,
+            "offset": 0.0,
+            "clarity": 0.0
+          },
+          "crop": {
+            "x": 0.1,
+            "y": 0.1,
+            "width": 0.8,
+            "height": 0.8
+          },
+          "rotation_degrees": 1.5
+        },
+        "publish_profile_indexes": [0],
+        "profile_bw_filters": [
+          {
+            "profile_index": 0,
+            "filter": "none"
+          }
+        ],
+        "profile_diffusion_settings": [],
+        "profiles": [
+          {
+            "profile_index": 0,
+            "profile_stem": "neutral",
+            "display_name": null,
+            "enabled": true,
+            "status": "done",
+            "url": "media/1/0",
+            "base_url": "media/1/0/base",
+            "error": null,
+            "duration_ms": 100,
+            "file_size_bytes": 1000,
+            "width": 3000,
+            "height": 2000,
+            "retouch_pending": false,
+            "dcp_profile_filename": "camera.dcp",
+            "lcp_profile_filename": null,
+            "bw_filter_eligible": false,
+            "bw_filter": "none",
+            "diffusion": {
+              "settings": {
+                "method": "multi-scale-mist",
+                "softness": 0,
+                "highlight_glow": 0,
+                "softness_radius_percent": 100,
+                "glow_radius_percent": 100,
+                "intensity_percent": 100,
+                "highlight_reach": 50
+              },
+              "source": "daemon"
+            },
+            "diffusion_settings": {
+              "method": "multi-scale-mist",
+              "softness": 0,
+              "highlight_glow": 0,
+              "softness_radius_percent": 100,
+              "glow_radius_percent": 100,
+              "intensity_percent": 100,
+              "highlight_reach": 50
+            },
+            "diffusion_source": "daemon",
+            "updated_at": "2026-09-05T12:00:00+00:00"
+          }
+        ],
+        "updated_at": "2026-09-05T12:00:00+00:00"
+      }
+    ],
+    "image_ids": [1]
+  },
+  "sampler_job": {
+    "id": 1,
+    "image_id": 1,
+    "file_name": "fixture.nef",
+    "status": "done",
+    "source_url": "sampler-media/1/source",
+    "source_width": 512,
+    "source_height": 341,
+    "completed": 1,
+    "total": 1,
+    "failed": 0,
+    "workers": 1,
+    "error": null,
+    "entries": [
+      {
+        "key": "neutral",
+        "name": "Neutral",
+        "filename": "neutral.xmp",
+        "parts": ["Neutral"],
+        "status": "done",
+        "thumbnail_url": "sampler-media/1/neutral",
+        "duration_ms": 50,
+        "error": null,
+        "current_enabled": true,
+        "all_enabled": false,
+        "configured_from_cli": true,
+        "selected": true
+      }
+    ]
+  },
+  "diffusion_job": {
+    "id": 1,
+    "status": "done",
+    "image_id": 1,
+    "profile_index": 0,
+    "settings": {
+      "method": "multi-scale-mist",
+      "softness": 0,
+      "highlight_glow": 0,
+      "softness_radius_percent": 100,
+      "glow_radius_percent": 100,
+      "intensity_percent": 100,
+      "highlight_reach": 50
+    },
+    "before_url": "diffusion-preview/1/before",
+    "after_url": "diffusion-preview/1/after",
+    "preview_width": 2048,
+    "preview_height": 1365,
+    "focus_source": "camera-focus",
+    "detail_areas": [
+      {
+        "kind": "focus",
+        "x": 100,
+        "y": 100,
+        "width": 200,
+        "height": 200
+      }
+    ],
+    "error": null
+  },
+  "keepalive": {
+    "type": "keepalive",
+    "datetime": "2026-09-05T12:00:00+00:00",
+    "version": "fixture"
+  },
+  "error": {
+    "error": "Fixture error"
+  }
+}
