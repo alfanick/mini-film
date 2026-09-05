@@ -1,3 +1,6 @@
+//! Integration checks for review persistence, rendering jobs, HTTP routes, and
+//! embedded assets; these protect the binary's complete review workflow.
+
 use super::prelude::*;
 use super::{
     db::*, handle::*, model::*, preview::*, publish::*, sampler::*, scheduler::*, server::*,
@@ -6372,13 +6375,34 @@ fn crop_source_and_profile_base_routes_serve_uncropped_media() {
 }
 
 #[test]
-fn review_vendor_assets_are_embedded_as_javascript() {
-    assert!(review_text_asset("vendor/preact.module.js").is_some());
-    assert!(review_text_asset("vendor/hooks.module.js").is_some());
+// Verify the runtime route serves the checked bundle without separate vendor files.
+fn review_bundle_is_embedded_and_served_as_javascript() {
+    let temp = tempfile::tempdir().unwrap();
+    let handle = test_handle(temp.path().join("in"), temp.path().join("out"), vec![]);
+    let runtime = test_async_runtime();
+    let response = runtime.block_on(route_request(
+        axum::http::Method::GET,
+        "/assets/app.js",
+        axum::body::Bytes::new(),
+        &handle,
+    ));
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
     assert_eq!(
-        review_asset_content_type("vendor/preact.module.js"),
+        response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .unwrap(),
         "application/javascript; charset=utf-8"
     );
+    let body = runtime
+        .block_on(axum::body::to_bytes(response.into_body(), usize::MAX))
+        .unwrap();
+    assert_eq!(&body[..], review_script().as_bytes());
+    assert!(!body.is_empty());
+    assert!(review_script().contains("Preact"));
+    assert!(!review_script().contains("sourceMappingURL"));
+    assert!(review_text_asset("vendor/preact.module.js").is_none());
+    assert!(review_text_asset("vendor/hooks.module.js").is_none());
 }
 
 #[test]
@@ -6640,14 +6664,6 @@ fn registered_font_assets_use_content_validators_and_immutable_private_caching()
             .unwrap()
             .contains("no-store")
     );
-}
-
-#[test]
-fn focus_overlay_toggles_the_svg_hidden_attribute() {
-    let script = review_script();
-    assert!(script.contains(r#"els.focusOverlay.setAttribute("hidden", "")"#));
-    assert!(script.contains(r#"els.focusOverlay.removeAttribute("hidden")"#));
-    assert!(!script.contains("els.focusOverlay.hidden ="));
 }
 
 #[cfg(unix)]

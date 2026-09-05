@@ -1,6 +1,6 @@
 [package]
 name = "mini-film"
-version = "22.15.1"
+version = "23.0.0"
 description = "Review and publish RAW, JPEG, and HEIC photos with optional Lightroom-style film emulation profiles."
 repository = "https://github.com/alfanick/mini-film"
 homepage = "https://github.com/alfanick/mini-film"
@@ -46,7 +46,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 sha1 = "0.11.0"
 ttf-parser = "0.25.1"
 ttf2woff2 = { version = "=0.13.2", default-features = false }
-self_update = { version = "1.2.0", default-features = false, features = ["reqwest", "native-tls", "github", "archive-tar", "compression-tar-gz"], optional = true }
+self_update = { version = "1.3.0", default-features = false, features = ["reqwest", "native-tls", "github", "archive-tar", "compression-tar-gz"], optional = true }
 tar = "0.4.44"
 tempfile = "3.27.0"
 walkdir = "2.5.0"
@@ -57,10 +57,10 @@ sysinfo = "0.39.6"
 axum = { version = "0.8.9", features = ["http2"] }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "fs", "sync", "time"] }
 async-stream = "0.3.6"
-tower-http = { version = "0.7.0", features = ["fs"] }
+tower-http = { version = "0.7.1", features = ["fs"] }
 tower = "0.5.3"
 tauri = { version = "2.11.5", optional = true }
-tauri-plugin-dialog = { version = "2.7.2", optional = true }
+tauri-plugin-dialog = { version = "2.7.3", optional = true }
 arc-swap = "1"
 
 [target.'cfg(target_os = "linux")'.dependencies]

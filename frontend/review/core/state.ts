@@ -1,0 +1,48 @@
+/** Initialize a fresh reactive review session so separate mounts never share mutable tool or edit state. */
+import type { ReviewState } from "./types";
+
+/** Keep server snapshots and transient feature state empty until their owning hook initializes them. */
+export function createState(): ReviewState {
+  return {
+    data: null,
+    currentId: null,
+    labelFilters: new Set(),
+    cropEditing: false,
+    localRetouchDirty: false,
+    mobileDrawer: null,
+    pendingProfileSelections: new Map(),
+    profileInfoProfileIndex: null,
+    profileInfoPp3: { key: null, text: null, error: null, loading: false },
+    commandInvocationOpen: false,
+    histogramOpen: false,
+    informationOpen: false,
+    panoramaOpen: false,
+    panoramaProjectId: null,
+    panoramaImageIds: [],
+    panoramaName: "Panorama",
+    panoramaMatching: "automatic",
+    panoramaProjection: "cylindrical",
+    panoramaMessage: "",
+    samplerOpen: false,
+    samplerLoading: false,
+    samplerError: "",
+    samplerJob: null,
+    samplerExpandedSections: new Set(),
+    samplerKnownEnabledKeys: new Set(),
+    samplerSelectedKey: null,
+    samplerPendingSelections: new Set(),
+    diffusionOpen: false,
+    diffusionLoading: false,
+    diffusionSaving: false,
+    diffusionError: "",
+    diffusionErrorKind: null,
+    diffusionMessage: "",
+    diffusionJob: null,
+    diffusionBefore: null,
+    diffusionPreviewContext: null,
+    diffusionImageId: null,
+    diffusionProfileIndex: null,
+    diffusionSettings: null,
+    diffusionSource: null,
+  };
+}

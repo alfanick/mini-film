@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "lib": ["ES2021", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "jsxImportSource": "preact",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "forceConsistentCasingInFileNames": true,
+    "noEmit": true,
+    "types": []
+  },
+  "include": ["frontend/review/**/*.ts", "frontend/review/**/*.tsx"],
+  "exclude": ["frontend/review/**/*.test.ts", "frontend/review/**/*.spec.ts"]
+}

@@ -1,3 +1,5 @@
+# Build each CLI and desktop artifact natively so npm installs tools for the
+# actual host platform before Cargo embeds the checked browser bundle.
 name: Release
 
 on:
@@ -99,56 +101,48 @@ jobs:
             extension: ""
             artifact_suffix: ""
             runs_on: ubuntu-latest
-            use_cross: false
             cargo_features: "github-update"
             default_features: false
           - target: aarch64-unknown-linux-gnu
             extension: ""
             artifact_suffix: ""
-            runs_on: ubuntu-latest
-            use_cross: true
+            runs_on: ubuntu-24.04-arm
             cargo_features: ""
             default_features: false
           - target: aarch64-apple-darwin
             extension: ""
             artifact_suffix: ""
             runs_on: macos-latest
-            use_cross: false
             cargo_features: "github-update"
             default_features: false
           - target: x86_64-pc-windows-msvc
             runs_on: windows-latest
             extension: ".exe"
             artifact_suffix: ""
-            use_cross: false
             cargo_features: "github-update"
             default_features: false
           - target: x86_64-unknown-linux-gnu
             extension: ""
             artifact_suffix: "-gui"
             runs_on: ubuntu-latest
-            use_cross: false
             cargo_features: "github-update"
             default_features: true
           - target: aarch64-unknown-linux-gnu
             extension: ""
             artifact_suffix: "-gui"
             runs_on: ubuntu-24.04-arm
-            use_cross: false
             cargo_features: "github-update"
             default_features: true
           - target: aarch64-apple-darwin
             extension: ""
             artifact_suffix: "-gui"
             runs_on: macos-latest
-            use_cross: false
             cargo_features: "github-update"
             default_features: true
           - target: x86_64-pc-windows-msvc
             runs_on: windows-latest
             extension: ".exe"
             artifact_suffix: "-gui"
-            use_cross: false
             cargo_features: "github-update"
             default_features: true
 
@@ -187,10 +181,11 @@ jobs:
           toolchain: nightly
           targets: ${{ matrix.target }}
 
-      - name: Install cross
-        if: matrix.use_cross
-        run: |
-          cargo install --locked cross
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
 
       - name: Install Linux GUI dependencies
         if: ${{ matrix.artifact_suffix == '-gui' && contains(matrix.target, 'linux') }}
@@ -210,14 +205,7 @@ jobs:
             build_args+=(--features "$cargo_features")
           fi
 
-          if [ "${{ matrix.use_cross }}" = "true" ]; then
-            if ! env PKG_CONFIG_ALLOW_CROSS=1 cross build "${build_args[@]}"; then
-              echo "::warning::cross build failed; retrying native cargo build for ${{ matrix.target }}."
-              PKG_CONFIG_ALLOW_CROSS=1 cargo build "${build_args[@]}"
-            fi
-          else
-            PKG_CONFIG_ALLOW_CROSS=1 cargo build "${build_args[@]}"
-          fi
+          cargo build --locked "${build_args[@]}"
 
       - name: Prepare artifact
         shell: bash

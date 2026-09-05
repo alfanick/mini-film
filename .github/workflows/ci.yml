@@ -1,3 +1,5 @@
+# Validate Rust and the embedded TypeScript UI before tagging releases. Explicit
+# Node setup and native platform smoke builds match source-build prerequisites.
 name: CI
 permissions:
   contents: write
@@ -27,6 +29,12 @@ jobs:
           toolchain: nightly
           components: clippy,rustfmt,llvm-tools-preview
 
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
       - name: Cache cargo registry, git deps, and target
         uses: actions/cache@v4
         with:
@@ -49,6 +57,15 @@ jobs:
 
       - name: Run local quality gate
         run: ./.githooks/run-style-checks.sh
+
+      - name: Verify isolated frontend builds
+        run: npm run test:review-build
+
+      - name: Install browser test engines
+        run: npx playwright install --with-deps chromium webkit
+
+      - name: Test compiled review UI in browsers
+        run: npm run test:review
 
       - name: Run unit tests (with report)
         id: unit-tests
@@ -192,11 +209,64 @@ jobs:
           cargo build --release --no-default-features
           cargo build --release
 
+      - name: Verify source package builds with embedded frontend
+        run: cargo package --locked --no-default-features
+
+  platform-builds:
+    name: Build smoke (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: nightly
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ matrix.target }}-smoke-${{ hashFiles('**/Cargo.lock', 'package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-smoke-
+
+      - name: Install Linux GUI dependencies
+        if: runner.os == 'Linux'
+        run: ./.github/scripts/install-linux-gui-deps.sh
+
+      - name: Build CLI with automatic frontend compilation
+        run: cargo build --locked --target ${{ matrix.target }} --no-default-features
+
+      - name: Build desktop with automatic frontend compilation
+        run: cargo build --locked --target ${{ matrix.target }}
+
   tag-on-version-bump:
     name: Tag release
     runs-on: ubuntu-latest
-    needs: test-and-lint
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.test-and-lint.result == 'success' }}
+    needs: [test-and-lint, platform-builds]
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.test-and-lint.result == 'success' && needs.platform-builds.result == 'success' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4

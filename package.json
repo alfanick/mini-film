@@ -1,22 +1,39 @@
 {
   "name": "mini-film",
-  "version": "22.15.1",
+  "version": "23.0.0",
   "private": true,
-  "description": "Frontend asset checks for embedded mini-film review and gallery UIs.",
+  "description": "Build and check the embedded mini-film review and gallery UIs.",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
-    "format:assets": "prettier --write \"assets/**/*.{html,css,js}\"",
-    "format:assets:check": "prettier --check \"assets/**/*.{html,css,js}\"",
-    "lint:assets": "eslint \"assets/**/*.js\" && stylelint \"assets/**/*.css\" && htmlhint \"assets/**/*.html\"",
-    "check:assets": "npm run format:assets:check && npm run lint:assets"
+    "build:review": "node scripts/build-review.mjs",
+    "typecheck:review": "tsc --project tsconfig.review.json",
+    "typecheck:review-tests": "tsc --project tsconfig.review-tests.json",
+    "test:review": "playwright test",
+    "test:review-build": "node --test scripts/build-review.test.mjs scripts/frontend-tooling.test.mjs",
+    "format:assets": "prettier --write \"assets/**/*.{html,css,js}\" \"frontend/**/*.{ts,tsx,mjs}\" \"scripts/*.mjs\" \"*config*.{json,mjs,ts}\"",
+    "format:staged": "node scripts/format-staged-assets.mjs",
+    "format:assets:check": "prettier --check \"assets/**/*.{html,css,js}\" \"frontend/**/*.{ts,tsx,mjs}\" \"scripts/*.mjs\" \"*config*.{json,mjs,ts}\"",
+    "lint:review": "eslint --max-warnings 0 \"frontend/review/**/*.{ts,tsx}\"",
+    "lint:assets": "eslint --max-warnings 0 \"assets/**/*.js\" \"frontend/**/*.{ts,tsx,mjs}\" \"scripts/*.mjs\" \"*config*.{mjs,ts}\" && stylelint --max-warnings 0 \"assets/**/*.css\" && htmlhint \"assets/**/*.html\"",
+    "check:assets": "npm run format:assets:check && npm run lint:assets && npm run typecheck:review && npm run typecheck:review-tests"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
+    "@stylistic/eslint-plugin": "5.10.0",
+    "@playwright/test": "1.63.0",
+    "@types/node": "24.13.3",
+    "esbuild": "0.28.2",
     "eslint": "10.8.0",
+    "eslint-plugin-react-hooks": "7.1.1",
     "globals": "17.9.0",
     "htmlhint": "1.9.2",
     "prettier": "3.9.6",
     "stylelint": "17.14.1",
-    "stylelint-config-standard": "40.0.0"
+    "stylelint-config-standard": "40.0.0",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.69.0"
   },
   "dependencies": {
     "preact": "10.29.8"

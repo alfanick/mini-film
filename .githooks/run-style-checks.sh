@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Shared local and CI quality gate for Rust plus the embedded frontend sources.
 
 set -euo pipefail
 
@@ -15,7 +16,7 @@ fi
 echo "🧾 Running cargo outdated for direct dependencies"
 cargo outdated --workspace --root-deps-only --exit-code 1
 
-echo "🔎 Checking HTML/CSS/JS assets"
+echo "🔎 Checking HTML/CSS/JavaScript/TypeScript assets"
 "$(dirname "$0")/check-frontend-assets.sh"
 
 echo "🔎 Running format check (cargo fmt --all -- --check)"

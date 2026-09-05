@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.review.json",
+  "compilerOptions": {
+    "types": ["node"]
+  },
+  "include": ["frontend/tests/**/*.ts", "playwright.config.ts"],
+  "exclude": []
+}

@@ -172,9 +172,20 @@ mini-film daemon /path/to/inbox /path/to/output \
 
 ## Build
 
+Source builds require Rust, Node.js 24 or newer, and npm on `PATH`. Cargo
+automatically installs the locked frontend dependencies, lints and checks the
+review UI's TypeScript, and bundles it into one JavaScript file embedded in the binary.
+The first build needs access to the npm registry (or a populated npm cache).
+Frontend sources, dependencies, and generated output are staged under Cargo's
+`OUT_DIR`; builds do not create `node_modules` or generated assets in the
+checkout. Unchanged builds reuse the staged dependencies and bundle.
+
 ```sh
 cargo build --release
 ```
+
+Downloaded binaries need neither Node.js nor npm and serve the same review UI
+without external JavaScript files. This applies to both CLI and desktop builds.
 
 The default build includes the Tauri desktop app so `cargo run --release` opens
 the app from the normal binary. On Linux this requires the WebKitGTK development
@@ -209,6 +220,42 @@ RUSTFLAGS='-C target-cpu=native' cargo build --release --no-default-features
 GitHub releases publish both CLI artifacts and GUI artifacts. GUI artifact names
 end in `-gui` before the platform extension, and GUI builds update from matching
 `-gui` release assets.
+
+The review UI lives in `frontend/review/` as strict TypeScript and Preact TSX
+modules. To work on it independently of Rust:
+
+```sh
+npm ci --ignore-scripts --include=dev --include=optional
+npm run typecheck:review
+npm run lint:review
+npm run build:review
+npm run check:assets
+npm run test:review-build
+npx playwright install chromium webkit
+npm run test:review
+```
+
+The standalone build writes `target/review-frontend/review/app.js`; pass
+`-- --profile release` to minify it. Cargo uses the same build helper for
+`cargo build`, `cargo run`, tests, and release builds. GitHub CI installs Node 24
+explicitly, caches npm downloads, runs frontend checks and browser tests, and
+builds CLI and desktop binaries on Linux x64/ARM64, macOS ARM64, and Windows x64.
+The desktop launcher, static galleries, sampler, and TV page retain their
+existing embedded assets.
+
+The checked-in `tsconfig.json` files let TypeScript language servers discover
+the browser project, Node-based tests, and Playwright configuration directly.
+Neovim and other editors should use this checkout's installed TypeScript and
+ESLint packages after `npm ci`. ESLint uses TypeScript's project service and
+rejects unsafe values, unhandled promises, unused declarations, `any`, and
+imperative `h()` views. Hook order and effect dependencies are also checked.
+Cargo runs the same production lint and type checks;
+`npm run check:assets` additionally checks tests and developer helpers. Warnings
+fail the lint commands, and TypeScript/ESLint suppression comments are rejected.
+Prettier uses a 120-column layout, and lint enforces that limit for TypeScript,
+TSX, and developer JavaScript. The pre-commit hook automatically formats staged
+frontend paths; formatting changes are left unstaged for review, preserving
+partial staging. `npm run format:assets` formats the complete frontend on demand.
 
 Required external dependencies at startup for image-generation commands:
 
