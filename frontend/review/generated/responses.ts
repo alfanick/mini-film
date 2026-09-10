@@ -107,7 +107,9 @@ export interface ResponseContracts {
   error: ReviewError;
   keepalive: ReviewKeepalive;
   message: ReviewStateMessage;
+  panorama_created: ReviewPanoramaCreated;
   patch: ReviewStatePatch;
+  publish_created: ReviewPublishCreated;
   sampler_job: ReviewSamplerJobSnapshot;
   state: ReviewStateSnapshot;
 }
@@ -636,6 +638,54 @@ export interface ReviewStatePatch {
   capabilities?: ReviewCapabilities;
   client_count?: PatchFieldUint;
   codex?: ReviewCodexSummary;
+  diffusion_default?: DiffusionSettings;
+  image_ids?: PatchField_ArrayOfUint64;
+  images?: PatchField_ArrayOf_ReviewImage;
+  invocation?: PatchField_NullableString;
+  panorama?: ReviewPanoramaState;
+  profile_diffusion_settings?: PatchField_ArrayOf_ReviewProfileDiffusionSetting;
+  profiles?: PatchField_ArrayOf_ReviewProfile;
+  publish_defaults?: ReviewPublishDefaults;
+  publish_jobs?: PatchField_ArrayOf_ReviewPublishJob;
+  publish_root?: PatchFieldString;
+  removed_image_ids?: PatchField_ArrayOfUint64;
+  type: ReviewPatchType;
+  ui?: ReviewUiState;
+  version: string;
+}
+/**
+ * Keep the historical patch envelope while acknowledging exactly the panorama created by this request.
+ */
+export interface ReviewPanoramaCreated {
+  bursts?: PatchField_ArrayOf_ReviewBurst;
+  capabilities?: ReviewCapabilities;
+  client_count?: PatchFieldUint;
+  codex?: ReviewCodexSummary;
+  created_project_id: number;
+  diffusion_default?: DiffusionSettings;
+  image_ids?: PatchField_ArrayOfUint64;
+  images?: PatchField_ArrayOf_ReviewImage;
+  invocation?: PatchField_NullableString;
+  panorama?: ReviewPanoramaState;
+  profile_diffusion_settings?: PatchField_ArrayOf_ReviewProfileDiffusionSetting;
+  profiles?: PatchField_ArrayOf_ReviewProfile;
+  publish_defaults?: ReviewPublishDefaults;
+  publish_jobs?: PatchField_ArrayOf_ReviewPublishJob;
+  publish_root?: PatchFieldString;
+  removed_image_ids?: PatchField_ArrayOfUint64;
+  type: ReviewPatchType;
+  ui?: ReviewUiState;
+  version: string;
+}
+/**
+ * Identify this request's publish job without inferring ownership from concurrently changing global state.
+ */
+export interface ReviewPublishCreated {
+  bursts?: PatchField_ArrayOf_ReviewBurst;
+  capabilities?: ReviewCapabilities;
+  client_count?: PatchFieldUint;
+  codex?: ReviewCodexSummary;
+  created_job_id: number;
   diffusion_default?: DiffusionSettings;
   image_ids?: PatchField_ArrayOfUint64;
   images?: PatchField_ArrayOf_ReviewImage;

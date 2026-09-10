@@ -4,16 +4,16 @@ import type { ReviewIntent } from "./commands";
 
 /** Local generations order browser intentions only; they are not server revisions. */
 export interface IntentTicket {
-  imageId: number;
-  key: string;
-  generation: number;
-  intent: ReviewIntent;
+  readonly imageId: number;
+  readonly key: string;
+  readonly generation: number;
+  readonly intent: ReviewIntent;
 }
 
 /** A lost response leaves commitment uncertain; rating-and-advance can only be checked, never retried here. */
 export interface IntentFailure extends IntentTicket {
-  message: string;
-  retryable: boolean;
+  readonly message: string;
+  readonly retryable: boolean;
 }
 
 /** Expose readonly failures and generation-checked transitions for deterministic tests and session recovery. */

@@ -3,8 +3,9 @@
  * Delayed responses make lost drafts and incorrect image targeting observable.
  */
 import { required } from "./required";
+import { requestDecoders } from "../review/generated/request-decoders";
 import { expect, test } from "@playwright/test";
-import type { ReviewUpdateRequest } from "../review/core/types";
+import type { ReviewUpdateRequest } from "../review/generated/requests";
 import { openReview, sendState } from "./harness";
 
 // Autosaving must not normalize focused text, discard duplicate tags, or disturb the caret.
@@ -37,10 +38,10 @@ test("a later note survives an older autosave acknowledgement and stale SSE", as
     releaseFirst = resolve;
   });
   await page.route("**/api/review", async (route): Promise<void> => {
-    const body = route.request().postDataJSON() as ReviewUpdateRequest;
+    const body = requestDecoders.review(route.request().postDataJSON());
     saves.push(body);
     if (saves.length === 1) await firstReady;
-    required(harness.data.images[0]).notes = body.notes;
+    required(harness.data.images[0]).notes = body.notes ?? "";
     await route.fulfill({ json: { ...harness.data, type: "patch" } });
   });
   const notes = page.locator("#notes");
@@ -53,7 +54,7 @@ test("a later note survives an older autosave acknowledgement and stale SSE", as
   await expect.poll(() => saves.length).toBeGreaterThanOrEqual(2);
   await expect.poll(() => required(harness.data.images[0]).notes).toBe("Second draft");
   await expect(notes).toHaveValue("Second draft");
-  expect(saves.slice(0, 2).map((body): string => body.notes)).toEqual(["First draft", "Second draft"]);
+  expect(saves.slice(0, 2).map((body): string => required(body.notes))).toEqual(["First draft", "Second draft"]);
   expect(saves.every((body): boolean => body.image_id === 1)).toBe(true);
   expect(harness.errors).toEqual([]);
 });
@@ -70,8 +71,8 @@ test("navigation carries the next published profile without modifying its metada
   await expect(page.locator("#profile-state")).toContainText("Soft");
   await expect.poll(() => required(harness.data.images[1]).selected_profile_index).toBe(1);
   await expect(page.locator("#notes")).toHaveValue("Second camera note");
-  const saves = harness.requests.filter((request): boolean => request.path === "review");
-  expect(saves.map((request): number => (request.body as ReviewUpdateRequest).image_id)).toEqual([1, 2]);
+  const saves = harness.requests.filter((request) => request.name === "review");
+  expect(saves.map((request): number => request.body.image_id)).toEqual([1, 2]);
   expect(required(saves[1]).body).toMatchObject({
     image_id: 2,
     selected_profile_index: 1,

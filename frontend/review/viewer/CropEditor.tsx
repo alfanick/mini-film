@@ -1,8 +1,16 @@
 /** Own a reversible crop draft in hooks until the photographer presses OK.
  * The original camera image and saved output stay separate layers so an existing crop can be expanded. */
-import type { JSX } from "preact";
+import type { CSSProperties, JSX, TargetedEvent, TargetedKeyboardEvent, TargetedPointerEvent } from "preact";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
-import type { CropRect, Dimensions, Point, RetouchSettings, ReviewImage, ReviewProfileRender } from "../core/types";
+import type {
+  CropRect,
+  Dimensions,
+  Point,
+  RetouchSettings,
+  RetouchObservation,
+  ReviewImageObservation as ReviewImage,
+  ReviewProfileRenderObservation as ReviewProfileRender,
+} from "../core/types";
 import { CROP_RATIO_PRESETS } from "../core/constants";
 import { versionedUrl } from "../core/selectors";
 import {
@@ -23,7 +31,7 @@ import {
 export interface CropEditorProps {
   image: ReviewImage;
   selected: ReviewProfileRender | null;
-  retouch: RetouchSettings;
+  retouch: RetouchObservation;
   available: Dimensions;
   shortcutsBlocked: boolean;
   onReadyChange: (ready: boolean) => void;
@@ -153,7 +161,7 @@ export function CropEditor({
   }, [sourceSize, onReadyChange]);
 
   /** Use camera dimensions while honoring the orientation of the extracted preview. */
-  function loaded(event: JSX.TargetedEvent<HTMLImageElement>): void {
+  function loaded(event: TargetedEvent<HTMLImageElement>): void {
     if (sourceSize) return;
     const natural = { width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight };
     if (natural.width < 1 || natural.height < 1) return;
@@ -232,7 +240,7 @@ export function CropEditor({
   }, [rotateRatio, shortcutsBlocked]);
 
   /** Begin dragging a handle or create a two-pointer pinch/rotation gesture. */
-  function pointerDown(event: JSX.TargetedPointerEvent<HTMLDivElement>): void {
+  function pointerDown(event: TargetedPointerEvent<HTMLDivElement>): void {
     if (!sourceSize || !overlayRef.current) return;
     event.preventDefault();
     event.stopPropagation();
@@ -261,7 +269,7 @@ export function CropEditor({
   }
 
   /** Update the draft geometry from captured pointer deltas, without saving intermediate frames. */
-  function pointerMove(event: JSX.TargetedPointerEvent<HTMLDivElement>): void {
+  function pointerMove(event: TargetedPointerEvent<HTMLDivElement>): void {
     if (!pointers.current.has(event.pointerId) || !sourceSize) return;
     event.preventDefault();
     pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
@@ -295,14 +303,14 @@ export function CropEditor({
   }
 
   /** Release pointer bookkeeping when a browser ends or cancels its captured gesture. */
-  function pointerEnd(event: JSX.TargetedPointerEvent<HTMLDivElement>): void {
+  function pointerEnd(event: TargetedPointerEvent<HTMLDivElement>): void {
     pointers.current.delete(event.pointerId);
     if (pointers.current.size < 2) touch.current = null;
     if (drag.current?.pointerId === event.pointerId) drag.current = null;
   }
 
   /** Move one displayed pixel per arrow, or ten with Shift, using the same constrained geometry as pointer edits. */
-  function keyboardCrop(event: JSX.TargetedKeyboardEvent<HTMLElement>, handle: string): void {
+  function keyboardCrop(event: TargetedKeyboardEvent<HTMLElement>, handle: string): void {
     if (!sourceSize || !overlayRef.current || shortcutsBlocked || event.ctrlKey || event.metaKey || event.altKey)
       return;
     const horizontal = event.key === "ArrowLeft" ? -1 : event.key === "ArrowRight" ? 1 : 0;
@@ -329,7 +337,7 @@ export function CropEditor({
     setMemory(remember(next, sourceSize, rotation));
   }
 
-  let savedStyle: JSX.CSSProperties = {};
+  let savedStyle: CSSProperties = {};
   if (sourceSize && safe) {
     // Transform the already-rendered crop back over the uncropped source so its boundaries remain editable.
     const oldSafe = rotatedSafeDimensions(sourceSize.width, sourceSize.height, saved.rotation_degrees);
@@ -341,10 +349,10 @@ export function CropEditor({
     const width = oldCrop.width * oldSafe.width * scale;
     const height = oldCrop.height * oldSafe.height * scale;
     savedStyle = {
-      left: (safe.width / 2 + Math.cos(radians) * x - Math.sin(radians) * y) * scale - width / 2,
-      top: (safe.height / 2 + Math.sin(radians) * x + Math.cos(radians) * y) * scale - height / 2,
-      width,
-      height,
+      left: `${(safe.width / 2 + Math.cos(radians) * x - Math.sin(radians) * y) * scale - width / 2}px`,
+      top: `${(safe.height / 2 + Math.sin(radians) * x + Math.cos(radians) * y) * scale - height / 2}px`,
+      width: `${width}px`,
+      height: `${height}px`,
       transform: `rotate(${delta}deg)`,
     };
   }
@@ -354,7 +362,7 @@ export function CropEditor({
         id="crop-stage"
         class="crop-stage"
         hidden={!sourceSize}
-        style={{ width: safe ? safe.width * scale : 1, height: safe ? safe.height * scale : 1 }}
+        style={{ width: `${safe ? safe.width * scale : 1}px`, height: `${safe ? safe.height * scale : 1}px` }}
       >
         <div id="crop-canvas" class="crop-canvas">
           <img
@@ -366,8 +374,8 @@ export function CropEditor({
             decoding="async"
             onLoad={loaded}
             style={{
-              width: sourceSize ? sourceSize.width * scale : undefined,
-              height: sourceSize ? sourceSize.height * scale : undefined,
+              width: sourceSize ? `${sourceSize.width * scale}px` : undefined,
+              height: sourceSize ? `${sourceSize.height * scale}px` : undefined,
               transform: `translate(-50%, -50%) rotate(${rotation}deg)`,
             }}
           />

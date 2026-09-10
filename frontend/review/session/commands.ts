@@ -1,21 +1,27 @@
 /** Compile image-scoped user intentions immediately before sending them, avoiding stale whole-record writes. */
-import type { BwFilter, ReviewImage, ReviewLabel, ReviewUpdateRequest } from "../core/types";
+import type {
+  BwFilter,
+  ReadonlyData,
+  ReviewImageObservation as ReviewImage,
+  ReviewLabel,
+  MaterializedReviewUpdate,
+} from "../core/types";
 import { imageLabels, isSoocProfile } from "../core/selectors";
 import { COLOR_LABELS } from "../core/constants";
 import { profileBwFilters, toggleEnabledProfile } from "./review-requests";
 
 /** A command owns only these fields; the required legacy request is completed at execution time. */
-export type ReviewFields = Partial<Omit<ReviewUpdateRequest, "image_id">>;
+export type ReviewFields = ReadonlyData<Partial<Omit<MaterializedReviewUpdate, "image_id">>>;
 
 /** Stable identities and desired membership make queued toggles compose and explicit retries predictable. */
 export type ReviewIntent =
-  | { kind: "with-draft"; fields: ReviewFields; intent: ReviewIntent }
-  | { kind: "fields"; fields: ReviewFields }
-  | { kind: "profile-enabled"; profileIndex: number; enabled: boolean }
-  | { kind: "profile-selected"; profileIndex: number }
-  | { kind: "profile-solo"; profileIndex: number }
-  | { kind: "label"; label: ReviewLabel; enabled: boolean }
-  | { kind: "bw-filter"; profileIndex: number; filter: BwFilter };
+  | { readonly kind: "with-draft"; readonly fields: ReviewFields; readonly intent: ReviewIntent }
+  | { readonly kind: "fields"; readonly fields: ReviewFields }
+  | { readonly kind: "profile-enabled"; readonly profileIndex: number; readonly enabled: boolean }
+  | { readonly kind: "profile-selected"; readonly profileIndex: number }
+  | { readonly kind: "profile-solo"; readonly profileIndex: number }
+  | { readonly kind: "label"; readonly label: ReviewLabel; readonly enabled: boolean }
+  | { readonly kind: "bw-filter"; readonly profileIndex: number; readonly filter: BwFilter };
 
 /** Resolve a semantic intention against the latest accepted server image, not a captured request body. */
 export function reviewIntentFields(image: ReviewImage, intent: ReviewIntent): ReviewFields {
@@ -100,12 +106,21 @@ export function projectReviewIntent(image: ReviewImage, intent: ReviewIntent): R
 }
 
 /** Serialize execution, but let a rejected command finish without poisoning subsequent independent operations. */
-export function createCommandQueue(): { enqueue: (execute: () => Promise<void>) => Promise<void> } {
+export interface CommandQueue {
+  enqueue: <T>(execute: () => Promise<T>) => Promise<T>;
+}
+
+/** Reserve FIFO positions synchronously, including barriers that wait before allowing later writes. */
+export function createCommandQueue(): CommandQueue {
   let tail = Promise.resolve();
   return {
-    enqueue(execute: () => Promise<void>): Promise<void> {
-      const command = tail.catch(() => undefined).then(execute);
-      tail = command;
+    /** Preserve the caller's result while absorbing rejection only in the shared queue tail. */
+    enqueue<T>(execute: () => Promise<T>): Promise<T> {
+      const command = tail.then(execute);
+      tail = command.then(
+        () => undefined,
+        () => undefined,
+      );
       return command;
     },
   };

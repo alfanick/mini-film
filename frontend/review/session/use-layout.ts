@@ -21,8 +21,8 @@ export function useMediaQuery(query: string): boolean {
 
 /** Reserve the panel's actual overlap rather than assuming fixed desktop/mobile heights. */
 export function usePanelSafeArea(
-  workspace: RefObject<HTMLElement>,
-  panel: RefObject<HTMLElement>,
+  workspace: RefObject<HTMLElement | null>,
+  panel: RefObject<HTMLElement | null>,
   layoutKey: string,
 ): number {
   const [safeArea, setSafeArea] = useState<number>(0);

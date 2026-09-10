@@ -119,8 +119,8 @@ export type ReviewStatePatch = Wire.ReviewStatePatch;
 /** Either a complete state replacement or an incremental server update. */
 export type ReviewStateMessage = Wire.ReviewStateMessage;
 
-/** The review write contract; optional fields preserve server-side omission semantics. */
-export interface ReviewUpdateRequest extends Omit<
+/** A complete UI save payload; the generated request type separately retains sparse and nullable wire inputs. */
+export interface MaterializedReviewUpdate extends Omit<
   Requests.ReviewUpdateRequest,
   | "label"
   | "labels"
@@ -145,12 +145,45 @@ export interface ReviewUpdateRequest extends Omit<
   advance_after_update?: boolean;
 }
 
-/** Expose nested JSON observations without granting consumers mutation ownership. */
-export type ReadonlyData<T> = T extends readonly (infer Item)[]
-  ? readonly ReadonlyData<Item>[]
-  : T extends object
-    ? { readonly [Key in keyof T]: ReadonlyData<T[Key]> }
-    : T;
+/** Preserve source compatibility while callers adopt the explicit materialized-payload name. */
+export type ReviewUpdateRequest = MaterializedReviewUpdate;
+
+/** Expose JSON and collection observations without granting consumers mutation ownership. */
+export type ReadonlyData<T> =
+  T extends ReadonlyMap<infer Key, infer Value>
+    ? ReadonlyMap<ReadonlyData<Key>, ReadonlyData<Value>>
+    : T extends ReadonlySet<infer Item>
+      ? ReadonlySet<ReadonlyData<Item>>
+      : T extends readonly (infer Item)[]
+        ? readonly ReadonlyData<Item>[]
+        : T extends object
+          ? { readonly [Key in keyof T]: ReadonlyData<T[Key]> }
+          : T;
+
+/** Public picture observations cannot alter confirmed data or bypass reactive subscriptions. */
+export type ReviewImageObservation = ReadonlyData<ReviewImage>;
+/** Public catalog observations retain immutable nested profiles, jobs, and image sequences. */
+export type ReviewCatalogObservation = ReadonlyData<ReviewStateData>;
+/** Public browser state includes read-only sets and maps as well as read-only catalog values. */
+export type ReviewStateObservation = ReadonlyData<ReviewState>;
+/** Retouch observations cannot bypass the owning draft revision by changing nested adjustments. */
+export type RetouchObservation = ReadonlyData<RetouchSettings>;
+/** Profile configuration observed by controls and information dialogs without mutation ownership. */
+export type ReviewProfileObservation = ReadonlyData<ReviewProfile>;
+/** A rendered profile observed through its owning image signal. */
+export type ReviewProfileRenderObservation = ReadonlyData<ReviewProfileRender>;
+/** Detailed configured metadata retains read-only tone-curve and PP3 sequences. */
+export type ReviewProfileMetadataObservation = ReadonlyData<ReviewProfileMetadata>;
+/** Sampler previews retain read-only catalog path segments and entries. */
+export type SamplerEntryObservation = ReadonlyData<SamplerEntry>;
+/** A sampler job observed while the owning model controls replacement and polling. */
+export type SamplerJobObservation = ReadonlyData<SamplerJob>;
+/** Diffusion preview geometry and aliases remain read-only to consuming views. */
+export type DiffusionJobObservation = ReadonlyData<DiffusionJob>;
+/** Panorama progress and source identities remain owned by the server. */
+export type ReviewPanoramaProjectObservation = ReadonlyData<ReviewPanoramaProject>;
+/** Publish progress and output links remain owned by the server. */
+export type ReviewPublishJobObservation = ReadonlyData<ReviewPublishJob>;
 
 /** Export selection and encoding options sent by the publish wizard. */
 export type PublishRequest = Requests.PublishRequest &
@@ -183,7 +216,7 @@ export type ProfileInfoPp3 =
   | { status: "ready"; key: string; text: string }
   | { status: "failed"; key: string; error: string };
 
-/** Reactive session and tool state; timers, requests, and gestures stay in their owning hooks. */
+/** Shared catalog and viewer state; tool drafts and asynchronous work belong to their feature models. */
 export interface ReviewState {
   data: ReviewStateData | null;
   currentId: number | null;
@@ -192,37 +225,6 @@ export interface ReviewState {
   localRetouchDirty: boolean;
   mobileDrawer: string | null;
   pendingProfileSelections: Map<number, number>;
-  profileInfoProfileIndex: number | null;
-  profileInfoPp3: ProfileInfoPp3;
-  commandInvocationOpen: boolean;
   histogramOpen: boolean;
   informationOpen: boolean;
-  panoramaOpen: boolean;
-  panoramaProjectId: number | null;
-  panoramaImageIds: number[];
-  panoramaName: string;
-  panoramaMatching: PanoramaMatching;
-  panoramaProjection: PanoramaProjection;
-  panoramaMessage: string;
-  samplerOpen: boolean;
-  samplerLoading: boolean;
-  samplerError: string;
-  samplerJob: SamplerJob | null;
-  samplerExpandedSections: Set<string>;
-  samplerKnownEnabledKeys: Set<string>;
-  samplerSelectedKey: string | null;
-  samplerPendingSelections: Set<string>;
-  diffusionOpen: boolean;
-  diffusionLoading: boolean;
-  diffusionSaving: boolean;
-  diffusionError: string;
-  diffusionErrorKind: "preview" | "save" | null;
-  diffusionMessage: string;
-  diffusionJob: DiffusionJob | null;
-  diffusionBefore: ImageSource | null;
-  diffusionPreviewContext: DiffusionPreviewContext | null;
-  diffusionImageId: number | null;
-  diffusionProfileIndex: number | null;
-  diffusionSettings: DiffusionSettings | null;
-  diffusionSource: DiffusionSource | null;
 }

@@ -78,6 +78,12 @@ jobs:
           cargo test --tests --no-default-features --no-fail-fast -- --nocapture --test-threads=1 | tee "$test_log"
         continue-on-error: false
 
+      - name: Install the real-daemon browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Verify the Node-free embedded daemon workflow
+        run: npm run test:review:daemon
+
       - name: Install cargo-llvm-cov
         run: |
           set -euo pipefail
@@ -235,8 +241,12 @@ jobs:
           cache: npm
       - name: Install locked frontend tools
         run: npm ci --ignore-scripts --include=dev --include=optional --no-audit --no-fund
+      - name: Reject newer supported frontend releases
+        run: npm run check:frontend-versions
       - name: Generate ignored runtime validators
-        run: node scripts/review-contracts.mjs --runtime
+        run: node scripts/review-contracts.mts --runtime
+      - name: Check pure frontend contracts and models without a server
+        run: npm run test:review:pure
       - name: Generate temporary debug reference screenshots
         run: >-
           npm run test:review -- review.spec.ts --project=chromium-debug

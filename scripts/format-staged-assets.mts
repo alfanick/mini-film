@@ -3,51 +3,42 @@
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { errorMessage, required, run } from "./tooling.mts";
 
 const require = createRequire(import.meta.url);
 
-/** Run Git or Prettier directly, without shell expansion of staged filenames. */
-function run(command, args, cwd) {
-  const result = spawnSync(command, args, { cwd, encoding: "utf8", windowsHide: true });
-  if (result.error || result.status !== 0) {
-    throw new Error(result.error?.message ?? result.stderr?.trim() ?? `${command} failed`);
-  }
-  return result.stdout;
-}
-
 /** Match source assets and configuration, excluding bundled vendor libraries. */
-function isFrontendSource(path) {
+function isFrontendSource(path: string): boolean {
   if (path.includes("/vendor/")) return false;
   return (
     /^assets\/.*\.(?:html|css|js)$/.test(path) ||
     /^frontend\/.*\.(?:ts|tsx|mts|mjs|json)$/.test(path) ||
-    /^scripts\/[^/]+\.mjs$/.test(path) ||
+    /^scripts\/[^/]+\.(?:mjs|mts)$/.test(path) ||
     /^(?:[^/]*config[^/]*\.(?:json|mjs|ts)|\.prettierrc\.json|package\.json)$/.test(path)
   );
 }
 
 /** Format working copies of staged files and report which require re-staging. */
-export async function formatStagedAssets(cwd) {
-  const root = run("git", ["rev-parse", "--show-toplevel"], cwd).trim();
-  const paths = run("git", ["diff", "--cached", "--name-only", "--diff-filter=ACMR", "-z"], root)
+export async function formatStagedAssets(cwd: string): Promise<string[]> {
+  const root = run("git", ["rev-parse", "--show-toplevel"], cwd, true).trim();
+  const paths = run("git", ["diff", "--cached", "--name-only", "--diff-filter=ACMR", "-z"], root, true)
     .split("\0")
     .filter(isFrontendSource);
   if (paths.length === 0) return [];
   const original = await Promise.all(paths.map((path) => readFile(join(root, path))));
   const prettierCli = join(dirname(require.resolve("prettier/package.json")), "bin/prettier.cjs");
-  process.stdout.write(run(process.execPath, [prettierCli, "--write", "--", ...paths], root));
-  const prettier = require("prettier");
-  const changed = [];
-  for (let index = 0; index < paths.length; index += 1) {
-    const file = join(root, paths[index]);
-    const staged = run("git", ["show", `:${paths[index]}`], root);
+  process.stdout.write(run(process.execPath, [prettierCli, "--write", "--", ...paths], root, true));
+  const prettier = require("prettier") as typeof import("prettier");
+  const changed: string[] = [];
+  for (const [index, path] of paths.entries()) {
+    const file = join(root, path);
+    const staged = run("git", ["show", `:${path}`], root, true);
     const options = { ...(await prettier.resolveConfig(file)), filepath: file };
     // Check the index too: retrying a failed hook without re-staging must not
     // commit the unformatted snapshot merely because the working copy is clean.
-    if (!original[index].equals(await readFile(file)) || !(await prettier.check(staged, options))) {
-      changed.push(paths[index]);
+    if (!required(original[index]).equals(await readFile(file)) || !(await prettier.check(staged, options))) {
+      changed.push(path);
     }
   }
   return changed;
@@ -62,7 +53,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       process.exitCode = 1;
     }
   } catch (error) {
-    console.error(`Frontend formatting failed: ${error.message}`);
+    console.error(`Frontend formatting failed: ${errorMessage(error)}`);
     process.exitCode = 1;
   }
 }

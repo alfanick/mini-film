@@ -6,14 +6,20 @@ import { render } from "preact";
 import { ReviewProvider } from "./core/context";
 import { ReviewApp } from "./ReviewApp";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { SessionProvider } from "./session/context";
+import { ToolsProvider } from "./tools/context";
 
 const root = document.getElementById("review-root");
 if (!root) throw new Error("Review application mount is missing");
 render(
   <ReviewProvider>
-    <ErrorBoundary>
-      <ReviewApp />
-    </ErrorBoundary>
+    <SessionProvider>
+      <ToolsProvider>
+        <ErrorBoundary>
+          <ReviewApp />
+        </ErrorBoundary>
+      </ToolsProvider>
+    </SessionProvider>
   </ReviewProvider>,
   root,
 );

@@ -24,7 +24,7 @@ export interface ExifPart {
 }
 
 /** Supply declarative camera-detail spans with the original hover text and ordering. */
-export function formatImageExif(image: T.ReviewImage | null): ExifPart[] {
+export function formatImageExif(image: T.ReviewImageObservation | null): ExifPart[] {
   if (!image) return [];
   const exif = image.exif;
   const shutterDetails = [
@@ -69,7 +69,10 @@ export function captureTimeDisplay(value: number | null | undefined): string {
 }
 
 /** Show precise elapsed capture time within a camera-provided burst. */
-export function burstCaptureDeltaDisplay(firstImage: T.ReviewImage, image: T.ReviewImage): string {
+export function burstCaptureDeltaDisplay(
+  firstImage: T.ReviewImageObservation,
+  image: T.ReviewImageObservation,
+): string {
   const firstCapture = preciseCaptureTime(firstImage);
   const capture = preciseCaptureTime(image);
   if (!firstCapture || !capture) return "";
@@ -79,7 +82,7 @@ export function burstCaptureDeltaDisplay(firstImage: T.ReviewImage, image: T.Rev
 }
 
 /** Read capture subseconds without rounding away burst ordering. */
-export function preciseCaptureTime(image: T.ReviewImage): { timestamp: number; subsecond: number } | null {
+export function preciseCaptureTime(image: T.ReviewImageObservation): { timestamp: number; subsecond: number } | null {
   const rawTimestamp = image?.exif?.capture_timestamp;
   const timestamp = Number(rawTimestamp);
   const subsecond = image?.exif?.capture_subsecond;
@@ -160,7 +163,7 @@ export function sidebarCameraModel(cameraModel: string | null | undefined): stri
 
 /** Summarize render and analysis progress for one picture without reading global state. */
 export function renderProgressSummary(
-  image: T.ReviewImage,
+  image: T.ReviewImageObservation,
   localDirty: boolean = false,
   implicitProfiles: boolean = false,
 ): ProgressState {
@@ -269,7 +272,7 @@ export function renderProgressSummary(
 }
 
 /** Give optional analysis work the same queued, running, and failed status vocabulary. */
-export function codexProgressState(image: T.ReviewImage | null): ProgressState | null {
+export function codexProgressState(image: T.ReviewImageObservation | null): ProgressState | null {
   const status = image?.codex?.status;
   if (status === "processing") {
     return {
@@ -296,7 +299,10 @@ export function codexProgressState(image: T.ReviewImage | null): ProgressState |
 }
 
 /** Show the date for the first picture of a day and the time for later pictures. */
-export function imageCaptureDisplay(image: T.ReviewImage | null, previousDay: string | null): CaptureDisplay {
+export function imageCaptureDisplay(
+  image: T.ReviewImageObservation | null,
+  previousDay: string | null,
+): CaptureDisplay {
   const timestamp = Number(image?.exif?.capture_timestamp || NaN);
   if (!Number.isFinite(timestamp)) {
     return { day: previousDay, text: "" };
@@ -355,14 +361,14 @@ export function formatExifNumberText(value: string | number | null | undefined, 
 }
 
 /** Prefer dimensions from the finished render when determining rail orientation. */
-export function isPortraitRenderProfile(profile: T.ReviewProfileRender | null): boolean {
+export function isPortraitRenderProfile(profile: T.ReviewProfileRenderObservation | null): boolean {
   const width = Number(profile?.width);
   const height = Number(profile?.height);
   return Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0 && height > width;
 }
 
 /** Describe original image size and pixel dimensions in the filename tooltip. */
-export function imageSourceInfoTitle(image: T.ReviewImage | null): string {
+export function imageSourceInfoTitle(image: T.ReviewImageObservation | null): string {
   const parts = [];
   const fileSize = formatFileSize(image?.source_file_size_bytes);
   if (fileSize) parts.push(fileSize);
@@ -398,8 +404,8 @@ export function formatFileSize(bytes: string | number | null | undefined): strin
 
 /** Generate a recognizable attachment filename from the source and selected profile. */
 export function profileDownloadName(
-  image: T.ReviewImage,
-  profile: T.ReviewProfileRender & { selector?: string },
+  image: T.ReviewImageObservation,
+  profile: T.ReviewProfileRenderObservation & { selector?: string },
 ): string {
   const rawName = image.file_name || image.relative_path || "mini-film";
   const baseName = rawName.replace(/\.[^.]*$/, "");
@@ -408,7 +414,7 @@ export function profileDownloadName(
 }
 
 /** Include the rendered file size when it is known. */
-export function profileDownloadTitle(profile: T.ReviewProfileRender, displayName: string): string {
+export function profileDownloadTitle(profile: T.ReviewProfileRenderObservation, displayName: string): string {
   const rawBytes = profile.file_size_bytes;
   const bytes = rawBytes === null || rawBytes === undefined ? Number.NaN : Number(rawBytes);
   const size = Number.isFinite(bytes) && bytes >= 0 ? `${(bytes / 1_000_000).toFixed(1)} MB` : "";

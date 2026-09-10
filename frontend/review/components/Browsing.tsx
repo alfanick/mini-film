@@ -4,7 +4,13 @@ import type { ComponentChildren } from "preact";
 import { useComputed } from "@preact/signals";
 import { memo } from "preact/compat";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
-import type { ReviewImage, ReviewProfileRender, ReviewBurst, BwFilter } from "../core/types";
+import type {
+  ReviewImageObservation as ReviewImage,
+  ReviewProfileRenderObservation as ReviewProfileRender,
+  ReadonlyData,
+  ReviewBurst,
+  BwFilter,
+} from "../core/types";
 import { useReviewModel } from "../core/context";
 import { BW_FILTERS, BW_FILTER_LABELS, BW_FILTER_NAMES } from "../core/constants";
 import {
@@ -33,8 +39,8 @@ import {
 
 /** Typed callbacks keep review mutations in the owning session. */
 export interface ImageListProps {
-  images: ReviewImage[];
-  bursts: ReviewBurst[];
+  images: readonly ReviewImage[];
+  bursts: readonly ReadonlyData<ReviewBurst>[];
   currentId: number | null;
   onSelect: (image: ReviewImage) => Promise<unknown>;
   onToggleBurst: (id: string, expanded: boolean) => Promise<unknown>;
@@ -46,7 +52,7 @@ interface ImageListEntry extends ReviewImage {
 }
 
 /** Typed callbacks keep review mutations in the owning session. */
-export interface VisibleBurst extends ReviewBurst {
+export interface VisibleBurst extends ReadonlyData<ReviewBurst> {
   members: ImageListEntry[];
   total: number;
 }
@@ -114,8 +120,7 @@ export const ImageList = memo(function ImageList({
   const imageById = new Map(displayImages.map((image) => [String(image.id), image]));
   const burstByImageId = new Map<string, VisibleBurst>();
 
-  for (const burst of Array.isArray(bursts) ? bursts : []) {
-    if (burst?.id === undefined || burst?.id === null || !Array.isArray(burst.image_ids)) continue;
+  for (const burst of bursts) {
     const memberIds = Array.from(new Set(burst.image_ids.map(String)));
     const members = memberIds
       .filter((imageId) => !burstByImageId.has(imageId))

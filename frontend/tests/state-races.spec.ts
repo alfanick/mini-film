@@ -1,6 +1,7 @@
 /** Exercise the real hook/queue integration under delayed responses, shared navigation, and unrelated live events. */
+import { requestDecoders } from "../review/generated/request-decoders";
 import { expect, test } from "@playwright/test";
-import type { ReviewUpdateRequest } from "../review/core/types";
+import type { ReviewUpdateRequest } from "../review/generated/requests";
 import { openReview, sendState } from "./harness";
 import { required } from "./required";
 
@@ -16,7 +17,7 @@ test("rapid availability changes compose after the earlier request is acknowledg
     release = resolve;
   });
   await page.route("**/api/review", async (route): Promise<void> => {
-    const body = route.request().postDataJSON() as ReviewUpdateRequest;
+    const body = requestDecoders.review(route.request().postDataJSON());
     writes.push(body);
     if (writes.length === 1) await ready;
     const image = required(harness.data.images[0]);
@@ -53,9 +54,7 @@ test("notes for two images survive shared navigation inside the autosave debounc
   await expect
     .poll(() => harness.data.images.map((image) => image.notes))
     .toEqual(["Unsaved first picture", "Separate second picture", "Camera note"]);
-  const notesWrites = harness.requests
-    .filter((request) => request.path === "review")
-    .map((request) => request.body as ReviewUpdateRequest);
+  const notesWrites = harness.requests.filter((request) => request.name === "review").map((request) => request.body);
   expect(notesWrites.map((body) => [body.image_id, body.notes])).toEqual([
     [1, "Unsaved first picture"],
     [2, "Separate second picture"],
@@ -74,7 +73,7 @@ test("a client-count event does not hide unacknowledged retouch pixels", async (
   await sendState(page, { type: "patch", version: harness.data.version, client_count: 4 });
   await expect(page.locator("#main-image")).toHaveAttribute("style", /brightness/);
   await expect(page.locator("#profile-state")).toContainText("retouch draft");
-  expect(harness.requests.filter((request) => request.path === "review")).toHaveLength(0);
+  expect(harness.requests.filter((request) => request.name === "review")).toHaveLength(0);
   await page.clock.runFor(1300);
   await expect.poll(() => required(harness.data.images[0]).retouch.adjustments.exposure).toBe(1);
   expect(harness.errors).toEqual([]);
@@ -89,8 +88,8 @@ test("a failed metadata save retains its draft and exposes an explicit retry", a
       await route.fulfill({ status: 503, json: { error: "Review store temporarily unavailable" } });
       return;
     }
-    const body = route.request().postDataJSON() as ReviewUpdateRequest;
-    required(harness.data.images[0]).notes = body.notes;
+    const body = requestDecoders.review(route.request().postDataJSON());
+    required(harness.data.images[0]).notes = body.notes ?? "";
     await route.fulfill({ json: { ...harness.data, type: "patch" } });
   });
   await page.locator("#notes").fill("A recoverable note");
@@ -114,7 +113,7 @@ for (const action of ["rating", "profile", "label", "next"] as const) {
       release = resolve;
     });
     await page.route("**/api/review", async (route): Promise<void> => {
-      const body = route.request().postDataJSON() as ReviewUpdateRequest;
+      const body = requestDecoders.review(route.request().postDataJSON());
       writes.push(body);
       if (writes.length === 1) await blocked;
       await route.fallback();
@@ -175,7 +174,7 @@ test("a retouch edited during pending profile selection uses the displayed profi
     release = resolve;
   });
   await page.route("**/api/review", async (route): Promise<void> => {
-    writes.push(route.request().postDataJSON() as ReviewUpdateRequest);
+    writes.push(requestDecoders.review(route.request().postDataJSON()));
     if (writes.length === 1) await blocked;
     await route.fallback();
   });
@@ -189,7 +188,7 @@ test("a retouch edited during pending profile selection uses the displayed profi
   await page.locator("#retouch-exposure").press("Enter");
   release();
   await expect.poll(() => writes.length).toBe(2);
-  expect(writes[1]?.retouch?.adjustments.exposure).toBe(4);
+  expect(writes[1]?.retouch?.adjustments?.exposure).toBe(4);
   expect(harness.errors).toEqual([]);
 });
 
@@ -201,7 +200,7 @@ test("a failed assignment refreshes before explicit retry and preserves refreshe
   const writes: ReviewUpdateRequest[] = [];
   await page.route("**/api/review", async (route): Promise<void> => {
     attempts += 1;
-    writes.push(route.request().postDataJSON() as ReviewUpdateRequest);
+    writes.push(requestDecoders.review(route.request().postDataJSON()));
     if (attempts === 1) {
       await route.fulfill({ status: 503, json: { error: "Assignment response lost" } });
       return;
@@ -243,7 +242,7 @@ test("a successful label change retains an unrelated failed availability intenti
   const harness = await openReview(page);
   const writes: ReviewUpdateRequest[] = [];
   await page.route("**/api/review", async (route): Promise<void> => {
-    writes.push(route.request().postDataJSON() as ReviewUpdateRequest);
+    writes.push(requestDecoders.review(route.request().postDataJSON()));
     if (writes.length === 1) {
       await route.fulfill({ status: 503, json: { error: "Profile response lost" } });
       return;
@@ -273,12 +272,12 @@ test("an ambiguous acknowledgement resyncs before the next queued legacy body is
     release = resolve;
   });
   await page.route("**/api/review", async (route): Promise<void> => {
-    const body = route.request().postDataJSON() as ReviewUpdateRequest;
+    const body = requestDecoders.review(route.request().postDataJSON());
     writes.push(body);
     if (writes.length === 1) {
       await blocked;
-      required(harness.data.images[0]).labels = body.labels;
-      required(harness.data.images[0]).label = body.label;
+      required(harness.data.images[0]).labels = body.labels ?? [];
+      required(harness.data.images[0]).label = body.label ?? "none";
       await route.fulfill({ status: 503, json: { error: "Committed label response lost" } });
       return;
     }

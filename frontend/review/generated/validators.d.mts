@@ -37,8 +37,12 @@ export function validateResponseError(value: unknown): value is ResponseContract
 export function validateResponseKeepalive(value: unknown): value is ResponseContracts["keepalive"];
 /** Validate the message responses boundary before consuming unknown JSON. */
 export function validateResponseMessage(value: unknown): value is ResponseContracts["message"];
+/** Validate the panorama_created responses boundary before consuming unknown JSON. */
+export function validateResponsePanoramaCreated(value: unknown): value is ResponseContracts["panorama_created"];
 /** Validate the patch responses boundary before consuming unknown JSON. */
 export function validateResponsePatch(value: unknown): value is ResponseContracts["patch"];
+/** Validate the publish_created responses boundary before consuming unknown JSON. */
+export function validateResponsePublishCreated(value: unknown): value is ResponseContracts["publish_created"];
 /** Validate the sampler_job responses boundary before consuming unknown JSON. */
 export function validateResponseSamplerJob(value: unknown): value is ResponseContracts["sampler_job"];
 /** Validate the state responses boundary before consuming unknown JSON. */

@@ -2,7 +2,7 @@
  * Publish form conversion and output comparison preserve the existing export request contract without reading DOM
  * fields.
  */
-import type { ReviewPublishJob } from "../../core/types";
+import type { ReviewPublishJobObservation as ReviewPublishJob } from "../../core/types";
 
 /** Clamp progress to an honest percentage and recognize completed empty jobs. */
 export function publishProgressPercent(job: ReviewPublishJob | null): number {

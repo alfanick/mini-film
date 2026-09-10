@@ -14,16 +14,16 @@ export default [
   },
   js.configs.recommended,
   {
-    files: ["frontend/**/*.{ts,tsx,mts,mjs}", "scripts/*.mjs", "*config*.{mjs,ts}"],
+    files: ["frontend/**/*.{ts,tsx,mts,mjs}", "scripts/*.{mjs,mts}", "*config*.{mjs,ts}"],
     plugins: { "@stylistic": stylistic },
     rules: { "@stylistic/max-len": ["error", { code: 120, tabWidth: 2 }] },
   },
   ...tseslint.configs.recommendedTypeChecked.map((config) => ({
     ...config,
-    files: ["frontend/**/*.{ts,tsx,mts}", "*config*.ts"],
+    files: ["frontend/**/*.{ts,tsx,mts}", "scripts/**/*.mts", "*config*.ts"],
   })),
   {
-    files: ["frontend/**/*.{ts,tsx,mts}", "*config*.ts"],
+    files: ["frontend/**/*.{ts,tsx,mts}", "scripts/**/*.mts", "*config*.ts"],
     plugins: { "react-hooks": reactHooks },
     languageOptions: {
       parserOptions: {
@@ -66,7 +66,7 @@ export default [
     },
   },
   {
-    files: ["scripts/*.mjs", "frontend/**/*.mjs", "frontend/tests/**/*.ts", "*config*.{mjs,ts}"],
+    files: ["scripts/*.{mjs,mts}", "frontend/**/*.mjs", "frontend/tests/**/*.{ts,mts}", "*config*.{mjs,ts}"],
     languageOptions: { globals: globals.node },
   },
   {

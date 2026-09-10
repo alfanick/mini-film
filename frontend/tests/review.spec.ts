@@ -1,12 +1,12 @@
 // Browser behavior checks run unchanged against the old and compiled review UIs.
 // Versioned screenshots run in the pinned CI environment; optional legacy comparisons remain available locally.
 import { required } from "./required";
+import { requestDecoders } from "../review/generated/request-decoders";
 import { expect, test } from "@playwright/test";
 import type { Page, TestInfo } from "@playwright/test";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import type { DiffusionSettings, ReviewUpdateRequest } from "../review/core/types";
 import { diffusionFixture, samplerFixture } from "./fixtures";
 
 import { openReview, sendState } from "./harness";
@@ -192,9 +192,9 @@ test("metadata saves and rating/navigation shortcuts preserve save ordering", as
   await page.keyboard.press("ArrowRight");
   await expect(page.locator("#image-title")).toHaveText("frame-3.NEF");
   await expect.poll(() => harness.data.ui.current_image_id).toBe(3);
-  const saves = harness.requests.filter((request) => request.path === "review");
-  expect((required(saves[0]).body as ReviewUpdateRequest).notes).toBe("Manual note");
-  expect(saves.filter((request) => (request.body as ReviewUpdateRequest).advance_after_update)).toHaveLength(1);
+  const saves = harness.requests.filter((request) => request.name === "review");
+  expect(required(saves[0]).body.notes).toBe("Manual note");
+  expect(saves.filter((request) => request.body.advance_after_update)).toHaveLength(1);
   expect(harness.errors).toEqual([]);
 });
 
@@ -279,7 +279,7 @@ test("pending profile selection survives an older SSE response", async ({ page }
     completeSave = resolve;
   });
   await page.route("**/api/review", async (route) => {
-    const update = route.request().postDataJSON() as ReviewUpdateRequest;
+    const update = requestDecoders.review(route.request().postDataJSON());
     await saveReady;
     required(harness.data.images[0]).selected_profile_index = update.selected_profile_index ?? 0;
     await route.fulfill({ json: { ...harness.data, type: "patch" } });
@@ -409,7 +409,7 @@ test("a stale diffusion response cannot replace a newer slider preview", async (
   await page.route("**/api/diffusion/jobs", async (route) => {
     requestCount += 1;
     const id = requestCount;
-    const body = route.request().postDataJSON() as { settings: DiffusionSettings };
+    const body = requestDecoders.diffusion_create(route.request().postDataJSON());
     if (id === 1) await firstReady;
     await route.fulfill({ json: { ...diffusionFixture(), id, settings: body.settings } });
   });

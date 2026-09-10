@@ -3,28 +3,15 @@
  */
 import { createContext } from "preact";
 import { useContext } from "preact/hooks";
-import type { ToolsController } from "../../tools/use-tools";
+import type { PanoramaModelValue } from "./model";
 import type { ComponentChildren } from "preact";
 
-import type { ReviewState, PanoramaMatching } from "../../core/types";
 import { PANORAMA_MATCHING_MODES, PANORAMA_PROJECTIONS } from "../../core/constants";
 import { capitalize, versionedUrl } from "../../core/selectors";
 import { panoramaStatusText } from "./helpers";
 
 /** Project state and typed workflow actions supplied to the panorama wizard. */
-export interface PanoramaViewDependencies {
-  closePanoramaWizard: ToolsController["closePanoramaWizard"];
-  currentPanoramaProject: ToolsController["currentPanoramaProject"];
-  generatePanoramaPreviews: ToolsController["generatePanoramaPreviews"];
-  minRating: ToolsController["minRating"];
-  movePanoramaSource: ToolsController["movePanoramaSource"];
-  renderPanoramaFinal: ToolsController["renderPanoramaFinal"];
-  updatePanorama: ToolsController["updatePanorama"];
-  selectPanoramaProject: ToolsController["selectPanoramaProject"];
-  state: ReviewState;
-  togglePanoramaSource: ToolsController["togglePanoramaSource"];
-  updateSharedUi: ToolsController["updateSharedUi"];
-}
+export type PanoramaViewDependencies = PanoramaModelValue;
 
 export const PanoramaViewContext = createContext<PanoramaViewDependencies | null>(null);
 
@@ -41,20 +28,22 @@ export function PanoramaOverlay(): ComponentChildren {
     closePanoramaWizard,
     currentPanoramaProject,
     generatePanoramaPreviews,
-    minRating,
     movePanoramaSource,
     renderPanoramaFinal,
     selectPanoramaProject,
-    state,
+    state: observation,
+    operation: activeOperation,
     togglePanoramaSource,
     updateSharedUi,
     updatePanorama,
   } = usePanoramaView();
+  const state = observation.value;
+  const operation = activeOperation.value;
   const project = currentPanoramaProject();
   const projects = state.data?.panorama?.projects || [];
   const images = state.data?.images || [];
   const busy = Boolean(state.data?.panorama?.busy);
-  const operationRunning = ["previewing", "rendering"].includes(project?.status || "");
+  const operationRunning = operation !== "idle" || ["previewing", "rendering"].includes(project?.status || "");
   const anyProjectRunning = projects.some((candidate) => ["previewing", "rendering"].includes(candidate.status));
   const selected = new Map(state.panoramaImageIds.map((imageId, index) => [imageId, index]));
   const previews = new Map(
@@ -63,7 +52,7 @@ export function PanoramaOverlay(): ComponentChildren {
       .map((preview) => [preview.projection, preview]),
   );
   const selectedPreview = previews.get(state.panoramaProjection);
-  const canPreview = state.panoramaImageIds.length >= 2 && !busy && !anyProjectRunning;
+  const canPreview = state.panoramaImageIds.length >= 2 && !busy && !anyProjectRunning && !operationRunning;
   const canRender =
     selectedPreview?.status === "done" && project?.status !== "complete" && !anyProjectRunning && !operationRunning;
   const progressTotal = Math.max(1, Number(project?.progress_total) || 1);
@@ -177,7 +166,8 @@ export function PanoramaOverlay(): ComponentChildren {
                 value={state.panoramaMatching}
                 disabled={operationRunning}
                 onChange={(event) => {
-                  updatePanorama({ panoramaMatching: event.currentTarget.value as PanoramaMatching });
+                  const selected = PANORAMA_MATCHING_MODES.find(([value]) => value === event.currentTarget.value);
+                  if (selected) updatePanorama({ panoramaMatching: selected[0] });
                 }}
               >
                 {PANORAMA_MATCHING_MODES.map(([value, label]) => (
@@ -249,8 +239,8 @@ export function PanoramaOverlay(): ComponentChildren {
             <button
               type={"button"}
               onClick={() => {
-                updateSharedUi({ current_image_id: project.result_image_id, min_rating: minRating() }).catch((error) =>
-                  console.error(error),
+                updateSharedUi({ current_image_id: project.result_image_id, min_rating: state.minRating }).catch(
+                  (error) => console.error(error),
                 );
                 closePanoramaWizard();
               }}

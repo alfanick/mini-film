@@ -2,16 +2,20 @@
  * Connect per-image reactive draft revisions to controlled inputs and browser unload handling.
  * Request and timer ownership lives in the draft model, so shared navigation cannot retarget an edit.
  */
-import { useCallback, useLayoutEffect, useEffect, useState } from "preact/hooks";
-import { useModel } from "@preact/signals";
+import { useCallback, useLayoutEffect } from "preact/hooks";
+import { useReviewRuntime } from "./context";
 import { useReviewModel } from "../core/context";
 import { currentImage, defaultRetouch, normalizedRetouch, selectedProfile } from "../core/selectors";
-import { reviewApi, reviewUrl } from "../core/api";
-import type { BasicRetouchAdjustments as RetouchAdjustments, RetouchSettings, ReviewImage } from "../core/types";
-import type { ReviewActions } from "./use-session";
-import { reviewRequestBody } from "./review-requests";
+
+import type {
+  BasicRetouchAdjustments as RetouchAdjustments,
+  ReadonlyData,
+  RetouchObservation as RetouchSettings,
+  ReviewImageObservation as ReviewImage,
+} from "../core/types";
+
 import { retouchFromVisibleControls } from "./retouch-controls";
-import { ReviewDraftModel, fieldDirty } from "./draft-model";
+import { fieldDirty } from "./draft-model";
 
 export { parseTags } from "./draft-model";
 
@@ -20,7 +24,7 @@ export interface ReviewEdits {
   tags: string;
   notes: string;
   retouch: RetouchSettings;
-  clipboard: RetouchAdjustments | null;
+  clipboard: ReadonlyData<RetouchAdjustments> | null;
   errors: readonly { imageId: number; message: string }[];
   retry: (imageId: number) => Promise<void>;
   setTags: (value: string) => void;
@@ -34,12 +38,12 @@ export interface ReviewEdits {
 }
 
 /** Retain drafts per picture while subscribing the controlled fields only to the displayed image. */
-export function useReviewEdits(actions: ReviewActions): ReviewEdits {
+export function useReviewEdits(): ReviewEdits {
   const model = useReviewModel();
-  const { saveImageReview, setDraftReader } = actions;
+  const { drafts, session, clipboard: storedClipboard, setClipboard } = useReviewRuntime();
   const imageId = model.field("currentId").value;
   const image = imageId !== null ? model.image(imageId).value : null;
-  const [clipboard, setClipboard] = useState<RetouchAdjustments | null>(null);
+  const clipboard = storedClipboard.value;
 
   /** Resolve current profile baselines at the save boundary, preserving the original clamped input rules. */
   const visibleRetouch = useCallback(
@@ -52,32 +56,10 @@ export function useReviewEdits(actions: ReviewActions): ReviewEdits {
     },
     [model],
   );
-  const drafts = useModel(
-    () =>
-      new ReviewDraftModel({
-        findImage: (id: number): ReviewImage | null =>
-          model.getConfirmedState().data?.images.find((item) => item.id === id) || null,
-        save: saveImageReview,
-        visibleRetouch,
-        presentRetouch: model.setRetouchDraft,
-        schedule: (callback: () => void, delay: number): (() => void) => {
-          const timer = window.setTimeout(callback, delay);
-          return (): void => window.clearTimeout(timer);
-        },
-      }),
-  );
   const draft = imageId !== null ? drafts.image(imageId).value : null;
   const metadataFocus = drafts.metadataFocus.value;
   const retouchFocus = drafts.retouchFocus.value;
   const errors = drafts.errors.value;
-
-  useLayoutEffect(() => {
-    setDraftReader(
-      (current) => drafts.fields(current.id),
-      (id) => drafts.flush(id),
-    );
-    return (): void => setDraftReader(null);
-  }, [drafts, setDraftReader]);
 
   // Shared navigation reuses the focused input element; move keyboard ownership without copying the old value.
   useLayoutEffect((): void => {
@@ -103,7 +85,7 @@ export function useReviewEdits(actions: ReviewActions): ReviewEdits {
     if (!current) return;
     const pending = drafts.read(current.id);
     if (pending) setClipboard({ ...visibleRetouch(current, pending.retouch.value).adjustments });
-  }, [drafts, model, visibleRetouch]);
+  }, [drafts, model, visibleRetouch, setClipboard]);
 
   /** Paste into this picture's geometry and explicitly commit the newly created local revision. */
   const paste = useCallback((): void => {
@@ -114,24 +96,6 @@ export function useReviewEdits(actions: ReviewActions): ReviewEdits {
     drafts.setRetouch(current.id, { ...pending.retouch.value, adjustments: { ...clipboard } });
     void drafts.flush(current.id).catch(() => undefined);
   }, [clipboard, drafts, model]);
-
-  useEffect(() => {
-    /** Unload is best effort, not a durable acknowledgement; include drafts belonging to other pictures too. */
-    const unload = (): void => {
-      if (!navigator.sendBeacon) return;
-      const snapshot = model.getConfirmedState();
-      const ids = new Set(drafts.entries.peek().keys());
-      if (snapshot.currentId !== null) ids.add(snapshot.currentId);
-      for (const id of ids) {
-        const current = snapshot.data?.images.find((item) => item.id === id);
-        if (!current) continue;
-        const body = reviewRequestBody(current, drafts.fields(id));
-        navigator.sendBeacon(reviewUrl("api/review"), new Blob([JSON.stringify(body)], { type: "application/json" }));
-      }
-    };
-    window.addEventListener("beforeunload", unload);
-    return (): void => window.removeEventListener("beforeunload", unload);
-  }, [drafts, model]);
 
   /** Dispatch an input event against the identity visible at that event boundary. */
   const withCurrent = (callback: (id: number) => void): void => {
@@ -154,7 +118,7 @@ export function useReviewEdits(actions: ReviewActions): ReviewEdits {
     clipboard,
     errors,
     retry: async (id: number): Promise<void> => {
-      model.applyMessage(await reviewApi.state({}));
+      await session.refresh();
       await drafts.flush(id);
     },
     setTags: (value: string): void => withCurrent((id) => drafts.setMetadata(id, "tags", value)),

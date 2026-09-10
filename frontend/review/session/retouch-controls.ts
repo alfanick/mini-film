@@ -1,7 +1,11 @@
 /** Reconstruct portable retouch deltas from the controls' effective profile values.
  * Reading any slider historically read every bounded input, so clipped siblings must normalize together. */
 import { clamp, isDirectCompressedImage, normalizedRetouch } from "../core/selectors";
-import type { RetouchSettings, ReviewImage, ReviewProfile } from "../core/types";
+import type {
+  RetouchObservation as RetouchSettings,
+  ReviewImageObservation as ReviewImage,
+  ReviewProfileObservation as ReviewProfile,
+} from "../core/types";
 
 /** Match the seven tonal input bounds while preserving crop and camera-relative white balance. */
 export function retouchFromVisibleControls(

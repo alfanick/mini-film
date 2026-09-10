@@ -1,6 +1,6 @@
 /** Per-image draft revisions survive shared navigation and acknowledge only the fields a completed save owned. */
 import { computed, createModel, effect, signal, type ReadonlySignal } from "@preact/signals";
-import type { RetouchSettings, ReviewImage, ReviewUpdateRequest } from "../core/types";
+import type { RetouchSettings, RetouchObservation, ReviewImageObservation as ReviewImage } from "../core/types";
 import { normalizedRetouch } from "../core/selectors";
 import type { ReviewFields } from "./commands";
 
@@ -17,33 +17,41 @@ export interface ImageDraft {
   readonly imageId: number;
   readonly tags: DraftField<string>;
   readonly notes: DraftField<string>;
-  readonly retouch: DraftField<RetouchSettings>;
+  readonly retouch: DraftField<RetouchObservation>;
   readonly error: string;
 }
 
 /** Browser timers and transport remain injectable I/O boundaries rather than hidden model dependencies. */
 export interface DraftPorts {
   findImage: (id: number) => ReviewImage | null;
-  save: (image: ReviewImage, fields: Partial<ReviewUpdateRequest>) => Promise<void>;
-  visibleRetouch: (image: ReviewImage, value: RetouchSettings) => RetouchSettings;
-  presentRetouch: (id: number, value: RetouchSettings | null) => void;
+  save: (image: ReviewImage, fields: ReviewFields, options?: DraftSaveOptions) => Promise<void>;
+  visibleRetouch: (image: ReviewImage, value: RetouchObservation) => RetouchSettings;
+  presentRetouch: (id: number, value: RetouchObservation | null) => void;
   schedule: (callback: () => void, delay: number) => () => void;
+}
+
+/** Automatic saves exclude failed revisions; only an explicit retry may resubmit them. */
+export interface DraftSaveOptions {
+  automatic?: boolean;
+  keepalive?: boolean;
 }
 
 /** Read-only draft signals and explicit image-scoped editing commands form the public boundary. */
 export interface DraftModelValue {
-  entries: ReadonlySignal<ReadonlyMap<number, ImageDraft>>;
-  errors: ReadonlySignal<readonly { imageId: number; message: string }[]>;
-  metadataFocus: ReadonlySignal<{ imageId: number; field: "tags" | "notes" } | null>;
-  retouchFocus: ReadonlySignal<number | null>;
+  readonly entries: ReadonlySignal<ReadonlyMap<number, ImageDraft>>;
+  readonly errors: ReadonlySignal<readonly { readonly imageId: number; readonly message: string }[]>;
+  readonly metadataFocus: ReadonlySignal<{ readonly imageId: number; readonly field: "tags" | "notes" } | null>;
+  readonly retouchFocus: ReadonlySignal<number | null>;
   image: (id: number) => ReadonlySignal<ImageDraft | null>;
   read: (id: number) => ImageDraft | null;
   fields: (id: number) => ReviewFields;
   focusMetadata: (id: number, field: "tags" | "notes" | null) => void;
   focusRetouch: (id: number, active: boolean) => void;
   setMetadata: (id: number, field: "tags" | "notes", value: string) => void;
-  setRetouch: (id: number, value: RetouchSettings, save?: boolean) => void;
-  flush: (id: number, forceRetouch?: boolean) => Promise<void>;
+  setRetouch: (id: number, value: RetouchObservation, save?: boolean) => void;
+  flush: (id: number, forceRetouch?: boolean, options?: DraftSaveOptions) => Promise<void>;
+  flushOwned: (ids?: readonly number[], keepalive?: boolean) => Promise<void>;
+  stop: () => void;
 }
 
 /** Preserve comma/space syntax, duplicates, and tag ordering at the request boundary. */
@@ -71,6 +79,7 @@ export const ReviewDraftModel = createModel((ports: DraftPorts): DraftModelValue
   const retouchFocus = signal<number | null>(null);
   const timers = new Map<string, () => void>();
   const saving = new Map<string, Promise<void>>();
+  const savingFields = new Set<string>();
   const projections = new Map<number, ReadonlySignal<ImageDraft | null>>();
   let revision = 0;
   let disposed = false;
@@ -129,19 +138,25 @@ export const ReviewDraftModel = createModel((ports: DraftPorts): DraftModelValue
   }
 
   /** Capture only local/focused fields; the command queue supplies untouched fields when sending. */
-  function fields(id: number): ReviewFields {
+  function fields(id: number, automatic = false, retry = false): ReviewFields {
     const draft = entries.peek().get(id);
     const image = ports.findImage(id);
     if (!draft || !image) return {};
     const focus = metadataFocus.peek();
     return {
-      ...(fieldDirty(draft.tags) || (focus?.imageId === id && focus.field === "tags")
+      ...((retry || !draft.tags.error) &&
+      (!automatic || !savingFields.has(`${id}:tags:${draft.tags.revision}`)) &&
+      (fieldDirty(draft.tags) || (!automatic && focus?.imageId === id && focus.field === "tags"))
         ? { tags: parseTags(draft.tags.value) }
         : {}),
-      ...(fieldDirty(draft.notes) || (focus?.imageId === id && focus.field === "notes")
+      ...((retry || !draft.notes.error) &&
+      (!automatic || !savingFields.has(`${id}:notes:${draft.notes.revision}`)) &&
+      (fieldDirty(draft.notes) || (!automatic && focus?.imageId === id && focus.field === "notes"))
         ? { notes: draft.notes.value }
         : {}),
-      ...(fieldDirty(draft.retouch) || retouchFocus.peek() === id
+      ...((retry || !draft.retouch.error) &&
+      (!automatic || !savingFields.has(`${id}:retouch:${draft.retouch.revision}`)) &&
+      (fieldDirty(draft.retouch) || (!automatic && retouchFocus.peek() === id))
         ? { retouch: ports.visibleRetouch(image, draft.retouch.value) }
         : {}),
     };
@@ -167,7 +182,7 @@ export const ReviewDraftModel = createModel((ports: DraftPorts): DraftModelValue
   }
 
   /** Submit one captured revision set and retain failed drafts for an explicit retry. */
-  async function flush(id: number, forceRetouch = false): Promise<void> {
+  async function flush(id: number, forceRetouch = false, options: DraftSaveOptions = {}): Promise<void> {
     cancel(id, "metadata");
     cancel(id, "retouch");
     let pending = entries.peek().get(id) || (forceRetouch ? read(id) : null);
@@ -182,10 +197,18 @@ export const ReviewDraftModel = createModel((ports: DraftPorts): DraftModelValue
       ports.presentRetouch(id, pending.retouch.value);
     }
     const submitted = pending;
-    const key = `${id}:${pending.tags.revision}:${pending.notes.revision}:${pending.retouch.revision}`;
+    const image = ports.findImage(id);
+    const patch = {
+      ...fields(id, options.automatic, !options.automatic),
+      ...(forceRetouch && image ? { retouch: ports.visibleRetouch(image, pending.retouch.value) } : {}),
+    };
+    if (!Object.keys(patch).length && image) return;
+    const key =
+      `${id}:${patch.tags === undefined ? "" : pending.tags.revision}:` +
+      `${patch.notes === undefined ? "" : pending.notes.revision}:` +
+      `${patch.retouch === undefined ? "" : pending.retouch.revision}`;
     const existing = saving.get(key);
     if (!forceRetouch && existing) return existing;
-    const image = ports.findImage(id);
     if (!image) {
       const error = new Error(`Picture ${id} is unavailable; its unsaved edits have been retained`);
       store(
@@ -199,12 +222,12 @@ export const ReviewDraftModel = createModel((ports: DraftPorts): DraftModelValue
       );
       throw error;
     }
-    const patch = {
-      ...fields(id),
-      ...(forceRetouch ? { retouch: ports.visibleRetouch(image, pending.retouch.value) } : {}),
-    };
+    const owned = (["tags", "notes", "retouch"] as const)
+      .filter((field) => patch[field] !== undefined)
+      .map((field) => `${id}:${field}:${submitted[field].revision}`);
+    for (const field of owned) savingFields.add(field);
     const promise = ports
-      .save(image, patch)
+      .save(image, patch, options)
       .then((): void => {
         if (disposed) return;
         const current = entries.peek().get(id);
@@ -241,6 +264,7 @@ export const ReviewDraftModel = createModel((ports: DraftPorts): DraftModelValue
     try {
       await promise;
     } finally {
+      for (const field of owned) savingFields.delete(field);
       if (saving.get(key) === promise) saving.delete(key);
     }
   }
@@ -253,16 +277,18 @@ export const ReviewDraftModel = createModel((ports: DraftPorts): DraftModelValue
       key,
       ports.schedule((): void => {
         timers.delete(key);
-        void flush(id).catch(() => undefined);
+        void flush(id, false, { automatic: true }).catch(() => undefined);
       }, delay),
     );
   }
 
-  effect(() => (): void => {
+  /** Synchronous provider invalidation does not depend on deferred Preact passive-effect cleanup. */
+  function stop(): void {
     disposed = true;
     for (const stop of timers.values()) stop();
     timers.clear();
-  });
+  }
+  effect(() => stop);
   return {
     entries,
     metadataFocus,
@@ -305,7 +331,7 @@ export const ReviewDraftModel = createModel((ports: DraftPorts): DraftModelValue
       schedule(id, "metadata", 500);
     },
     /** Publish draft pixels immediately while the server retains final RAW rendering ownership. */
-    setRetouch(id: number, value: RetouchSettings, save = true): void {
+    setRetouch(id: number, value: RetouchObservation, save = true): void {
       const previous = read(id);
       if (!previous) return;
       cancel(id, "retouch");
@@ -315,5 +341,11 @@ export const ReviewDraftModel = createModel((ports: DraftPorts): DraftModelValue
       if (save) schedule(id, "retouch", 1200);
     },
     flush,
+    stop,
+    /** Snapshot all eligible revisions synchronously before an exclusive job/lifecycle queue position is reserved. */
+    flushOwned(ids?: readonly number[], keepalive = false): Promise<void> {
+      const selected = ids === undefined ? Array.from(entries.peek().keys()) : ids;
+      return Promise.all(selected.map((id) => flush(id, false, { automatic: true, keepalive }))).then(() => undefined);
+    },
   };
 });

@@ -16,8 +16,14 @@
     "message": {
       "$ref": "#/definitions/ReviewStateMessage"
     },
+    "panorama_created": {
+      "$ref": "#/definitions/ReviewPanoramaCreated"
+    },
     "patch": {
       "$ref": "#/definitions/ReviewStatePatch"
+    },
+    "publish_created": {
+      "$ref": "#/definitions/ReviewPublishCreated"
     },
     "sampler_job": {
       "$ref": "#/definitions/ReviewSamplerJobSnapshot"
@@ -26,7 +32,17 @@
       "$ref": "#/definitions/ReviewStateSnapshot"
     }
   },
-  "required": ["state", "patch", "message", "sampler_job", "diffusion_job", "error", "keepalive"],
+  "required": [
+    "state",
+    "patch",
+    "message",
+    "publish_created",
+    "panorama_created",
+    "sampler_job",
+    "diffusion_job",
+    "error",
+    "keepalive"
+  ],
   "definitions": {
     "BasicRetouchAdjustments": {
       "description": "JSON representation of BasicRetouchAdjustments; serialized spelling is part of the review protocol.",
@@ -1046,6 +1062,72 @@
       "type": "string",
       "enum": ["default", "camera", "codex", "manual"]
     },
+    "ReviewPanoramaCreated": {
+      "description": "Keep the historical patch envelope while acknowledging exactly the panorama created by this request.",
+      "type": "object",
+      "properties": {
+        "bursts": {
+          "$ref": "#/definitions/PatchField_Array_of_ReviewBurst"
+        },
+        "capabilities": {
+          "$ref": "#/definitions/PatchField_ReviewCapabilities"
+        },
+        "client_count": {
+          "$ref": "#/definitions/PatchField_uint"
+        },
+        "codex": {
+          "$ref": "#/definitions/PatchField_ReviewCodexSummary"
+        },
+        "created_project_id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "diffusion_default": {
+          "$ref": "#/definitions/PatchField_DiffusionSettings"
+        },
+        "image_ids": {
+          "$ref": "#/definitions/PatchField_Array_of_uint64"
+        },
+        "images": {
+          "$ref": "#/definitions/PatchField_Array_of_ReviewImage"
+        },
+        "invocation": {
+          "$ref": "#/definitions/PatchField_Nullable_string"
+        },
+        "panorama": {
+          "$ref": "#/definitions/PatchField_ReviewPanoramaState"
+        },
+        "profile_diffusion_settings": {
+          "$ref": "#/definitions/PatchField_Array_of_ReviewProfileDiffusionSetting"
+        },
+        "profiles": {
+          "$ref": "#/definitions/PatchField_Array_of_ReviewProfile"
+        },
+        "publish_defaults": {
+          "$ref": "#/definitions/PatchField_ReviewPublishDefaults"
+        },
+        "publish_jobs": {
+          "$ref": "#/definitions/PatchField_Array_of_ReviewPublishJob"
+        },
+        "publish_root": {
+          "$ref": "#/definitions/PatchField_string"
+        },
+        "removed_image_ids": {
+          "$ref": "#/definitions/PatchField_Array_of_uint64"
+        },
+        "type": {
+          "$ref": "#/definitions/ReviewPatchType"
+        },
+        "ui": {
+          "$ref": "#/definitions/PatchField_ReviewUiState"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": ["type", "version", "created_project_id"]
+    },
     "ReviewPanoramaPreview": {
       "description": "A panorama preview replaces its private cached path with a nullable public URL.",
       "type": "object",
@@ -1775,6 +1857,72 @@
         }
       },
       "required": ["composite", "red", "green", "blue"]
+    },
+    "ReviewPublishCreated": {
+      "description": "Identify this request's publish job without inferring ownership from concurrently changing global state.",
+      "type": "object",
+      "properties": {
+        "bursts": {
+          "$ref": "#/definitions/PatchField_Array_of_ReviewBurst"
+        },
+        "capabilities": {
+          "$ref": "#/definitions/PatchField_ReviewCapabilities"
+        },
+        "client_count": {
+          "$ref": "#/definitions/PatchField_uint"
+        },
+        "codex": {
+          "$ref": "#/definitions/PatchField_ReviewCodexSummary"
+        },
+        "created_job_id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "diffusion_default": {
+          "$ref": "#/definitions/PatchField_DiffusionSettings"
+        },
+        "image_ids": {
+          "$ref": "#/definitions/PatchField_Array_of_uint64"
+        },
+        "images": {
+          "$ref": "#/definitions/PatchField_Array_of_ReviewImage"
+        },
+        "invocation": {
+          "$ref": "#/definitions/PatchField_Nullable_string"
+        },
+        "panorama": {
+          "$ref": "#/definitions/PatchField_ReviewPanoramaState"
+        },
+        "profile_diffusion_settings": {
+          "$ref": "#/definitions/PatchField_Array_of_ReviewProfileDiffusionSetting"
+        },
+        "profiles": {
+          "$ref": "#/definitions/PatchField_Array_of_ReviewProfile"
+        },
+        "publish_defaults": {
+          "$ref": "#/definitions/PatchField_ReviewPublishDefaults"
+        },
+        "publish_jobs": {
+          "$ref": "#/definitions/PatchField_Array_of_ReviewPublishJob"
+        },
+        "publish_root": {
+          "$ref": "#/definitions/PatchField_string"
+        },
+        "removed_image_ids": {
+          "$ref": "#/definitions/PatchField_Array_of_uint64"
+        },
+        "type": {
+          "$ref": "#/definitions/ReviewPatchType"
+        },
+        "ui": {
+          "$ref": "#/definitions/PatchField_ReviewUiState"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": ["type", "version", "created_job_id"]
     },
     "ReviewPublishDefaults": {
       "description": "Serialized ReviewPublishDefaults with only fields visible to review clients.",

@@ -3,7 +3,7 @@
  */
 import { createContext } from "preact";
 import { useContext } from "preact/hooks";
-import type { ToolsController } from "../../tools/use-tools";
+import type { DiffusionModelValue } from "./model";
 import {
   formatPercent,
   diffusionAfterSource,
@@ -21,27 +21,15 @@ import { reviewUrl } from "../../core/api";
 import type { ComponentChildren } from "preact";
 
 import type {
-  ReviewState,
-  DiffusionJob,
+  DiffusionJobObservation as DiffusionJob,
   DiffusionSettings,
   DiffusionPreviewContext,
   DiffusionDetailArea,
+  ReadonlyData,
 } from "../../core/types";
 
 /** Current diffusion state and lifecycle actions for the comparison components. */
-export interface DiffusionViewDependencies {
-  applyDiffusion: ToolsController["applyDiffusion"];
-  closeDiffusion: ToolsController["closeDiffusion"];
-  diffusionBeforeSource: ToolsController["diffusionBeforeSource"];
-  diffusionMediaStyle: ToolsController["diffusionMediaStyle"];
-  diffusionPreviewContext: ToolsController["diffusionPreviewContext"];
-  diffusionStatusText: ToolsController["diffusionStatusText"];
-  findImage: ToolsController["findImage"];
-  requestDiffusionPreview: ToolsController["requestDiffusionPreview"];
-  resetDiffusion: ToolsController["resetDiffusion"];
-  setDiffusionSettings: ToolsController["setDiffusionSettings"];
-  state: ReviewState;
-}
+export type DiffusionViewDependencies = DiffusionModelValue;
 
 interface DiffusionComparisonProps {
   before: ReturnType<DiffusionViewDependencies["diffusionBeforeSource"]>;
@@ -53,7 +41,7 @@ interface DiffusionComparisonProps {
 interface DiffusionDetailComparisonsProps {
   before: DiffusionComparisonProps["before"];
   after: DiffusionComparisonProps["after"];
-  previewContext: DiffusionPreviewContext | null;
+  previewContext: ReadonlyData<DiffusionPreviewContext> | null;
   job: DiffusionJob | null;
 }
 
@@ -61,7 +49,7 @@ interface DiffusionDetailFigureProps {
   label: string;
   source: DiffusionComparisonProps["before"];
   area: DiffusionDetailArea | null;
-  previewContext: DiffusionPreviewContext | null;
+  previewContext: ReadonlyData<DiffusionPreviewContext> | null;
   placeholder: string;
   alt: string;
 }
@@ -96,12 +84,12 @@ export function DiffusionOverlay(): ComponentChildren {
     diffusionMediaStyle,
     diffusionPreviewContext,
     diffusionStatusText,
-    findImage,
     requestDiffusionPreview,
     resetDiffusion,
-    state,
+    state: stateSignal,
   } = useDiffusionView();
-  const image = findImage(state.diffusionImageId);
+  const state = stateSignal.value;
+  const image = state.image;
   const profile = diffusionProfile(image, state.diffusionProfileIndex);
   const settings = normalizeDiffusionSettings(state.diffusionSettings);
   const job = state.diffusionJob;
@@ -216,7 +204,8 @@ export function DiffusionFullComparison({
   mediaStyle,
   job,
 }: DiffusionComparisonProps): ComponentChildren {
-  const { diffusionStatusText, state } = useDiffusionView();
+  const { diffusionStatusText, state: stateSignal } = useDiffusionView();
+  const state = stateSignal.value;
   return (
     <section class={"diffusion-comparison"} aria-label={"Diffusion before and after preview"}>
       <figure>
@@ -260,7 +249,8 @@ export function DiffusionDetailComparisons({
   previewContext,
   job,
 }: DiffusionDetailComparisonsProps): ComponentChildren {
-  const { diffusionStatusText, state } = useDiffusionView();
+  const { diffusionStatusText, state: stateSignal } = useDiffusionView();
+  const state = stateSignal.value;
   return (
     <section class={"diffusion-details"} aria-labelledby={"diffusion-details-title"}>
       <header class={"diffusion-details-header"}>

@@ -5,30 +5,8 @@ import type { ReviewStateData, ReviewStateMessage } from "../review/core/types";
 import { diffusionFixture, reviewFixture, samplerFixture } from "./fixtures";
 import type { ReviewKeepalive } from "../review/generated/responses";
 import { operations } from "../review/generated/operations";
-import * as validators from "../review/generated/validators.mjs";
+import { decodeOperationRequest, type RecordedOperation } from "../review/generated/request-decoders";
 import { defaultRetouch } from "../review/core/selectors";
-
-/** Keep every Rust-owned operation covered, including the four routes with no JSON request body. */
-const requestValidators = {
-  state: null,
-  review: validators.validateRequestReview,
-  ui: validators.validateRequestUi,
-  burst: validators.validateRequestBurst,
-  publish: validators.validateRequestPublish,
-  sampler_create: validators.validateRequestSamplerCreate,
-  sampler_get: null,
-  sampler_priority: validators.validateRequestSamplerPriority,
-  sampler_select: validators.validateRequestSamplerSelect,
-  diffusion_create: validators.validateRequestDiffusionCreate,
-  diffusion_get: null,
-  diffusion_apply: validators.validateRequestDiffusionApply,
-  diffusion_reset: validators.validateRequestDiffusionReset,
-  panorama_create: validators.validateRequestPanoramaCreate,
-  panorama_update: validators.validateRequestPanoramaUpdate,
-  panorama_previews: validators.validateRequestPanoramaPreviews,
-  panorama_render: validators.validateRequestPanoramaRender,
-  events: null,
-} satisfies Record<keyof typeof operations, ((body: unknown) => boolean) | null>;
 
 /** Narrow reflective catalog keys without asserting types for an untrusted request. */
 function isOperationName(name: string): name is keyof typeof operations {
@@ -47,30 +25,31 @@ function matchesRoute(template: string, path: string): boolean {
   );
 }
 
-/** Reject incorrect methods, routes, missing bodies, and incompatible JSON before a fixture can accept them. */
-export function validateOutgoingRequest(path: string, method: string, body: unknown): keyof typeof operations {
+/** Correlate the validated wire body with the specific operation, never a stronger UI-only payload type. */
+export type RecordedRequest = RecordedOperation & { readonly path: string; readonly method: string };
+
+/** Reject incorrect routes and body shapes before fixtures can acknowledge a mutation. */
+export function decodeOutgoingRequest(path: string, method: string, body: unknown): RecordedRequest {
   for (const name of Object.keys(operations)) {
     if (!isOperationName(name)) continue;
     const operation = operations[name];
     if (operation.method !== method || !matchesRoute(operation.path, path)) continue;
-    const validate = requestValidators[name];
-    if (!operation.hasRequest) {
-      if (body !== undefined) throw new Error(`Outgoing ${name} request must not contain a JSON body`);
-    } else if (body === undefined && operation.allowEmptyRequest) {
-      // These three handlers explicitly substitute their Rust defaults for an absent HTTP body.
-    } else if (!validate || !validate(body)) {
+    if (!operation.hasRequest && body !== undefined)
+      throw new Error(`Outgoing ${name} request must not contain a JSON body`);
+    try {
+      return { ...decodeOperationRequest(name, body), path, method };
+    } catch {
       throw new Error(`Outgoing ${name} request does not satisfy its Rust JSON contract`);
     }
-    return name;
   }
   throw new Error(`Outgoing ${method} api/${path} does not match a Rust JSON operation`);
 }
 
-interface RecordedRequest {
-  path: string;
-  method: string;
-  body: unknown;
+/** Preserve the route-coverage test's small name API while keeping real recordings fully discriminated. */
+export function validateOutgoingRequest(path: string, method: string, body: unknown): keyof typeof operations {
+  return decodeOutgoingRequest(path, method, body).name;
 }
+
 interface ReviewHarness {
   data: ReviewStateData;
   requests: RecordedRequest[];
@@ -83,7 +62,7 @@ export async function openReview(page: Page): Promise<ReviewHarness> {
   const harness: ReviewHarness = { data: reviewFixture(), requests: [], errors: [], scripts: [] };
   page.on("pageerror", (error) => harness.errors.push(error.message));
   page.on("console", (message) => {
-    if (message.type() === "error") harness.errors.push(message.text());
+    if (message.type() === "error" || message.type() === "warning") harness.errors.push(message.text());
   });
   page.on("request", (request) => {
     if (request.resourceType() === "script") harness.scripts.push(request.url());
@@ -148,10 +127,10 @@ export async function openReview(page: Page): Promise<ReviewHarness> {
     const path = new URL(request.url()).pathname.split("/api/")[1];
     if (path === undefined) throw new Error("Fixture intercepted a URL outside the review API");
     const body: unknown = request.postData() ? request.postDataJSON() : undefined;
-    harness.requests.push({ path, method: request.method(), body });
-    if (path === "review") {
-      if (!validators.validateRequestReview(body)) throw new Error("Invalid review fixture request");
-      const update = body;
+    const recorded = decodeOutgoingRequest(path, request.method(), body);
+    harness.requests.push(recorded);
+    if (recorded.name === "review") {
+      const update = recorded.body;
       const image = harness.data.images.find((image) => image.id === update.image_id);
       if (image) {
         image.rating = update.rating;
@@ -180,9 +159,8 @@ export async function openReview(page: Page): Promise<ReviewHarness> {
           }));
         if (update.advance_after_update) harness.data.ui.current_image_id = Math.min(3, image.id + 1);
       }
-    } else if (path === "ui") {
-      if (!validators.validateRequestUi(body)) throw new Error("Invalid UI fixture request");
-      Object.assign(harness.data.ui, body);
+    } else if (recorded.name === "ui") {
+      Object.assign(harness.data.ui, recorded.body);
     } else if (path === "diffusion/settings") {
       // Settings endpoints acknowledge with a state patch, including DELETE.
     } else if (path.startsWith("sampler/jobs")) {
@@ -212,7 +190,12 @@ export async function openReview(page: Page): Promise<ReviewHarness> {
       await route.fulfill({ status: 404, json: { error: `Unexpected fixture request: ${path}` } });
       return;
     }
-    await route.fulfill({ json: path === "state" ? harness.data : { ...harness.data, type: "patch" } });
+    await route.fulfill({
+      json:
+        path === "state"
+          ? harness.data
+          : { ...harness.data, type: "patch", ...(path === "publish" ? { created_job_id: 11 } : {}) },
+    });
   });
   await page.goto("./");
   await expect(page.locator("#image-title")).toHaveText("frame-1.NEF");

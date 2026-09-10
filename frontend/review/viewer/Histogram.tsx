@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { clamp } from "./geometry";
 
 interface HistogramProps {
-  imageRef: RefObject<HTMLImageElement>;
+  imageRef: RefObject<HTMLImageElement | null>;
   sourceKey: string;
   filter: string;
   visible: boolean;

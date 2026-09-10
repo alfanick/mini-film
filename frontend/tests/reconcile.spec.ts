@@ -14,7 +14,7 @@ import {
   profileDisplayState,
   selectedProfile,
 } from "../review/core/selectors";
-import type { ReviewState } from "../review/core/types";
+import type { ReviewStateObservation as ReviewState } from "../review/core/types";
 
 /** Build an isolated established review session from the same fixture used by browser tests. */
 function session(): ReviewState {
@@ -44,12 +44,19 @@ test("patches without an initial snapshot wait for a complete state", (): void =
   expect(mergeSnapshot(null, { type: "patch", version: "22.15.1", client_count: 3 })).toBeNull();
 });
 
+test("unrelated live messages retain label and pending-selection collection identities", (): void => {
+  const state = session();
+  const patch = reconcileReview(state, { type: "patch", version: "22.15.1", client_count: 9 });
+  expect(patch.labelFilters).toBe(state.labelFilters);
+  expect(patch.pendingProfileSelections).toBe(state.pendingProfileSelections);
+});
+
 test("optimistic selection survives stale SSE until the exact selection is acknowledged", (): void => {
   const state = session();
   const data = reviewFixture();
   const pending = required(required(data.images[0]).profiles[1]).profile_index;
-  state.pendingProfileSelections.set(1, pending);
-  const merged = { ...state, ...reconcileReview(state, data) };
+  const optimistic = { ...state, pendingProfileSelections: new Map([[1, pending]]) };
+  const merged = { ...optimistic, ...reconcileReview(optimistic, data) };
   expect(selectedProfile(required(merged.data?.images[0]) || null, merged)?.profile_index).toBe(pending);
   expect(merged.pendingProfileSelections.get(1)).toBe(pending);
   required(data.images[0]).selected_profile_index = pending;
@@ -62,13 +69,14 @@ test("older snapshots cannot reverse a confirmed newer profile selection", (): v
   const data = reviewFixture();
   if (!state.data) throw new Error("Fixture requires a snapshot");
   const chosen = required(required(state.data.images[0]).profiles[1]).profile_index;
-  state.data.images[0] = {
+  const selected = {
     ...required(state.data.images[0]),
     selected_profile_index: chosen,
     updated_at: "2026-09-06",
   };
   required(data.images[0]).updated_at = "2026-09-05";
-  expect(required(reconcileReview(state, data).data?.images[0]).selected_profile_index).toBe(chosen);
+  const newer = { ...state, data: { ...state.data, images: [selected, ...state.data.images.slice(1)] } };
+  expect(required(reconcileReview(newer, data).data?.images[0]).selected_profile_index).toBe(chosen);
 });
 
 test("server removals choose the first remaining visible picture", (): void => {

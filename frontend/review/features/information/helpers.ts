@@ -3,17 +3,18 @@
  * quoting.
  */
 import type {
-  ReviewImage,
-  ReviewProfile,
-  ReviewProfileMetadata,
+  ReviewImageObservation as ReviewImage,
+  ReviewProfileObservation as ReviewProfile,
+  ReviewProfileMetadataObservation as ReviewProfileMetadata,
   ReviewProfileAdjustments,
   ReviewProfileSharpening,
   ReviewProfilePp3Section,
+  ReadonlyData,
 } from "../../core/types";
 import { safeDownloadPart, profileDisplayName } from "../../tools/common";
 
 /** Format known profile adjustments without inventing unsupported metadata fields. */
-export function renderAdjustments(adjustments: Partial<ReviewProfileAdjustments>): string {
+export function renderAdjustments(adjustments: ReadonlyData<Partial<ReviewProfileAdjustments>>): string {
   const values = [
     ["exposure", adjustments.exposure],
     ["contrast", adjustments.contrast],
@@ -54,19 +55,17 @@ export function renderSharpening(sharpening: Partial<ReviewProfileSharpening>): 
 }
 
 /** Format profile sections and entries while omitting empty section bodies. */
-export function renderPp3Adjustments(sections?: ReviewProfilePp3Section[]): string {
-  if (!Array.isArray(sections) || sections.length === 0) {
+export function renderPp3Adjustments(sections?: readonly ReadonlyData<ReviewProfilePp3Section>[]): string {
+  if (!sections || sections.length === 0) {
     return "—";
   }
   return sections
     .map((section) => {
       const source = section.source ? `${section.source} ` : "";
-      const entries = Array.isArray(section.entries)
-        ? section.entries
-            .filter((entry) => entry?.key && entry?.value)
-            .map((entry) => `${entry.key}=${entry.value}`)
-            .join(", ")
-        : "";
+      const entries = section.entries
+        .filter((entry) => entry.key && entry.value)
+        .map((entry) => `${entry.key}=${entry.value}`)
+        .join(", ");
       return entries ? `${source}[${section.section}]\n${entries}` : "";
     })
     .filter(Boolean)

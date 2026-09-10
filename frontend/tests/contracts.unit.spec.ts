@@ -9,6 +9,8 @@ import {
   validateResponseKeepalive,
   validateResponseMessage,
   validateResponsePatch,
+  validateResponsePublishCreated,
+  validateResponsePanoramaCreated,
   validateResponseSamplerJob,
   validateResponseState,
 } from "../review/generated/validators.mjs";
@@ -69,6 +71,8 @@ test("actual Rust-serialized fixtures satisfy the generated response validators"
   const validators: Readonly<Record<string, (value: unknown) => boolean>> = {
     state: validateResponseState,
     patch: validateResponsePatch,
+    publish_created: validateResponsePublishCreated,
+    panorama_created: validateResponsePanoramaCreated,
     sampler_job: validateResponseSamplerJob,
     diffusion_job: validateResponseDiffusionJob,
     keepalive: validateResponseKeepalive,

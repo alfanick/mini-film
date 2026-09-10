@@ -2,7 +2,6 @@
  * These cases protect focus ownership and portable slider deltas that broad screenshots cannot establish. */
 import { required } from "./required";
 import { expect, test } from "@playwright/test";
-import type { ReviewUpdateRequest } from "../review/core/types";
 import { openReview, sendState } from "./harness";
 
 test("crop tools advertise saved adjustments and do not open without usable source media", async ({ page }) => {
@@ -44,20 +43,20 @@ test("focused retouch inputs survive autosave acknowledgements and later server 
   await exposure.focus();
   await page.keyboard.press("ArrowRight");
   await expect(exposure).toHaveValue("0.8");
-  await expect.poll(() => harness.requests.filter((request) => request.path === "review").length).toBeGreaterThan(0);
+  await expect.poll(() => harness.requests.filter((request) => request.name === "review").length).toBeGreaterThan(0);
   const data = structuredClone(harness.data);
   required(data.images[0]).retouch.adjustments.exposure = 2;
   await sendState(page, data);
   await expect(exposure).toBeFocused();
   await expect(exposure).toHaveValue("0.8");
-  const beforeCommit = harness.requests.filter((request) => request.path === "review").length;
+  const beforeCommit = harness.requests.filter((request) => request.name === "review").length;
   await page.keyboard.press("Enter");
   await expect
-    .poll(() => harness.requests.filter((request) => request.path === "review").length)
+    .poll(() => harness.requests.filter((request) => request.name === "review").length)
     .toBeGreaterThan(beforeCommit);
-  const requests = harness.requests.filter((request) => request.path === "review");
-  const committed = required(requests[requests.length - 1]).body as ReviewUpdateRequest;
-  expect(committed.retouch?.adjustments.exposure).toBe(0.8);
+  const requests = harness.requests.filter((request) => request.name === "review");
+  const committed = required(requests[requests.length - 1]).body;
+  expect(committed.retouch?.adjustments?.exposure).toBe(0.8);
   expect(harness.errors).toEqual([]);
 });
 
@@ -74,9 +73,9 @@ test("editing one slider normalizes every displayed delta clipped by the selecte
   await page.keyboard.press("ArrowRight");
   await expect
     .poll(() => {
-      const requests = harness.requests.filter((item) => item.path === "review");
+      const requests = harness.requests.filter((item) => item.name === "review");
       const request = requests[requests.length - 1];
-      return (request?.body as ReviewUpdateRequest | undefined)?.retouch?.adjustments.exposure;
+      return request?.body?.retouch?.adjustments?.exposure;
     })
     .toBe(1);
   expect(harness.errors).toEqual([]);

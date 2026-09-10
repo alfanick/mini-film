@@ -2,6 +2,7 @@
 import { expect, test } from "@playwright/test";
 import { effect } from "@preact/signals";
 import { ReviewModel } from "../review/core/model";
+import { PanoramaModel } from "../review/features/panorama/model";
 import { ReviewDraftModel, fieldDirty, type DraftPorts } from "../review/session/draft-model";
 import { createFailureTracker } from "../review/session/failures";
 import {
@@ -9,8 +10,9 @@ import {
   projectReviewIntent,
   reviewIntentFields,
   type ReviewIntent,
+  type ReviewFields,
 } from "../review/session/commands";
-import type { ReviewImage, ReviewUpdateRequest } from "../review/core/types";
+import type { ReviewImageObservation as ReviewImage } from "../review/core/types";
 import { reviewFixture } from "./fixtures";
 
 /** Require a fixture value while narrowing both absent entries and explicitly nullable model selections. */
@@ -38,14 +40,14 @@ function deferred(): { promise: Promise<void>; resolve: () => void; reject: (err
 function draftHarness(): {
   model: InstanceType<typeof ReviewModel>;
   drafts: InstanceType<typeof ReviewDraftModel>;
-  saves: { id: number; fields: Partial<ReviewUpdateRequest> }[];
+  saves: { id: number; fields: ReviewFields }[];
   timers: Map<number, { delay: number; fire: () => void }>;
   setSave: (save: DraftPorts["save"]) => void;
   dispose: () => void;
 } {
   const model = new ReviewModel();
   model.applyMessage(reviewFixture());
-  const saves: { id: number; fields: Partial<ReviewUpdateRequest> }[] = [];
+  const saves: { id: number; fields: ReviewFields }[] = [];
   const timers = new Map<number, { delay: number; fire: () => void }>();
   let timerId = 0;
   let save: DraftPorts["save"] = (image, fields): Promise<void> => {
@@ -132,8 +134,8 @@ test("an older acknowledgement clears only the field revisions it submitted", as
 test("unrelated server patches cannot acknowledge or hide a local retouch preview", async (): Promise<void> => {
   const harness = draftHarness();
   try {
-    const retouch = structuredClone(required(harness.model.image(1).peek()).retouch);
-    retouch.adjustments.exposure = 1;
+    const original = required(harness.model.image(1).peek()).retouch;
+    const retouch = { ...original, adjustments: { ...original.adjustments, exposure: 1 } };
     harness.drafts.setRetouch(1, retouch);
     expect(Array.from(harness.timers.values()).map((timer) => timer.delay)).toEqual([1200]);
     harness.model.applyMessage({ type: "patch", version: "22.15.1", client_count: 3 });
@@ -187,13 +189,19 @@ test("focused retouch remains explicitly committable after autosave and a server
   const harness = draftHarness();
   try {
     harness.drafts.focusRetouch(1, true);
-    const retouch = structuredClone(required(harness.model.image(1).peek()).retouch);
-    retouch.adjustments.exposure = 0.8;
+    const original = required(harness.model.image(1).peek()).retouch;
+    const retouch = { ...original, adjustments: { ...original.adjustments, exposure: 0.8 } };
     harness.drafts.setRetouch(1, retouch, false);
     await harness.drafts.flush(1);
     const remote = structuredClone(required(harness.model.getConfirmedState().data));
-    required(remote.images[0]).retouch.adjustments.exposure = 2;
-    harness.model.applyMessage(remote);
+    harness.model.applyMessage({
+      ...remote,
+      images: remote.images.map((image) =>
+        image.id === 1
+          ? { ...image, retouch: { ...image.retouch, adjustments: { ...image.retouch.adjustments, exposure: 2 } } }
+          : image,
+      ),
+    });
     expect(required(harness.drafts.image(1).peek()).retouch.value.adjustments.exposure).toBe(0.8);
     await harness.drafts.flush(1, true);
     expect(harness.saves[1]?.fields.retouch?.adjustments.exposure).toBe(0.8);
@@ -206,7 +214,7 @@ test("semantic commands compile against the acknowledged result of prior local c
   const model = new ReviewModel();
   model.applyMessage(reviewFixture());
   const queue = createCommandQueue();
-  const bodies: number[][] = [];
+  const bodies: (readonly number[])[] = [];
   /** Match the session's intention boundary while keeping transport deterministic. */
   function execute(intent: ReviewIntent): Promise<void> {
     const id = model.beginCommand(1, intent);
@@ -273,7 +281,7 @@ test("one image patch notifies only its image subscriber and preserves untouched
   }
 });
 
-test("tool draft changes do not invalidate catalog, filtered rows or unrelated field subscriptions", (): void => {
+test("viewer state does not invalidate catalog, filtered rows or unrelated field subscriptions", (): void => {
   const model = new ReviewModel();
   model.applyMessage(reviewFixture());
   let catalogs = 0;
@@ -292,7 +300,7 @@ test("tool draft changes do not invalidate catalog, filtered rows or unrelated f
     selections += 1;
   });
   try {
-    model.update({ panoramaName: "New project name", diffusionMessage: "Loading preview" });
+    model.update({ histogramOpen: true, mobileDrawer: "pictures" });
     expect([catalogs, rows, selections]).toEqual([1, 1, 1]);
   } finally {
     stopCatalog();
@@ -302,17 +310,17 @@ test("tool draft changes do not invalidate catalog, filtered rows or unrelated f
   }
 });
 
-test("separate provider models never share edits, pending selections or tool state", (): void => {
+test("separate provider models never share edits, pending selections or viewer state", (): void => {
   const first = new ReviewModel();
   const second = new ReviewModel();
   try {
     first.applyMessage(reviewFixture());
     second.applyMessage(reviewFixture());
     first.beginCommand(1, { kind: "profile-selected", profileIndex: 1 });
-    first.update({ samplerOpen: true });
+    first.update({ informationOpen: true });
     expect(required(first.image(1).peek()).selected_profile_index).toBe(1);
     expect(required(second.image(1).peek()).selected_profile_index).toBe(0);
-    expect(second.field("samplerOpen").peek()).toBe(false);
+    expect(second.field("informationOpen").peek()).toBe(false);
   } finally {
     first[Symbol.dispose]();
     second[Symbol.dispose]();
@@ -398,6 +406,10 @@ for (const count of [1000, 10000]) {
     const template = required(fixture.images[0]);
     fixture.images = Array.from({ length: count }, (_unused, index) => ({ ...template, id: index + 1 }));
     model.applyMessage(fixture);
+    const panorama = new PanoramaModel(model, {
+      applyMessage: model.applyMessage,
+      updateSharedUi: (): Promise<void> => Promise.resolve(),
+    });
     let notifications = 0;
     const stops = fixture.images.map((image) =>
       effect(() => {
@@ -408,7 +420,7 @@ for (const count of [1000, 10000]) {
     try {
       notifications = 0;
       const started = performance.now();
-      model.update({ panoramaName: "No image subscription", diffusionMessage: "No catalog work" });
+      panorama.updatePanorama({ panoramaName: "No image subscription" });
       expect(notifications).toBe(0);
       const retouch = structuredClone(template.retouch);
       retouch.adjustments.exposure = 1;
@@ -420,6 +432,7 @@ for (const count of [1000, 10000]) {
       console.info(`${count} images: edit + tool update ${elapsed.toFixed(2)} ms, ${notifications} image notification`);
     } finally {
       for (const stop of stops) stop();
+      panorama[Symbol.dispose]();
       model[Symbol.dispose]();
     }
   });

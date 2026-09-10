@@ -7,11 +7,11 @@ import { createContext, type ComponentChildren } from "preact";
 import { useContext } from "preact/hooks";
 import { useModel } from "@preact/signals";
 import { ReviewModel, type ReviewModelValue, type ReviewStateUpdate } from "./model";
-import type { ReviewState } from "./types";
+import type { ReviewStateObservation as ReviewState } from "./types";
 
 export type { ReviewStateUpdate } from "./model";
 
-/** The only application-wide state interface; feature-local state stays in hooks. */
+/** Named shell subscriptions observe the catalog model; feature-local state belongs to provider-owned models. */
 export interface ReviewContextValue {
   state: ReviewState;
   update: (patch: ReviewStateUpdate) => void;
@@ -33,10 +33,9 @@ export function useReviewModel(): ReviewModelValue {
   return model;
 }
 
-/** Subscribe only to listed client fields, or to the full snapshot for unmigrated consumers. */
-export function useReviewContext(keys?: readonly (keyof ReviewState)[]): ReviewContextValue {
+/** Every view subscription names its fields; complete snapshots are read only for current event-time selectors. */
+export function useReviewContext(keys: readonly (keyof ReviewState)[]): ReviewContextValue {
   const model = useReviewModel();
-  if (keys) for (const key of keys) void model.field(key).value;
-  else void model.state.value;
+  for (const key of keys) void model.field(key).value;
   return { state: model.getState(), update: model.update, getState: model.getState };
 }

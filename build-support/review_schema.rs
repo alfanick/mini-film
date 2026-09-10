@@ -38,6 +38,8 @@ pub struct ResponseContracts {
     pub state: ReviewStateSnapshot,
     pub patch: ReviewStatePatch,
     pub message: ReviewStateMessage,
+    pub publish_created: ReviewPublishCreated,
+    pub panorama_created: ReviewPanoramaCreated,
     pub sampler_job: ReviewSamplerJobSnapshot,
     pub diffusion_job: ReviewDiffusionJob,
     pub error: ReviewError,
@@ -54,7 +56,40 @@ pub struct Operation {
     pub response: &'static str,
     pub allow_empty_request: bool,
     pub transport: &'static str,
+    pub parameters: &'static [OperationParameter],
 }
+
+/// Route identities keep numeric server identifiers distinct from opaque, URL-encoded keys.
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ParameterKind {
+    Number,
+    String,
+}
+
+/// Export the server parser's parameter type instead of guessing from a placeholder in JavaScript.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct OperationParameter {
+    pub name: &'static str,
+    pub kind: ParameterKind,
+}
+
+impl Operation {
+    /// Attach parameter metadata beside its route so new placeholders require an explicit type.
+    const fn parameters(mut self, parameters: &'static [OperationParameter]) -> Self {
+        self.parameters = parameters;
+        self
+    }
+}
+
+const JOB_ID: OperationParameter = OperationParameter {
+    name: "job_id",
+    kind: ParameterKind::Number,
+};
+const PROJECT_ID: OperationParameter = OperationParameter {
+    name: "project_id",
+    kind: ParameterKind::Number,
+};
 
 /// Describe a JSON HTTP operation, preserving the existing relative routing convention.
 const fn http(
@@ -73,6 +108,7 @@ const fn http(
         response,
         allow_empty_request,
         transport: "http",
+        parameters: &[],
     }
 }
 
@@ -95,13 +131,17 @@ pub const OPERATIONS: &[Operation] = &[
         Some("burst"),
         "patch",
         false,
-    ),
+    )
+    .parameters(&[OperationParameter {
+        name: "burst_id",
+        kind: ParameterKind::String,
+    }]),
     http(
         "publish",
         "POST",
         "api/publish",
         Some("publish"),
-        "patch",
+        "publish_created",
         true,
     ),
     http(
@@ -119,7 +159,8 @@ pub const OPERATIONS: &[Operation] = &[
         None,
         "sampler_job",
         false,
-    ),
+    )
+    .parameters(&[JOB_ID]),
     http(
         "sampler_priority",
         "POST",
@@ -127,7 +168,8 @@ pub const OPERATIONS: &[Operation] = &[
         Some("sampler_priority"),
         "sampler_job",
         false,
-    ),
+    )
+    .parameters(&[JOB_ID]),
     http(
         "sampler_select",
         "POST",
@@ -135,7 +177,14 @@ pub const OPERATIONS: &[Operation] = &[
         Some("sampler_select"),
         "sampler_job",
         false,
-    ),
+    )
+    .parameters(&[
+        JOB_ID,
+        OperationParameter {
+            name: "entry_key",
+            kind: ParameterKind::String,
+        },
+    ]),
     http(
         "diffusion_create",
         "POST",
@@ -151,7 +200,8 @@ pub const OPERATIONS: &[Operation] = &[
         None,
         "diffusion_job",
         false,
-    ),
+    )
+    .parameters(&[JOB_ID]),
     http(
         "diffusion_apply",
         "POST",
@@ -173,7 +223,7 @@ pub const OPERATIONS: &[Operation] = &[
         "POST",
         "api/panoramas",
         Some("panorama_create"),
-        "patch",
+        "panorama_created",
         false,
     ),
     http(
@@ -183,7 +233,8 @@ pub const OPERATIONS: &[Operation] = &[
         Some("panorama_update"),
         "patch",
         false,
-    ),
+    )
+    .parameters(&[PROJECT_ID]),
     http(
         "panorama_previews",
         "POST",
@@ -191,7 +242,8 @@ pub const OPERATIONS: &[Operation] = &[
         Some("panorama_previews"),
         "patch",
         true,
-    ),
+    )
+    .parameters(&[PROJECT_ID]),
     http(
         "panorama_render",
         "POST",
@@ -199,7 +251,8 @@ pub const OPERATIONS: &[Operation] = &[
         Some("panorama_render"),
         "patch",
         true,
-    ),
+    )
+    .parameters(&[PROJECT_ID]),
     Operation {
         name: "events",
         method: "GET",
@@ -208,6 +261,7 @@ pub const OPERATIONS: &[Operation] = &[
         response: "message",
         allow_empty_request: false,
         transport: "sse",
+        parameters: &[],
     },
 ];
 

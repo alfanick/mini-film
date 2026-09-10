@@ -6,7 +6,8 @@
     "request": null,
     "response": "state",
     "allow_empty_request": false,
-    "transport": "http"
+    "transport": "http",
+    "parameters": []
   },
   {
     "name": "review",
@@ -15,7 +16,8 @@
     "request": "review",
     "response": "patch",
     "allow_empty_request": false,
-    "transport": "http"
+    "transport": "http",
+    "parameters": []
   },
   {
     "name": "ui",
@@ -24,7 +26,8 @@
     "request": "ui",
     "response": "patch",
     "allow_empty_request": false,
-    "transport": "http"
+    "transport": "http",
+    "parameters": []
   },
   {
     "name": "burst",
@@ -33,16 +36,23 @@
     "request": "burst",
     "response": "patch",
     "allow_empty_request": false,
-    "transport": "http"
+    "transport": "http",
+    "parameters": [
+      {
+        "name": "burst_id",
+        "kind": "string"
+      }
+    ]
   },
   {
     "name": "publish",
     "method": "POST",
     "path": "api/publish",
     "request": "publish",
-    "response": "patch",
+    "response": "publish_created",
     "allow_empty_request": true,
-    "transport": "http"
+    "transport": "http",
+    "parameters": []
   },
   {
     "name": "sampler_create",
@@ -51,7 +61,8 @@
     "request": "sampler_create",
     "response": "sampler_job",
     "allow_empty_request": false,
-    "transport": "http"
+    "transport": "http",
+    "parameters": []
   },
   {
     "name": "sampler_get",
@@ -60,7 +71,13 @@
     "request": null,
     "response": "sampler_job",
     "allow_empty_request": false,
-    "transport": "http"
+    "transport": "http",
+    "parameters": [
+      {
+        "name": "job_id",
+        "kind": "number"
+      }
+    ]
   },
   {
     "name": "sampler_priority",
@@ -69,7 +86,13 @@
     "request": "sampler_priority",
     "response": "sampler_job",
     "allow_empty_request": false,
-    "transport": "http"
+    "transport": "http",
+    "parameters": [
+      {
+        "name": "job_id",
+        "kind": "number"
+      }
+    ]
   },
   {
     "name": "sampler_select",
@@ -78,7 +101,17 @@
     "request": "sampler_select",
     "response": "sampler_job",
     "allow_empty_request": false,
-    "transport": "http"
+    "transport": "http",
+    "parameters": [
+      {
+        "name": "job_id",
+        "kind": "number"
+      },
+      {
+        "name": "entry_key",
+        "kind": "string"
+      }
+    ]
   },
   {
     "name": "diffusion_create",
@@ -87,7 +120,8 @@
     "request": "diffusion_create",
     "response": "diffusion_job",
     "allow_empty_request": false,
-    "transport": "http"
+    "transport": "http",
+    "parameters": []
   },
   {
     "name": "diffusion_get",
@@ -96,7 +130,13 @@
     "request": null,
     "response": "diffusion_job",
     "allow_empty_request": false,
-    "transport": "http"
+    "transport": "http",
+    "parameters": [
+      {
+        "name": "job_id",
+        "kind": "number"
+      }
+    ]
   },
   {
     "name": "diffusion_apply",
@@ -105,7 +145,8 @@
     "request": "diffusion_apply",
     "response": "patch",
     "allow_empty_request": false,
-    "transport": "http"
+    "transport": "http",
+    "parameters": []
   },
   {
     "name": "diffusion_reset",
@@ -114,16 +155,18 @@
     "request": "diffusion_reset",
     "response": "patch",
     "allow_empty_request": false,
-    "transport": "http"
+    "transport": "http",
+    "parameters": []
   },
   {
     "name": "panorama_create",
     "method": "POST",
     "path": "api/panoramas",
     "request": "panorama_create",
-    "response": "patch",
+    "response": "panorama_created",
     "allow_empty_request": false,
-    "transport": "http"
+    "transport": "http",
+    "parameters": []
   },
   {
     "name": "panorama_update",
@@ -132,7 +175,13 @@
     "request": "panorama_update",
     "response": "patch",
     "allow_empty_request": false,
-    "transport": "http"
+    "transport": "http",
+    "parameters": [
+      {
+        "name": "project_id",
+        "kind": "number"
+      }
+    ]
   },
   {
     "name": "panorama_previews",
@@ -141,7 +190,13 @@
     "request": "panorama_previews",
     "response": "patch",
     "allow_empty_request": true,
-    "transport": "http"
+    "transport": "http",
+    "parameters": [
+      {
+        "name": "project_id",
+        "kind": "number"
+      }
+    ]
   },
   {
     "name": "panorama_render",
@@ -150,7 +205,13 @@
     "request": "panorama_render",
     "response": "patch",
     "allow_empty_request": true,
-    "transport": "http"
+    "transport": "http",
+    "parameters": [
+      {
+        "name": "project_id",
+        "kind": "number"
+      }
+    ]
   },
   {
     "name": "events",
@@ -159,6 +220,7 @@
     "request": null,
     "response": "message",
     "allow_empty_request": false,
-    "transport": "sse"
+    "transport": "sse",
+    "parameters": []
   }
 ]

@@ -19,10 +19,16 @@ Installed hooks:
 
 This makes both commit and push fail early when formatting or lint checks are not clean.
 
-Frontend checks require Node.js 24 or newer and npm. The asset hook installs
+Frontend checks require Node.js 24.12 or newer and npm. The asset hook installs
 locked tooling locally when needed, then formats/lints the embedded assets and
 TypeScript/TSX sources and checks review UI types. Cargo builds independently
 install and compile the review UI inside Cargo's build output directory.
+
+Both hooks and CI block on newer stable/RC Preact, stable Signals, native
+TypeScript, or either pinned TypeScript 6 compatibility package. Registry outages
+fail closed after bounded retries; no dependency is updated automatically.
+The hook also checks high-severity npm advisories. These online policies never
+run inside Cargo, so cached source builds do not require freshness services.
 
 The pre-commit hook automatically formats staged frontend paths to the project's
 120-column style. It preserves the Git index: if formatting changes a working

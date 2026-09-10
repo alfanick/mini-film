@@ -1,20 +1,21 @@
 /**
- * Reactive diffusion editing ties request cancellation, preview media, and inherited settings to the dialog
- * lifecycle.
+ * Provider-owned diffusion preserves debounce and polling while isolating preview generations and save barriers.
  */
-import { useCallback, useEffect, useRef, useState } from "preact/hooks";
-import type { JSX } from "preact";
-import { useReviewContext } from "../../core/context";
-import { reviewApi } from "../../core/api";
+import { computed, createModel, effect, signal, type ReadonlySignal } from "@preact/signals";
+import type { CSSProperties } from "preact";
+import { reviewApi, errorMessage, isAbortError } from "../../core/api";
+import type { ReviewModelValue } from "../../core/model";
 import type {
-  DiffusionJob,
+  DiffusionJobObservation,
   DiffusionSettings,
   DiffusionScope,
   DiffusionPreviewContext,
   DiffusionDetailArea,
   ImageSource,
-  ReviewImage,
-  ReviewProfileRender,
+  ReadonlyData,
+  ReviewImageObservation,
+  ReviewProfileRenderObservation,
+  DiffusionSource,
 } from "../../core/types";
 import { DIFFUSION_POLL_MS, DIFFUSION_PREVIEW_DEBOUNCE_MS } from "../../core/constants";
 import {
@@ -25,10 +26,49 @@ import {
   diffusionAfterSource,
 } from "./helpers";
 import { selectedProfile, isDirectCompressedImage, isSoocProfile, capitalize } from "../../core/selectors";
-import { errorMessage, isAbortError } from "../../core/api";
 import type { ToolSessionActions } from "../../tools/types";
 
-/** Typed editing commands and derived media helpers consumed by diffusion views. */
+/** View observations derive mutually exclusive loading/save flags from the model's operation state. */
+export interface DiffusionState {
+  readonly diffusionOpen: boolean;
+  readonly diffusionLoading: boolean;
+  readonly diffusionSaving: boolean;
+  readonly diffusionError: string;
+  readonly diffusionErrorKind: "preview" | "save" | null;
+  readonly diffusionMessage: string;
+  readonly diffusionJob: DiffusionJobObservation | null;
+  readonly diffusionBefore: ReadonlyData<ImageSource> | null;
+  readonly diffusionPreviewContext: ReadonlyData<DiffusionPreviewContext> | null;
+  readonly diffusionImageId: number | null;
+  readonly diffusionProfileIndex: number | null;
+  readonly diffusionSettings: ReadonlyData<DiffusionSettings> | null;
+  readonly diffusionSource: DiffusionSource | null;
+  readonly image: ReviewImageObservation | null;
+}
+
+/** Save and preview feedback cannot coexist accidentally or display a stale save message during a preview. */
+type DiffusionWork =
+  | { readonly kind: "preview"; readonly loading: boolean; readonly error: string }
+  | { readonly kind: "saving"; readonly loading: boolean; readonly message: string }
+  | { readonly kind: "save-failed"; readonly loading: boolean; readonly error: string };
+
+/** An open dialog always owns a complete picture/profile/settings draft; closing destroys that identity. */
+interface DiffusionActive {
+  readonly kind: "open";
+  readonly imageId: number;
+  readonly profileIndex: number;
+  readonly settings: ReadonlyData<DiffusionSettings>;
+  readonly source: DiffusionSource | null;
+  readonly job: DiffusionJobObservation | null;
+  readonly before: ReadonlyData<ImageSource> | null;
+  readonly context: ReadonlyData<DiffusionPreviewContext> | null;
+  readonly work: DiffusionWork;
+}
+
+/** Dialog lifetime is distinct from preview and save work within an existing draft. */
+type DiffusionDialog = { readonly kind: "closed" } | DiffusionActive;
+
+/** Stable editing commands and derived media helpers consumed by diffusion views. */
 export interface DiffusionActions {
   openDiffusion(this: void): void;
   closeDiffusion(this: void): void;
@@ -36,22 +76,30 @@ export interface DiffusionActions {
   requestDiffusionPreview(this: void): void;
   applyDiffusion(this: void, scope: DiffusionScope): Promise<void>;
   resetDiffusion(this: void, scope: DiffusionScope): Promise<void>;
-  diffusionBeforeSource(this: void, job: DiffusionJob | null): ImageSource;
-  diffusionPreviewContext(this: void, job: DiffusionJob | null): DiffusionPreviewContext | null;
+  diffusionBeforeSource(this: void, job: DiffusionJobObservation | null): ReadonlyData<ImageSource>;
+  diffusionPreviewContext(
+    this: void,
+    job: DiffusionJobObservation | null,
+  ): ReadonlyData<DiffusionPreviewContext> | null;
   diffusionMediaStyle(
     this: void,
-    job: DiffusionJob | null,
-    image: ReviewImage | null,
-    profile: ReviewProfileRender | null,
-  ): JSX.CSSProperties | undefined;
-  diffusionStatusText(this: void, job: DiffusionJob | null): string;
+    job: DiffusionJobObservation | null,
+    image: ReviewImageObservation | null,
+    profile: ReviewProfileRenderObservation | null,
+  ): CSSProperties | undefined;
+  diffusionStatusText(this: void, job: DiffusionJobObservation | null): string;
 }
 
-/** Carry valid detail crops between previews of matching size so loading does not shift the comparison frames. */
+/** One application-owned instance outlives recoverable dialog views and owns all pending work. */
+export interface DiffusionModelValue extends DiffusionActions {
+  readonly state: ReadonlySignal<DiffusionState>;
+}
+
+/** Retain valid detail crops between matching preview dimensions to avoid shifting comparison frames. */
 function previewContext(
-  job: DiffusionJob | null,
-  remembered: DiffusionPreviewContext | null,
-): DiffusionPreviewContext | null {
+  job: DiffusionJobObservation | null,
+  remembered: ReadonlyData<DiffusionPreviewContext> | null,
+): ReadonlyData<DiffusionPreviewContext> | null {
   const width = Number(job?.preview_width) > 0 ? Math.round(Number(job?.preview_width)) : remembered?.width;
   const height = Number(job?.preview_height) > 0 ? Math.round(Number(job?.preview_height)) : remembered?.height;
   if (!width || !height) return remembered;
@@ -67,286 +115,314 @@ function previewContext(
   };
 }
 
-/** Expose typed dialog actions while effects own debounce, polling, and cancellation. */
-export function useDiffusion(session: ToolSessionActions): DiffusionActions {
-  const { state, update, getState } = useReviewContext();
-  const [retry, setRetry] = useState(0);
-  const [immediate, setImmediate] = useState(true);
-  const [previewPaused, setPreviewPaused] = useState(false);
-  const previewController = useRef<AbortController | null>(null);
-  const sessionRef = useRef(session);
-  sessionRef.current = session;
-
-  /** Capture the selected picture/profile and its inherited diffusion settings when the dialog opens. */
-  const openDiffusion = useCallback((): void => {
-    const current = getState();
-    const image = current.data?.images.find((candidate) => candidate.id === current.currentId) || null;
-    const profile = selectedProfile(image, current);
-    if (!image || !profile || isDirectCompressedImage(image) || isSoocProfile(profile)) return;
-    previewController.current?.abort();
-    setImmediate(true);
-    setPreviewPaused(false);
-    update({
-      diffusionOpen: true,
-      diffusionLoading: true,
-      diffusionSaving: false,
-      diffusionError: "",
-      diffusionErrorKind: null,
-      diffusionMessage: "",
-      diffusionJob: null,
-      diffusionBefore: null,
-      diffusionPreviewContext: null,
-      diffusionImageId: image.id,
-      diffusionProfileIndex: profile.profile_index,
-      diffusionSettings: normalizeDiffusionSettings(profile.diffusion?.settings || profile.diffusion_settings),
-      diffusionSource: profile.diffusion?.source ?? profile.diffusion_source,
-    });
-  }, [getState, update]);
-
-  /** Closing the dialog clears its draft and causes preview-effect cleanup to abort pending work. */
-  const closeDiffusion = useCallback((): void => {
-    if (getState().diffusionSaving) return;
-    previewController.current?.abort();
-    update({
-      diffusionOpen: false,
-      diffusionJob: null,
-      diffusionBefore: null,
-      diffusionPreviewContext: null,
-      diffusionImageId: null,
-      diffusionProfileIndex: null,
-      diffusionSettings: null,
-      diffusionSource: null,
-      diffusionErrorKind: null,
-      diffusionLoading: false,
-    });
-  }, [getState, update]);
-
-  /** Normalize changes together and debounce only settings that differ from the current draft. */
-  const setDiffusionSettings = useCallback(
-    (patch: Partial<DiffusionSettings>): void => {
-      const current = getState();
-      if (!current.diffusionOpen || current.diffusionSaving) return;
-      const next = normalizeDiffusionSettings({ ...current.diffusionSettings, ...patch });
-      if (diffusionSettingsSignature(next) === diffusionSettingsSignature(current.diffusionSettings)) return;
-      // Invalidate old results at the event boundary, before the next passive-effect cleanup can run.
-      previewController.current?.abort();
-      setImmediate(false);
-      setPreviewPaused(false);
-      update({
-        diffusionSettings: next,
-        diffusionJob: null,
-        diffusionLoading: true,
-        diffusionError: "",
-        diffusionErrorKind: null,
-        diffusionMessage: "",
-      });
-    },
-    [getState, update],
-  );
-
-  /** Retry explicitly without waiting for the slider debounce. */
-  const requestDiffusionPreview = useCallback((): void => {
-    previewController.current?.abort();
-    setImmediate(true);
-    setPreviewPaused(false);
-    setRetry((value) => value + 1);
-  }, []);
-  useEffect(() => {
-    if (!state.diffusionOpen || state.diffusionSaving || previewPaused || !state.diffusionSettings) return;
-    const controller = new AbortController();
-    previewController.current = controller;
+/** Own cancellation at action boundaries, not at delayed component-effect cleanup boundaries. */
+export const DiffusionModel = createModel(
+  (catalog: ReviewModelValue, session: Pick<ToolSessionActions, "applyMessage" | "commit">): DiffusionModelValue => {
+    const dialog = signal<DiffusionDialog>({ kind: "closed" });
+    let controller: AbortController | null = null;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const imageId = state.diffusionImageId;
-    const profileIndex = state.diffusionProfileIndex;
-    const settings = normalizeDiffusionSettings(state.diffusionSettings);
+    let saveFlight: Promise<void> | null = null;
+    let disposed = false;
+    const state = computed((): DiffusionState => {
+      const current = dialog.value;
+      if (current.kind === "closed")
+        return {
+          diffusionOpen: false,
+          diffusionLoading: false,
+          diffusionSaving: false,
+          diffusionError: "",
+          diffusionErrorKind: null,
+          diffusionMessage: "",
+          diffusionJob: null,
+          diffusionBefore: null,
+          diffusionPreviewContext: null,
+          diffusionImageId: null,
+          diffusionProfileIndex: null,
+          diffusionSettings: null,
+          diffusionSource: null,
+          image: null,
+        };
+      const work = current.work;
+      return {
+        diffusionOpen: true,
+        diffusionImageId: current.imageId,
+        diffusionLoading: work.loading,
+        diffusionSaving: work.kind === "saving",
+        diffusionError: work.kind === "saving" ? "" : work.error,
+        diffusionErrorKind:
+          work.kind === "save-failed" ? "save" : work.kind === "preview" && work.error ? "preview" : null,
+        diffusionMessage: work.kind === "saving" ? work.message : "",
+        diffusionJob: current.job,
+        diffusionBefore: current.before,
+        diffusionPreviewContext: current.context,
+        diffusionProfileIndex: current.profileIndex,
+        diffusionSettings: current.settings,
+        diffusionSource: current.source,
+        image: catalog.image(current.imageId).value,
+      };
+    });
 
-    /** Merge only the current effect's response; aborted renders cannot replace newer media or controls. */
-    const receive = (job: DiffusionJob | null): void => {
-      if (controller.signal.aborted) return;
-      update((current) => ({
-        diffusionJob: job,
-        diffusionPreviewContext: previewContext(job, current.diffusionPreviewContext),
-        diffusionBefore:
-          job?.before_url || job?.source_url
-            ? current.diffusionBefore?.url && job.status !== "done"
-              ? current.diffusionBefore
+    /** Change only an existing dialog; late callbacks cannot recreate a closed draft. */
+    function change(patch: Partial<Omit<DiffusionActive, "kind">>): void {
+      const current = dialog.peek();
+      if (current.kind === "open") dialog.value = { ...current, ...patch };
+    }
+
+    /** Invalidate both a queued barrier continuation and a transport that does not honor its abort signal. */
+    function cancelPreview(): void {
+      clearTimeout(timer);
+      timer = undefined;
+      const previous = controller;
+      controller = null;
+      previous?.abort();
+    }
+
+    /** Merge only the owning request's result, preserving the last complete before frame during rendering. */
+    function receive(job: DiffusionJobObservation): void {
+      const current = dialog.peek();
+      if (current.kind !== "open") return;
+      change({
+        job,
+        context: previewContext(job, current.context),
+        before:
+          job.before_url || job.source_url
+            ? current.before?.url && job.status !== "done"
+              ? current.before
               : {
                   url: job.before_url || job.source_url || null,
                   updatedAt: job.before_updated_at || job.updated_at || null,
                 }
-            : current.diffusionBefore,
-        diffusionLoading: !diffusionJobIsTerminal(job),
-        diffusionError: job?.status === "failed" ? job.error || "Preview failed" : "",
-        diffusionErrorKind: job?.status === "failed" ? "preview" : null,
-      }));
-    };
+            : current.before,
+        work: {
+          kind: "preview",
+          loading: !diffusionJobIsTerminal(job),
+          error: job.status === "failed" ? job.error || "Preview failed" : "",
+        },
+      });
+    }
 
-    /** Poll serially until completion and retry recoverable transport failures at the existing interval. */
-    const poll = async (id: number): Promise<void> => {
-      if (controller.signal.aborted) return;
-      try {
-        const job = await reviewApi.diffusion_get({ params: { job_id: id }, signal: controller.signal });
-        receive(job);
-        if (!controller.signal.aborted && !diffusionJobIsTerminal(job))
-          timer = setTimeout(() => {
-            void poll(id);
-          }, DIFFUSION_POLL_MS);
-      } catch (error) {
-        if (controller.signal.aborted || isAbortError(error)) return;
-        update({ diffusionError: errorMessage(error), diffusionErrorKind: "preview" });
-        timer = setTimeout(() => {
+    /** Debounce user edits, commit their target image, then poll only the resulting preview identity. */
+    function schedulePreview(delay: number): void {
+      cancelPreview();
+      const current = state.peek();
+      if (disposed || !current.diffusionOpen || current.diffusionSaving || !current.diffusionSettings) return;
+      const pending = new AbortController();
+      controller = pending;
+      const imageId = current.diffusionImageId;
+      const profileIndex = current.diffusionProfileIndex;
+      const settings = normalizeDiffusionSettings(current.diffusionSettings);
+
+      /** Ownership survives slow queues and abort-insensitive transports without accepting stale responses. */
+      function ownsPreview(): boolean {
+        return !disposed && controller === pending && !pending.signal.aborted;
+      }
+
+      /** Continue serial polling without replaying the preview-creation mutation on transient GET failures. */
+      async function poll(id: number): Promise<void> {
+        if (!ownsPreview()) return;
+        try {
+          const job = await reviewApi.diffusion_get({ params: { job_id: id }, signal: pending.signal });
+          if (!ownsPreview()) return;
+          receive(job);
+          if (diffusionJobIsTerminal(job)) return;
+        } catch (error) {
+          if (!ownsPreview() || isAbortError(error)) return;
+          change({ work: { kind: "preview", loading: state.peek().diffusionLoading, error: errorMessage(error) } });
+        }
+        timer = setTimeout((): void => {
           void poll(id);
         }, DIFFUSION_POLL_MS);
       }
-    };
 
-    /** Create a preview for the current settings, then poll the returned job identity. */
-    const start = async (): Promise<void> => {
-      if (controller.signal.aborted) return;
-      update({
-        diffusionLoading: true,
-        diffusionError: "",
-        diffusionErrorKind: null,
-        diffusionMessage: "",
-        diffusionJob: null,
-      });
-      try {
-        if (imageId === null || profileIndex === null) throw new Error("Select a picture and profile for diffusion");
-        const job = await reviewApi.diffusion_create({
-          body: { image_id: imageId, profile_index: profileIndex, settings },
-          signal: controller.signal,
-        });
-        if (controller.signal.aborted) return;
-        if (!job) throw new Error("preview job returned no data");
-        receive(job);
-        if (!diffusionJobIsTerminal(job))
-          timer = setTimeout(() => {
-            void poll(job.id);
-          }, DIFFUSION_POLL_MS);
-      } catch (error) {
-        if (controller.signal.aborted || isAbortError(error)) return;
-        update({
-          diffusionLoading: false,
-          diffusionError: errorMessage(error),
-          diffusionErrorKind: "preview",
-        });
+      /** A canceled preview may finish waiting for local saves, but must never submit its obsolete request. */
+      async function start(): Promise<void> {
+        if (!ownsPreview()) return;
+        change({ job: null, work: { kind: "preview", loading: true, error: "" } });
+        try {
+          if (imageId === null || profileIndex === null) throw new Error("Select a picture and profile for diffusion");
+          const job = await session.commit([imageId], async (): Promise<DiffusionJobObservation | null> => {
+            if (!ownsPreview()) return null;
+            return reviewApi.diffusion_create({
+              body: { image_id: imageId, profile_index: profileIndex, settings },
+              signal: pending.signal,
+            });
+          });
+          if (!ownsPreview() || !job) return;
+          receive(job);
+          if (!diffusionJobIsTerminal(job))
+            timer = setTimeout((): void => {
+              void poll(job.id);
+            }, DIFFUSION_POLL_MS);
+        } catch (error) {
+          if (!ownsPreview() || isAbortError(error)) return;
+          change({ work: { kind: "preview", loading: false, error: errorMessage(error) } });
+        }
       }
-    };
-    timer = setTimeout(
-      () => {
+      timer = setTimeout((): void => {
         void start();
-      },
-      immediate ? 0 : DIFFUSION_PREVIEW_DEBOUNCE_MS,
-    );
-    return () => {
-      clearTimeout(timer);
-      controller.abort();
-      if (previewController.current === controller) previewController.current = null;
-    };
-  }, [
-    state.diffusionOpen,
-    state.diffusionSaving,
-    state.diffusionImageId,
-    state.diffusionProfileIndex,
-    state.diffusionSettings,
-    previewPaused,
-    retry,
-    immediate,
-    update,
-  ]);
+      }, delay);
+    }
 
-  /** Save or reset the chosen inheritance scope; successful empty resets are accepted. */
-  const save = useCallback(
-    async (scope: DiffusionScope, reset: boolean): Promise<void> => {
-      const current = getState();
-      if (!current.diffusionOpen || current.diffusionSaving || (!reset && !current.diffusionSettings)) return;
-      previewController.current?.abort();
-      // A failed save keeps the current preview and error until the user edits or explicitly retries.
-      setPreviewPaused(true);
-      update({
-        diffusionSaving: true,
-        diffusionError: "",
-        diffusionErrorKind: null,
-        diffusionMessage: reset
-          ? scope === "all"
-            ? "Resetting this profile for all pictures"
-            : "Resetting current picture"
-          : scope === "all"
-            ? "Applying to all pictures for this profile"
-            : "Applying to current picture",
-      });
+    /** Capture the selected picture/profile and inherited settings when the dialog opens. */
+    function openDiffusion(): void {
+      const current = catalog.getState();
+      if (disposed || state.peek().diffusionSaving) return;
+      const image = current.data?.images.find((candidate) => candidate.id === current.currentId) || null;
+      const profile = selectedProfile(image, current);
+      if (!image || !profile || isDirectCompressedImage(image) || isSoocProfile(profile)) return;
+      cancelPreview();
+      dialog.value = {
+        kind: "open",
+        work: { kind: "preview", loading: true, error: "" },
+        job: null,
+        before: null,
+        context: null,
+        imageId: image.id,
+        profileIndex: profile.profile_index,
+        settings: normalizeDiffusionSettings(profile.diffusion?.settings || profile.diffusion_settings),
+        source: profile.diffusion?.source ?? profile.diffusion_source,
+      };
+      schedulePreview(0);
+    }
+
+    /** Save ownership prevents closing; ordinary cancellation immediately drops all preview work and its draft. */
+    function closeDiffusion(): void {
+      if (state.peek().diffusionSaving) return;
+      cancelPreview();
+      dialog.value = { kind: "closed" };
+    }
+
+    /** Normalize all controls together and ignore equivalent settings before allocating a new generation. */
+    function setDiffusionSettings(patch: Partial<DiffusionSettings>): void {
+      const current = state.peek();
+      if (disposed || !current.diffusionOpen || current.diffusionSaving) return;
+      const next = normalizeDiffusionSettings({ ...current.diffusionSettings, ...patch });
+      if (diffusionSettingsSignature(next) === diffusionSettingsSignature(current.diffusionSettings)) return;
+      cancelPreview();
+      change({ settings: next, job: null, work: { kind: "preview", loading: true, error: "" } });
+      schedulePreview(DIFFUSION_PREVIEW_DEBOUNCE_MS);
+    }
+
+    /** Explicit retries bypass slider debounce without replaying a failed save. */
+    function requestDiffusionPreview(): void {
+      schedulePreview(0);
+    }
+
+    /** Save through the same local command cut as preview creation; failed saves retain the current draft and media. */
+    async function performSave(scope: DiffusionScope, reset: boolean, current: DiffusionState): Promise<void> {
       try {
         if (current.diffusionImageId === null || current.diffusionProfileIndex === null)
           throw new Error("Select a picture and profile for diffusion");
-        const body = {
-          image_id: current.diffusionImageId,
-          profile_index: current.diffusionProfileIndex,
-          scope,
-        };
-        const message = reset
-          ? await reviewApi.diffusion_reset({ body })
-          : await reviewApi.diffusion_apply({
-              body: { ...body, settings: normalizeDiffusionSettings(current.diffusionSettings) },
-            });
-        update({ diffusionSaving: false });
-        closeDiffusion();
-        if (message) sessionRef.current.applyMessage(message);
+        const body = { image_id: current.diffusionImageId, profile_index: current.diffusionProfileIndex, scope };
+        const message = await session.commit(scope === "all" ? "all" : [body.image_id], async () =>
+          reset
+            ? reviewApi.diffusion_reset({ body })
+            : reviewApi.diffusion_apply({
+                body: { ...body, settings: normalizeDiffusionSettings(current.diffusionSettings) },
+              }),
+        );
+        if (disposed) return;
+        cancelPreview();
+        dialog.value = { kind: "closed" };
+        session.applyMessage(message);
       } catch (error) {
-        update({
-          diffusionSaving: false,
-          diffusionError: `Could not ${reset ? "reset" : "apply"} diffusion: ${errorMessage(error)}`,
-          diffusionErrorKind: "save",
-          diffusionMessage: "",
+        if (disposed) return;
+        change({
+          work: {
+            kind: "save-failed",
+            loading: current.diffusionLoading,
+            error: `Could not ${reset ? "reset" : "apply"} diffusion: ${errorMessage(error)}`,
+          },
         });
       }
-    },
-    [getState, update, closeDiffusion],
-  );
+    }
 
-  /** Hold the before image steady until a new complete preview becomes available. */
-  const diffusionBeforeSource = (job: DiffusionJob | null): ImageSource => {
-    if (state.diffusionBefore?.url && job?.status !== "done") return state.diffusionBefore;
-    const url = job?.before_url || job?.source_url;
-    return url
-      ? { url, updatedAt: job?.before_updated_at || job?.updated_at || null }
-      : state.diffusionBefore || { url: null, updatedAt: null };
-  };
-  /** Derive detail geometry without updating state during rendering. */
-  const diffusionPreviewContext = (job: DiffusionJob | null): DiffusionPreviewContext | null =>
-    previewContext(job, state.diffusionPreviewContext);
-  /** Reserve the correct image proportions through preview and full-render transitions. */
-  const diffusionMediaStyle = (
-    job: DiffusionJob | null,
-    image: ReviewImage | null,
-    profile: ReviewProfileRender | null,
-  ): JSX.CSSProperties | undefined => {
-    const context = diffusionPreviewContext(job);
-    const width = Number(context?.width || job?.source_width || profile?.width || image?.source_width);
-    const height = Number(context?.height || job?.source_height || profile?.height || image?.source_height);
-    return width > 0 && height > 0 && Number.isFinite(width) && Number.isFinite(height)
-      ? { aspectRatio: `${width} / ${height}` }
-      : undefined;
-  };
-  /** Describe preview and save progress directly from reactive state. */
-  const diffusionStatusText = (job: DiffusionJob | null): string => {
-    if (state.diffusionSaving) return state.diffusionMessage || "Saving diffusion settings";
-    if (!job) return state.diffusionLoading ? "Preparing preview" : "Preview unavailable";
-    if (job.status === "done") return diffusionAfterSource(job).url ? "Preview ready" : "Preview output unavailable";
-    if (job.status === "failed") return job.error || "Preview failed";
-    if (job.status === "processing") return "Rendering preview";
-    if (job.status === "queued") return "Preview queued";
-    return state.diffusionLoading ? "Preparing preview" : capitalize(job.status);
-  };
-  return {
-    openDiffusion,
-    closeDiffusion,
-    setDiffusionSettings,
-    requestDiffusionPreview,
-    applyDiffusion: (scope) => save(scope, false),
-    resetDiffusion: (scope) => save(scope, true),
-    diffusionBeforeSource,
-    diffusionPreviewContext,
-    diffusionMediaStyle,
-    diffusionStatusText,
-  };
-}
+    /** Synchronous flight ownership closes the gap between repeated events before Preact updates disabled controls. */
+    function save(scope: DiffusionScope, reset: boolean): Promise<void> {
+      if (saveFlight) return saveFlight;
+      const current = state.peek();
+      if (disposed || !current.diffusionOpen || current.diffusionSaving || (!reset && !current.diffusionSettings))
+        return Promise.resolve();
+      cancelPreview();
+      change({
+        work: {
+          kind: "saving",
+          loading: current.diffusionLoading,
+          message: reset
+            ? scope === "all"
+              ? "Resetting this profile for all pictures"
+              : "Resetting current picture"
+            : scope === "all"
+              ? "Applying to all pictures for this profile"
+              : "Applying to current picture",
+        },
+      });
+      const pending = performSave(scope, reset, current).finally((): void => {
+        if (saveFlight === pending) saveFlight = null;
+      });
+      saveFlight = pending;
+      return pending;
+    }
+
+    /** Hold the before image steady until a new complete preview becomes available. */
+    function diffusionBeforeSource(job: DiffusionJobObservation | null): ReadonlyData<ImageSource> {
+      const before = state.peek().diffusionBefore;
+      if (before?.url && job?.status !== "done") return before;
+      const url = job?.before_url || job?.source_url;
+      return url
+        ? { url, updatedAt: job?.before_updated_at || job?.updated_at || null }
+        : before || { url: null, updatedAt: null };
+    }
+
+    /** Derive detail geometry without changing state while a component renders. */
+    function diffusionPreviewContext(
+      job: DiffusionJobObservation | null,
+    ): ReadonlyData<DiffusionPreviewContext> | null {
+      return previewContext(job, state.peek().diffusionPreviewContext);
+    }
+
+    /** Reserve image proportions through preview and full-render transitions. */
+    function diffusionMediaStyle(
+      job: DiffusionJobObservation | null,
+      image: ReviewImageObservation | null,
+      profile: ReviewProfileRenderObservation | null,
+    ): CSSProperties | undefined {
+      const context = diffusionPreviewContext(job);
+      const width = Number(context?.width || job?.source_width || profile?.width || image?.source_width);
+      const height = Number(context?.height || job?.source_height || profile?.height || image?.source_height);
+      return width > 0 && height > 0 && Number.isFinite(width) && Number.isFinite(height)
+        ? { aspectRatio: `${width} / ${height}` }
+        : undefined;
+    }
+
+    /** Describe preview and save progress from the current model snapshot. */
+    function diffusionStatusText(job: DiffusionJobObservation | null): string {
+      const current = state.peek();
+      if (current.diffusionSaving) return current.diffusionMessage || "Saving diffusion settings";
+      if (!job) return current.diffusionLoading ? "Preparing preview" : "Preview unavailable";
+      if (job.status === "done") return diffusionAfterSource(job).url ? "Preview ready" : "Preview output unavailable";
+      if (job.status === "failed") return job.error || "Preview failed";
+      if (job.status === "processing") return "Rendering preview";
+      if (job.status === "queued") return "Preview queued";
+      return current.diffusionLoading ? "Preparing preview" : capitalize(job.status);
+    }
+
+    effect(() => (): void => {
+      disposed = true;
+      cancelPreview();
+    });
+    return {
+      state,
+      openDiffusion,
+      closeDiffusion,
+      setDiffusionSettings,
+      requestDiffusionPreview,
+      applyDiffusion: (scope): Promise<void> => save(scope, false),
+      resetDiffusion: (scope): Promise<void> => save(scope, true),
+      diffusionBeforeSource,
+      diffusionPreviewContext,
+      diffusionMediaStyle,
+      diffusionStatusText,
+    };
+  },
+);

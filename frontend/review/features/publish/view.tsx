@@ -1,10 +1,10 @@
 /** Reactive publish views render controlled tool state; stable component identities preserve focus and open details. */
 import { createContext } from "preact";
 import { useContext } from "preact/hooks";
-import type { ToolsController } from "../../tools/use-tools";
+import type { PublishActions } from "./model";
 import type { ComponentChildren } from "preact";
 
-import type { ReviewPublishJob } from "../../core/types";
+import type { ReviewPublishJobObservation as ReviewPublishJob } from "../../core/types";
 import { Dialog } from "../../components/Dialog";
 import { COLOR_LABELS, RATING_VALUES } from "../../core/constants";
 import { capitalize } from "../../core/selectors";
@@ -12,19 +12,7 @@ import { publishProgressPercent } from "./helpers";
 import { reviewUrl } from "../../core/api";
 
 /** Controlled publish values and derived job/selection state required by its form components. */
-export interface PublishViewDependencies {
-  publishOpen: ToolsController["publishOpen"];
-  publishForm: ToolsController["publishForm"];
-  publishSubmitting: ToolsController["publishSubmitting"];
-  publishError: ToolsController["publishError"];
-  publishJob: ToolsController["publishJob"];
-  publishRerender: ToolsController["publishRerender"];
-  publishStats: ToolsController["publishStats"];
-  togglePublishWizard: ToolsController["togglePublishWizard"];
-  setPublishField: ToolsController["setPublishField"];
-  togglePublishLabel: ToolsController["togglePublishLabel"];
-  submitPublish: ToolsController["submitPublish"];
-}
+export type PublishViewDependencies = PublishActions;
 
 export const PublishViewContext = createContext<PublishViewDependencies | null>(null);
 
@@ -37,82 +25,89 @@ function usePublishView(): PublishViewDependencies {
 
 /** Render publish overlay from current state and typed callbacks. */
 export function PublishOverlay(): ComponentChildren {
-  const {
-    publishOpen,
-    publishRerender,
-    publishStats,
-    togglePublishWizard,
-    publishSubmitting,
-    publishError,
-    publishJob,
-    submitPublish,
-  } = usePublishView();
+  const { publishOpen, togglePublishWizard } = usePublishView();
   return (
     <Dialog
-      id={"publish-overlay"}
+      id="publish-overlay"
       className="publish-overlay"
       labelledBy="publish-title"
       label="Publish"
-      open={publishOpen}
+      open={publishOpen.value}
       onClose={(): void => togglePublishWizard(false)}
     >
-      <form
-        id={"publish-form"}
-        class={"publish-card"}
-        onSubmit={(event) => {
-          event.preventDefault();
-          void submitPublish();
-        }}
-      >
-        <header class={"publish-header"}>
-          <div>
-            <h2 id={"publish-title"}>{"Publish"}</h2>
-            <p id={"publish-mode"}>
-              {publishRerender
-                ? "Changed output or grain settings will rerender selected pictures from the original RAW files."
-                : "Settings match daemon defaults, so publish will hardlink reviewed outputs when possible."}
-            </p>
-            <p id={"publish-count"} class={"publish-count"}>
-              {`${publishStats.pictures} ${publishStats.pictures === 1 ? "picture" : "pictures"} selected, ` +
-                `${publishStats.outputs} ${publishStats.outputs === 1 ? "output" : "outputs"} will be exported.`}
-            </p>
-          </div>
-          <button id={"publish-cancel"} type={"button"} onClick={() => togglePublishWizard(false)}>
-            {"Cancel"}
-          </button>
-        </header>
-        <div class={"publish-grid"}>
-          <PublishSelectionSection />
-          <PublishOutputSection />
-          <PublishGallerySection />
-        </div>
-        <footer class={"publish-footer"}>
-          <div id={"publish-status"} class={"publish-status"} role="status" aria-live="polite">
-            {publishError ||
-              (publishJob ? (
-                <PublishStatus job={publishJob} />
-              ) : publishRerender ? (
-                "Changed output settings will rerender from original RAWs."
-              ) : (
-                "Default settings will link existing reviewed outputs."
-              ))}
-          </div>
-          <button
-            id={"publish-submit"}
-            type={"submit"}
-            disabled={publishSubmitting || publishJob?.status === "running"}
-          >
-            {"Start publish job"}
-          </button>
-        </footer>
-      </form>
+      {publishOpen.value && <PublishForm />}
     </Dialog>
+  );
+}
+
+/** Closed publish dialogs do not subscribe to form fields, catalog selection, or progress computations. */
+function PublishForm(): ComponentChildren {
+  const model = usePublishView();
+  const publishRerender = model.publishRerender.value;
+  const publishStats = model.publishStats.value;
+  const publishSubmitting = model.publishSubmitting.value;
+  const publishError = model.publishError.value;
+  const publishJob = model.publishJob.value;
+  const publishRecovery = model.publishRecovery.value;
+  const { togglePublishWizard, submitPublish } = model;
+  return (
+    <form
+      id={"publish-form"}
+      class={"publish-card"}
+      onSubmit={(event) => {
+        event.preventDefault();
+        void submitPublish();
+      }}
+    >
+      <header class={"publish-header"}>
+        <div>
+          <h2 id={"publish-title"}>{"Publish"}</h2>
+          <p id={"publish-mode"}>
+            {publishRerender
+              ? "Changed output or grain settings will rerender selected pictures from the original RAW files."
+              : "Settings match daemon defaults, so publish will hardlink reviewed outputs when possible."}
+          </p>
+          <p id={"publish-count"} class={"publish-count"}>
+            {`${publishStats.pictures} ${publishStats.pictures === 1 ? "picture" : "pictures"} selected, ` +
+              `${publishStats.outputs} ${publishStats.outputs === 1 ? "output" : "outputs"} will be exported.`}
+          </p>
+        </div>
+        <button id={"publish-cancel"} type={"button"} onClick={() => togglePublishWizard(false)}>
+          {"Cancel"}
+        </button>
+      </header>
+      <div class={"publish-grid"}>
+        <PublishSelectionSection />
+        <PublishOutputSection />
+        <PublishGallerySection />
+      </div>
+      <footer class={"publish-footer"}>
+        <div id={"publish-status"} class={"publish-status"} role="status" aria-live="polite">
+          {publishError ||
+            (publishJob ? (
+              <PublishStatus job={publishJob} />
+            ) : publishRerender ? (
+              "Changed output settings will rerender from original RAWs."
+            ) : (
+              "Default settings will link existing reviewed outputs."
+            ))}
+        </div>
+        <button
+          id={"publish-submit"}
+          type={"submit"}
+          disabled={!publishRecovery && (publishSubmitting || publishJob?.status === "running")}
+        >
+          {publishRecovery ? "Check state and resume edits" : "Start publish job"}
+        </button>
+      </footer>
+    </form>
   );
 }
 
 /** Render publish selection section from current state and typed callbacks. */
 export function PublishSelectionSection(): ComponentChildren {
-  const { publishForm, setPublishField, togglePublishLabel } = usePublishView();
+  const { publishForm: form, setPublishField, togglePublishLabel } = usePublishView();
+  const publishForm = form.value;
   return (
     <section class={"publish-section"}>
       <h3>{"Selection"}</h3>
@@ -181,7 +176,8 @@ export function PublishSelectionSection(): ComponentChildren {
 
 /** Render publish output section from current state and typed callbacks. */
 export function PublishOutputSection(): ComponentChildren {
-  const { publishForm, setPublishField } = usePublishView();
+  const { publishForm: form, setPublishField } = usePublishView();
+  const publishForm = form.value;
   return (
     <section class={"publish-section"}>
       <h3>{"Output"}</h3>
@@ -333,7 +329,8 @@ export function PublishOutputSection(): ComponentChildren {
 
 /** Render publish gallery section from current state and typed callbacks. */
 export function PublishGallerySection(): ComponentChildren {
-  const { publishForm, setPublishField } = usePublishView();
+  const { publishForm: form, setPublishField } = usePublishView();
+  const publishForm = form.value;
   return (
     <section class={"publish-section publish-section-wide"}>
       <h3>{"Gallery"}</h3>
@@ -404,7 +401,7 @@ export function PublishStatus({ job }: { job: ReviewPublishJob }): ComponentChil
     );
   }
   if (job.status === "done") {
-    const links = Array.isArray(job.gallery_urls) ? job.gallery_urls : [];
+    const links = job.gallery_urls;
     const galleryLinks = links.map((link) => (link.startsWith("/") ? link : `/${link}`));
     return (
       <div>

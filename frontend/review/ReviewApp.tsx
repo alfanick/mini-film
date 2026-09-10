@@ -1,9 +1,10 @@
 /**
  * Compose the review workspace from state-driven Preact features.
- * The shell preserves embedded UI structure while hooks own requests, edits and browser capabilities.
+ * Provider-owned models coordinate requests and edits; hooks manage view-local browser capabilities.
  */
 import { Fragment, type ComponentChildren } from "preact";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
+import { useComputed } from "@preact/signals";
 import { useReviewContext, useReviewModel } from "./core/context";
 import { COLOR_LABELS, RATING_VALUES } from "./core/constants";
 import {
@@ -19,18 +20,20 @@ import {
   profilesAreImplicitOnly,
   selectedProfile,
 } from "./core/selectors";
-import type { ReviewStateData } from "./core/types";
+import type { ReviewCatalogObservation as ReviewStateData } from "./core/types";
 import { Controls } from "./components/Controls";
 import { BwFilterControls, ImageList, ProfileList } from "./components/Browsing";
 import { formatImageExif, imageSourceInfoTitle } from "./components/formatting";
 import { ShortcutsOverlay } from "./components/Shortcuts";
-import { useReviewSession, type ReviewActions, type ReviewSession } from "./session/use-session";
+import type { ReviewActions, ReviewSession } from "./session/use-session";
+import { useReviewSession } from "./session/context";
 import { useReviewEdits, type ReviewEdits } from "./session/use-edits";
 import { useMediaQuery, usePanelSafeArea } from "./session/use-layout";
 import { useReviewShortcuts } from "./session/use-shortcuts";
 import { useOriginalShare } from "./session/use-original-share";
 import { Viewer } from "./viewer/Viewer";
-import { ToolsProvider, useActiveTools, ToolOverlayHost } from "./tools/context";
+import { useActiveTools } from "./tools/context";
+import { ToolOverlayHost } from "./tools/overlays";
 import { publishProgressPercent } from "./features/publish/helpers";
 
 /** Keep live pipeline progress phrased like the original compact sidebar summary. */
@@ -60,35 +63,71 @@ function statusSummary(data: ReviewStateData | null, count: number, profileCount
   );
 }
 
+/** Connection pulses subscribe at their leaf, never rerendering image rows, controls, or closed dialogs. */
+function LiveConnection(): ComponentChildren {
+  const session = useReviewSession();
+  const model = useReviewModel();
+  const summary = useComputed((): string => {
+    for (const key of ["client_count", "codex", "publish_jobs", "profiles"] as const)
+      void model.catalogField(key).value;
+    const count = model.visibleImages.value.length;
+    const state = model.getState();
+    const profileCount = profilesAreImplicitOnly(state, null) ? 0 : state.data?.profiles.length || 0;
+    return statusSummary(state.data, count, profileCount);
+  });
+  const keepalive = session.keepalive.value;
+  const connected = session.connected.value;
+  const classes = ["live-dot", connected ? "connected" : "", keepalive.tick ? "keepalive-pulse" : ""]
+    .filter(Boolean)
+    .join(" ");
+  return (
+    <div class="status">
+      <span
+        key={keepalive.tick}
+        id="live-dot"
+        class={classes}
+        title={keepalive.title || (connected ? "Connected" : "Connecting...")}
+      />
+      <span id="status">{session.connectionError.value || summary.value}</span>
+    </div>
+  );
+}
+
 /** Mount the single review application with stable feature components and controlled forms. */
 export function ReviewApp(): ComponentChildren {
   const session = useReviewSession();
+  return <ReviewWorkspace session={session} />;
+}
+
+/** Catalog list changes stay within the sidebar instead of invalidating the current picture's editing workspace. */
+function CatalogImageList(): ComponentChildren {
+  const model = useReviewModel();
+  const { actions } = useReviewSession();
   return (
-    <ToolsProvider session={session}>
-      <ReviewWorkspace session={session} />
-    </ToolsProvider>
+    <ImageList
+      images={model.visibleImages.value}
+      bursts={model.catalogField("bursts").value || []}
+      currentId={model.field("currentId").value}
+      onSelect={actions.selectImage}
+      onToggleBurst={actions.toggleBurst}
+    />
   );
 }
 
 /** Tool forms own a separate render boundary; the workspace reads only catalog and visible-shell state. */
 function ReviewWorkspace({ session }: { session: ReviewSession }): ComponentChildren {
   const model = useReviewModel();
+  for (const key of ["profiles", "ui", "capabilities", "version"] as const) void model.catalogField(key).value;
   const { state, update } = useReviewContext([
-    "data",
     "currentId",
     "labelFilters",
     "cropEditing",
     "mobileDrawer",
     "informationOpen",
     "histogramOpen",
-    "profileInfoProfileIndex",
-    "commandInvocationOpen",
-    "diffusionOpen",
-    "samplerOpen",
-    "panoramaOpen",
     "localRetouchDirty",
   ]);
-  const editSession = useReviewEdits(session);
+  const editSession = useReviewEdits();
   const tools = useActiveTools();
   const image = currentImage(state);
   const selected = selectedProfile(image, state);
@@ -96,7 +135,6 @@ function ReviewWorkspace({ session }: { session: ReviewSession }): ComponentChil
   const compressed = isCompressedImage(image);
   const hideProfiles = direct || profilesAreImplicitOnly(state, image);
   const profileCount = profilesAreImplicitOnly(state, image) ? 0 : image?.profiles.length || 0;
-  const configuredProfileCount = profilesAreImplicitOnly(state, null) ? 0 : state.data?.profiles.length || 0;
   const disabled = !image || direct || isSoocProfile(selected);
   const [feedback, setFeedback] = useState<{ text: string; sequence: number } | null>(null);
   /** Restart the viewer's transient feedback even when consecutive actions use the same caption. */
@@ -117,7 +155,6 @@ function ReviewWorkspace({ session }: { session: ReviewSession }): ComponentChil
       }
     },
   };
-  const images = model.visibleImages.value;
   const mobile = useMediaQuery("(max-width: 600px), (max-width: 950px) and (max-height: 520px)");
   const rail = useMediaQuery("(min-width: 901px) and (min-height: 620px)");
   const tuckedRail = useMediaQuery("(min-width: 901px) and (min-height: 620px) and (max-width: 1499.98px)");
@@ -206,17 +243,7 @@ function ReviewWorkspace({ session }: { session: ReviewSession }): ComponentChil
   ]
     .filter(Boolean)
     .join(" ");
-  const liveClass = ["live-dot", session.connected ? "connected" : "", session.keepalive.tick ? "keepalive-pulse" : ""]
-    .filter(Boolean)
-    .join(" ");
-  const shortcutsBlocked =
-    state.commandInvocationOpen ||
-    state.profileInfoProfileIndex !== null ||
-    state.diffusionOpen ||
-    state.samplerOpen ||
-    state.panoramaOpen ||
-    tools.publishOpen ||
-    shortcutsOpen;
+  const shortcutsBlocked = tools.modalOpen || shortcutsOpen;
   const profileList = (
     <div
       id="profiles"
@@ -315,17 +342,7 @@ function ReviewWorkspace({ session }: { session: ReviewSession }): ComponentChil
               </select>
             </label>
           </div>
-          <div class="status">
-            <span
-              key={session.keepalive.tick}
-              id="live-dot"
-              class={liveClass}
-              title={session.keepalive.title || (session.connected ? "Connected" : "Connecting...")}
-            />
-            <span id="status">
-              {session.connectionError || statusSummary(state.data, images.length, configuredProfileCount)}
-            </span>
-          </div>
+          <LiveConnection />
           {edits.errors.map((error) => (
             <div key={error.imageId} class="save-error" role="status" aria-live="polite">
               {`Picture ${error.imageId}: ${error.message}. Edits are still unsaved. `}
@@ -339,7 +356,7 @@ function ReviewWorkspace({ session }: { session: ReviewSession }): ComponentChil
               </button>
             </div>
           ))}
-          {session.reviewFailures.map((failure): ComponentChildren => (
+          {session.reviewFailures.value.map((failure): ComponentChildren => (
             <div key={failure.key} class="save-error" role="status" aria-live="polite">
               {`Picture ${failure.imageId}: ${failure.message}. Save could not be confirmed. `}
               <button
@@ -353,13 +370,7 @@ function ReviewWorkspace({ session }: { session: ReviewSession }): ComponentChil
             </div>
           ))}
           <div id="image-list" class="image-list">
-            <ImageList
-              images={images}
-              bursts={state.data?.bursts || []}
-              currentId={state.currentId}
-              onSelect={actions.selectImage}
-              onToggleBurst={actions.toggleBurst}
-            />
+            <CatalogImageList />
           </div>
           <section class="sidebar-tools" aria-label="Tools">
             <div class="sidebar-tools-title">Tools</div>

@@ -3,6 +3,6 @@
   "compilerOptions": {
     "types": ["node"]
   },
-  "include": ["frontend/tests/**/*.ts", "playwright.config.ts"],
+  "include": ["frontend/tests/**/*.ts", "frontend/tests/**/*.mts", "playwright*.config.ts"],
   "exclude": []
 }

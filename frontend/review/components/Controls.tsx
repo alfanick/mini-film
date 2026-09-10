@@ -8,8 +8,8 @@ import { COLOR_LABELS, RATING_VALUES } from "../core/constants";
 import { capitalize, clamp, defaultRetouch, imageLabels, labelLetter, normalizedRetouch } from "../core/selectors";
 import type {
   BasicRetouchAdjustments as RetouchAdjustments,
-  ReviewImage,
-  ReviewProfile,
+  ReviewImageObservation as ReviewImage,
+  ReviewProfileObservation as ReviewProfile,
   ReviewLabel,
 } from "../core/types";
 import type { ReviewEdits } from "../session/use-edits";
@@ -39,8 +39,8 @@ interface ControlsProps {
   profile: ReviewProfile | null;
   disabled: boolean;
   edits: ReviewEdits;
-  tagsRef: RefObject<HTMLInputElement>;
-  notesRef: RefObject<HTMLInputElement>;
+  tagsRef: RefObject<HTMLInputElement | null>;
+  notesRef: RefObject<HTMLInputElement | null>;
   onRate: (rating: number) => Promise<void>;
   onLabel: (label: ReviewLabel) => Promise<void>;
   onMove: (delta: number) => Promise<void>;

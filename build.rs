@@ -12,9 +12,9 @@ pub mod review_schema;
 fn main() {
     for path in [
         "frontend/review",
-        "scripts/build-review.mjs",
-        "scripts/review-contracts.mjs",
+        "scripts",
         "tsconfig.review.json",
+        "tsconfig.tooling.json",
         "eslint.config.mjs",
         "package.json",
         "package-lock.json",
@@ -32,9 +32,27 @@ fn main() {
     let contracts = output.join("contracts");
     review_schema::export(&contracts).expect("exporting review JSON contracts");
     let node = env::var_os("NODE").unwrap_or_else(|| "node".into());
+    let version = Command::new(&node)
+        .arg("--version")
+        .output()
+        .expect("building the review UI requires Node.js 24.12 or newer and npm in PATH");
+    let version_text = String::from_utf8_lossy(&version.stdout);
+    let mut version_parts = version_text.trim().trim_start_matches('v').split('.');
+    let major = version_parts
+        .next()
+        .and_then(|part| part.parse::<u32>().ok());
+    let minor = version_parts
+        .next()
+        .and_then(|part| part.parse::<u32>().ok());
+    assert!(
+        version.status.success()
+            && matches!((major, minor), (Some(major), Some(minor)) if major > 24 || major == 24 && minor >= 12),
+        "building the review UI requires Node.js 24.12 or newer; found {}",
+        version_text.trim()
+    );
     let status = Command::new(node)
         .current_dir(&root)
-        .arg(root.join("scripts/build-review.mjs"))
+        .arg(root.join("scripts/build-review.mts"))
         .arg("--cargo-out-dir")
         .arg(output)
         .arg("--contracts-dir")
@@ -42,7 +60,7 @@ fn main() {
         .arg("--profile")
         .arg(env::var("PROFILE").unwrap())
         .status()
-        .expect("building the review UI requires Node.js 24 or newer and npm in PATH");
+        .expect("building the review UI requires Node.js 24.12 or newer and npm in PATH");
     assert!(
         status.success(),
         "review UI build failed; see diagnostics above"

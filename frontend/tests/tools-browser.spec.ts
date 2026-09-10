@@ -69,7 +69,9 @@ test("panorama source order and choices survive project creation, previews, and 
       project.result_image_id = 3;
     }
     harness.data.panorama.projects = [project];
-    await route.fulfill({ json: { ...harness.data, type: "patch" } });
+    await route.fulfill({
+      json: { ...harness.data, type: "patch", ...(path === "panoramas" ? { created_project_id: project.id } : {}) },
+    });
   });
   await page.locator("#panorama").click();
   await page.getByLabel("Name", { exact: true }).fill("Mountain panorama");

@@ -256,7 +256,7 @@ export function cssUrl(value: string | null): string {
 }
 
 /** Project camera autofocus regions through rotation and crop into the displayed frame. */
-export function focusRegionPolygons(image: T.ReviewImage, retouch: T.RetouchSettings): FocusPolygon[] {
+export function focusRegionPolygons(image: T.ReviewImageObservation, retouch: T.RetouchObservation): FocusPolygon[] {
   const frameWidth = Number(image?.exif?.focus_frame_width);
   const frameHeight = Number(image?.exif?.focus_frame_height);
   const regions = image?.exif?.focus_regions || [];

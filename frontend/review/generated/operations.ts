@@ -4,24 +4,64 @@ import type { ResponseContracts } from "./responses";
 import * as validators from "./validators.mjs";
 /** Endpoint bindings originate in Rust, preventing caller-selected response assertions. */
 export interface OperationContracts {
-  state: { request: undefined; response: ResponseContracts["state"] };
-  review: { request: RequestContracts["review"]; response: ResponseContracts["patch"] };
-  ui: { request: RequestContracts["ui"]; response: ResponseContracts["patch"] };
-  burst: { request: RequestContracts["burst"]; response: ResponseContracts["patch"] };
-  publish: { request: RequestContracts["publish"]; response: ResponseContracts["patch"] };
-  sampler_create: { request: RequestContracts["sampler_create"]; response: ResponseContracts["sampler_job"] };
-  sampler_get: { request: undefined; response: ResponseContracts["sampler_job"] };
-  sampler_priority: { request: RequestContracts["sampler_priority"]; response: ResponseContracts["sampler_job"] };
-  sampler_select: { request: RequestContracts["sampler_select"]; response: ResponseContracts["sampler_job"] };
-  diffusion_create: { request: RequestContracts["diffusion_create"]; response: ResponseContracts["diffusion_job"] };
-  diffusion_get: { request: undefined; response: ResponseContracts["diffusion_job"] };
-  diffusion_apply: { request: RequestContracts["diffusion_apply"]; response: ResponseContracts["patch"] };
-  diffusion_reset: { request: RequestContracts["diffusion_reset"]; response: ResponseContracts["patch"] };
-  panorama_create: { request: RequestContracts["panorama_create"]; response: ResponseContracts["patch"] };
-  panorama_update: { request: RequestContracts["panorama_update"]; response: ResponseContracts["patch"] };
-  panorama_previews: { request: RequestContracts["panorama_previews"]; response: ResponseContracts["patch"] };
-  panorama_render: { request: RequestContracts["panorama_render"]; response: ResponseContracts["patch"] };
-  events: { request: undefined; response: ResponseContracts["message"] };
+  state: { request: undefined; response: ResponseContracts["state"]; parameters: never };
+  review: { request: RequestContracts["review"]; response: ResponseContracts["patch"]; parameters: never };
+  ui: { request: RequestContracts["ui"]; response: ResponseContracts["patch"]; parameters: never };
+  burst: { request: RequestContracts["burst"]; response: ResponseContracts["patch"]; parameters: { burst_id: string } };
+  publish: { request: RequestContracts["publish"]; response: ResponseContracts["publish_created"]; parameters: never };
+  sampler_create: {
+    request: RequestContracts["sampler_create"];
+    response: ResponseContracts["sampler_job"];
+    parameters: never;
+  };
+  sampler_get: { request: undefined; response: ResponseContracts["sampler_job"]; parameters: { job_id: number } };
+  sampler_priority: {
+    request: RequestContracts["sampler_priority"];
+    response: ResponseContracts["sampler_job"];
+    parameters: { job_id: number };
+  };
+  sampler_select: {
+    request: RequestContracts["sampler_select"];
+    response: ResponseContracts["sampler_job"];
+    parameters: { job_id: number; entry_key: string };
+  };
+  diffusion_create: {
+    request: RequestContracts["diffusion_create"];
+    response: ResponseContracts["diffusion_job"];
+    parameters: never;
+  };
+  diffusion_get: { request: undefined; response: ResponseContracts["diffusion_job"]; parameters: { job_id: number } };
+  diffusion_apply: {
+    request: RequestContracts["diffusion_apply"];
+    response: ResponseContracts["patch"];
+    parameters: never;
+  };
+  diffusion_reset: {
+    request: RequestContracts["diffusion_reset"];
+    response: ResponseContracts["patch"];
+    parameters: never;
+  };
+  panorama_create: {
+    request: RequestContracts["panorama_create"];
+    response: ResponseContracts["panorama_created"];
+    parameters: never;
+  };
+  panorama_update: {
+    request: RequestContracts["panorama_update"];
+    response: ResponseContracts["patch"];
+    parameters: { project_id: number };
+  };
+  panorama_previews: {
+    request: RequestContracts["panorama_previews"];
+    response: ResponseContracts["patch"];
+    parameters: { project_id: number };
+  };
+  panorama_render: {
+    request: RequestContracts["panorama_render"];
+    response: ResponseContracts["patch"];
+    parameters: { project_id: number };
+  };
+  events: { request: undefined; response: ResponseContracts["message"]; parameters: never };
 }
 /** Concrete decoders and route templates for every supported JSON operation. */
 export const operations = {
@@ -57,7 +97,7 @@ export const operations = {
     method: "POST",
     path: "api/publish",
     allowEmptyRequest: true,
-    decode: validators.validateResponsePatch,
+    decode: validators.validateResponsePublishCreated,
     hasRequest: true,
   },
   sampler_create: {
@@ -120,7 +160,7 @@ export const operations = {
     method: "POST",
     path: "api/panoramas",
     allowEmptyRequest: false,
-    decode: validators.validateResponsePatch,
+    decode: validators.validateResponsePanoramaCreated,
     hasRequest: true,
   },
   panorama_update: {

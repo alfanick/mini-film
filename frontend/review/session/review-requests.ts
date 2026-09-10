@@ -9,10 +9,16 @@ import {
   normalizeBwFilter,
   publishProfileIndexes,
 } from "../core/selectors";
-import type { BwFilter, ProfileBwFilter, ReviewImage, ReviewUpdateRequest } from "../core/types";
+import type {
+  BwFilter,
+  ProfileBwFilter,
+  ReviewImageObservation as ReviewImage,
+  MaterializedReviewUpdate,
+} from "../core/types";
+import type { ReviewFields } from "./commands";
 
 /** Capture controlled draft values without introducing an imperative dependency on the UI. */
-export type ReviewDraftReader = (image: ReviewImage) => Partial<ReviewUpdateRequest>;
+export type ReviewDraftReader = (image: ReviewImage) => ReviewFields;
 
 /** Keep one supported monochrome filter per available profile in display order. */
 export function profileBwFilters(image: ReviewImage): ProfileBwFilter[] {
@@ -30,20 +36,21 @@ export function profileBwFilters(image: ReviewImage): ProfileBwFilter[] {
 }
 
 /** Build the complete legacy request while retaining intentional omitted fields. */
-export function reviewRequestBody(image: ReviewImage, patch: Partial<ReviewUpdateRequest> = {}): ReviewUpdateRequest {
+export function reviewRequestBody(image: ReviewImage, patch: ReviewFields = {}): MaterializedReviewUpdate {
+  const retouch = patch.retouch ?? image.retouch ?? defaultRetouch();
   return {
     image_id: image.id,
     rating: patch.rating ?? image.rating,
     label: patch.label ?? (patch.labels ? patch.labels[0] || "none" : image.label || "none"),
-    labels: patch.labels ?? imageLabels(image),
-    tags: patch.tags ?? image.tags ?? [],
+    labels: [...(patch.labels ?? imageLabels(image))],
+    tags: [...(patch.tags ?? image.tags)],
     notes: patch.notes ?? image.notes ?? "",
-    retouch: patch.retouch ?? image.retouch ?? defaultRetouch(),
+    retouch: { ...retouch, crop: retouch.crop ? { ...retouch.crop } : null, adjustments: { ...retouch.adjustments } },
     ...(patch.selected_profile_index === undefined ? {} : { selected_profile_index: patch.selected_profile_index }),
     ...(patch.enabled_profile_indexes === undefined
-      ? { publish_profile_indexes: patch.publish_profile_indexes ?? publishProfileIndexes(image) }
-      : { enabled_profile_indexes: patch.enabled_profile_indexes }),
-    profile_bw_filters: patch.profile_bw_filters ?? profileBwFilters(image),
+      ? { publish_profile_indexes: [...(patch.publish_profile_indexes ?? publishProfileIndexes(image))] }
+      : { enabled_profile_indexes: [...patch.enabled_profile_indexes] }),
+    profile_bw_filters: (patch.profile_bw_filters ?? profileBwFilters(image)).map((filter) => ({ ...filter })),
     advance_after_update: Boolean(patch.advance_after_update),
   };
 }

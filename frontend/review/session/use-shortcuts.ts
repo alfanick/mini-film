@@ -3,7 +3,7 @@
  * Form controls handle their own keys; dialog and crop state take precedence over photo navigation.
  */
 import { useLayoutEffect, useRef } from "preact/hooks";
-import type { JSX, RefObject } from "preact";
+import type { TargetedWheelEvent, RefObject } from "preact";
 import { useReviewContext } from "../core/context";
 import {
   currentImage,
@@ -16,18 +16,18 @@ import { WHEEL_NAV_COOLDOWN_MS, WHEEL_NAV_RESET_MS, WHEEL_NAV_THRESHOLD_PX } fro
 import type { ReviewLabel } from "../core/types";
 import type { ReviewActions } from "./use-session";
 import type { ReviewEdits } from "./use-edits";
-import type { ToolsController } from "../tools/use-tools";
+import type { ActiveTools } from "../tools/context";
 
 interface ShortcutOptions {
   actions: ReviewActions;
   edits: ReviewEdits;
-  tools: ToolsController;
+  tools: ActiveTools;
   shortcutsOpen: boolean;
   setShortcutsOpen: (open: boolean) => void;
-  tagsRef: RefObject<HTMLInputElement>;
-  notesRef: RefObject<HTMLInputElement>;
+  tagsRef: RefObject<HTMLInputElement | null>;
+  notesRef: RefObject<HTMLInputElement | null>;
   mobile: boolean;
-  appRef: RefObject<HTMLDivElement>;
+  appRef: RefObject<HTMLDivElement | null>;
 }
 interface WheelState {
   axis: "x" | "y" | null;
@@ -43,18 +43,11 @@ async function toggleFullscreen(app: HTMLDivElement | null): Promise<void> {
 }
 
 /** Return a JSX wheel handler and attach one current keyboard listener. */
-export function useReviewShortcuts(options: ShortcutOptions): (event: JSX.TargetedWheelEvent<HTMLElement>) => void {
-  const { state, update } = useReviewContext();
+export function useReviewShortcuts(options: ShortcutOptions): (event: TargetedWheelEvent<HTMLElement>) => void {
+  const { state, update } = useReviewContext(["histogramOpen", "informationOpen", "mobileDrawer", "cropEditing"]);
   const wheel = useRef<WheelState>({ axis: null, amount: 0, lastAt: 0, lockedUntil: 0 });
   const { actions, edits, tools, shortcutsOpen, setShortcutsOpen, tagsRef, notesRef, mobile, appRef } = options;
-  const modal =
-    state.profileInfoProfileIndex !== null ||
-    state.commandInvocationOpen ||
-    state.diffusionOpen ||
-    state.samplerOpen ||
-    state.panoramaOpen ||
-    tools.publishOpen ||
-    shortcutsOpen;
+  const modal = tools.modalOpen || shortcutsOpen;
   useLayoutEffect(() => {
     /** Route keyboard actions in modal-first order so typing never rates a picture accidentally. */
     const keydown = (event: KeyboardEvent): void => {
@@ -167,7 +160,7 @@ export function useReviewShortcuts(options: ShortcutOptions): (event: JSX.Target
   }, [state, update, actions, edits, tools, shortcutsOpen, setShortcutsOpen, tagsRef, notesRef, mobile, modal, appRef]);
 
   /** Accumulate trackpad impulses and impose a cooldown so one gesture performs one navigation step. */
-  return (event: JSX.TargetedWheelEvent<HTMLElement>): void => {
+  return (event: TargetedWheelEvent<HTMLElement>): void => {
     if (modal || state.cropEditing || event.ctrlKey || event.metaKey || event.altKey) return;
     if (event.target instanceof Element && event.target.closest("input, textarea, select, .retouch, .crop-tools"))
       return;

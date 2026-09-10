@@ -4,8 +4,12 @@
  */
 import { createContext } from "preact";
 import { useContext } from "preact/hooks";
-import type { ToolsController } from "../../tools/use-tools";
-import type { ReviewState, ReviewProfileMetadata, ReviewExif } from "../../core/types";
+import type { InformationModelValue } from "./model";
+import type {
+  ReviewProfileMetadataObservation as ReviewProfileMetadata,
+  ReviewExif,
+  ReadonlyData,
+} from "../../core/types";
 
 import type { ComponentChildren } from "preact";
 import { profileDisplayName, versionedUrl } from "../../core/selectors";
@@ -24,14 +28,7 @@ import {
 } from "./helpers";
 
 /** Current profile/command state and asynchronous detail loading for the information dialogs. */
-export interface InformationViewDependencies {
-  closeCommandInvocation: ToolsController["closeCommandInvocation"];
-  closeProfileInfo: ToolsController["closeProfileInfo"];
-  findImage: ToolsController["findImage"];
-  loadProfilePp3: ToolsController["loadProfilePp3"];
-  profileByIndex: ToolsController["profileByIndex"];
-  state: ReviewState;
-}
+export type InformationViewDependencies = InformationModelValue;
 
 export const InformationViewContext = createContext<InformationViewDependencies | null>(null);
 
@@ -44,12 +41,13 @@ function useInformationView(): InformationViewDependencies {
 
 /** Render profile info overlay from current state and typed callbacks. */
 export function ProfileInfoOverlay(): ComponentChildren {
-  const { closeProfileInfo, findImage, loadProfilePp3, profileByIndex, state } = useInformationView();
+  const { closeProfileInfo, loadProfilePp3, profileByIndex, state: observation } = useInformationView();
+  const state = observation.value;
   const profile = profileByIndex(state.profileInfoProfileIndex);
   if (!profile) return null;
   const metadata: Partial<ReviewProfileMetadata> = profile.metadata || {};
-  const image = findImage(state.currentId);
-  const exif: Partial<ReviewExif> = image?.exif || {};
+  const image = state.image;
+  const exif: ReadonlyData<Partial<ReviewExif>> = image?.exif || {};
   const haldImage = metadata.has_hald ? `api/profile/${profile.index}/hald` : null;
   const pp3Url = image ? profilePp3Url(image, profile) : null;
   const pp3Key = image ? profilePp3Key(image, profile) : null;
@@ -151,7 +149,8 @@ export function ProfileInfoRow(label: string, value: ComponentChildren, multilin
 
 /** Render command invocation overlay from current state and typed callbacks. */
 export function CommandInvocationOverlay(): ComponentChildren {
-  const { closeCommandInvocation, state } = useInformationView();
+  const { closeCommandInvocation, state: observation } = useInformationView();
+  const state = observation.value;
   const invocation = state.data?.invocation || "Invocation unavailable.";
   const lines = commandInvocationLines(invocation);
   return (

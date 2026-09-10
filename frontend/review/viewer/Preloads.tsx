@@ -2,7 +2,11 @@
  * Idle scheduling protects the active picture; a bounded URL history retains the original cache behavior. */
 import type { JSX } from "preact";
 import { useEffect, useState } from "preact/hooks";
-import type { ReviewImage, ReviewProfileRender, ReviewState } from "../core/types";
+import type {
+  ReviewImageObservation as ReviewImage,
+  ReviewProfileRenderObservation as ReviewProfileRender,
+  ReviewStateObservation as ReviewState,
+} from "../core/types";
 import { useReviewContext } from "../core/context";
 import { COMPRESSED_REVIEW_PREVIEW_LONG_EDGE } from "../core/constants";
 import {
@@ -43,7 +47,7 @@ export function nearbyPreloadUrls(state: ReviewState, imageId: number, longEdge:
 
 /** Mount low-priority media when the browser is idle and prepare the uncropped camera source immediately. */
 export function ViewerPreloads({ image, selected, longEdge, sourceUrl }: ViewerPreloadsProps): JSX.Element {
-  const { state } = useReviewContext();
+  const { state } = useReviewContext(["data", "currentId", "labelFilters", "pendingProfileSelections"]);
   const [preloaded, setPreloaded] = useState<string[]>([]);
   const urlsKey = JSON.stringify(image ? nearbyPreloadUrls(state, image.id, longEdge) : []);
   const cropUrl = image?.crop_source_url || selected?.base_url || image?.preview_url || selected?.url;
@@ -56,7 +60,10 @@ export function ViewerPreloads({ image, selected, longEdge, sourceUrl }: ViewerP
         : selected?.updated_at;
   const cropSource = cropUrl ? versionedUrl(cropUrl, cropUpdated) : null;
   useEffect((): (() => void) => {
-    const urls: string[] = JSON.parse(urlsKey) as string[];
+    const parsed: unknown = JSON.parse(urlsKey);
+    if (!Array.isArray(parsed) || !parsed.every((url: unknown): url is string => typeof url === "string"))
+      throw new Error("Preload URL identity must contain only strings");
+    const urls: readonly string[] = parsed;
     /** Retain decoded neighbors without allowing a long review to grow the hidden subtree indefinitely. */
     function preload(): void {
       if (urls.length === 0) return;

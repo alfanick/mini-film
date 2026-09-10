@@ -5,57 +5,28 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
-import { contractInputs, generateContracts } from "./review-contracts.mjs";
+import { contractInputs, generateContracts } from "./review-contracts.mts";
+import { errorMessage, isMissingFile, npm, packageBinary, required, requireSupportedNode, run } from "./tooling.mts";
 
 const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const inputFiles = [
   "package.json",
   "package-lock.json",
   "tsconfig.review.json",
+  "tsconfig.tooling.json",
   "eslint.config.mjs",
-  "scripts/build-review.mjs",
-  "scripts/review-contracts.mjs",
+  "scripts/build-review.mts",
+  "scripts/review-contracts.mts",
+  "scripts/tooling.mts",
+  "scripts/tsconfig.json",
 ];
 
-/** Run a build tool with inherited diagnostics, optionally collecting a version. */
-function run(command, args, cwd, capture = false) {
-  const result = spawnSync(command, args, {
-    cwd,
-    stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit",
-    encoding: "utf8",
-    windowsHide: true,
-  });
-  if (result.error || result.status !== 0) {
-    const detail = result.error?.message ?? result.stderr?.trim() ?? `exit ${result.status}`;
-    throw new Error(`${command} ${args.join(" ")} failed: ${detail}`);
-  }
-  return result.stdout?.trim();
-}
-
-/** Locate npm without shell-interpolating filesystem paths, including Windows. */
-function npm(args, cwd, capture = false) {
-  // npm.cmd needs a shell on Windows. Prefer its JavaScript entry point so
-  // paths containing spaces work without shell interpolation on either OS.
-  const candidates = [
-    process.env.npm_execpath,
-    join(dirname(process.execPath), "node_modules/npm/bin/npm-cli.js"),
-    join(dirname(process.execPath), "../lib/node_modules/npm/bin/npm-cli.js"),
-  ];
-  const cli = candidates.find((path) => path && existsSync(path));
-  if (cli) return run(process.execPath, [cli, ...args], cwd, capture);
-  if (process.platform === "win32") {
-    return run(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", "npm", ...args], cwd, capture);
-  }
-  return run("npm", args, cwd, capture);
-}
-
 /** Enumerate source inputs deterministically so additions and removals invalidate builds. */
-async function filesUnder(root, relative) {
+async function filesUnder(root: string, relative: string): Promise<string[]> {
   const entries = await readdir(join(root, relative), { withFileTypes: true });
-  const paths = [];
+  const paths: string[] = [];
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
     const path = `${relative}/${entry.name}`;
     if (entry.isDirectory()) paths.push(...(await filesUnder(root, path)));
@@ -66,7 +37,7 @@ async function filesUnder(root, relative) {
 }
 
 /** Length-prefix each input to prevent ambiguous concatenations in cache keys. */
-function digest(parts) {
+function digest(parts: readonly (string | Buffer)[]): string {
   const hash = createHash("sha256");
   for (const part of parts) {
     hash.update(String(part.length));
@@ -77,22 +48,22 @@ function digest(parts) {
 }
 
 /** Read an optional cache marker while preserving real filesystem errors. */
-async function textIfPresent(path) {
+async function textIfPresent(path: string): Promise<string | undefined> {
   try {
     return await readFile(path, "utf8");
   } catch (error) {
-    if (error.code === "ENOENT") return undefined;
+    if (isMissingFile(error)) return undefined;
     throw error;
   }
 }
 
 /** Preserve unchanged output timestamps so Rust need not re-embed identical bytes. */
-async function writeIfChanged(path, contents) {
-  let existing;
+async function writeIfChanged(path: string, contents: string | Buffer): Promise<void> {
+  let existing: Buffer | undefined;
   try {
     existing = await readFile(path);
   } catch (error) {
-    if (error.code !== "ENOENT") throw error;
+    if (!isMissingFile(error)) throw error;
   }
   const bytes = Buffer.isBuffer(contents) ? contents : Buffer.from(contents);
   if (!existing?.equals(bytes)) {
@@ -101,11 +72,29 @@ async function writeIfChanged(path, contents) {
   }
 }
 
+/** Inputs shared by Cargo and standalone builds; optional locations remain explicit. */
+export interface BuildOptions {
+  sourceDir?: string;
+  outputDir?: string;
+  profile?: "debug" | "release";
+  contractsDir?: string;
+}
+
+/** Report whether cached output or installed dependencies could be reused. */
+export interface BuildResult {
+  bundlePath: string;
+  rebuilt: boolean;
+  installed: boolean;
+}
+
 /** Stage, lint, type-check, and bundle one self-contained review application for Cargo. */
-export async function buildReview({ sourceDir = sourceRoot, outputDir, profile = "debug", contractsDir }) {
-  if (Number(process.versions.node.split(".")[0]) < 24) {
-    throw new Error("building the review UI requires Node.js 24 or newer");
-  }
+export async function buildReview({
+  sourceDir = sourceRoot,
+  outputDir,
+  profile = "debug",
+  contractsDir,
+}: BuildOptions): Promise<BuildResult> {
+  requireSupportedNode();
   const output = resolve(outputDir ?? join(sourceDir, "target/review-frontend"));
   const workspace = join(output, "review-workspace");
   const bundlePath = join(output, "review/app.js");
@@ -117,8 +106,8 @@ export async function buildReview({ sourceDir = sourceRoot, outputDir, profile =
   // Dependencies follow manifests and the host toolchain; source edits reuse
   // that install but invalidate the separately fingerprinted compiled bundle.
   const dependencyHash = digest([
-    contents[0],
-    contents[1],
+    required(contents[0]),
+    required(contents[1]),
     process.version,
     npmVersion,
     process.platform,
@@ -128,13 +117,13 @@ export async function buildReview({ sourceDir = sourceRoot, outputDir, profile =
     dependencyHash,
     profile,
     ...schemaContents,
-    ...sources.flatMap((path, index) => [path, contents[index]]),
+    ...sources.flatMap((path, index) => [path, required(contents[index])]),
   ]);
   const dependencyMarker = join(workspace, ".dependencies.sha256");
   const buildMarker = join(workspace, ".build.sha256");
   const dependenciesReady =
     (await textIfPresent(dependencyMarker)) === dependencyHash &&
-    existsSync(join(workspace, "node_modules/typescript/bin/tsc")) &&
+    existsSync(join(workspace, "node_modules/@typescript/native/bin/tsc")) &&
     existsSync(join(workspace, "node_modules/esbuild/package.json"));
   if (dependenciesReady && (await textIfPresent(buildMarker)) === buildHash && existsSync(bundlePath)) {
     return { bundlePath, rebuilt: false, installed: false };
@@ -149,7 +138,7 @@ export async function buildReview({ sourceDir = sourceRoot, outputDir, profile =
     }
   }
   for (let index = 0; index < sources.length; index += 1) {
-    await writeIfChanged(join(workspace, sources[index]), contents[index]);
+    await writeIfChanged(join(workspace, required(sources[index])), required(contents[index]));
   }
   if (!dependenciesReady) {
     console.error("Installing locked review UI build dependencies in Cargo build output...");
@@ -165,9 +154,23 @@ export async function buildReview({ sourceDir = sourceRoot, outputDir, profile =
     dependenciesDir: workspace,
   });
   const eslint = join(dirname(require.resolve("eslint/package.json")), "bin/eslint.js");
-  run(process.execPath, [eslint, "--max-warnings", "0", "frontend/review/**/*.{ts,tsx,mts}"], workspace);
-  run(process.execPath, [require.resolve("typescript/bin/tsc"), "--project", "tsconfig.review.json"], workspace);
-  const { build } = require("esbuild");
+  run(
+    process.execPath,
+    [eslint, "--max-warnings", "0", "frontend/review/**/*.{ts,tsx,mts}", "scripts/*.mts"],
+    workspace,
+  );
+  run(
+    process.execPath,
+    [packageBinary("@typescript/native", "tsc", workspace), "--project", "tsconfig.review.json"],
+    workspace,
+  );
+  run(
+    process.execPath,
+    [packageBinary("@typescript/native", "tsc", workspace), "--project", "tsconfig.tooling.json"],
+    workspace,
+  );
+  // Cargo installs these locked packages in staging; their bundled declarations type the dynamic Node boundary.
+  const { build } = require("esbuild") as typeof import("esbuild");
   const result = await build({
     absWorkingDir: workspace,
     entryPoints: [
@@ -192,10 +195,11 @@ export async function buildReview({ sourceDir = sourceRoot, outputDir, profile =
   if (result.outputFiles.length !== 1 || outputs.some((item) => item.imports.length !== 0)) {
     throw new Error("review UI must compile to one JavaScript file without external imports");
   }
-  const ts = require("typescript");
-  assertSelfContained(result.outputFiles[0].text, ts);
+  const ts = require("typescript") as typeof import("typescript");
+  const javascript = required(result.outputFiles[0]).text;
+  assertSelfContained(javascript, ts);
   const licenses = await bundledLicenses(workspace, result.metafile.inputs);
-  const bundle = `${licenses}\n${result.outputFiles[0].text}`;
+  const bundle = `${licenses}\n${javascript}`;
   const gzipBytes = gzipSync(bundle, { level: 9 }).length;
   if (profile === "release" && gzipBytes > 80 * 1024) {
     throw new Error(`review UI exceeds its 80 KiB gzip budget: ${gzipBytes} bytes`);
@@ -207,10 +211,10 @@ export async function buildReview({ sourceDir = sourceRoot, outputDir, profile =
 }
 
 /** Reject every remaining module load, including computed imports omitted from esbuild's import metadata. */
-export function assertSelfContained(source, ts) {
+export function assertSelfContained(source: string, ts: typeof import("typescript")): void {
   const file = ts.createSourceFile("app.js", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
   /** Walk emitted syntax instead of matching strings that may occur inside comments or UI text. */
-  function visit(node) {
+  function visit(node: import("typescript").Node): void {
     if (
       ts.isImportDeclaration(node) ||
       (ts.isExportDeclaration(node) && node.moduleSpecifier) ||
@@ -224,14 +228,14 @@ export function assertSelfContained(source, ts) {
 }
 
 /** Retain licenses for exactly the runtime packages present in the embedded bundle. */
-async function bundledLicenses(workspace, inputs) {
+async function bundledLicenses(workspace: string, inputs: import("esbuild").Metafile["inputs"]): Promise<string> {
   const packages = new Set(
     Object.keys(inputs).flatMap((path) => {
       const match = /(?:^|\/)node_modules\/((?:@[^/]+\/)?[^/]+)/.exec(path);
-      return match ? [match[1]] : [];
+      return match?.[1] ? [match[1]] : [];
     }),
   );
-  const licenses = [];
+  const licenses: string[] = [];
   for (const name of [...packages].sort()) {
     const directory = join(workspace, "node_modules", name);
     const filename = (await readdir(directory)).find((file) => /^licen[sc]e(?:\.(?:txt|md))?$/i.test(file));
@@ -244,25 +248,31 @@ async function bundledLicenses(workspace, inputs) {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    let outputDir;
-    let contractsDir;
-    let profile = "debug";
+    let outputDir: string | undefined;
+    let contractsDir: string | undefined;
+    let profile: "debug" | "release" = "debug";
     const args = process.argv.slice(2);
     while (args.length) {
       const option = args.shift();
       if (option === "--cargo-out-dir" || option === "--out-dir") outputDir = args.shift();
       else if (option === "--contracts-dir") contractsDir = args.shift();
-      else if (option === "--profile") profile = args.shift();
-      else throw new Error(`unknown review build option: ${option}`);
+      else if (option === "--profile") {
+        const value = args.shift();
+        if (value !== "debug" && value !== "release") throw new Error("Expected --profile debug or release");
+        profile = value;
+      } else throw new Error(`unknown review build option: ${option}`);
       if (!outputDir && (option === "--cargo-out-dir" || option === "--out-dir")) {
         throw new Error(`missing value for ${option}`);
       }
       if (option === "--contracts-dir" && !contractsDir) throw new Error(`missing value for ${option}`);
-      if (!profile) throw new Error(`missing value for ${option}`);
     }
-    await buildReview({ outputDir, profile, contractsDir });
+    await buildReview({
+      profile,
+      ...(outputDir ? { outputDir } : {}),
+      ...(contractsDir ? { contractsDir } : {}),
+    });
   } catch (error) {
-    console.error(`Review UI build failed: ${error.message}`);
+    console.error(`Review UI build failed: ${errorMessage(error)}`);
     process.exitCode = 1;
   }
 }

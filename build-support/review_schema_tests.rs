@@ -121,6 +121,32 @@ fn operation_manifest_covers_all_json_routes_without_phantom_empty_responses() {
             assert!(requests["properties"].get(request).is_some());
         }
         assert!(responses["properties"].get(operation.response).is_some());
+        let placeholders: Vec<&str> = operation
+            .path
+            .split('{')
+            .skip(1)
+            .map(|part| part.split_once('}').expect("closed path placeholder").0)
+            .collect();
+        assert_eq!(
+            placeholders,
+            operation
+                .parameters
+                .iter()
+                .map(|item| item.name)
+                .collect::<Vec<_>>(),
+            "{} must describe every route identity in order",
+            operation.name
+        );
+        for parameter in operation.parameters {
+            assert_eq!(
+                parameter.kind,
+                match parameter.name {
+                    "job_id" | "project_id" => ParameterKind::Number,
+                    "burst_id" | "entry_key" => ParameterKind::String,
+                    name => panic!("unreviewed route identity: {name}"),
+                }
+            );
+        }
         assert_eq!(
             operation.allow_empty_request,
             matches!(
@@ -173,4 +199,31 @@ fn response_fixtures_are_deterministic_public_dto_values() {
     );
     assert!(fixtures["state"].get("type").is_none());
     assert!(fixtures["diffusion_job"].get("source_url").is_none());
+}
+
+/// Creation acknowledgements add request-owned IDs without changing the ordinary patch or SSE schema.
+#[test]
+fn created_response_contracts_preserve_patch_fields_and_require_their_identity() {
+    let schema = response_schema();
+    let fixtures = serde_json::to_value(fixtures::responses()).unwrap();
+    for (name, identity, id) in [
+        ("publish_created", "created_job_id", 7),
+        ("panorama_created", "created_project_id", 9),
+    ] {
+        let created = member(&schema, name);
+        assert!(
+            created["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(identity))
+        );
+        let mut response = fixtures[name].as_object().unwrap().clone();
+        assert_eq!(response.remove(identity), Some(json!(id)));
+        assert_eq!(response, *fixtures["patch"].as_object().unwrap());
+        assert!(
+            member(&schema, "patch")["properties"]
+                .get(identity)
+                .is_none()
+        );
+    }
 }

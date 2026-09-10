@@ -1,28 +1,34 @@
 {
   "name": "mini-film",
-  "version": "23.1.0",
+  "version": "23.2.0",
   "private": true,
   "description": "Build and check the embedded mini-film review and gallery UIs.",
   "engines": {
-    "node": ">=24"
+    "node": ">=24.12.0"
   },
   "scripts": {
-    "build:review": "node scripts/build-review.mjs",
-    "contracts:generate": "node scripts/review-contracts.mjs --generate",
-    "contracts:check": "node scripts/review-contracts.mjs --check",
-    "contracts:runtime": "node scripts/review-contracts.mjs --runtime",
-    "typecheck:review": "tsc --project tsconfig.review.json",
-    "typecheck:review-tests": "tsc --project tsconfig.review-tests.json",
+    "build:review": "node scripts/build-review.mts",
+    "contracts:generate": "node scripts/review-contracts.mts --generate",
+    "contracts:check": "node scripts/review-contracts.mts --check",
+    "contracts:runtime": "node scripts/review-contracts.mts --runtime",
+    "typecheck:review": "node scripts/assets.mts --typecheck review",
+    "typecheck:review-tests": "node scripts/assets.mts --typecheck tests",
+    "typecheck:tooling": "node scripts/assets.mts --typecheck tooling",
+    "check:frontend-versions": "node scripts/frontend-versions.mts",
     "test:review": "playwright test",
+    "test:review:pure": "playwright test --config playwright.pure.config.ts",
+    "test:review:daemon": "cargo build --locked --no-default-features && playwright test --config playwright.daemon.config.ts",
+    "pretest:review:daemon": "npm run contracts:runtime",
+    "pretest:review:pure": "npm run contracts:runtime",
     "pretest:review": "npm run contracts:runtime",
-    "test:review:visual": "node scripts/review-visual.mjs",
-    "test:review-build": "node --test scripts/build-review.test.mjs scripts/frontend-tooling.test.mjs scripts/review-contracts.test.mjs",
-    "format:assets": "prettier --write \"assets/**/*.{html,css,js}\" \"frontend/**/*.{ts,tsx,mts,mjs,json}\" \"scripts/*.mjs\" \"*config*.{json,mjs,ts}\"",
-    "format:staged": "node scripts/format-staged-assets.mjs",
-    "format:assets:check": "prettier --check \"assets/**/*.{html,css,js}\" \"frontend/**/*.{ts,tsx,mts,mjs,json}\" \"scripts/*.mjs\" \"*config*.{json,mjs,ts}\"",
+    "test:review:visual": "node scripts/review-visual.mts",
+    "test:review-build": "node --test scripts/*.test.mts",
+    "format:assets": "node scripts/assets.mts --write",
+    "format:staged": "node scripts/format-staged-assets.mts",
+    "format:assets:check": "node scripts/assets.mts --check",
     "lint:review": "eslint --max-warnings 0 \"frontend/review/**/*.{ts,tsx,mts}\"",
-    "lint:assets": "eslint --max-warnings 0 \"assets/**/*.js\" \"frontend/**/*.{ts,tsx,mts,mjs}\" \"scripts/*.mjs\" \"*config*.{mjs,ts}\" && stylelint --max-warnings 0 \"assets/**/*.css\" && htmlhint \"assets/**/*.html\"",
-    "check:assets": "npm run format:assets:check && npm run lint:assets && npm run typecheck:review && npm run typecheck:review-tests"
+    "lint:assets": "node scripts/assets.mts --lint",
+    "check:assets": "node scripts/assets.mts --check-all"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.13.0",
@@ -30,6 +36,9 @@
     "@stylistic/eslint-plugin": "5.10.0",
     "@playwright/test": "1.63.0",
     "@types/node": "24.13.3",
+    "@types/semver": "7.8.0",
+    "@typescript/native": "npm:typescript@7.0.2",
+    "@typescript/old": "npm:typescript@6.0.3",
     "ajv": "8.20.0",
     "esbuild": "0.28.2",
     "eslint": "10.8.0",
@@ -39,13 +48,14 @@
     "htmlhint": "1.9.2",
     "json-schema-to-typescript": "16.0.0",
     "prettier": "3.9.6",
+    "semver": "7.8.5",
     "stylelint": "17.14.1",
     "stylelint-config-standard": "40.0.0",
-    "typescript": "6.0.3",
-    "typescript-eslint": "8.69.0"
+    "typescript": "npm:@typescript/typescript6@6.0.2",
+    "typescript-eslint": "8.70.0"
   },
   "dependencies": {
     "@preact/signals": "2.11.2",
-    "preact": "10.29.8"
+    "preact": "11.0.0-rc.2"
   }
 }

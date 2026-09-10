@@ -7,14 +7,15 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { assertSelfContained, buildReview } from "./build-review.mjs";
-import { contractInputs } from "./review-contracts.mjs";
+import { assertSelfContained, buildReview } from "./build-review.mts";
+import { contractInputs } from "./review-contracts.mts";
+import { isRecord, readJson } from "./tooling.mts";
 import ts from "typescript";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 // A single lifecycle proves failed builds cannot leave a valid cache marker.
-test("Cargo staging installs, invalidates, checks types, and emits one runtime file", async (context) => {
+void test("Cargo staging installs, invalidates, checks types, and emits one runtime file", async (context) => {
   const temporary = await mkdtemp(join(tmpdir(), "mini-film review build "));
   context.after(() => rm(temporary, { recursive: true, force: true }));
   const sourceDir = join(temporary, "source checkout");
@@ -27,9 +28,12 @@ test("Cargo staging installs, invalidates, checks types, and emits one runtime f
     "package.json",
     "package-lock.json",
     "tsconfig.review.json",
+    "tsconfig.tooling.json",
     "eslint.config.mjs",
-    "scripts/build-review.mjs",
-    "scripts/review-contracts.mjs",
+    "scripts/build-review.mts",
+    "scripts/review-contracts.mts",
+    "scripts/tooling.mts",
+    "scripts/tsconfig.json",
     "frontend/review/core/transport.ts",
   ]) {
     await copyFile(join(root, path), join(sourceDir, path));
@@ -75,18 +79,22 @@ test("Cargo staging installs, invalidates, checks types, and emits one runtime f
   assert.equal(existsSync(join(outputDir, "review-workspace/frontend/review/added.ts")), false);
 
   const configPath = join(sourceDir, "tsconfig.review.json");
-  const config = JSON.parse(await readFile(configPath, "utf8"));
-  config.compilerOptions.noUnusedLocals = true;
+  const config = await readJson(configPath);
+  assert.ok(isRecord(config));
+  assert.ok(isRecord(config["compilerOptions"]));
+  config["compilerOptions"]["noUnusedLocals"] = true;
   await writeFile(configPath, JSON.stringify(config));
   assert.equal((await buildReview(options)).rebuilt, true);
 
   const packagePath = join(sourceDir, "package.json");
   const lockPath = join(sourceDir, "package-lock.json");
-  const manifest = JSON.parse(await readFile(packagePath, "utf8"));
-  const lock = JSON.parse(await readFile(lockPath, "utf8"));
-  manifest.version = "0.0.0-build-fixture";
-  lock.version = manifest.version;
-  lock.packages[""].version = manifest.version;
+  const manifest = await readJson(packagePath);
+  const lock = await readJson(lockPath);
+  assert.ok(isRecord(manifest) && isRecord(lock));
+  assert.ok(isRecord(lock["packages"]) && isRecord(lock["packages"][""]));
+  manifest["version"] = "0.0.0-build-fixture";
+  lock["version"] = manifest["version"];
+  lock["packages"][""]["version"] = manifest["version"];
   await writeFile(packagePath, JSON.stringify(manifest));
   await writeFile(lockPath, JSON.stringify(lock));
   assert.equal((await buildReview(options)).installed, true);
@@ -130,7 +138,7 @@ test("Cargo staging installs, invalidates, checks types, and emits one runtime f
 });
 
 // Import metadata alone misses computed dynamic imports; the final emitted syntax must also be checked.
-test("single-file validation rejects computed imports but accepts import-like UI strings", () => {
+void test("single-file validation rejects computed imports but accepts import-like UI strings", () => {
   assert.throws(() => assertSelfContained("const path = location.hash; void import(path);", ts), /external imports/);
   assert.throws(() => assertSelfContained('export { view } from "./chunk.js";', ts), /external imports/);
   assert.doesNotThrow(() => assertSelfContained('const text = "import(path)"; document.title = text;', ts));

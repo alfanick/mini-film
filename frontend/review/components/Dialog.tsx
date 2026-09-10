@@ -2,7 +2,7 @@
  * Keep modal state in Preact while the native dialog owns the top layer, focus containment, and background inertness.
  * Explicit focus restoration also covers a dialog that disappears with its parent feature.
  */
-import type { ComponentChildren, JSX } from "preact";
+import type { ComponentChildren, JSX, TargetedKeyboardEvent } from "preact";
 import { useLayoutEffect, useRef } from "preact/hooks";
 import { ErrorBoundary } from "./ErrorBoundary";
 
@@ -46,7 +46,7 @@ export function Dialog({ id, className, labelledBy, label, open, onClose, childr
   }
 
   /** Keep Tab at the modal edges instead of transferring focus into the hosting browser's chrome. */
-  function containTab(event: JSX.TargetedKeyboardEvent<HTMLDialogElement>): void {
+  function containTab(event: TargetedKeyboardEvent<HTMLDialogElement>): void {
     if (event.key !== "Tab" || event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
     const controls = dialogControls(event.currentTarget);
     const first = controls[0];

@@ -103,6 +103,22 @@ pub enum ReviewStateMessage {
     Patch(ReviewStatePatch),
 }
 
+/// Identify this request's publish job without inferring ownership from concurrently changing global state.
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+pub struct ReviewPublishCreated {
+    #[serde(flatten)]
+    pub patch: ReviewStatePatch,
+    pub created_job_id: u64,
+}
+
+/// Keep the historical patch envelope while acknowledging exactly the panorama created by this request.
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+pub struct ReviewPanoramaCreated {
+    #[serde(flatten)]
+    pub patch: ReviewStatePatch,
+    pub created_project_id: u64,
+}
+
 /// Clone a replacement only when the corresponding snapshot value changed.
 fn changed<T: Clone + PartialEq>(previous: &T, current: &T) -> PatchField<T> {
     if previous == current {

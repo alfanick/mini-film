@@ -1,9 +1,13 @@
 //! Serve review routes through the shared Rust-owned JSON request and response contracts.
 
 use crate::review_contract as wire;
+#[path = "server_assets.rs"]
+mod static_assets;
+
 use std::{
     convert::Infallible,
     path::{Path, PathBuf},
+    sync::OnceLock,
 };
 
 use async_stream::stream;
@@ -109,14 +113,24 @@ pub(super) async fn route_request_with_headers(
             .into_response()
         }
         (Method::GET, "/assets/styles.css") => {
-            text_response(200, "text/css; charset=utf-8", review_styles()).into_response()
+            static STYLES: OnceLock<static_assets::StaticAsset> = OnceLock::new();
+            STYLES
+                .get_or_init(|| {
+                    static_assets::StaticAsset::new(review_styles(), "text/css; charset=utf-8")
+                })
+                .response(headers)
         }
-        (Method::GET, "/assets/app.js") => text_response(
-            200,
-            "application/javascript; charset=utf-8",
-            review_script(),
-        )
-        .into_response(),
+        (Method::GET, "/assets/app.js") => {
+            static SCRIPT: OnceLock<static_assets::StaticAsset> = OnceLock::new();
+            SCRIPT
+                .get_or_init(|| {
+                    static_assets::StaticAsset::new(
+                        review_script(),
+                        "application/javascript; charset=utf-8",
+                    )
+                })
+                .response(headers)
+        }
         (Method::GET, _) if path.starts_with("/assets/fonts/") => {
             font_asset_response(path, headers, handle).await
         }
@@ -229,8 +243,16 @@ pub(super) async fn route_request_with_headers(
             };
             match parse_publish_request(&body)
                 .and_then(|request| handle.start_publish_job(request))
-                .and_then(|_| handle.api_state_patch_json_since(&previous))
-            {
+                .and_then(|job| {
+                    serde_json::to_string(&wire::ReviewPublishCreated {
+                        patch: wire::ReviewStatePatch::between(
+                            &previous,
+                            &handle.api_state_snapshot()?,
+                        ),
+                        created_job_id: job.id,
+                    })
+                    .context("serializing publish acknowledgement")
+                }) {
                 Ok(body) => {
                     text_response(200, "application/json; charset=utf-8", &body).into_response()
                 }
@@ -657,8 +679,12 @@ async fn panorama_create_response(body: &[u8], handle: &ReviewHandle) -> Respons
     let result = async {
         let request = serde_json::from_slice::<wire::ReviewPanoramaCreateRequest>(body)
             .context("parsing panorama project")?;
-        handle.create_panorama_project_async(request.into()).await?;
-        handle.api_state_patch_json_since(&previous)
+        let created_project_id = handle.create_panorama_project_async(request.into()).await?;
+        serde_json::to_string(&wire::ReviewPanoramaCreated {
+            patch: wire::ReviewStatePatch::between(&previous, &handle.api_state_snapshot()?),
+            created_project_id,
+        })
+        .context("serializing panorama acknowledgement")
     }
     .await;
     match result {

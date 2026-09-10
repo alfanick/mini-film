@@ -1,12 +1,12 @@
 // Serve the actual embedded shell and bundle without starting image-processing
 // services. Browser tests supply deterministic HTTP state and SSE messages.
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const legacy = process.env.REVIEW_LEGACY === "1";
+const legacy = process.env["REVIEW_LEGACY"] === "1";
 const assets = resolve(root, legacy ? "target/review-baseline" : "assets/review");
 const bundle = resolve(root, legacy ? "target/review-baseline/app.js" : "target/review-frontend/review/app.js");
 const releaseBundle = resolve(root, "target/review-release/review/app.js");
@@ -19,12 +19,12 @@ const image = [
 ].join("");
 
 // Resolve only allowlisted assets so the fixture server cannot expose the checkout.
-const server = createServer(async (request, response) => {
-  const url = new URL(request.url, "http://localhost");
+async function serve(request: IncomingMessage, response: ServerResponse): Promise<void> {
+  const url = new URL(request.url ?? "/", "http://localhost");
   const release = url.pathname.startsWith("/nested/review-release/");
   const path = url.pathname.replace(/^\/nested\/review(?:-release)?\//, "");
-  let file;
-  let type;
+  let file: string;
+  let type: string;
   if (path === "" || path === "index.html") {
     file = resolve(assets, "index.html");
     type = "text/html";
@@ -52,7 +52,13 @@ const server = createServer(async (request, response) => {
     response.end(contents);
   } catch (error) {
     response.writeHead(500);
-    response.end(error.message);
+    response.end(error instanceof Error ? error.message : "Fixture asset read failed");
   }
+}
+const server = createServer((request, response): void => {
+  void serve(request, response).catch((error: unknown): void => {
+    response.writeHead(500);
+    response.end(error instanceof Error ? error.message : "Fixture request failed");
+  });
 });
 server.listen(4178, "127.0.0.1");

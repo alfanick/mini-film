@@ -4,7 +4,7 @@
  */
 import { useRef, useState } from "preact/hooks";
 import { reviewUrl } from "../core/api";
-import type { ReviewImage } from "../core/types";
+import type { ReviewImageObservation as ReviewImage } from "../core/types";
 
 interface ShareState {
   busyId: number | null;

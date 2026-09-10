@@ -2,12 +2,20 @@
  * Controlled publish drafts preserve text input and optional export fields while server jobs supply reactive
  * progress.
  */
-import { useCallback, useMemo, useRef, useState } from "preact/hooks";
-import { useReviewContext } from "../../core/context";
+import { computed, createModel, signal, type ReadonlySignal } from "@preact/signals";
+import type { ReviewModelValue } from "../../core/model";
+import { waitForPublishOutputs, waitForPublishSnapshot } from "./barrier";
+import type { CommitContext } from "../../session/barriers";
 import { reviewApi, errorMessage } from "../../core/api";
 import { imageLabels, isDirectCompressedImage, publishProfileIndexes } from "../../core/selectors";
 import { COLOR_LABELS } from "../../core/constants";
-import type { PublishRequest, ReviewLabel, ReviewPublishDefaults, ReviewPublishJob } from "../../core/types";
+import type {
+  PublishRequest,
+  ReadonlyData,
+  ReviewLabel,
+  ReviewPublishDefaults,
+  ReviewPublishJobObservation as ReviewPublishJob,
+} from "../../core/types";
 import { numberOrNull, splitPublishTags } from "./helpers";
 import type { ToolSessionActions } from "../../tools/types";
 
@@ -37,13 +45,14 @@ export interface PublishDraft {
 }
 /** Controlled form values, derived selection counts, and publish lifecycle actions. */
 export interface PublishActions {
-  publishOpen: boolean;
-  publishForm: PublishDraft;
-  publishSubmitting: boolean;
-  publishError: string;
-  publishJob: ReviewPublishJob | null;
-  publishRerender: boolean;
-  publishStats: { pictures: number; outputs: number };
+  readonly publishOpen: ReadonlySignal<boolean>;
+  readonly publishForm: ReadonlySignal<ReadonlyData<PublishDraft>>;
+  readonly publishSubmitting: ReadonlySignal<boolean>;
+  readonly publishError: ReadonlySignal<string>;
+  readonly publishRecovery: ReadonlySignal<boolean>;
+  readonly publishJob: ReadonlySignal<ReviewPublishJob | null>;
+  readonly publishRerender: ReadonlySignal<boolean>;
+  readonly publishStats: ReadonlySignal<{ readonly pictures: number; readonly outputs: number }>;
   togglePublishWizard(this: void, force?: boolean): void;
   setPublishField<K extends keyof PublishDraft>(this: void, field: K, value: PublishDraft[K]): void;
   togglePublishLabel(this: void, label: ReviewLabel, checked: boolean): void;
@@ -84,11 +93,11 @@ function defaultDraft(defaults: Partial<ReviewPublishDefaults>, minRating: numbe
 }
 
 /** Convert strings only at the request boundary and omit dimensions belonging to inactive size modes. */
-export function publishBody(form: PublishDraft): PublishRequest {
+export function publishBody(form: ReadonlyData<PublishDraft>): PublishRequest {
   return {
     album: form.album.trim() || "published",
     min_rating: Number(form.minRating || 0),
-    labels: form.labels,
+    labels: [...form.labels],
     tags: splitPublishTags(form.tags),
     main_profile_only: form.mainProfileOnly,
     output_format: form.outputFormat,
@@ -133,57 +142,130 @@ function wouldRerender(form: PublishDraft, defaults: Partial<ReviewPublishDefaul
 }
 
 /** Manage the controlled form and derive selection counts/progress without querying rendered form fields. */
-export function usePublish(session: ToolSessionActions): PublishActions {
-  const { state, getState } = useReviewContext();
-  const [publishOpen, setOpen] = useState(false);
-  const [publishForm, setForm] = useState<PublishDraft>(() =>
+export const PublishModel = createModel((catalog: ReviewModelValue, session: ToolSessionActions): PublishActions => {
+  const getState = catalog.getState;
+  const state = getState();
+  const publishOpen = signal(false);
+  /** Change dialog visibility without canceling an in-flight publish operation. */
+  const setOpen = (value: boolean): void => {
+    publishOpen.value = value;
+  };
+  const publishForm = signal<PublishDraft>(
     defaultDraft(state.data?.publish_defaults || {}, state.data?.ui.min_rating || 0),
   );
-  const [publishSubmitting, setSubmitting] = useState(false);
-  const [publishError, setError] = useState("");
-  const submitting = useRef(false);
+  /** Copy controlled form input so caller-owned label arrays cannot mutate the draft. */
+  const setForm = (value: PublishDraft | ((previous: PublishDraft) => PublishDraft)): void => {
+    const next = typeof value === "function" ? value(publishForm.peek()) : value;
+    publishForm.value = { ...next, labels: [...next.labels] };
+  };
+  const publishSubmitting = signal(false);
+  /** Reflect submission progress independently of whether the dialog is visible. */
+  const setSubmitting = (value: boolean): void => {
+    publishSubmitting.value = value;
+  };
+  const publishError = signal("");
+  /** Retain actionable publish errors in the durable feature model. */
+  const setError = (value: string): void => {
+    publishError.value = value;
+  };
+  const submitting = { current: false };
+  const publishRecovery = signal(false);
+  let recovery: (() => Promise<void>) | null = null;
+  const ownJobId = signal<number | null>(null);
+
+  /** Explicit read-only recovery may resume edits, but never infers a created job or retries its POST. */
+  function holdUnknown(context: CommitContext, jobId: number | null, message: string): Promise<void> {
+    publishRecovery.value = true;
+    setError(
+      `Publish outcome is unknown: ${message}. Check state before resuming edits; do not resubmit automatically.`,
+    );
+    return new Promise<void>((resolve) => {
+      recovery = async (): Promise<void> => {
+        const controller = new AbortController();
+        const timer = setTimeout((): void => controller.abort(), 30_000);
+        try {
+          const snapshot = await context.refresh(controller.signal);
+          const jobs = snapshot.data?.publish_jobs || [];
+          const own = jobId === null ? null : jobs.find((job) => job.id === jobId);
+          if (
+            (jobId !== null && !own) ||
+            (own?.status === "running" && own.step === "starting") ||
+            (jobId === null && jobs.some((job) => job.status === "running" && job.step === "starting"))
+          ) {
+            setError("Publish startup is still uncertain. Edits remain local; check state again shortly.");
+            return;
+          }
+          // With a lost creation acknowledgement this is an explicit best-effort release, not job correlation proof.
+          recovery = null;
+          publishRecovery.value = false;
+          setError(
+            jobId === null
+              ? "Publish outcome unknown. Editing resumed after checking state; inspect jobs before starting another."
+              : "Publish state checked; local editing resumed.",
+          );
+          resolve();
+        } catch (error) {
+          setError(`State check failed: ${errorMessage(error)}. Edits remain local.`);
+        } finally {
+          clearTimeout(timer);
+          controller.abort();
+        }
+      };
+    });
+  }
 
   /** Reinitialize controls on each opening, matching the daemon-default publish workflow. */
-  const togglePublishWizard = useCallback(
-    (force?: boolean): void => {
-      const show = force ?? !publishOpen;
-      if (show) {
-        const current = getState();
-        setForm(defaultDraft(current.data?.publish_defaults || {}, current.data?.ui.min_rating || 0));
-        setError("");
-      }
-      setOpen(show);
-    },
-    [publishOpen, getState],
-  );
+  const togglePublishWizard = (force?: boolean): void => {
+    const show = force ?? !publishOpen.peek();
+    if (show && !submitting.current) {
+      const current = getState();
+      setForm(defaultDraft(current.data?.publish_defaults || {}, current.data?.ui.min_rating || 0));
+      setError("");
+    }
+    setOpen(show);
+  };
 
   /** Keep a field's declared value type when replacing part of the controlled draft. */
-  const setPublishField = useCallback(
-    <K extends keyof PublishDraft>(field: K, value: PublishDraft[K]): void =>
-      setForm((current) => ({ ...current, [field]: value })),
-    [],
-  );
+  const setPublishField = <K extends keyof PublishDraft>(field: K, value: PublishDraft[K]): void =>
+    setForm((current) => ({ ...current, [field]: value }));
 
   /** Store selected color labels in the same order as the rendered checkbox list. */
-  const togglePublishLabel = useCallback(
-    (label: ReviewLabel, checked: boolean): void =>
-      setForm((current) => ({
-        ...current,
-        labels: COLOR_LABELS.filter((candidate) =>
-          candidate === label ? checked : current.labels.includes(candidate),
-        ),
-      })),
-    [],
-  );
+  const togglePublishLabel = (label: ReviewLabel, checked: boolean): void =>
+    setForm((current) => ({
+      ...current,
+      labels: COLOR_LABELS.filter((candidate) => (candidate === label ? checked : current.labels.includes(candidate))),
+    }));
 
   /** Start publishing with the current draft and merge the returned server job state. */
   const submitPublish = async (): Promise<void> => {
+    if (recovery) {
+      await recovery();
+      return;
+    }
     if (submitting.current) return;
     submitting.current = true;
     setSubmitting(true);
     setError("");
     try {
-      session.applyMessage(await reviewApi.publish({ body: publishBody(publishForm) }));
+      const body = publishBody(publishForm.peek());
+      await session.commit("all", async (context): Promise<void> => {
+        setError("Saving edits and waiting for affected pictures to finish rendering...");
+        await waitForPublishOutputs(context, body);
+        setError("Starting publish job...");
+        let jobId: number | null = null;
+        try {
+          const response = await reviewApi.publish({ body });
+          session.applyMessage(response);
+          if (!("created_job_id" in response) || typeof response.created_job_id !== "number")
+            throw new Error("Publish creation acknowledgement did not identify its job");
+          jobId = response.created_job_id;
+          ownJobId.value = jobId;
+          await waitForPublishSnapshot(context, jobId);
+          setError("");
+        } catch (error) {
+          await holdUnknown(context, jobId, errorMessage(error));
+        }
+      });
     } catch (error) {
       setError(`Publish failed: ${errorMessage(error)}`);
     } finally {
@@ -191,13 +273,13 @@ export function usePublish(session: ToolSessionActions): PublishActions {
       setSubmitting(false);
     }
   };
-  const publishStats = useMemo(() => {
-    const body = publishBody(publishForm);
+  const publishStats = computed(() => {
+    const body = publishBody(publishForm.value);
     const labels = new Set(body.labels);
     const tags = new Set(body.tags.map((tag) => tag.toLowerCase()));
     const totals = { pictures: 0, outputs: 0 };
-    if (!publishOpen) return totals;
-    for (const image of state.data?.images || []) {
+    if (!publishOpen.value) return totals;
+    for (const image of catalog.images.value) {
       if (
         image.rating < body.min_rating ||
         (labels.size > 0 && imageLabels(image).every((label) => !labels.has(label))) ||
@@ -212,20 +294,26 @@ export function usePublish(session: ToolSessionActions): PublishActions {
           : publishProfileIndexes(image).length;
     }
     return totals;
-  }, [publishForm, publishOpen, state.data?.images]);
-  const jobs = state.data?.publish_jobs || [];
-  const publishJob = jobs[jobs.length - 1] || null;
+  });
+  const publishJob = computed((): ReviewPublishJob | null => {
+    const jobs = catalog.catalogField("publish_jobs").value || [];
+    const id = ownJobId.value;
+    return id === null ? jobs[jobs.length - 1] || null : jobs.find((job) => job.id === id) || null;
+  });
   return {
     publishOpen,
     publishForm,
     publishSubmitting,
     publishError,
+    publishRecovery,
     publishJob,
     publishStats,
-    publishRerender: wouldRerender(publishForm, state.data?.publish_defaults || {}),
+    publishRerender: computed(
+      () => publishOpen.value && wouldRerender(publishForm.value, catalog.catalogField("publish_defaults").value || {}),
+    ),
     togglePublishWizard,
     setPublishField,
     togglePublishLabel,
     submitPublish,
   };
-}
+});

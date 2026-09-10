@@ -1,8 +1,8 @@
-# Check changing advisory data on a schedule without making deterministic Cargo builds depend on audit services.
-name: Frontend dependency audit
+# Check changing advisory and release metadata without coupling deterministic Cargo builds to online services.
+name: Frontend dependency freshness and audit
 on:
   schedule:
-    - cron: "17 7 * * 1"
+    - cron: "17 7 * * *"
   workflow_dispatch:
 permissions:
   contents: read
@@ -20,3 +20,7 @@ jobs:
           cache: npm
       - name: Audit locked build and runtime dependencies
         run: npm audit --audit-level=high
+      - name: Install locked version-check tooling
+        run: npm ci --ignore-scripts --include=dev --include=optional --no-audit --no-fund
+      - name: Reject newer supported frontend releases
+        run: npm run check:frontend-versions

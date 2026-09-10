@@ -172,7 +172,7 @@ mini-film daemon /path/to/inbox /path/to/output \
 
 ## Build
 
-Source builds require Rust, Node.js 24 or newer, and npm on `PATH`. Cargo
+Source builds require Rust, Node.js 24.12 or newer, and npm on `PATH`. Cargo
 automatically installs the locked frontend dependencies, lints and checks the
 review UI's TypeScript, and bundles it into one JavaScript file embedded in the binary.
 The first build needs access to the npm registry (or a populated npm cache).
@@ -232,7 +232,9 @@ npm run typecheck:review
 npm run lint:review
 npm run build:review
 npm run check:assets
+npm run check:frontend-versions
 npm run test:review-build
+npm run test:review:pure
 npx playwright install chromium webkit
 npm run test:review
 ```
@@ -254,6 +256,10 @@ defaults may make an input optional while its output remains required/nullable.
 Malformed HTTP or SSE data cannot replace the last valid review state. Runtime
 response validators are precompiled; no schema compiler, external schema fetch,
 or dynamic code generation is needed in the browser.
+Only boolean guards are public. A narrowly checked AST adapter compacts opaque
+Ajv error payloads in generated validators, retaining validation control flow,
+counts, arrays, and schema constants. Unknown generator shapes fail the build;
+fixture and malformed-input equivalence tests protect acceptance semantics.
 
 The standalone build writes `target/review-frontend/review/app.js`; pass
 `-- --profile release` to minify it. Cargo uses the same build helper for
@@ -264,7 +270,11 @@ The desktop launcher, static galleries, sampler, and TV page retain their
 existing embedded assets.
 
 Browser checks cover debug and release bundles in Chromium and WebKit; pure
-contract, geometry, and state-model tests run once. Accessibility checks cover
+contract, geometry, and state-model tests use a separate server-free configuration.
+Mobile projects use real touch/coarse-pointer contexts on both engines. Trusted
+tap tests run on both; continuous swipe, hold/cancel, and two-finger crop gestures
+use Chromium's native CDP input API, since Playwright exposes only taps for WebKit.
+Accessibility checks cover
 keyboard-only controls and WCAG AA scans. Visual comparisons use the pinned
 `mcr.microsoft.com/playwright:v1.63.0-noble` image in CI. Each run first generates
 temporary debug reference screenshots, then compares release and repeated debug
@@ -285,13 +295,43 @@ screenshots stay under `target/review-visual`; failures, diffs, and traces stay
 under `target/playwright-results`, relative to that workspace or the checkout
 when running Playwright directly. CI uploads these ignored artifacts on failure.
 Release JavaScript is capped at 80 KiB gzip and
-checked for external or computed dynamic imports. Scheduled npm advisory checks
-are separate from deterministic Cargo builds.
+checked for external or computed dynamic imports. Daily npm advisory and release
+freshness checks are separate from deterministic Cargo builds.
+
+Commit hooks and CI reject newer stable or RC Preact releases across all majors,
+newer stable Signals releases, and newer stable native TypeScript releases.
+They separately check the TypeScript 6 compatibility wrapper and its underlying
+major-6 compiler. Exact package pins and lockfile integrity are required; beta,
+nightly, and deprecated releases are excluded. RC-to-stable transitions are
+detected even if an npm dist-tag lags behind. Registry failures block these
+checks after two bounded attempts; retry when online. Checks never modify pins
+or update dependencies automatically. Cargo does not run freshness or audits:
+rebuilds remain offline-capable once their locked dependency cache is populated.
 
 The checked-in `tsconfig.json` files let TypeScript language servers discover
-the browser project, Node-based tests, and Playwright configuration directly.
-Neovim and other editors should use this checkout's installed TypeScript and
-ESLint packages after `npm ci`. ESLint uses TypeScript's project service and
+the browser project, Node-based tests, Playwright configuration, and erasable
+`.mts` build helpers directly. Node executes these typed helpers without an
+emitted bootstrap artifact. Native TypeScript 7 runs all three compiler projects;
+the separately pinned TypeScript 6 compatibility API supports ESLint and AST
+checks. `@typescript/native` aliases the native `typescript` package, while
+`typescript` aliases `@typescript/typescript6` and `@typescript/old` pins its
+classic implementation independently.
+
+After `npm ci`, Neovim with current `nvim-lspconfig` can use the native `tsc`
+configuration (not the deprecated `tsgo` name) with the checkout-local command:
+
+```lua
+vim.lsp.config('tsc', {
+  cmd = { 'node', './node_modules/@typescript/native/bin/tsc', '--lsp', '--stdio' },
+})
+vim.lsp.enable('tsc')
+```
+
+Start Neovim from the repository root, or use an absolute checkout path in `cmd`.
+Do not point a classic `ts_ls` setup at the compatibility wrapper: it does not
+contain `lib/tsserver.js`. If a classic-language-server fallback is needed, use
+`node_modules/@typescript/old/lib/tsserver.js` explicitly. Configure the editor's
+ESLint integration to use the checkout's ESLint package. ESLint uses TypeScript's project service and
 rejects unsafe values, unhandled promises, unused declarations, `any`, and
 imperative `h()` views. Hook order and effect dependencies are also checked.
 Unchecked indexed access, exact optional properties, exhaustive switches, and
@@ -302,7 +342,7 @@ Cargo runs the same production lint and type checks;
 `npm run check:assets` additionally checks tests and developer helpers. Warnings
 fail the lint commands, and TypeScript/ESLint suppression comments are rejected.
 Prettier uses a 120-column layout, and lint enforces that limit for TypeScript,
-TSX, and developer JavaScript. The pre-commit hook automatically formats staged
+TSX, and typed developer helpers. The pre-commit hook automatically formats staged
 frontend paths; formatting changes are left unstaged for review, preserving
 partial staging. `npm run format:assets` formats the complete frontend on demand.
 
@@ -315,6 +355,17 @@ job-creation requests are not automatically replayed. This protects local edit
 ownership, not simultaneous writes from different browsers: the existing wire
 protocol has no conditional writes or causal revision ordering. Drafts remain
 in memory, not in a durable offline journal.
+
+When the page becomes hidden or is leaving, eligible unsaved revisions join the
+same ordered save queue. Small requests use `keepalive`; this remains best-effort
+and offers no close prompt or durability guarantee if the page is terminated.
+Publish captures its current form and existing local edit revisions, then waits
+for selected outputs invalidated by that fixed edit set. Closing the dialog hides
+it without canceling the operation. Later edits wait until the created job leaves
+its starting state. An uncertain creation or startup result never automatically
+repeats the POST: use "Check state and resume edits" to refresh validated server
+state first. Without a returned job ID, recovery is user-directed best effort,
+not proof that a remote job was never created.
 
 Review dialogs contain keyboard focus and return it to the triggering control
 on close. Background rating/navigation shortcuts are suspended while a dialog

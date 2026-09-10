@@ -1,8 +1,21 @@
 /** Present the current picture with reactive crop, autofocus, histogram, and zoom layers.
  * Preact owns visible markup and styles; refs are reserved for canvas sampling, measurements, and pointer capture. */
-import type { JSX } from "preact";
+import type {
+  CSSProperties,
+  JSX,
+  TargetedEvent,
+  TargetedKeyboardEvent,
+  TargetedMouseEvent,
+  TargetedPointerEvent,
+} from "preact";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
-import type { Dimensions, RetouchSettings, ReviewImage, ReviewProfileRender } from "../core/types";
+import type {
+  Dimensions,
+  RetouchSettings,
+  RetouchObservation,
+  ReviewImageObservation as ReviewImage,
+  ReviewProfileRenderObservation as ReviewProfileRender,
+} from "../core/types";
 import { useReviewContext } from "../core/context";
 import {
   currentImage,
@@ -22,7 +35,7 @@ import { clamp, cssUrl, focusRegionPolygons, fullZoomOffset, zoomLoupePosition }
 export interface ViewerProps {
   image: ReviewImage | null;
   selected: ReviewProfileRender | null;
-  retouch: RetouchSettings;
+  retouch: RetouchObservation;
   onRetouch: (retouch: RetouchSettings) => void | Promise<void>;
   onMove: (delta: number) => Promise<void>;
   onRate: (rating: number) => Promise<void>;
@@ -82,7 +95,7 @@ function rectOf(element: Element | null): Rect {
 }
 
 /** Approximate pending tonal edits using the existing fast browser preview filter. */
-function draftFilter(retouch: RetouchSettings, active: boolean, sooc: boolean): string {
+function draftFilter(retouch: RetouchObservation, active: boolean, sooc: boolean): string {
   const adjustments = sooc ? defaultRetouch().adjustments : retouch.adjustments;
   const changed = Object.values(adjustments).some((value) => value !== 0) || retouch.crop || retouch.rotation_degrees;
   if (!active || !changed) return "";
@@ -135,7 +148,7 @@ export function Viewer({
   shortcutsBlocked = false,
   feedback: feedbackRequest,
 }: ViewerProps): JSX.Element {
-  const { state, getState } = useReviewContext();
+  const { state, getState } = useReviewContext(["localRetouchDirty"]);
   const viewerRef = useRef<HTMLElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
   const fullRef = useRef<HTMLDivElement>(null);
@@ -273,7 +286,7 @@ export function Viewer({
   }, [zoom, stopZoom, shortcutsBlocked]);
 
   /** Track decoded dimensions separately from state so canvas and overlays redraw on load. */
-  function imageLoaded(event: JSX.TargetedEvent<HTMLImageElement>): void {
+  function imageLoaded(event: TargetedEvent<HTMLImageElement>): void {
     if (zoom?.kind === "loupe") stopZoom();
     setLoadedSource(event.currentTarget.getAttribute("src") || "");
     setNatural({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight });
@@ -282,7 +295,7 @@ export function Viewer({
   }
 
   /** Start a primary-button hold without interfering with crop tools or other controls. */
-  function pointerDown(event: JSX.TargetedPointerEvent<HTMLElement>): void {
+  function pointerDown(event: TargetedPointerEvent<HTMLElement>): void {
     if (
       cropActive ||
       zoom?.kind === "full" ||
@@ -326,7 +339,7 @@ export function Viewer({
   }
 
   /** Follow zoom pointers and cancel a hold once movement becomes a swipe. */
-  function pointerMove(event: JSX.TargetedPointerEvent<HTMLElement>): void {
+  function pointerMove(event: TargetedPointerEvent<HTMLElement>): void {
     if (zoom?.kind === "full" && event.pointerType === "mouse") {
       setZoom({
         kind: "full",
@@ -355,7 +368,7 @@ export function Viewer({
   }
 
   /** Turn a released touch into navigation or rating, while completed zoom holds only close their loupe. */
-  async function pointerUp(event: JSX.TargetedPointerEvent<HTMLElement>): Promise<void> {
+  async function pointerUp(event: TargetedPointerEvent<HTMLElement>): Promise<void> {
     const session = pointer.current;
     if (!session || session.pointerId !== event.pointerId) return;
     const dx = event.clientX - session.startX;
@@ -374,12 +387,12 @@ export function Viewer({
   }
 
   /** Cancel only the pointer-owned interaction, leaving unrelated desktop full zoom intact. */
-  function pointerCanceled(event: JSX.TargetedPointerEvent<HTMLElement>): void {
+  function pointerCanceled(event: TargetedPointerEvent<HTMLElement>): void {
     if (pointer.current?.pointerId === event.pointerId) stopZoom();
   }
 
   /** Toggle desktop full-frame zoom while keeping touch double taps reserved for gesture navigation. */
-  function doubleClick(event: JSX.TargetedMouseEvent<HTMLElement>): void {
+  function doubleClick(event: TargetedMouseEvent<HTMLElement>): void {
     if (
       cropActive ||
       !sourceUrl ||
@@ -401,7 +414,7 @@ export function Viewer({
   }
 
   /** Give the photograph's keyboard control the same centered full-resolution zoom as a desktop double click. */
-  function keyboardZoom(event: JSX.TargetedKeyboardEvent<HTMLImageElement>): void {
+  function keyboardZoom(event: TargetedKeyboardEvent<HTMLImageElement>): void {
     if (event.key !== "Enter" && event.key !== " ") return;
     if (cropActive || shortcutsBlocked || !sourceUrl) return;
     event.preventDefault();
@@ -426,18 +439,18 @@ export function Viewer({
   }
 
   /** Suppress native dragging and context actions only on the image gesture surface. */
-  function preventNativeAction(event: JSX.TargetedEvent<HTMLElement>): void {
+  function preventNativeAction(event: TargetedEvent<HTMLElement>): void {
     if (event.target instanceof Element && !event.target.closest(".crop-overlay, .crop-tools, .retouch-grid"))
       event.preventDefault();
   }
 
-  const frameStyle: JSX.CSSProperties = {
-    left: layout.image.left - layout.viewer.left,
-    top: layout.image.top - layout.viewer.top,
-    width: layout.image.width,
-    height: layout.image.height,
+  const frameStyle: CSSProperties = {
+    left: `${layout.image.left - layout.viewer.left}px`,
+    top: `${layout.image.top - layout.viewer.top}px`,
+    width: `${layout.image.width}px`,
+    height: `${layout.image.height}px`,
   };
-  let zoomStyle: JSX.CSSProperties = {};
+  let zoomStyle: CSSProperties = {};
   if (zoom && zoomSource.width > 0 && zoomSource.height > 0) {
     const { clientX, clientY, pointerType } = zoom.point;
     const relativeX = clamp((clientX - layout.image.left) / Math.max(1, layout.image.width), 0, 1);
@@ -454,7 +467,8 @@ export function Viewer({
       );
       zoomStyle = {
         ...zoomStyle,
-        ...position,
+        left: `${position.left}px`,
+        top: `${position.top}px`,
         backgroundSize: `${zoomSource.width}px ${zoomSource.height}px`,
         backgroundPosition: [
           `${layout.loupe.width / 2 - relativeX * zoomSource.width}px`,
@@ -579,8 +593,8 @@ export function Viewer({
         role="status"
         aria-live="polite"
         style={{
-          left: layout.image.width > 0 ? layout.image.left - layout.viewer.left + layout.image.width / 2 : "50%",
-          top: layout.image.height > 0 ? layout.image.top - layout.viewer.top + layout.image.height / 2 : "50%",
+          left: layout.image.width > 0 ? `${layout.image.left - layout.viewer.left + layout.image.width / 2}px` : "50%",
+          top: layout.image.height > 0 ? `${layout.image.top - layout.viewer.top + layout.image.height / 2}px` : "50%",
         }}
       >
         {feedback.text}

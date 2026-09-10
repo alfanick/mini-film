@@ -1,60 +1,89 @@
-/** Colocate tool lifecycle hooks and controlled forms away from the image workspace's render boundary. */
-import { computed, createModel, signal, useModel, type ReadonlySignal } from "@preact/signals";
+/** Stable provider-owned feature models survive view recovery without controller copying or broad subscriptions. */
+import { computed, createModel, useModel, type ReadonlySignal } from "@preact/signals";
 import { createContext, type ComponentChildren } from "preact";
-import { useContext, useLayoutEffect } from "preact/hooks";
-import { useTools, type ToolsController } from "./use-tools";
-import { ToolOverlays } from "./overlays";
+import { useContext } from "preact/hooks";
+import { useReviewSession } from "../session/context";
+import { useReviewModel } from "../core/context";
+import type { ReviewModelValue } from "../core/model";
 import type { ToolSessionActions } from "./types";
+import { InformationModel, type InformationModelValue } from "../features/information/model";
+import { PanoramaModel, type PanoramaModelValue } from "../features/panorama/model";
+import { PublishModel, type PublishActions } from "../features/publish/model";
+import { SamplerModel, type SamplerModelValue } from "../features/sampler/model";
+import { DiffusionModel, type DiffusionModelValue } from "../features/diffusion/model";
 
-/** The workspace subscribes to visibility only; overlays subscribe to their complete current tool presentation. */
-interface ToolModelValue {
-  controller: ReadonlySignal<ToolsController>;
-  publishOpen: ReadonlySignal<boolean>;
-  replace: (controller: ToolsController) => void;
+/** Context transports identities only; each feature view observes its own model signals directly. */
+export interface ToolModels {
+  information: InformationModelValue;
+  panorama: PanoramaModelValue;
+  publish: PublishActions;
+  sampler: SamplerModelValue;
+  diffusion: DiffusionModelValue;
+  modalOpen: ReadonlySignal<boolean>;
 }
 
-/** Keep a stable context identity even while sliders, polling or publish text update tool-local state. */
-const ToolModel = createModel((initial: ToolsController): ToolModelValue => {
-  const current = signal(initial);
+/** Compose models in the provider's lifetime so closing or crashing a dialog never creates a second operation owner. */
+const ReviewTools = createModel((catalog: ReviewModelValue, session: ToolSessionActions): ToolModels => {
+  const information = new InformationModel(catalog);
+  const panorama = new PanoramaModel(catalog, session);
+  const publish = new PublishModel(catalog, session);
+  const sampler = new SamplerModel(catalog, session);
+  const diffusion = new DiffusionModel(catalog, session);
   return {
-    controller: current,
-    publishOpen: computed(() => current.value.publishOpen),
-    replace: (controller: ToolsController): void => {
-      current.value = controller;
-    },
+    information,
+    panorama,
+    publish,
+    sampler,
+    diffusion,
+    modalOpen: computed(
+      () =>
+        information.state.value.profileInfoProfileIndex !== null ||
+        information.state.value.commandInvocationOpen ||
+        panorama.state.value.panoramaOpen ||
+        publish.publishOpen.value ||
+        sampler.state.value.samplerOpen ||
+        diffusion.state.value.diffusionOpen,
+    ),
   };
 });
-const ToolContext = createContext<ToolModelValue | null>(null);
+const ToolContext = createContext<ToolModels | null>(null);
 
-/** Mount each tool's effects once without lifting its controlled inputs into the image workspace. */
-export function ToolsProvider({
-  session,
-  children,
-}: {
-  session: ToolSessionActions;
-  children: ComponentChildren;
-}): ComponentChildren {
-  const controller = useTools(session);
-  const model = useModel(() => new ToolModel(controller));
-  useLayoutEffect((): void => model.replace(controller), [controller, model]);
-  return <ToolContext.Provider value={model}>{children}</ToolContext.Provider>;
+/** Mount model ownership above all recoverable workspace and dialog view boundaries. */
+export function ToolsProvider({ children }: { children: ComponentChildren }): ComponentChildren {
+  const catalog = useReviewModel();
+  const session = useReviewSession();
+  const models = useModel(() => new ReviewTools(catalog, session));
+  return <ToolContext.Provider value={models}>{children}</ToolContext.Provider>;
 }
 
 /** Reject accidental use outside the owning provider instead of sharing singleton tool state. */
-function useToolModel(): ToolModelValue {
+export function useToolModels(): ToolModels {
   const model = useContext(ToolContext);
   if (!model) throw new Error("Review tools require ToolsProvider");
   return model;
 }
 
-/** Read stable commands without subscribing the workspace to form text, previews or polling results. */
-export function useActiveTools(): ToolsController {
-  const model = useToolModel();
-  return { ...model.controller.peek(), publishOpen: model.publishOpen.value };
+/** The shell needs launch commands and one modal flag, not complete form/controller presentations. */
+export interface ActiveTools {
+  modalOpen: boolean;
+  openProfileInfo: InformationModelValue["openProfileInfo"];
+  openCommandInvocation: InformationModelValue["openCommandInvocation"];
+  openPanoramaWizard: PanoramaModelValue["openPanoramaWizard"];
+  openSampler: SamplerModelValue["openSampler"];
+  openDiffusion: DiffusionModelValue["openDiffusion"];
+  togglePublishWizard: PublishActions["togglePublishWizard"];
 }
 
-/** Keep the existing inside/outside layout while only open tool rendering reacts to tool-local changes. */
-export function ToolOverlayHost({ placement }: { placement: "inside" | "outside" }): ComponentChildren {
-  const model = useToolModel();
-  return <ToolOverlays tools={model.controller.value} placement={placement} />;
+/** Observe only publish visibility; all exported launch functions retain their model-bound identity. */
+export function useActiveTools(): ActiveTools {
+  const models = useToolModels();
+  return {
+    modalOpen: models.modalOpen.value,
+    openProfileInfo: models.information.openProfileInfo,
+    openCommandInvocation: models.information.openCommandInvocation,
+    openPanoramaWizard: models.panorama.openPanoramaWizard,
+    openSampler: models.sampler.openSampler,
+    openDiffusion: models.diffusion.openDiffusion,
+    togglePublishWizard: models.publish.togglePublishWizard,
+  };
 }

@@ -13,7 +13,14 @@ export interface OperationSpec<Response> {
 export type OperationOptions<Request, Parameters> = (undefined extends Request
   ? { body?: Request }
   : { body: Request }) &
-  (keyof Parameters extends never ? { params?: Parameters } : { params: Parameters }) & { signal?: AbortSignal };
+  ([Parameters] extends [never]
+    ? { params?: never }
+    : keyof Parameters extends never
+      ? { params?: never }
+      : { params: Parameters }) & {
+    signal?: AbortSignal;
+    keepalive?: boolean;
+  };
 
 /** Resolve API/media paths relative to the page so reverse-proxy prefixes remain supported. */
 export function reviewUrl(path: string): string {
@@ -62,6 +69,7 @@ export function createOperation<Request, Response, Parameters extends Readonly<R
       cache: "no-store",
       ...(body === undefined ? {} : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
       ...(options.signal === undefined ? {} : { signal: options.signal }),
+      ...(options.keepalive === undefined ? {} : { keepalive: options.keepalive }),
     });
     const text = await response.text();
     if (!response.ok) {

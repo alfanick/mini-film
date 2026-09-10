@@ -9,11 +9,11 @@ import type {
   CropRect,
   ImageSource,
   RetouchSettings,
-  ReviewImage,
-  ReviewProfile,
-  ReviewProfileRender,
-  ReviewState,
-  ReviewStateData,
+  ReviewImageObservation as ReviewImage,
+  ReviewProfileObservation as ReviewProfile,
+  ReviewProfileRenderObservation as ReviewProfileRender,
+  ReviewStateObservation as ReviewState,
+  ReviewCatalogObservation as ReviewStateData,
 } from "./types";
 import { BW_FILTERS, COLOR_LABELS, COMPRESSED_REVIEW_PREVIEW_LONG_EDGE } from "./constants";
 
@@ -142,9 +142,7 @@ export function profilesAreImplicitOnly(
 /** Return the published/enabled variants in their existing display order. */
 export function publishProfileIndexes(image: ReviewImage | null): number[] {
   if (!image || isDirectCompressedImage(image)) return [];
-  return Array.isArray(image.publish_profile_indexes)
-    ? image.publish_profile_indexes
-    : image.profiles.map((profile) => profile.profile_index);
+  return [...image.publish_profile_indexes];
 }
 
 /** Normalize both legacy single labels and the current multiple-label field. */

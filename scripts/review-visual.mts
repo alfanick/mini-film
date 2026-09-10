@@ -3,12 +3,13 @@ import { cp, mkdir, mkdtemp } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { errorMessage, isMissingFile, requireSupportedNode } from "./tooling.mts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** Forward subprocess diagnostics while failing the outer check if either test pass fails. */
-function run(command, args, cwd) {
-  return new Promise((resolveRun, reject) => {
+function run(command: string, args: readonly string[], cwd: string): Promise<void> {
+  return new Promise<void>((resolveRun, reject) => {
     const child = spawn(command, args, { cwd, stdio: "inherit", windowsHide: true });
     child.once("error", reject);
     child.once("exit", (code, signal) => {
@@ -19,7 +20,7 @@ function run(command, args, cwd) {
 }
 
 /** Install from the lockfile in disposable output, then compare both bundles against fresh same-browser references. */
-async function checkInsideContainer(args) {
+async function checkInsideContainer(args: readonly string[]): Promise<void> {
   const workspace = await mkdtemp(join(root, "target/run-"));
   console.info(`Visual workspace and artifacts: ${workspace}`);
   const sources = [
@@ -31,8 +32,10 @@ async function checkInsideContainer(args) {
     "tsconfig.json",
     "tsconfig.review.json",
     "tsconfig.review-tests.json",
+    "tsconfig.tooling.json",
     "eslint.config.mjs",
     "playwright.config.ts",
+    "playwright.pure.config.ts",
     ".prettierrc.json",
   ];
   await Promise.all(
@@ -49,8 +52,9 @@ async function checkInsideContainer(args) {
     ["ci", "--ignore-scripts", "--include=dev", "--include=optional", "--no-audit", "--no-fund"],
     workspace,
   );
-  await run(process.execPath, ["scripts/review-contracts.mjs", "--runtime"], workspace);
+  await run(process.execPath, ["scripts/review-contracts.mts", "--runtime"], workspace);
   const playwright = join(workspace, "node_modules/@playwright/test/cli.js");
+  await run(process.execPath, [playwright, "test", "--config", "playwright.pure.config.ts"], workspace);
   await run(
     process.execPath,
     [
@@ -67,12 +71,12 @@ async function checkInsideContainer(args) {
 }
 
 /** Expose only ignored target output as writable to the pinned browser container. */
-async function checkInPinnedContainer(args) {
+async function checkInPinnedContainer(args: readonly string[]): Promise<void> {
   const artifacts = join(root, "target/review-ci");
   await mkdir(artifacts, { recursive: true });
   console.info(`Container workspaces and artifacts remain under ${artifacts}`);
   await run(
-    process.env.CONTAINER_ENGINE || "docker",
+    process.env["CONTAINER_ENGINE"] || "docker",
     [
       "run",
       "--rm",
@@ -89,7 +93,7 @@ async function checkInPinnedContainer(args) {
       "/work",
       "mcr.microsoft.com/playwright:v1.63.0-noble",
       "node",
-      "scripts/review-visual.mjs",
+      "scripts/review-visual.mts",
       "--inside-container",
       ...args,
     ],
@@ -98,11 +102,12 @@ async function checkInPinnedContainer(args) {
 }
 
 try {
+  requireSupportedNode();
   const args = process.argv.slice(2);
   if (args[0] === "--inside-container") await checkInsideContainer(args.slice(1));
   else await checkInPinnedContainer(args);
 } catch (error) {
-  console.error(`Visual checks failed: ${error.message}`);
-  if (error.code === "ENOENT") console.error("Install Docker or set CONTAINER_ENGINE=podman.");
+  console.error(`Visual checks failed: ${errorMessage(error)}`);
+  if (isMissingFile(error)) console.error("Install Docker or set CONTAINER_ENGINE=podman.");
   process.exitCode = 1;
 }

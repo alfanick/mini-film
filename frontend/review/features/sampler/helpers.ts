@@ -2,7 +2,7 @@
  * Profile-catalog hierarchy algorithms preserve the sampler grouping and priority semantics independently of
  * component lifecycles.
  */
-import type { SamplerEntry, SamplerJob } from "../../core/types";
+import type { SamplerEntryObservation as SamplerEntry, SamplerJobObservation as SamplerJob } from "../../core/types";
 import { capitalize } from "../../tools/common";
 
 /** Preserve source proportions while sampler thumbnails load. */
@@ -39,10 +39,10 @@ export interface SamplerHierarchy {
 }
 
 /** Build display sections and an entry lookup together so expansion and request priority use identical grouping. */
-export function buildSamplerHierarchy(entries: SamplerEntry[]): SamplerHierarchy {
+export function buildSamplerHierarchy(entries: readonly SamplerEntry[]): SamplerHierarchy {
   const root = samplerTrieNode("");
   for (const entry of entries) {
-    const parts = Array.isArray(entry.parts) ? entry.parts.map((part) => String(part).trim()).filter(Boolean) : [];
+    const parts = entry.parts.map((part) => part.trim()).filter(Boolean);
     let node = root;
     for (const part of parts.length > 0 ? parts : ["Profiles"]) {
       let child = node.children.get(part);
@@ -122,7 +122,7 @@ export function collectSamplerTrieEntries(node: SamplerTrieNode): SamplerEntry[]
 }
 
 /** Apply the original locale-aware, numeric ordering to profile entries. */
-export function samplerSortEntries(entries: SamplerEntry[]): SamplerEntry[] {
+export function samplerSortEntries(entries: readonly SamplerEntry[]): SamplerEntry[] {
   return [...entries].sort((left, right) => left.name.localeCompare(right.name, undefined, { numeric: true }));
 }
 

@@ -1,39 +1,18 @@
 /** Reactive sampler views render controlled tool state; stable component identities preserve focus and open details. */
 import { createContext } from "preact";
-import { useContext } from "preact/hooks";
-import type { ToolsController } from "../../tools/use-tools";
+import { useContext, useLayoutEffect, useRef } from "preact/hooks";
+import type { SamplerModelValue } from "./model";
 import type { ComponentChildren } from "preact";
 
-import type { ReviewState, SamplerJob, SamplerEntry } from "../../core/types";
+import type { SamplerJobObservation as SamplerJob, SamplerEntryObservation as SamplerEntry } from "../../core/types";
 import { capitalize } from "../../core/selectors";
 import { reviewUrl } from "../../core/api";
-import { buildSamplerHierarchy, samplerMediaStyle, samplerStatusText } from "./helpers";
+import { buildSamplerHierarchy, samplerMediaStyle, samplerStatusText, type SamplerSectionData } from "./helpers";
 
-/** Live catalog state and selection actions shared by the sampler tree and comparison components. */
-export interface SamplerViewDependencies {
-  samplerRootRef: ToolsController["samplerRootRef"];
-  closeSampler: ToolsController["closeSampler"];
-  samplerSelectedEntry: ToolsController["samplerSelectedEntry"];
-  selectSamplerEntry: ToolsController["selectSamplerEntry"];
-  state: ReviewState;
-  toggleSamplerSection: ToolsController["toggleSamplerSection"];
-  updateSamplerSelection: ToolsController["updateSamplerSelection"];
-}
-
-export interface SamplerSectionData {
-  key: string;
-  label: string;
-  depth: number;
-  ancestorKeys: string[];
-  entries: SamplerEntry[];
-  allEntries: SamplerEntry[];
-  children: SamplerSectionData[];
-}
-
-export const SamplerViewContext = createContext<SamplerViewDependencies | null>(null);
+export const SamplerViewContext = createContext<SamplerModelValue | null>(null);
 
 /** Read the current dialog dependencies from its provider instead of retaining initial factory closures. */
-function useSamplerView(): SamplerViewDependencies {
+function useSamplerView(): SamplerModelValue {
   const value = useContext(SamplerViewContext);
   if (!value) throw new Error("Sampler views require their tool provider");
   return value;
@@ -41,8 +20,34 @@ function useSamplerView(): SamplerViewDependencies {
 
 /** Render sampler overlay from current state and typed callbacks. */
 export function SamplerOverlay(): ComponentChildren {
-  const { closeSampler, samplerSelectedEntry, state, samplerRootRef } = useSamplerView();
+  const { closeSampler, samplerSelectedEntry, state: observation, setVisibleEntries } = useSamplerView();
+  const state = observation.value;
+  const samplerRootRef = useRef<HTMLDivElement | null>(null);
   const job = state.samplerJob;
+  /** Measurements belong to the mounted view; all priority state and transport belong to its durable model. */
+  useLayoutEffect(() => {
+    const root = samplerRootRef.current;
+    if (!root || !job || typeof IntersectionObserver === "undefined") return;
+    const visible = new Set<string>();
+    const observer = new IntersectionObserver(
+      (entries): void => {
+        for (const entry of entries) {
+          if (!(entry.target instanceof HTMLElement)) continue;
+          const key = entry.target.dataset["samplerKey"];
+          if (!key) continue;
+          if (entry.isIntersecting) visible.add(key);
+          else visible.delete(key);
+        }
+        setVisibleEntries([...visible]);
+      },
+      { root, rootMargin: "80px 0px", threshold: 0.01 },
+    );
+    root.querySelectorAll<HTMLElement>("[data-sampler-key]").forEach((tile) => observer.observe(tile));
+    return (): void => {
+      observer.disconnect();
+      setVisibleEntries([]);
+    };
+  }, [job, setVisibleEntries]);
   const hierarchy = buildSamplerHierarchy(job?.entries || []);
   const selectedEntry = samplerSelectedEntry(job);
   const completed = Number(job?.completed || 0);
@@ -114,7 +119,8 @@ export function SamplerSection({
   section: SamplerSectionData;
   job: SamplerJob | null;
 }): ComponentChildren {
-  const { state, toggleSamplerSection } = useSamplerView();
+  const { state: observation, toggleSamplerSection } = useSamplerView();
+  const state = observation.value;
   const expanded = state.samplerExpandedSections.has(section.key);
   const done = section.allEntries.filter((entry) => entry.status === "done").length;
   return (
@@ -148,7 +154,8 @@ export function SamplerSection({
 
 /** Render sampler tile from current state and typed callbacks. */
 export function SamplerTile({ entry, job }: { entry: SamplerEntry; job: SamplerJob | null }): ComponentChildren {
-  const { selectSamplerEntry, state, updateSamplerSelection } = useSamplerView();
+  const { selectSamplerEntry, state: observation, updateSamplerSelection } = useSamplerView();
+  const state = observation.value;
   const selected = state.samplerSelectedKey === entry.key;
   const ready = entry.status === "done" && Boolean(entry.thumbnail_url);
   const currentPending = state.samplerPendingSelections.has(`${entry.key}:current`);

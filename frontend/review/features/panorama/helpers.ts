@@ -1,5 +1,5 @@
 /** Panorama status formatting stays independent of the asynchronous project editor. */
-import type { ReviewPanoramaProject } from "../../core/types";
+import type { ReviewPanoramaProjectObservation as ReviewPanoramaProject } from "../../core/types";
 import { capitalize } from "../../tools/common";
 
 /** Describe project progress with the established panorama labels. */

@@ -11,6 +11,8 @@ const TIME: &str = "2026-09-05T12:00:00+00:00";
 pub struct ResponseFixtures {
     pub state: ReviewStateSnapshot,
     pub patch: ReviewStatePatch,
+    pub publish_created: ReviewPublishCreated,
+    pub panorama_created: ReviewPanoramaCreated,
     pub sampler_job: ReviewSamplerJobSnapshot,
     pub diffusion_job: ReviewDiffusionJob,
     pub keepalive: ReviewKeepalive,
@@ -350,6 +352,14 @@ pub fn responses() -> ResponseFixtures {
     let patch = ReviewStatePatch::between(&state, &next);
     ResponseFixtures {
         state,
+        publish_created: ReviewPublishCreated {
+            patch: patch.clone(),
+            created_job_id: 7,
+        },
+        panorama_created: ReviewPanoramaCreated {
+            patch: patch.clone(),
+            created_project_id: 9,
+        },
         patch,
         sampler_job: ReviewSamplerJobSnapshot {
             id: 1,

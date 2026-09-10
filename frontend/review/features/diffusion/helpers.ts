@@ -2,16 +2,17 @@
  * Diffusion value and geometry helpers retain engine limits and preview framing while reactive hooks own requests and
  * state.
  */
-import type { JSX } from "preact";
+import type { CSSProperties } from "preact";
 import type {
   DiffusionSettings,
   DiffusionMethod,
-  DiffusionJob,
+  DiffusionJobObservation as DiffusionJob,
   DiffusionDetailArea,
   DiffusionPreviewContext,
   ImageSource,
-  ReviewImage,
-  ReviewProfileRender,
+  ReviewImageObservation as ReviewImage,
+  ReviewProfileRenderObservation as ReviewProfileRender,
+  ReadonlyData,
 } from "../../core/types";
 import { DIFFUSION_METHODS, DIFFUSION_DETAIL_AREAS } from "../../core/constants";
 import { clamp } from "../../tools/common";
@@ -135,15 +136,15 @@ export function normalizeDiffusionDetailArea(
 }
 
 /** Reserve the selected detail area's aspect ratio while media loads. */
-export function diffusionDetailFrameStyle(area: DiffusionDetailArea | null): JSX.CSSProperties {
+export function diffusionDetailFrameStyle(area: DiffusionDetailArea | null): CSSProperties {
   return area ? { aspectRatio: `${area.width} / ${area.height}` } : { aspectRatio: "1 / 1" };
 }
 
 /** Position a full preview behind the detail frame using normalized crop percentages. */
 export function diffusionDetailMediaStyle(
   area: DiffusionDetailArea,
-  previewContext: DiffusionPreviewContext,
-): JSX.CSSProperties {
+  previewContext: ReadonlyData<DiffusionPreviewContext>,
+): CSSProperties {
   return {
     width: `${((previewContext.width / area.width) * 100).toFixed(6)}%`,
     height: `${((previewContext.height / area.height) * 100).toFixed(6)}%`,

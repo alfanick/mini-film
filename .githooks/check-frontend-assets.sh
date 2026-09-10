@@ -10,12 +10,19 @@ if ! command -v npm >/dev/null 2>&1; then
   exit 1
 fi
 
+node -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 24 ||
+  (major === 24 && minor < 12)) { console.error("Frontend checks require Node.js 24.12 or newer"); process.exit(1); }'
+
 if [[ ! -x node_modules/.bin/prettier || ! -x node_modules/.bin/tsc ||
       package-lock.json -nt node_modules/.package-lock.json ||
       package.json -nt node_modules/.package-lock.json ]]; then
   echo "Installing pinned frontend tooling with npm ci"
   npm ci --ignore-scripts --include=dev --include=optional --no-audit --no-fund
 fi
+
+# Online freshness is deliberately a hook/CI policy, never part of Cargo's deterministic asset build.
+npm run check:frontend-versions
+npm audit --audit-level=high
 
 if [[ "${MINI_FILM_FORMAT_STAGED:-0}" == "1" ]]; then
   npm run format:staged
