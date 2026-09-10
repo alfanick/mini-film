@@ -1,6 +1,7 @@
 // Exercise the real frontend build with disposable source checkouts. These
 // checks protect Cargo caching, error propagation, and the single-file contract.
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -13,6 +14,24 @@ import { isRecord, readJson } from "./tooling.mts";
 import ts from "typescript";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+/** Capture expected CLI failures so CI matchers see diagnostics only when a regression breaks the assertion. */
+function expectRejectedBuild(
+  { sourceDir, outputDir }: { readonly sourceDir: string; readonly outputDir: string },
+  failure: RegExp,
+  diagnostic: RegExp,
+): void {
+  const result = spawnSync(process.execPath, [join(sourceDir, "scripts/build-review.mts"), "--out-dir", outputDir], {
+    cwd: sourceDir,
+    encoding: "utf8",
+    timeout: 180_000,
+  });
+  const output = `${result.stdout}\n${result.stderr}`;
+  assert.equal(result.error, undefined, output);
+  assert.equal(result.status, 1, output);
+  assert.match(output, failure);
+  assert.match(output, diagnostic);
+}
 
 // A single lifecycle proves failed builds cannot leave a valid cache marker.
 void test("Cargo staging installs, invalidates, checks types, and emits one runtime file", async (context) => {
@@ -73,7 +92,7 @@ void test("Cargo staging installs, invalidates, checks types, and emits one runt
 
   const addedModule = join(sourceDir, "frontend/review/added.ts");
   await writeFile(addedModule, 'export const added: number = "invalid added module";\n');
-  await assert.rejects(buildReview(options), /tsc.*failed/);
+  expectRejectedBuild(options, /tsc.*failed/, /added\.ts\(1,14\): error TS2322/);
   await rm(addedModule);
   assert.equal((await buildReview(options)).rebuilt, true);
   assert.equal(existsSync(join(outputDir, "review-workspace/frontend/review/added.ts")), false);
@@ -100,7 +119,7 @@ void test("Cargo staging installs, invalidates, checks types, and emits one runt
   assert.equal((await buildReview(options)).installed, true);
 
   await writeFile(view, 'export const view: number = "intentional type error";\n');
-  await assert.rejects(buildReview(options), /tsc.*failed/);
+  expectRejectedBuild(options, /tsc.*failed/, /view\.tsx\(1,14\): error TS2322/);
   assert.match(await readFile(first.bundlePath, "utf8"), /Updated fixture/);
   await writeFile(view, "export const view = <button>Updated fixture</button>;\n");
   const release = await buildReview({ ...options, profile: "release" });
@@ -119,22 +138,26 @@ void test("Cargo staging installs, invalidates, checks types, and emits one runt
   assert.equal(existsSync(join(sourceDir, "node_modules")), false);
 
   // Cargo must enforce the same type-aware source rules as npm and editors.
-  for (const invalidSource of [
-    "const unsafe: any = {}; unsafe();\n",
-    'const unsafe = JSON.parse("{}"); unsafe.missing();\n',
-    "Promise.resolve();\n",
-    'import { h, render } from "preact"; render(h("div", null, "imperative markup"), document.body);\n',
-  ]) {
+  const invalidSources: readonly (readonly [string, RegExp])[] = [
+    ["const unsafe: any = {}; unsafe();\n", /@typescript-eslint\/no-explicit-any/],
+    ['const unsafe = JSON.parse("{}"); unsafe.missing();\n', /@typescript-eslint\/no-unsafe-member-access/],
+    ["Promise.resolve();\n", /@typescript-eslint\/no-floating-promises/],
+    [
+      'import { h, render } from "preact"; render(h("div", null, "imperative markup"), document.body);\n',
+      /Use TSX markup instead of h\(\) calls/,
+    ],
+  ];
+  for (const [invalidSource, diagnostic] of invalidSources) {
     await writeFile(entry, invalidSource);
-    await assert.rejects(buildReview(options), /eslint.*failed/);
+    expectRejectedBuild(options, /eslint.*failed/, diagnostic);
   }
 
   await writeFile(entry, 'import "missing-review-module";\n');
-  await assert.rejects(buildReview(options), /failed/);
+  expectRejectedBuild(options, /tsc.*failed/, /error TS2882.*missing-review-module/);
 
   const mismatchedManifest = { ...manifest, dependencies: { preact: "0.0.0-invalid-fixture" } };
   await writeFile(packagePath, JSON.stringify(mismatchedManifest));
-  await assert.rejects(buildReview(options), /failed/);
+  expectRejectedBuild(options, /npm.*failed/, /0\.0\.0-invalid-fixture/);
 });
 
 // Import metadata alone misses computed dynamic imports; the final emitted syntax must also be checked.

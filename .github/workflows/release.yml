@@ -37,7 +37,7 @@ jobs:
       source_ref: ${{ steps.release.outputs.source_ref }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.ref }}
@@ -97,11 +97,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve-release.outputs.source_ref }}
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -172,7 +172,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: ${{ needs.resolve-release.outputs.source_ref }}
@@ -182,7 +182,7 @@ jobs:
         run: ./.githooks/check-cargo-versions.sh
 
       - name: Cache cargo registry, git deps, and target
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -206,7 +206,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Install Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -241,7 +241,7 @@ jobs:
           cp "$binary" "$artifact"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mini-film-${{ matrix.target }}${{ matrix.artifact_suffix }}
           path: artifacts/*
@@ -255,7 +255,7 @@ jobs:
     environment: Default
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: ${{ needs.resolve-release.outputs.source_ref }}
@@ -343,7 +343,7 @@ jobs:
     if: needs.resolve-release.outputs.should_release == 'true'
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: ${{ needs.resolve-release.outputs.source_ref }}
@@ -360,7 +360,7 @@ jobs:
           echo "tag=${{ needs.resolve-release.outputs.release_tag }}" >> "$GITHUB_OUTPUT"
 
       - name: Download release artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           pattern: mini-film-*
