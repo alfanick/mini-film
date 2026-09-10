@@ -10,7 +10,14 @@ import tseslint from "typescript-eslint";
 export default [
   {
     // Standalone validator JS is compiler output; freshness, formatting, typed declarations and runtime tests check it.
-    ignores: ["node_modules/**", "target/**", "assets/**/vendor/**", "frontend/review/generated/validators.mjs"],
+    ignores: [
+      "node_modules/**",
+      "target/**",
+      "assets/**/vendor/**",
+      "frontend/review/generated/validators.mjs",
+      // This independent native submodule runs its own checks and contains generated Cargo assets.
+      "frontend/gtk4/**",
+    ],
   },
   js.configs.recommended,
   {

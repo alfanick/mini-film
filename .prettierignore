@@ -1,0 +1,2 @@
+# The native GTK submodule owns its source checks and generated Cargo artifacts independently.
+frontend/gtk4/
