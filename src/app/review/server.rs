@@ -1,6 +1,8 @@
 //! Serve review routes through the shared Rust-owned JSON request and response contracts.
 
 use crate::review_contract as wire;
+#[path = "server_local_media.rs"]
+mod local_media;
 #[path = "server_assets.rs"]
 mod static_assets;
 
@@ -14,7 +16,7 @@ use async_stream::stream;
 use axum::{
     Router,
     body::{Body, Bytes, to_bytes},
-    extract::State,
+    extract::{ConnectInfo, State},
     http::{HeaderMap, HeaderValue, Method, Request, StatusCode, header},
     response::{
         IntoResponse, Response,
@@ -38,20 +40,50 @@ pub(super) fn run_review_listener(
     runtime.block_on(async move {
         let listener = tokio::net::TcpListener::from_std(listener)
             .context("creating async review listener")?;
-        axum::serve(listener, review_router(handle))
-            .await
-            .context("running review HTTP server")
+        axum::serve(
+            listener,
+            review_router(handle).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .context("running review HTTP server")
     })
 }
 
 fn review_router(handle: ReviewHandle) -> Router {
-    Router::new().fallback(review_request).with_state(handle)
+    let access = local_media::LocalMediaAccess::prepare(&handle);
+    Router::new()
+        .fallback(review_request)
+        .layer(axum::Extension(access))
+        .with_state(handle)
+}
+
+/// Exercise the real authorization middleware from isolated route tests without opening a public listener.
+#[cfg(test)]
+pub(super) fn local_media_router(handle: ReviewHandle) -> Router {
+    review_router(handle)
 }
 
 /// Preserve existing routing and status codes while decoding mutations through shared wire DTOs.
 async fn review_request(State(handle): State<ReviewHandle>, request: Request<Body>) -> Response {
     let (parts, body) = request.into_parts();
     let path = review_route_path(parts.uri.path());
+    if parts.method == Method::POST && path == "/api/media-path" {
+        let Some(access) = parts.extensions.get::<local_media::LocalMediaAccess>() else {
+            return json_error(403, anyhow!("local media access denied")).into_response();
+        };
+        let peer = parts
+            .extensions
+            .get::<ConnectInfo<std::net::SocketAddr>>()
+            .map(|info| info.0);
+        let body = match to_bytes(body, 16 * 1024).await {
+            Ok(body) => body,
+            Err(_) => {
+                return json_error(400, anyhow!("local media request is too large"))
+                    .into_response();
+            }
+        };
+        return local_media::response(&handle, access, peer, &parts.headers, &body).await;
+    }
     if parts.method == Method::GET && path == "/api/events" {
         return event_stream_response(handle);
     }

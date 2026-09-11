@@ -304,6 +304,47 @@ impl ReviewHandle {
         Ok(path)
     }
 
+    /// Seed only test-owned ready media so router tests need no external RAW renderer or asynchronous sampler worker.
+    #[cfg(test)]
+    pub(super) fn seed_local_media_test_sampler(&self, id: u64) -> Result<(PathBuf, PathBuf)> {
+        let root = self.sampler_cache_root().join("local-media-route-test");
+        fs::create_dir_all(&root)?;
+        let source = root.join("source.jpg");
+        let thumbnail = root.join("thumbnail.jpg");
+        fs::write(&source, b"sampler source fixture")?;
+        fs::write(&thumbnail, b"sampler thumbnail fixture")?;
+        self.sampler_registry.insert(ReviewSamplerJob {
+            id,
+            image_id: 1,
+            file_name: "fixture.NEF".into(),
+            job_key: "local-media-route-test".into(),
+            status: ReviewSamplerJobStatus::Done,
+            prepared_source: None,
+            source_preview: Some(source.clone()),
+            source_width: Some(1),
+            source_height: Some(1),
+            completed: 1,
+            failed: 0,
+            workers: 0,
+            error: None,
+            entries: vec![ReviewSamplerEntry {
+                key: "fixture-profile".into(),
+                identity: "local-media-route-test".into(),
+                name: "Fixture".into(),
+                filename: "fixture.xmp".into(),
+                parts: Vec::new(),
+                profile_path: root.join("fixture.xmp"),
+                status: ReviewSamplerEntryStatus::Done,
+                thumbnail: Some(thumbnail.clone()),
+                duration_ms: None,
+                error: None,
+                candidate: None,
+                priority: 0,
+            }],
+        });
+        Ok((source, thumbnail))
+    }
+
     pub(super) fn prioritize_sampler_job(
         &self,
         job_id: u64,

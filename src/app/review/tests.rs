@@ -12,6 +12,10 @@ use std::sync::Mutex;
 #[path = "contract_tests.rs"]
 mod contract_tests;
 
+#[cfg(unix)]
+#[path = "local_media_tests.rs"]
+mod local_media_tests;
+
 fn profile(index: usize, stem: &str) -> ReviewProfile {
     ReviewProfile {
         index,

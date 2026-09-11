@@ -4,6 +4,15 @@
 use super::*;
 use serde::Deserialize;
 
+/// Read-only local media lookup; the caller must also prove access to the catalog's private capability file.
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize)]
+pub struct ReviewMediaPathRequest {
+    /// Existing relative review media route, without an origin, query, or fragment.
+    pub path: String,
+    /// Canonical catalog selected explicitly by the native client.
+    pub catalog_path: String,
+}
+
 /// Accepted JSON body for ReviewUpdateRequest.
 #[derive(schemars::JsonSchema, Clone, Debug, Deserialize)]
 pub struct ReviewUpdateRequest {

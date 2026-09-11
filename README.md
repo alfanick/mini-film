@@ -740,6 +740,30 @@ again for the same unchanged image.
 
 ### Live Review
 
+The optional [native GTK4 client](https://github.com/alfanick/mini-film-gtk4)
+is maintained in the `frontend/gtk4` Git submodule. Initialize it with
+`git submodule update --init frontend/gtk4`; its README documents native build
+dependencies and the single-command `make` build. It connects to the same
+review daemon, preserving the browser workflow and review state.
+
+When the native client receives both a daemon URL and its local SQLite catalog,
+image and preview bytes are read from local files, never downloaded over HTTP.
+SQLite resolves persisted media first. For transient or lazily generated previews,
+the Unix daemon provides `POST /api/media-path`: a JSON request containing
+`path` (an existing relative media route) and `catalog_path` returns the canonical
+media `path` and matching `catalog_path`. This endpoint transfers no image bytes
+and does not edit review data; normal preview-cache generation may still occur.
+Edits, jobs, and live updates continue through the ordinary HTTP/SSE control API.
+
+Local path lookup requires an actual loopback connection, no browser or forwarding
+headers, and `x-mini-film-local-access` containing the private capability stored
+as `.mini-film-local-media-token` in the catalog's recorded cache directory.
+The mode-0600 capability is published atomically and is never exposed by the web
+API. Catalog mismatches, unknown routes, and output-directory traversal are
+rejected. This is a same-user local-filesystem facility, not a remote file server;
+the native client fails closed rather than downloading images when local media
+cannot be resolved. Non-image exports such as gallery ZIP files still use HTTP.
+
 Add `--review-address` to expose a browser-based review UI while the daemon is
 running:
 

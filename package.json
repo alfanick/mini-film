@@ -1,6 +1,6 @@
 {
   "name": "mini-film",
-  "version": "23.2.1",
+  "version": "23.3.0",
   "private": true,
   "description": "Build and check the embedded mini-film review and gallery UIs.",
   "engines": {

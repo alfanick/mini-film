@@ -1,8 +1,17 @@
 //! Public response bodies and metadata projections for the embedded review app.
-//! Private paths and camera identifiers have no fields here and cannot leak through serialization.
+//! Browser projections omit private paths; the separately authorized local-media response explicitly carries one.
 
 use super::*;
 use serde::Serialize;
+
+/// Capability-protected local response; ordinary browser state and job projections never include these paths.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+pub struct ReviewMediaPathResponse {
+    /// Canonical regular file chosen by the existing daemon media resolver.
+    pub path: String,
+    /// Canonical catalog identity used to reject accidental cross-daemon local reads.
+    pub catalog_path: String,
+}
 
 /// The two source categories emitted by the current review projection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, schemars::JsonSchema)]
